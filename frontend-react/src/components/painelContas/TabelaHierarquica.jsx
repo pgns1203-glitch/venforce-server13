@@ -35,6 +35,7 @@ import { AUSENTE, ehAusente, direcao } from "../../utils/numbers.js";
 import { rotularCompetenciaCurta, formatarData, formatarDataHora } from "../../utils/dates.js";
 import { colunasVisiveis, gruposVisiveis } from "./colunas.js";
 import { atualizacaoEmCurso } from "../../utils/painelContasAtualizacao.js";
+import { DemonstrativoComposicao } from "./ComposicaoFaturamento.jsx";
 import "./TabelaHierarquica.css";
 
 // Squad é identidade, não estado: tag NEUTRA (cor fica reservada para o que
@@ -106,7 +107,21 @@ function Delta({ sentido, valor, texto }) {
 //   is-ausente          "—" em tom secundário (ausência não compete com dado)
 //   is-negativo         negativo diferenciado sem depender só da cor (o "−"
 //                       já vem do formatador)
-function Celula({ coluna, valor, variacao, titulo }) {
+// Cobertura de custos: só SINALIZA. LC/MC continuam os números calculados;
+// quando parte do FAT não tem custo, uma marca discreta diz quanto está coberto.
+export function textoCoberturaParcial(custos) {
+  const pct = formatarPercentual(custos.cobertura);
+  return `Cálculo parcial: os custos cobrem ${pct} do FAT (${formatarMoeda(custos.faturamentoComCusto)} de `
+    + `${formatarMoeda(custos.faturamentoComCusto + custos.faturamentoSemCusto)}). O LC soma só os pedidos com custo `
+    + "cadastrado e a MC é LC ÷ faturamento com custo — valem para a parte coberta.";
+}
+
+function marcaParcial(coluna, custos) {
+  if (custos?.estado !== "parcial") return false;
+  return (custos.indicadores || ["lc", "mc"]).includes(coluna.chave);
+}
+
+function Celula({ coluna, valor, variacao, titulo, custos = null }) {
   const texto = formatarValor(coluna.tipo, valor);
   const delta = lerVariacao(coluna.tipo, variacao);
   const indisponivel = coluna.tipo === "indisponivel";
@@ -125,6 +140,11 @@ function Celula({ coluna, valor, variacao, titulo }) {
     >
       <span className={`vf-ph-valor${ausente ? " is-ausente" : ""}${negativo ? " is-negativo" : ""}`}>{texto}</span>
       {delta && <Delta sentido={coluna.sentido} valor={delta.valor} texto={delta.texto} />}
+      {!ausente && marcaParcial(coluna, custos) && (
+        <span className="vf-ph-parcial" title={textoCoberturaParcial(custos)} aria-label={textoCoberturaParcial(custos)}>
+          <span aria-hidden="true">◐ {formatarPercentual(custos.cobertura)}</span>
+        </span>
+      )}
     </td>
   );
 }
@@ -547,6 +567,7 @@ function LinhaConta({
               coluna={c}
               valor={semAdsPorConta ? null : conta.resumo?.[c.chave] ?? null}
               titulo={semAdsPorConta ? NOTA_ADS_POR_CONTA : undefined}
+              custos={conta.custos}
             />
           );
         })}
@@ -566,6 +587,53 @@ function LinhaConta({
       {aberto && semanasConta?.map((semana) => (
         <LinhaSemana key={semana.semana} semana={semana} colunas={colunas} origem="conta" />
       ))}
+    </>
+  );
+}
+
+// Composição do faturamento: gatilho na expansão do cliente + demonstrativo
+// por conta (lazy). Só existe quando alguma conta ativa tem pedidos
+// importados — conta manual não tem pedido para compor.
+export function temComposicao(cliente) {
+  return (cliente.contas || []).some((c) => c.ativa && c.importId != null);
+}
+
+function LinhasComposicao({ cliente, competencia, aberto, onAlternar, estado, carregar, colSpan }) {
+  useEffect(() => {
+    if (aberto && !estado) carregar(cliente.id, competencia);
+  }, [aberto, estado, carregar, cliente.id, competencia]);
+
+  return (
+    <>
+      <tr className="vf-ph-row vf-ph-row--historico vf-ph-row--composicao-gatilho">
+        <CelulaExpansivel
+          aberto={aberto}
+          onClick={onAlternar}
+          nivel="historico"
+          rotuloAcessivel={`Composição do faturamento de ${cliente.nome} por conta — ${aberto ? "recolher" : "expandir"}`}
+        >
+          <span className="vf-ph-indent">
+            <span className="vf-ph-historico__rotulo">Composição do faturamento</span>
+            <span className="vf-ph-meta"> · por conta</span>
+          </span>
+        </CelulaExpansivel>
+        <td colSpan={colSpan - 1} />
+      </tr>
+      {aberto && estado?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={1} rotulo="Carregando composição do faturamento" />}
+      {aberto && estado?.erro && !estado.carregando && (
+        <LinhaErro
+          colSpan={colSpan}
+          mensagem={`Não foi possível carregar a composição. ${estado.erro.mensagem}`}
+          onTentar={() => carregar(cliente.id, competencia, { forcar: true })}
+        />
+      )}
+      {aberto && estado?.contas && !estado.carregando && (
+        <tr className="vf-ph-row vf-ph-row--composicao">
+          <td colSpan={colSpan}>
+            <DemonstrativoComposicao contas={estado.contas} somaDasContas={estado.somaDasContas} competencia={competencia} />
+          </td>
+        </tr>
+      )}
     </>
   );
 }
@@ -647,6 +715,7 @@ function LinhaCliente({
   cliente, competencia, competenciaAtual, expansao,
   mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
   semanasContasPorCliente, carregarSemanasContas,
+  composicaoPorCliente = {}, carregarComposicao = () => {},
   colunas, onLancar, atualizacao, podeAtualizar, onAtualizar, onDispensar,
   mostrarHistoricoCliente = true,
 }) {
@@ -704,7 +773,7 @@ function LinhaCliente({
           <FrescorCliente cliente={cliente} concluidaAgora={job?.estado === "concluida"} />
         </td>
 
-        {colunas.map((c) => <Celula key={c.chave} coluna={c} valor={cliente.resumo?.[c.chave] ?? null} />)}
+        {colunas.map((c) => <Celula key={c.chave} coluna={c} valor={cliente.resumo?.[c.chave] ?? null} custos={cliente.custos} />)}
         <td className="vf-ph-folga" />
       </tr>
 
@@ -737,6 +806,17 @@ function LinhaCliente({
         <LinhaEstado colSpan={colSpan}>
           Nenhuma conta/operação cadastrada — cadastre a operação em <a href="clientes.html">Clientes</a> para separar o número por conta.
         </LinhaEstado>
+      )}
+      {aberto && temComposicao(cliente) && (
+        <LinhasComposicao
+          cliente={cliente}
+          competencia={competencia}
+          aberto={expansao.composicoesAbertas.has(cliente.id)}
+          onAlternar={() => expansao.alternarComposicao(cliente.id)}
+          estado={composicaoPorCliente[`${cliente.id}:${competencia}`]}
+          carregar={carregarComposicao}
+          colSpan={colSpan}
+        />
       )}
       {aberto && mostrarHistoricoCliente && (
         <LinhaHistorico
@@ -795,22 +875,25 @@ export function useExpansao() {
   const [contasAbertas, setContasAbertas] = useState(() => new Set());
   const [historicosAbertos, setHistoricosAbertos] = useState(() => new Set());
   const [mesesAbertos, setMesesAbertos] = useState(() => new Set());
+  const [composicoesAbertas, setComposicoesAbertas] = useState(() => new Set());
 
   const alternarCliente = useCallback((id) => alternarEm(setClientesAbertos, id), []);
   const alternarConta = useCallback((clienteId, contaId) => alternarEm(setContasAbertas, `${clienteId}:${contaId}`), []);
   const alternarHistorico = useCallback((id) => alternarEm(setHistoricosAbertos, id), []);
   const alternarMes = useCallback((clienteId, competencia) => alternarEm(setMesesAbertos, `${clienteId}:${competencia}`), []);
+  const alternarComposicao = useCallback((id) => alternarEm(setComposicoesAbertas, id), []);
 
   const recolherTudo = useCallback(() => {
     setClientesAbertos(new Set());
     setContasAbertas(new Set());
     setHistoricosAbertos(new Set());
     setMesesAbertos(new Set());
+    setComposicoesAbertas(new Set());
   }, []);
 
   return {
-    clientesAbertos, contasAbertas, historicosAbertos, mesesAbertos,
-    alternarCliente, alternarConta, alternarHistorico, alternarMes, recolherTudo,
+    clientesAbertos, contasAbertas, historicosAbertos, mesesAbertos, composicoesAbertas,
+    alternarCliente, alternarConta, alternarHistorico, alternarMes, alternarComposicao, recolherTudo,
     temExpandido: clientesAbertos.size > 0,
   };
 }
@@ -869,6 +952,7 @@ export function TabelaHierarquica({
   clientes, competencia, competenciaAtual = competencia, colunas: colunasProp, grupos, expansao,
   mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
   semanasContasPorCliente = {}, carregarSemanasContas = () => {},
+  composicaoPorCliente = {}, carregarComposicao = () => {},
   atualizando, onLancar = () => {},
   atualizacoes = {}, podeAtualizar = false, onAtualizar = () => {}, onDispensarAtualizacao = () => {},
   mostrarHistoricoCliente = true,
@@ -992,6 +1076,8 @@ export function TabelaHierarquica({
               carregarSemanas={carregarSemanas}
               semanasContasPorCliente={semanasContasPorCliente}
               carregarSemanasContas={carregarSemanasContas}
+              composicaoPorCliente={composicaoPorCliente}
+              carregarComposicao={carregarComposicao}
               colunas={colunas}
               onLancar={onLancar}
               competenciaAtual={competenciaAtual}

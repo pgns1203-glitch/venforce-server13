@@ -43,6 +43,15 @@ export function listarSemanasContas(clienteId, competencia, { signal } = {}) {
   });
 }
 
+// Demonstrativo do faturamento POR CONTA (bruto V1 → exclusões → FAT) e a
+// soma das contas. Lazy: só quando a linha "Composição do faturamento" abre.
+export function listarComposicaoContas(clienteId, competencia, { signal } = {}) {
+  return requisitar(`/painel-contas/${encodeURIComponent(clienteId)}/contas/composicao`, {
+    params: { competencia },
+    signal,
+  });
+}
+
 function caminhoManual(clienteId, contaId, competencia) {
   return `/painel-contas/${encodeURIComponent(clienteId)}/contas/${encodeURIComponent(contaId)}/manual/${encodeURIComponent(competencia)}`;
 }

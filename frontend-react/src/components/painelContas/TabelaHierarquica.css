@@ -1248,3 +1248,148 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* ── Cobertura de custos (LC/MC parciais) ───────────────────────────────────
+   Só sinal: o número continua o calculado. Discreto (2xs, tom muted), abaixo
+   do valor como o delta — não compete com o número nem usa cor de alerta. */
+.vf-ph-parcial {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--vf-fs-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+  cursor: help;
+}
+
+/* ── Composição do faturamento (demonstrativo por conta) ────────────────── */
+.vf-ph-row--composicao > td {
+  padding: var(--vf-sp-2) var(--vf-table-cell-px) var(--vf-sp-3);
+  background: var(--vf-bg);
+  border-top: none;
+}
+
+.vf-ph-comp {
+  position: sticky;
+  left: var(--vf-table-cell-px);
+  width: max-content;
+  max-width: min(1100px, 92vw);
+  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px) - 14px);
+  overflow-x: auto;
+}
+
+.vf-ph-table .vf-ph-comp__tabela {
+  border-collapse: collapse;
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-ph-table .vf-ph-comp__tabela th,
+.vf-ph-table .vf-ph-comp__tabela td {
+  /* Tabela aninhada: anula o que a tabela-mãe (.vf-table/.vf-ph-table)
+     aplica a todo th/td descendente — caixa alta, fundo, régua, sticky. */
+  position: static;
+  height: auto;
+  padding: 5px var(--vf-sp-3);
+  border-top: none;
+  border-bottom: 1px solid var(--vf-border);
+  text-align: left;
+  text-transform: none;
+  letter-spacing: 0;
+  vertical-align: top;
+  background: var(--vf-surface);
+}
+
+.vf-ph-table .vf-ph-comp__tabela .num {
+  text-align: right;
+}
+
+.vf-ph-table .vf-ph-comp__tabela thead th {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  border-bottom-color: var(--vf-border-strong);
+  white-space: nowrap;
+}
+
+.vf-ph-table .vf-ph-comp__tabela .is-soma {
+  box-shadow: inset 1px 0 0 var(--vf-border-strong);
+}
+
+.vf-ph-comp__conta,
+.vf-ph-comp__periodo {
+  display: block;
+}
+
+.vf-ph-comp__periodo,
+.vf-ph-comp__pedidos,
+.vf-ph-comp__ajuda {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-comp__ajuda {
+  display: block;
+}
+
+.vf-ph-table .vf-ph-comp__tabela tbody th {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+  min-width: 15rem;
+}
+
+.vf-ph-comp__linha.is-exclusao th {
+  padding-left: var(--vf-sp-5);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-comp__moeda {
+  display: block;
+  white-space: nowrap;
+}
+
+.vf-ph-comp__pedidos {
+  display: block;
+  white-space: nowrap;
+}
+
+.vf-ph-comp__valor.is-forte .vf-ph-comp__moeda {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-comp__linha.is-exclusao .vf-ph-comp__moeda {
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-comp__valor.is-zero .vf-ph-comp__moeda {
+  color: var(--vf-text-disabled);
+}
+
+.vf-ph-comp__linha.is-total th,
+.vf-ph-comp__linha.is-total td {
+  border-top: 1px solid var(--vf-border-strong);
+}
+
+.vf-ph-comp__linha.is-conferencia th,
+.vf-ph-comp__linha.is-conferencia td {
+  border-bottom: none;
+  font-size: var(--vf-fs-2xs);
+}
+
+.vf-ph-comp__notas {
+  margin: var(--vf-sp-2) 0 0;
+  padding-left: 1.1em;
+  max-width: 72ch;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: normal;
+}
+
+.vf-ph-comp__vazio {
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-secondary);
+  white-space: normal;
+}

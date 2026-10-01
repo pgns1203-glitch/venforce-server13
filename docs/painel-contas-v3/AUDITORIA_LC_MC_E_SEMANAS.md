@@ -1,7 +1,10 @@
 # Painel de Contas V3 — auditoria de LC/MC e das semanas por conta
 
-**Data:** 01/10/2026 · Nada aqui altera fórmula ou exibição. Contagens de
-produção lidas em sessão `default_transaction_read_only=on` (só `SELECT`).
+**Data:** 01/10/2026 · Nada aqui altera fórmula. Contagens de produção lidas
+em sessão `default_transaction_read_only=on` (só `SELECT`).
+
+> **Atualização (01/10/2026, ajuste de apresentação):** a gestão escolheu
+> preservar LC/MC e **sinalizar** a cobertura parcial (opção 1 do §2). Ver §2.1.
 
 ---
 
@@ -29,9 +32,9 @@ como vêm; o consolidado soma LC e calcula `ΣLC ÷ ΣfaturamentoComCusto`
   `base_cliente_vinculos` para o cliente.
 - **Base parcial**: o Painel mostra FAT **total** ao lado de LC **só da parte
   coberta**. LC fica subestimado em relação ao FAT, e quem fizer LC ÷ FAT de
-  cabeça não chega na MC exibida (que é a margem da amostra coberta). Hoje
-  **nenhum aviso** sinaliza isso — o único aviso da conta é sobre
-  `completeness_status` do sync, que é outra coisa.
+  cabeça não chega na MC exibida (que é a margem da amostra coberta). Antes
+  deste ajuste **nenhum aviso** sinalizava isso — o único aviso da conta era
+  sobre `completeness_status` do sync, que é outra coisa. Agora sinaliza (§2.1).
 
 ### Tamanho do problema (set/2026, último import publicado por conta)
 
@@ -42,7 +45,7 @@ como vêm; o consolidado soma LC e calcula `ΣLC ÷ ΣfaturamentoComCusto`
 | Sem custo algum (LC/MC já `null`) | 20 | 0% | 0% |
 | Sem faturamento | 4 | — | — |
 
-## 2. Como seria possível ocultar (para decisão — nada implementado)
+## 2. Opções avaliadas (a 1 foi a escolhida)
 
 O dado necessário **já chega ao service**: `listarImportsDaCompetencia` lê
 `faturamento` e `faturamento_com_custo` de cada import. A cobertura é
@@ -63,6 +66,27 @@ Opções, da menos para a mais invasiva:
 
 Em todas: o consolidado precisa da MESMA regra (a soma de LC de contas
 "ocultas" não pode reaparecer no total do cliente) e a fórmula oficial não muda.
+
+### 2.1 Implementado: sinalização discreta (opção 1)
+
+- `coberturaCustos({fat, lc, baseLc})` (`painelContasComposicao.js`) devolve
+  `{estado: "completa"|"parcial", cobertura, faturamentoComCusto,
+  faturamentoSemCusto}` ou `null` quando não há o que sinalizar (LC ausente —
+  continua "—" — ou FAT ≤ 0). A cobertura é arredondada **para baixo** (nunca
+  mostra 100% faltando custo).
+- **Conta automática:** base = `faturamentoComCusto` do import. **Conta
+  manual:** o LC informado vale para o FAT inteiro (completa). **Consolidado:**
+  base = Σ `faturamentoComCusto` das contas com LC ÷ FAT consolidado — o mesmo
+  denominador da MC consolidada. Snapshot com MC do fechamento oficial: o aviso
+  vale só para o LC (`indicadores: ["lc"]`). Snapshot do cliente sem
+  detalhamento por conta: nada é afirmado (`null`).
+- Tela: abaixo do LC/MC parciais, `◐ 62,8%` em tom secundário; o `title`/
+  `aria-label` explica: "Cálculo parcial: os custos cobrem 62,8% do FAT (R$ X
+  de R$ Y). O LC soma só os pedidos com custo cadastrado e a MC é LC ÷
+  faturamento com custo — valem para a parte coberta." Nenhum número muda,
+  nenhuma métrica é removida.
+- As definições de FAT/LC/MC no cabeçalho foram corrigidas para descrever a
+  regra real (a MC dizia "LC ÷ venda total", o que não é o cálculo).
 
 ## 3. Semanas por conta (seção 7) — validado e preservado
 

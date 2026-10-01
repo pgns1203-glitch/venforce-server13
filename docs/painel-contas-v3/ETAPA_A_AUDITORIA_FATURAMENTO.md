@@ -110,7 +110,12 @@ atribuído a uma categoria. **Não presumir.**
 5. **Data:** imports de 29–30/09. Um sync posterior muda os valores; a consulta
    abaixo reproduz o cálculo para qualquer import.
 
-## 6. Decisão humana pendente (nada foi implementado)
+## 6. Decisão humana
+
+> **Decidido em 01/10/2026:** o FAT oficial (Central) continua o número da
+> tabela; a composição bruto → exclusões → FAT passa a ser apresentada **por
+> conta**, com a soma das contas ao lado. Ver
+> `COMPOSICAO_FATURAMENTO_POR_CONTA.md`. Itens abaixo mantidos como registro.
 
 - Qual número o Painel exibe como FAT: o da Central (hoje), o bruto da V1, ou o
   da Central com o "perdido para cancelamento/mediação" ao lado como

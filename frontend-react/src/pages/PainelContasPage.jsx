@@ -127,6 +127,7 @@ export default function PainelContasPage() {
     carregando, atualizando, erro, recarregar,
     mesesPorCliente, carregarMeses, semanasPorChave, carregarSemanas,
     semanasContasPorCliente, carregarSemanasContas,
+    composicaoPorCliente, carregarComposicao,
     salvarManual, removerManual, lancamentosDaConta, historicoLancamento,
     permissoes, competenciaAtual, atualizacoes, atualizarCliente, dispensarAtualizacao,
   } = painel;
@@ -266,6 +267,8 @@ export default function PainelContasPage() {
               carregarSemanas={carregarSemanas}
               semanasContasPorCliente={semanasContasPorCliente}
               carregarSemanasContas={carregarSemanasContas}
+              composicaoPorCliente={composicaoPorCliente}
+              carregarComposicao={carregarComposicao}
               atualizando={atualizando}
               onLancar={abrirLancamento}
               competenciaAtual={competenciaAtual}

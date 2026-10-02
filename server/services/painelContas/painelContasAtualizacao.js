@@ -20,10 +20,23 @@
 // Escopo = cliente × competência. Duas atualizações simultâneas do mesmo
 // escopo são recusadas (409) em dois níveis:
 //   - no processo: registro em memória (também é de onde sai o progresso);
-//   - entre instâncias: pg_try_advisory_lock de SESSÃO numa conexão dedicada,
-//     mesmo padrão do lock global do scheduler noturno.
+//   - entre instâncias: pg_try_advisory_lock de SESSÃO numa conexão DEDICADA,
+//     aberta FORA do pool compartilhado.
 // Por baixo ainda vale o dedupe do próprio sync_run (índice único de runs
 // ativos por conta × período).
+//
+// Por que fora do pool (incidente 2026-10-02): com o lock numa conexão DO
+// pool, cada atualização reservava 1 das 10 conexões até terminar — e a
+// sincronização grava pelo mesmo pool. Dez cliques reservaram as dez; nenhuma
+// sincronização conseguia gravar para terminar e soltar a sua, e o resto da
+// API (GET /me/context) esperava conexão para sempre.
+//
+// Atualizações simultâneas também têm teto (429), em dois níveis:
+//   - no processo: contador síncrono, checado ANTES de abrir conexão;
+//   - entre instâncias: N vagas = N advisory locks; cada atualização segura
+//     uma vaga na mesma sessão dedicada do lock de escopo.
+// Encerrar a sessão dedicada solta escopo + vaga no Postgres de uma vez — no
+// fim do job, em qualquer erro e quando a conexão cai.
 //
 // ── Estado ─────────────────────────────────────────────────────────────────
 // O job vive em memória (o worker da Central também é in-process). Um restart
@@ -32,6 +45,7 @@
 
 const crypto = require("crypto");
 const pool = require("../../config/database");
+const { configConexao } = require("../../config/databaseConexao");
 const { assertClienteNaCarteira } = require("../squads/authorizationService");
 const noturno = require("../centralVendas/centralVendasNoturnoService");
 const { competenciaValida } = require("./painelContasManual");
@@ -43,6 +57,19 @@ const LOG = "[painel-atualizar]";
 // (ou outra pessoa olhando o mesmo cliente) ainda vê o desfecho e as falhas.
 const RETENCAO_CONCLUIDO_MS = 30 * 60 * 1000;
 
+// Teto de atualizações simultâneas (por processo e entre instâncias).
+// PAINEL_ATUALIZAR_MAX_SIMULTANEAS ajusta; inválido → padrão.
+const LIMITE_SIMULTANEAS_PADRAO = 2;
+const LIMITE_SIMULTANEAS_MAXIMO = 10;
+
+// Conexão dedicada do lock: só faz try_lock (não bloqueante), então prazos
+// curtos. Falhar aqui recusa o clique; nunca trava a API.
+const LOCK_CONNECT_TIMEOUT_MS = 10000;
+const LOCK_QUERY_TIMEOUT_MS = 10000;
+
+const PREFIXO_LOCK_ESCOPO = "venforce:painel-contas:atualizar:";
+const PREFIXO_LOCK_VAGA = "venforce:painel-contas:atualizar:vaga:";
+
 function erro(statusCode, code, mensagem, extra = {}) {
   const e = new Error(mensagem);
   e.statusCode = statusCode;
@@ -53,6 +80,20 @@ function erro(statusCode, code, mensagem, extra = {}) {
 
 function ehAdmin(user) {
   return String(user?.role || "").toLowerCase() === "admin";
+}
+
+function resolverLimiteSimultaneas(valor) {
+  const n = Number.parseInt(valor, 10);
+  if (!Number.isFinite(n) || n < 1) return LIMITE_SIMULTANEAS_PADRAO;
+  return Math.min(n, LIMITE_SIMULTANEAS_MAXIMO);
+}
+
+function erroLimite(limite) {
+  return erro(
+    429,
+    "LIMITE_ATUALIZACOES_SIMULTANEAS",
+    `Já há ${limite} ${limite === 1 ? "atualização" : "atualizações"} em andamento. Aguarde uma terminar e tente de novo.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +155,7 @@ const ESTADO_CONTA = { sucesso: "ok", parcial: "parcial", falha: "falha", ignora
 // ---------------------------------------------------------------------------
 
 const jobs = new Map(); // chave cliente|competência → job
+let emAndamento = 0; // vagas locais ocupadas (do lock adquirido até o fim do job)
 
 function chave(clienteId, competencia) {
   return `${Number(clienteId)}|${competencia}`;
@@ -154,35 +196,64 @@ function atualizacaoDoCliente(clienteId, competencia, { agoraMs = Date.now() } =
 // Lock entre instâncias
 // ---------------------------------------------------------------------------
 
-async function adquirirLockEscopo(db, clienteId, competencia) {
-  const client = await db.connect();
-  const nome = `venforce:painel-contas:atualizar:${Number(clienteId)}:${competencia}`;
-  let locked = false;
+// Conexão própria, FORA do pool compartilhado (ver "Por que fora do pool").
+function criarConexaoDedicada() {
+  const { Client } = require("pg");
+  return new Client({
+    ...configConexao(),
+    application_name: "venforce-painel-atualizar-lock",
+    connectionTimeoutMillis: LOCK_CONNECT_TIMEOUT_MS,
+    query_timeout: LOCK_QUERY_TIMEOUT_MS,
+    keepAlive: true,
+  });
+}
+
+/**
+ * Lock do escopo cliente × competência + uma das `vagas` globais, ambos de
+ * SESSÃO numa conexão dedicada. Retorna { adquirido: true, liberar } ou
+ * { adquirido: false, motivo: "ESCOPO_OCUPADO" | "LIMITE_GLOBAL" }.
+ * A conexão é encerrada em todo desfecho que não devolve o lock.
+ */
+async function adquirirLockEscopo({ clienteId, competencia, vagas, criarConexao = criarConexaoDedicada, logger = console }) {
+  const nome = `${PREFIXO_LOCK_ESCOPO}${Number(clienteId)}:${competencia}`;
+  const client = criarConexao();
+  let encerramento = null;
+  // Encerrar a sessão solta TODOS os advisory locks dela no Postgres (escopo
+  // e vaga), mesmo que nenhum unlock explícito chegue a rodar. Idempotente.
+  const encerrar = () => {
+    if (!encerramento) encerramento = Promise.resolve().then(() => client.end()).catch(() => {});
+    return encerramento;
+  };
+  // Sem listener, um 'error' da conexão (rede caiu) derrubaria o processo. O
+  // Postgres já soltou os locks da sessão; o job segue até o fim.
+  client.on("error", (err) => {
+    logger.warn(`${LOG} conexão do lock caiu (${nome}): ${err?.message}`);
+    encerrar();
+  });
+  const tentar = async (chave) => {
+    const r = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [chave]);
+    return r.rows[0]?.locked === true;
+  };
+
   try {
-    const r = await client.query("SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS locked", [nome]);
-    locked = r.rows[0]?.locked === true;
+    await client.connect();
+    if (!(await tentar(nome))) {
+      await encerrar();
+      return { adquirido: false, motivo: "ESCOPO_OCUPADO" };
+    }
+    let vaga = null;
+    for (let i = 0; i < vagas && vaga === null; i += 1) {
+      if (await tentar(`${PREFIXO_LOCK_VAGA}${i}`)) vaga = i;
+    }
+    if (vaga === null) {
+      await encerrar();
+      return { adquirido: false, motivo: "LIMITE_GLOBAL" };
+    }
+    return { adquirido: true, vaga, liberar: encerrar };
   } catch (err) {
-    client.release();
+    await encerrar();
     throw err;
   }
-  if (!locked) {
-    client.release();
-    return { adquirido: false };
-  }
-  return {
-    adquirido: true,
-    async liberar() {
-      let falhou = null;
-      try {
-        await client.query("SELECT pg_advisory_unlock(hashtextextended($1, 0))", [nome]);
-      } catch (err) {
-        falhou = err;
-      } finally {
-        // Unlock falhou: a conexão não volta ao pool segurando o lock.
-        client.release(falhou || undefined);
-      }
-    },
-  };
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +269,7 @@ function defaultDeps() {
     executarRodada: noturno.executarRodada,
     criarSyncRun: runService.criarSyncRun,
     adquirirLock: adquirirLockEscopo,
+    criarConexaoLock: criarConexaoDedicada,
     hoje: () => noturno.hojeNoFuso(new Date(), TIMEZONE),
     agora: () => new Date(),
     env: process.env,
@@ -338,43 +410,80 @@ async function iniciarAtualizacao(user, clienteRef, competencia, depsOverride = 
     throw erro(422, "SEM_CONTA_ELEGIVEL", "Nenhuma conta Mercado Livre ativa e conectada para atualizar neste cliente.");
   }
 
-  const lock = await deps.adquirirLock(deps.db, cliente.id, competencia);
-  if (!lock.adquirido) {
+  // Teto por processo ANTES de abrir conexão. Checar e reservar no mesmo
+  // trecho síncrono: cliques simultâneos não passam juntos pela checagem.
+  const limite = deps.limiteSimultaneas ?? resolverLimiteSimultaneas(deps.env?.PAINEL_ATUALIZAR_MAX_SIMULTANEAS);
+  if (emAndamento >= limite) throw erroLimite(limite);
+  emAndamento += 1;
+  let vagaDevolvida = false;
+  const devolverVaga = () => {
+    if (vagaDevolvida) return;
+    vagaDevolvida = true;
+    emAndamento -= 1;
+  };
+
+  let lockEscopo;
+  try {
+    lockEscopo = await deps.adquirirLock({
+      clienteId: cliente.id, competencia, vagas: limite, criarConexao: deps.criarConexaoLock, logger: deps.logger,
+    });
+  } catch (err) {
+    devolverVaga();
+    throw err;
+  }
+  if (!lockEscopo.adquirido) {
+    devolverVaga();
+    if (lockEscopo.motivo === "LIMITE_GLOBAL") throw erroLimite(limite);
     throw erro(409, "ATUALIZACAO_EM_ANDAMENTO", "Já existe uma atualização deste cliente nesta competência em andamento.");
   }
-
-  const job = {
-    id: crypto.randomUUID(),
-    clienteId: Number(cliente.id),
-    competencia,
-    estado: "executando",
-    periodo,
-    iniciadaEm: agora.toISOString(),
-    iniciadaPor: user.nome || null,
-    iniciadaPorId: user.id ?? null,
-    concluidaEm: null,
-    progresso: { fase: "preparacao", concluidas: 0, total: elegiveis.length },
-    contas: [
-      ...elegiveis.map((c) => ({
-        contaId: c.clienteContaId, elegivel: true, estado: "pendente", mensagem: null, erroCodigo: null, runId: null,
-      })),
-      ...ignoradas
-        // Conta inativa não faz parte do consolidado: não é pendência.
-        .filter((c) => c.motivo !== "conta_inativa" && c.motivo !== "cliente_inativo")
-        .map((c) => ({
-          contaId: c.clienteContaId, elegivel: false, estado: "ignorada",
-          mensagem: MENSAGEM_POR_CODIGO[c.motivo] || null, erroCodigo: c.motivo, runId: null,
-        })),
-    ],
-    ads: null,
-    snapshot: null,
-    mensagem: null,
+  // Fim do job (ou falha antes dele): devolve a vaga local primeiro — ela não
+  // pode depender de a conexão dedicada encerrar a tempo — e solta o lock.
+  const lock = {
+    liberar: async () => {
+      devolverVaga();
+      await lockEscopo.liberar?.();
+    },
   };
-  jobs.set(k, job);
-  deps.logger.log(
-    `${LOG} início cliente=${cliente.slug} competência=${competencia} período=${periodo.dateFrom}..${periodo.dateTo}`
-      + ` contas=${elegiveis.length} por=${job.iniciadaPorId ?? "?"}`
-  );
+
+  let job;
+  try {
+    job = {
+      id: crypto.randomUUID(),
+      clienteId: Number(cliente.id),
+      competencia,
+      estado: "executando",
+      periodo,
+      iniciadaEm: agora.toISOString(),
+      iniciadaPor: user.nome || null,
+      iniciadaPorId: user.id ?? null,
+      concluidaEm: null,
+      progresso: { fase: "preparacao", concluidas: 0, total: elegiveis.length },
+      contas: [
+        ...elegiveis.map((c) => ({
+          contaId: c.clienteContaId, elegivel: true, estado: "pendente", mensagem: null, erroCodigo: null, runId: null,
+        })),
+        ...ignoradas
+          // Conta inativa não faz parte do consolidado: não é pendência.
+          .filter((c) => c.motivo !== "conta_inativa" && c.motivo !== "cliente_inativo")
+          .map((c) => ({
+            contaId: c.clienteContaId, elegivel: false, estado: "ignorada",
+            mensagem: MENSAGEM_POR_CODIGO[c.motivo] || null, erroCodigo: c.motivo, runId: null,
+          })),
+      ],
+      ads: null,
+      snapshot: null,
+      mensagem: null,
+    };
+    jobs.set(k, job);
+    deps.logger.log(
+      `${LOG} início cliente=${cliente.slug} competência=${competencia} período=${periodo.dateFrom}..${periodo.dateTo}`
+        + ` contas=${elegiveis.length} por=${job.iniciadaPorId ?? "?"}`
+    );
+  } catch (err) {
+    if (job && jobs.get(k) === job) jobs.delete(k);
+    await Promise.resolve(lock.liberar()).catch(() => {});
+    throw err;
+  }
 
   const execucao = executarJob(job, { cliente, rows, lock }, deps);
   // Segundo plano de propósito: a resposta não espera a API do Mercado Livre.
@@ -392,6 +501,7 @@ async function obterAtualizacao(user, clienteRef, competencia, depsOverride = {}
 
 function _limparParaTestes() {
   jobs.clear();
+  emAndamento = 0;
 }
 
 module.exports = {
@@ -402,5 +512,8 @@ module.exports = {
   mensagemDaConta,
   ehAdmin,
   RETENCAO_CONCLUIDO_MS,
+  adquirirLockEscopo,
+  resolverLimiteSimultaneas,
+  LIMITE_SIMULTANEAS_PADRAO,
   _limparParaTestes,
 };

@@ -3739,6 +3739,7 @@ async function run() {
       assert.ok(col.includes(SUG_DESC_A.length + "/2500 caracteres"), col);
       assert.ok(/com base em: Marca, Duração da bateria/.test(col), col);
       assert.deepStrictEqual(await botaoGerarDescricao(), { texto: "Gerar novamente", disabled: false });
+      assert.strictEqual(await cdp.evaluate("document.querySelector('#am-det-sug-descricao [data-acao=\"usar-descricao\"]').textContent"), "Usar descrição");
       assert.ok(!/score/i.test(col));
     });
 
@@ -3788,8 +3789,21 @@ async function run() {
         motivo: "A descrição gerada não passou na validação: Número ou medida que não está nos dados do anúncio. Tente gerar novamente." } });
       await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
       await waitFor(cdp, "document.getElementById('am-det-sug-descricao').innerText.indexOf('não passou na validação') >= 0", "o motivo não apareceu");
+      assert.ok(/rejeitada pela checagem de fatos[\s\S]*Nada foi aplicado/.test(await colunaDescricao()), "a rejeição precisa dizer que nada foi aplicado");
       assert.strictEqual(await nUsarDescricao(), 0);
       assert.deepStrictEqual(await botaoGerarDescricao(), { texto: "Tentar novamente", disabled: false });
+      // com os problemas do backend: um motivo por linha (repetidos uma vez só), sem o parágrafo corrido
+      descricaoSeoHandler = () => ({ status: 200, corpo: { ok: false, codigo: "DESCRICAO_INVALIDA",
+        motivo: "A descrição gerada não passou na validação: A. B. Tente gerar novamente.",
+        problemas: [{ codigo: "CLAIM_OBJETIVO_SEM_FONTE", detalhe: "Afirmação técnica sem fonte nos dados.", termos: ["antiembacante"] },
+          { codigo: "LINGUAGEM_PROIBIDA", detalhe: "Promessa de entrega.", termos: ["receba"] },
+          { codigo: "LINGUAGEM_PROIBIDA", detalhe: "Promessa de entrega.", termos: ["receba"] }] } });
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await waitFor(cdp, "document.getElementById('am-det-sug-descricao').innerText.indexOf('Promessa de entrega') >= 0", "os motivos não apareceram");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-sug-descricao .am-det-compare__list li').length"), 2);
+      assert.ok(/Afirmação técnica sem fonte nos dados\. \(antiembacante\)/.test(await colunaDescricao()));
+      assert.ok(!/não passou na validação/.test(await colunaDescricao()), "a lista substitui o parágrafo corrido");
+      assert.strictEqual(await nUsarDescricao(), 0);
       descricaoSeoHandler = () => ({ status: 200, corpo: { ok: false, codigo: "AI_RESPONSE_TRUNCATED", motivo: "A resposta da IA veio cortada. Tente gerar novamente." } });
       await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
       await waitFor(cdp, "document.getElementById('am-det-sug-descricao').innerText.indexOf('veio cortada') >= 0", "o erro da IA não apareceu");

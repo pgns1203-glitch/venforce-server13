@@ -5186,7 +5186,7 @@
   // quem escreve no Mercado Livre continua sendo "Salvar alterações". O
   // histórico/aprovação do otimizador legado não alimenta mais esta coluna.
   function novoEstadoDescricao() {
-    return { estado: null, texto: "", chars: 0, limite: 0, fatosUsados: [], erro: null, codigo: null, seq: 0 };
+    return { estado: null, texto: "", chars: 0, limite: 0, fatosUsados: [], erro: null, codigo: null, problemas: [], seq: 0 };
   }
 
   function descricaoSugeridaUsada() {
@@ -5222,13 +5222,32 @@
         '<p class="am-det-compare__hint">' + S.chars + (S.limite ? "/" + S.limite : "") + " caracteres" +
           (base.length ? " · com base em: " + escapeHtml(base.join(", ")) : "") + "</p>" +
         acoesIaHtml([
-          btnGhost("usar-descricao", "Usar", ""),
+          btnGhost("usar-descricao", "Usar descrição", ""),
           btnGhost("copiar", "Copiar", ' data-fonte="descricao-sugerida"'),
           botaoGerar("Gerar novamente"),
         ]);
     }
 
     if (S.estado === "erro") {
+      // Rejeição da checagem de fatos (DESCRICAO_INVALIDA): diz que NADA foi
+      // aplicado e lista cada motivo do backend, um por linha, em vez do
+      // parágrafo corrido. Outros erros (IA fora, resposta cortada) seguem
+      // com o motivo como veio.
+      if (S.codigo === "DESCRICAO_INVALIDA") {
+        var vistos = {};
+        var motivos = (S.problemas || []).map(function (p) {
+          var t = p && p.detalhe ? String(p.detalhe) : "";
+          if (t && p.termos && p.termos.length) t += " (" + p.termos.slice(0, 3).join(", ") + ")";
+          return t;
+        }).filter(function (t) { return t && !vistos[t] && (vistos[t] = true); });
+        return cabeca +
+          '<p class="am-det-vazio"><b>A descrição gerada foi rejeitada pela checagem de fatos.</b> ' +
+            "Nada foi aplicado ao rascunho nem ao anúncio.</p>" +
+          (motivos.length
+            ? listaIaHtml([], motivos)
+            : '<p class="am-det-vazio">' + escapeHtml(S.erro || "") + "</p>") +
+          acoesIaHtml([botaoGerar("Tentar novamente")]);
+      }
       return cabeca + '<p class="am-det-vazio">' + escapeHtml(S.erro || "Não foi possível gerar a descrição.") + "</p>" +
         acoesIaHtml([botaoGerar("Tentar novamente")]);
     }
@@ -5251,6 +5270,7 @@
     S.estado = "carregando";
     S.erro = null;
     S.codigo = null;
+    S.problemas = [];
     repintarDescricao();
 
     var corpo = { clienteSlug: AM.clienteAtual.slug };
@@ -5271,6 +5291,7 @@
         S.estado = "erro";
         S.erro = d.motivo || "Não foi possível gerar a descrição.";
         S.codigo = d.codigo || null;
+        S.problemas = Array.isArray(d.problemas) ? d.problemas : [];
         S.texto = "";
         repintarDescricao();
         toast(S.erro, "is-danger");

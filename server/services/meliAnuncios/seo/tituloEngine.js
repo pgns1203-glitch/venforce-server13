@@ -6,8 +6,10 @@
 // Fluxo (gerarTitulos):
 //   ficha de fatos (montarFatos) → LLM gera candidatos (só texto) →
 //   cada candidato é validado contra os fatos (avaliarTitulo) → inválidos são
-//   DESCARTADOS → os válidos recebem score determinístico → duplicados saem →
-//   ordena por score e devolve até 6. O LLM nunca dá nota nem escolhe.
+//   DESCARTADOS → os válidos com espaço sobrando recebem, no fim, Termos
+//   Complementares factuais até o mais perto possível do limite
+//   (completarTitulo) → score determinístico → duplicados saem → ordena por
+//   score e devolve até 6. O LLM nunca dá nota nem escolhe.
 //
 // Este módulo é puro em relação a infraestrutura: não lê banco, não chama o
 // Mercado Livre, não lê env. O aiProvider entra como parâmetro (e é simulado
@@ -24,6 +26,7 @@
 
 const seo = require("./seoText");
 const fatosProduto = require("./fatosProduto");
+const termosComplementaresEngine = require("./termosComplementaresEngine");
 const { AI_TASKS } = require("../../ai/aiTasks");
 
 const LIMITE_PADRAO = 60;
@@ -215,6 +218,9 @@ function montarFatos(anuncio, opts = {}) {
     vocabulario,
     proibidos,
     proibidosExibicao,
+    // Para o complemento pós-geração (Termos Complementares/F4R), que lê os
+    // mesmos atributos do anúncio.
+    fonte: { anuncio: a, categoriaNome: categoriaUtil ? categoria : null },
   };
 }
 
@@ -222,15 +228,17 @@ function montarFatos(anuncio, opts = {}) {
 // Componentes do score
 // -----------------------------------------------------------------------------
 
-// EFICIÊNCIA (15) — faixa ótima perto do limite, sem premiar "maior = melhor"
-// linearmente. Acima do limite o candidato nem chega aqui (é descartado).
+// EFICIÊNCIA (15) — pelo que FALTA até o limite, não pela proporção: o ML
+// indexa cada palavra do título, então espaço sobrando é indexação perdida.
+// Com limite 60: 57–60 = alvo (15) · 55–56 = bom (12) · 50–54 = curto (5) ·
+// abaixo de 50 = 0 (penalidade forte). Acima do limite o candidato nem chega
+// aqui (é descartado).
 function pontuarEficiencia(chars, limite) {
   if (!limite || chars > limite) return 0;
-  const r = chars / limite;
-  if (r >= 0.9) return 15;
-  if (r >= 0.8) return 12;
-  if (r >= 0.65) return 8;
-  if (r >= 0.5) return 4;
+  const falta = limite - chars;
+  if (falta <= 3) return 15;
+  if (falta <= 5) return 12;
+  if (falta <= 10) return 5;
   return 0;
 }
 
@@ -390,7 +398,10 @@ function montarPrompt(fatos) {
   linhas.push(
     "",
     "Regras:",
-    "- No máximo " + fatos.limite + " caracteres por título. Aproveite o espaço, sem ultrapassar.",
+    "- Tamanho: procure ficar entre " + Math.max(1, fatos.limite - 5) + " e " + fatos.limite + " caracteres (o ideal é " +
+      Math.max(1, fatos.limite - 3) + " a " + fatos.limite + "). Nunca ultrapasse " + fatos.limite + ".",
+    "- Aproveite o espaço só com fatos da lista acima; nunca palavras sem fato. Se os fatos acabarem, pare: " +
+      "um título mais curto e verdadeiro é melhor que um longo com material, medida ou característica que não está na lista.",
     "- Use apenas palavras que aparecem nos fatos acima ou no título atual. Pode flexionar singular/plural e masculino/feminino.",
     "- Conectivos permitidos: de, da, do, para, com, e, em.",
     "- Comece pelo que o produto é. Leitura natural, sem lista solta de palavras.",
@@ -402,6 +413,164 @@ function montarPrompt(fatos) {
     '{ "titulos": ["...", "..."] }'
   );
   return linhas.join("\n");
+}
+
+// -----------------------------------------------------------------------------
+// Complemento pós-geração — determinístico. O LLM conta caracteres mal; aqui o
+// título válido que ainda tem espaço recebe, no fim, os melhores Termos
+// Complementares (F4R): fatos estruturados do anúncio que ele ainda não cobre.
+// Entre as combinações que cabem, vence a de maior score (relevância e
+// cobertura antes do espaço) — chega o mais perto possível do limite sem
+// trocar relevância por tamanho. Cada combinação passa de novo por
+// avaliarTitulo; nada fora dos fatos entra.
+// -----------------------------------------------------------------------------
+const CONECTIVOS_MINUSCULOS = new Set(["de", "da", "do", "das", "dos", "para", "com", "e", "em"]);
+
+// Medida solta no fim do título ("63 Cm", "640 G", "7 Cm") é fato, mas não diz
+// de quê — não ajuda a busca e confunde quem lê. Só entra sozinha a medida que
+// se explica pelo próprio número/unidade e é buscada assim: tensão, potência,
+// capacidade, volume, memória/armazenamento, tamanho de tela.
+const MEDIDA_PURA = /^\d+([.,]\d+)?\s?[a-zA-Zµ°%"]{1,4}(\s?\/\s?\d+([.,]\d+)?\s?[a-zA-Zµ°%"]{1,4})*$/;
+const MEDIDA_QUE_SE_EXPLICA = /VOLTAGE|POWER|WATTAGE|CAPACITY|VOLUME|STORAGE|RAM|MEMORY|SCREEN_SIZE|DISPLAY_SIZE/;
+
+// Só atributos que DEFINEM o produto entram no fim do título. Atributo
+// acessório também é fato, mas solto no fim vira ruído: "Sem Validade"
+// (PRODUCT_FEATURES), "Livre" (HAZMAT_TRANSPORTABILITY), "plástico" do
+// LID_MATERIAL (é a tampa), valor-lixo de GIFTABLE. O nome da categoria
+// também fica de fora ("Manuais" como categoria de cortina): o tipo do
+// produto já é o começo do título.
+const ATRIBUTOS_DO_COMPLEMENTO = new Set([
+  ...ATRIBUTOS_ESTRUTURAIS,
+  "COLOR", "MAIN_COLOR", "SIZE", "MATERIALS",
+  "VOLUME_CAPACITY", "NET_VOLUME", "STORAGE_CAPACITY", "RAM_MEMORY", "SCREEN_SIZE", "DISPLAY_SIZE", "WATTAGE",
+]);
+
+function termoServeNoTitulo(t) {
+  if (t.fonte === "marca") return true;
+  if (t.fonte !== "atributo" || !ATRIBUTOS_DO_COMPLEMENTO.has(t.attributeId)) return false;
+  if (!MEDIDA_PURA.test(texto(t.termo))) return true;
+  return MEDIDA_QUE_SE_EXPLICA.test(t.attributeId);
+}
+
+// "240 GB" já está em "ssd 240gb": a cobertura por palavra não vê (240gb é
+// uma palavra só), a forma compacta vê.
+const compacto = (s) => s.toLocaleLowerCase("pt-BR").replace(/[\s.,]/g, "");
+function jaNoTitulo(termo, titulo) {
+  return /\d/.test(termo) && compacto(titulo).includes(compacto(termo));
+}
+
+// Palavra que é sigla/código/nome próprio na grafia original (JSN, GG,
+// TP-Link, 110V) mantém a caixa em qualquer estilo.
+function caixaPropria(w) {
+  return w !== w.toLocaleLowerCase("pt-BR") && w.slice(1) !== w.slice(1).toLocaleLowerCase("pt-BR");
+}
+
+// O título base está em estilo de título ("Lixeira Plástica Quadrada") ou
+// em frase ("Adaptador de rede usb para rj45")? Decide pela maioria das
+// palavras de conteúdo depois da primeira.
+function estiloDeTitulo(titulo) {
+  const ws = titulo.split(" ").slice(1).filter((w) => /^\p{L}/u.test(w) && !CONECTIVOS_MINUSCULOS.has(w.toLowerCase()));
+  if (!ws.length) return true;
+  const maiusculas = ws.filter((w) => w.charAt(0) !== w.charAt(0).toLocaleLowerCase("pt-BR")).length;
+  return maiusculas * 2 >= ws.length;
+}
+
+// Forma de exibição do termo: a grafia original do fato (os Termos
+// Complementares devolvem minúsculas: "110v" volta a ser "110V") e o estilo
+// do título que ele completa — inicial maiúscula num título em estilo de
+// título, minúscula num título em frase. Marca e siglas mantêm a grafia.
+function formaDeTitulo(termo, fontes, opts = {}) {
+  const alvo = termo.toLocaleLowerCase("pt-BR");
+  let original = termo;
+  for (const f of fontes) {
+    const i = f.toLocaleLowerCase("pt-BR").indexOf(alvo);
+    if (i >= 0) { original = f.slice(i, i + termo.length); break; }
+  }
+  if (opts.marca) return original;
+  const titulo = opts.estiloTitulo !== false;
+  return original.split(" ").map((w, i) => {
+    if (!w || caixaPropria(w)) return w;
+    if (/\d/.test(w)) return w;
+    if (!titulo || (i > 0 && CONECTIVOS_MINUSCULOS.has(w.toLowerCase()))) return w.toLocaleLowerCase("pt-BR");
+    return w.charAt(0).toLocaleUpperCase("pt-BR") + w.slice(1).toLocaleLowerCase("pt-BR");
+  }).join(" ");
+}
+
+function fontesDeGrafia(fatos) {
+  const a = (fatos.fonte && fatos.fonte.anuncio) || {};
+  const out = [];
+  if (fatos.marca) out.push(fatos.marca);
+  if (fatos.categoria) out.push(fatos.categoria);
+  for (const at of lerAtributos(a)) {
+    const v = texto(at.value != null ? at.value : at.value_name);
+    if (v) out.push(v);
+    if (at.name) out.push(texto(at.name));
+  }
+  return out;
+}
+
+//   → { avaliado, termos:[string] }  (termos vazio = nada coube / nada a somar)
+function completarTitulo(avaliado, fatos) {
+  const sem = { avaliado, termos: [] };
+  if (!fatos.fonte || !fatos.fonte.anuncio) return sem;
+  if (fatos.limite - avaliado.chars < 2) return sem;
+
+  const analise = termosComplementaresEngine.gerarTermosComplementares({
+    anuncio: fatos.fonte.anuncio,
+    tituloReferencia: avaliado.titulo,
+    categoriaNome: fatos.fonte.categoriaNome,
+  });
+  if (!analise.ok || !analise.termos.length) return sem;
+
+  // Todas as combinações dos termos (≤ MAX_TERMOS = 8 → ≤ 256), na ordem de
+  // TERM_SCORE. Vence a de maior score do título; empate: relevância,
+  // cobertura e só então o espaço aproveitado. Guloso termo a termo parava
+  // cedo ("Casual" ocupava o espaço onde "Molekinho" levaria a 55).
+  const fontes = fontesDeGrafia(fatos);
+  const estiloTitulo = estiloDeTitulo(avaliado.titulo);
+  const formas = analise.termos
+    .filter((t) => termoServeNoTitulo(t) && !jaNoTitulo(t.termo, avaliado.titulo))
+    .map((t) => formaDeTitulo(t.termo, fontes, { estiloTitulo, marca: t.fonte === "marca" }));
+  if (!formas.length) return sem;
+  let melhor = avaliado;
+  let melhorTermos = [];
+  for (let mask = 1; mask < (1 << formas.length); mask++) {
+    const escolhidos = formas.filter((_, i) => mask & (1 << i));
+    const tentativa = avaliado.titulo + " " + escolhidos.join(" ");
+    if (tentativa.length > fatos.limite) continue;
+    const r = avaliarTitulo(tentativa, fatos);
+    if (!r.valido || compararAvaliados(r, melhor) >= 0) continue;
+    melhor = r;
+    melhorTermos = escolhidos;
+  }
+  if (!melhorTermos.length) return sem;
+  return { avaliado: melhor, termos: melhorTermos };
+}
+
+// < 0 quando `a` vem antes de `b`: score, relevância, cobertura e então o
+// aproveitamento do espaço (mais longo). Mesmo critério da lista final.
+function compararAvaliados(a, b) {
+  return b.score - a.score ||
+    b.breakdown.relevancia - a.breakdown.relevancia ||
+    b.breakdown.cobertura - a.breakdown.cobertura ||
+    b.chars - a.chars;
+}
+
+// Recorte — o LLM, pedido a chegar perto do limite, passa dele com frequência
+// (smoke F12: 134 de 400 candidatos). Em vez de descartar, tira palavras do FIM
+// (o prompt pede o que o produto é primeiro) até caber, e não deixa conectivo
+// ou separador solto no fim. Só remove — nunca acrescenta nem troca palavra.
+// O resultado passa por avaliarTitulo como qualquer candidato.
+// Também o número que ficou órfão da unidade cortada ("poliéster 1" de
+// "poliéster 1,6 m"; "2 x" de "2 x 3 m").
+const SOLTOS_NO_FIM = /\s+(?:de|da|do|das|dos|para|com|e|em|x|[-/,+&]|\d+(?:[.,]\d+)?)$/i;
+function recortarAoLimite(titulo, limite) {
+  let t = texto(titulo).replace(/\s+/g, " ");
+  if (t.length <= limite) return t;
+  while (t.length > limite && t.includes(" ")) t = t.slice(0, t.lastIndexOf(" "));
+  let antes;
+  do { antes = t; t = t.replace(SOLTOS_NO_FIM, ""); } while (t !== antes);
+  return t.length <= limite ? t : null;
 }
 
 function textoDoCandidato(c) {
@@ -447,19 +616,29 @@ async function gerarTitulos({ fatos, aiProvider }) {
   const descartar = (motivo) => { motivosDescarte[motivo] = (motivosDescarte[motivo] || 0) + 1; };
 
   const validos = [];
+  let recortados = 0;
   for (const bruto of brutos) {
     const t = textoDoCandidato(bruto);
     if (t == null) { descartar("ESTRUTURA_INVALIDA"); continue; }
-    const r = avaliarTitulo(t, fatos);
+    let r = avaliarTitulo(t, fatos);
+    if (!r.valido && r.motivo === "EXCEDE_LIMITE") {
+      const recortado = recortarAoLimite(t, fatos.limite);
+      if (recortado) {
+        r = avaliarTitulo(recortado, fatos);
+        if (r.valido) recortados += 1;
+      }
+    }
     if (!r.valido) { descartar(r.motivo); continue; }
-    validos.push(r);
+    const c = completarTitulo(r, fatos);
+    validos.push(c.termos.length ? { ...c.avaliado, complemento: c.termos } : r);
   }
 
-  // Ordena por score (empate: mais curto, depois ordem do LLM) e só então
-  // tira duplicados — fica a versão de maior score de cada um.
+  // Ordena por score; empate: relevância, cobertura, aproveitamento do espaço
+  // (mais longo) e, por fim, a ordem do LLM. Só então tira duplicados — fica a
+  // versão de maior score de cada um.
   const ordenados = validos
     .map((r, i) => ({ r, i }))
-    .sort((a, b) => b.r.score - a.r.score || a.r.chars - b.r.chars || a.i - b.i)
+    .sort((a, b) => compararAvaliados(a.r, b.r) || a.i - b.i)
     .map((x) => x.r);
   const vistos = new Set();
   const unicos = [];
@@ -470,9 +649,11 @@ async function gerarTitulos({ fatos, aiProvider }) {
     unicos.push(r);
   }
 
-  const sugestoes = unicos.slice(0, MAX_SUGESTOES).map((r) => ({
-    titulo: r.titulo, chars: r.chars, score: r.score, breakdown: r.breakdown,
-  }));
+  const sugestoes = unicos.slice(0, MAX_SUGESTOES).map((r) => {
+    const s = { titulo: r.titulo, chars: r.chars, score: r.score, breakdown: r.breakdown };
+    if (r.complemento) s.complemento = r.complemento;
+    return s;
+  });
   const descartadas = Object.values(motivosDescarte).reduce((a, n) => a + n, 0);
 
   if (!sugestoes.length) {
@@ -493,6 +674,7 @@ async function gerarTitulos({ fatos, aiProvider }) {
     recebidos: brutos.length,
     descartadas,
     motivosDescarte,
+    recortados,
   };
   if (sugestoes.length < MIN_SUGESTOES) {
     resultado.aviso = "Só " + sugestoes.length + (sugestoes.length === 1 ? " sugestão passou" : " sugestões passaram") +
@@ -505,6 +687,9 @@ module.exports = {
   montarFatos,
   avaliarTitulo,
   pontuarEficiencia,
+  completarTitulo,
+  formaDeTitulo,
+  recortarAoLimite,
   montarPrompt,
   gerarTitulos,
   SYSTEM,

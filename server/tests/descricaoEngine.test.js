@@ -1626,6 +1626,63 @@ async function run() {
     ok("50. F10: polimento editorial — acentos, valor sem informação, rótulo ecoado, qualificador redundante, metatexto, concordância de cor, item contido, seção pobre; marca intacta; regra que quebra a validação é descartada");
   }
 
+  // 51 ─ F14: descritor comprovado não é marca ("Blackout" com IS_BLACK_OUT=Sim)
+  {
+    const mk = (attrs, titulo = "Cortina Blackout Tecido 4,00 X 2,80") => engine.montarFicha({ item_id: "MLB-BO", titulo,
+      attributes_json: [{ id: "BRAND", name: "Marca", value: "Doce Lar" }, { id: "MATERIAL", name: "Material", value: "Poliéster" }, ...attrs] },
+    { categoriaNome: "Cortinas", limiteCategoria: 50000, descricaoAtual: null, descricaoEstado: "sem_descricao" });
+    const com = mk([{ id: "IS_BLACK_OUT", name: "É blecaute", value: "Sim" }]);
+    const base = "Cortina blackout da Doce Lar, em poliéster.\n\nDESTAQUES DO PRODUTO\n* LINHA\n* Material poliéster";
+    const marcas = (f, linha) => (engine.validarDescricao(base.replace("LINHA", linha), ["brand"], f).problemas || [])
+      .filter((p) => /MARCA|NOME/.test(p.codigo)).map((p) => p.codigo + ":" + p.termos.join("/"));
+    assert.deepStrictEqual([...com.descritoresDeAtributo], ["blackout"]);
+    assert.deepStrictEqual(marcas(com, "Blackout em tecido"), [], "IS_BLACK_OUT=Sim: abrir item com Blackout não é marca");
+    assert.deepStrictEqual(marcas(com, "BLACKOUT em tecido"), [], "caixa alta também, se o atributo prova");
+    // sem o atributo, a forma estrangeira abrindo item com BRAND continua conflito (regra antiga intacta)
+    assert.deepStrictEqual(marcas(mk([]), "Blackout em tecido"), ["MARCA_CONFLITANTE:Blackout"]);
+    // fonte que usa a palavra em minúscula também prova descritor
+    const minuscula = engine.montarFicha({ item_id: "MLB-BO2", titulo: "Cortina blackout tecido", attributes_json: [
+      { id: "BRAND", name: "Marca", value: "Doce Lar" }, { id: "MATERIAL", name: "Material", value: "Poliéster" }] },
+    { categoriaNome: "Cortinas", limiteCategoria: 50000, descricaoAtual: null, descricaoEstado: "sem_descricao" });
+    assert.deepStrictEqual(marcas(minuscula, "Blackout em tecido"), []);
+    // posição de marca e marca concorrente continuam bloqueadas
+    assert.deepStrictEqual(marcas(com, "Da marca Blackout"), ["MARCA_CONFLITANTE:Blackout"]);
+    assert.deepStrictEqual(marcas(com, "Feito pela Blackout"), ["MARCA_CONFLITANTE:Blackout"]);
+    assert.deepStrictEqual(marcas(com, "Nike em tecido"), ["MARCA_CONFLITANTE:Nike"]);
+    assert.deepStrictEqual(marcas(com, "Blackout oferece conforto"), ["MARCA_CONFLITANTE:Blackout"]);
+    ok("51. F14: descritor comprovado (atributo booleano Sim ou minúscula nas fontes) não é marca fora de posição de marca; posição de marca e marca concorrente seguem bloqueadas");
+  }
+
+  // 52 ─ F14: correção SOFT tira só a oração com o termo, não o item inteiro
+  {
+    const P = (codigo, termos) => ({ codigo, termos });
+    assert.strictEqual(engine.removerFragmento("* Composição: 100% algodão, sem lycra", P("TERMO_NAO_COMPROVADO", ["lycra"])), "* Composição: 100% algodão");
+    assert.strictEqual(engine.removerFragmento("* Revestimento em borracha texturizada para uma pegada firme durante as séries", P("CLAIM_OBJETIVO_SEM_FONTE", ["firme"])),
+      "* Revestimento em borracha texturizada");
+    assert.strictEqual(engine.removerFragmento("Lixeira em plástico, com tampa e resistente ao uso diário.", P("CLAIM_OBJETIVO_SEM_FONTE", ["resistente"])), "Lixeira em plástico, com tampa.");
+    // a cabeça da frase não sai; sobra curta demais → null (quem chama apaga o segmento)
+    assert.strictEqual(engine.removerFragmento("* Resistente e durável", P("CLAIM_OBJETIVO_SEM_FONTE", ["resistente"])), null);
+    assert.strictEqual(engine.removerFragmento("* Tecido que protege do sol", P("CLAIM_OBJETIVO_SEM_FONTE", ["protege"])), null);
+    assert.strictEqual(engine.removerFragmento("* Material plástico", P("TERMO_NAO_COMPROVADO", ["cromado"])), null);
+
+    const f = engine.montarFicha({ item_id: "MLB-SF", titulo: "Lixeira Plástica Com Pedal 60 Litros Acme Branco", attributes_json: [
+      { id: "BRAND", name: "Marca", value: "Acme" }, { id: "COLOR", name: "Cor", value: "Branco" },
+      { id: "VOLUME_CAPACITY", name: "Capacidade em volume", value: "60 L" }, { id: "OPENING_TYPES", name: "Tipos de aberturas", value: "Pedal" },
+      { id: "STRUCTURE_MATERIALS", name: "Materiais da estrutura", value: "Plástico" }] },
+    { categoriaNome: "Lixeiras", limiteCategoria: 50000, descricaoAtual: null, descricaoEstado: "sem_descricao" });
+    const t = ["DESCRIÇÃO PRINCIPAL", "Lixeira da marca Acme, em plástico branco, com abertura por pedal e capacidade de 60 L.", "",
+      "ESPECIFICAÇÕES", "* Cor: Branco", "* Capacidade em volume: 60 L", "* Tipos de aberturas: Pedal",
+      "* Materiais da estrutura: Plástico, com acabamento cromado"].join("\n");
+    const usados = ["brand", "attr:COLOR", "attr:VOLUME_CAPACITY", "attr:OPENING_TYPES", "attr:STRUCTURE_MATERIALS"];
+    const c = engine.validarComCorrecoes(t, usados, f);
+    assert.strictEqual(c.valida, true, JSON.stringify(c.problemas));
+    assert.ok(c.descricao.includes("* Materiais da estrutura: Plástico\n") || c.descricao.endsWith("* Materiais da estrutura: Plástico"), c.descricao);
+    assert.ok(!/cromado/.test(c.descricao));
+    const aviso = c.avisos.find((a) => a.codigo === "TERMO_NAO_COMPROVADO");
+    assert.ok(aviso && /cromado/.test(aviso.trecho), "a remoção continua registrada");
+    ok("52. F14: correção SOFT tira só a oração com o termo (\"Plástico, com acabamento cromado\" → \"Plástico\"); cabeça da frase nunca sai; sobra curta → segmento sai como antes");
+  }
+
   console.log(`\n✓ ${checks} verificações do Description Engine`);
 }
 

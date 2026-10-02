@@ -854,6 +854,15 @@ function montarFicha(anuncio, opts = {}) {
     for (const t of palavrasDeConteudo(fonte)) vocabularioDeValores.add(t.key);
   }
 
+  // F14 — característica booleana "Sim" pelo ID do atributo: IS_BLACK_OUT=Sim
+  // prova que "blackout" é DESCRITOR do produto, não marca de outro.
+  const descritoresDeAtributo = new Set();
+  for (const f of fatos) {
+    if (!f.id.startsWith("attr:") || valorBooleano(f.value) !== true) continue;
+    const id = f.id.slice(5).toLowerCase().replace(/^(is|has|with|includes?)_/, "");
+    descritoresDeAtributo.add(id.replace(/[^a-z0-9]/g, ""));
+  }
+
   const nFatosProduto = (marcaUtil ? 1 : 0) + (modeloUtil ? 1 : 0) + nAtributos;
   const descricaoUtil = !!(descricaoAtual.texto && descricaoAtual.texto.length >= DESCRICAO_ATUAL_MIN_UTIL);
   const suficiente = nFatosProduto + (descricaoUtil ? 1 : 0) >= MIN_FATOS;
@@ -878,6 +887,7 @@ function montarFicha(anuncio, opts = {}) {
     nomesAutorizados,
     vocabularioFraco,
     vocabularioComum,
+    descritoresDeAtributo,
     vocabularioAutorizado,
     vocabularioDeValores,
     numerosPermitidos,
@@ -1459,6 +1469,16 @@ function analisarNomes(textoDesc, ficha) {
     if (!candidata || autorizadaForte(p)) continue;
     // F8.2 — termo técnico ou norma COM origem numa fonte não é marca
     if (naFraca(p) && termoTecnico(p)) { p.tecnico = true; continue; }
+    // F14 — coincidência de FORMA com marca (maiúscula, grafia estrangeira)
+    // não basta fora de posição de marca: termo que é descritor comprovado
+    // do produto ("* Blackout em tecido" com IS_BLACK_OUT=Sim, ou palavra que
+    // as fontes usam em minúscula) não é marca. "da marca X", "X oferece"
+    // continuam na regra de marca.
+    if (!posicaoDeMarca) {
+      const compacto = semAcento(w).replace(/[^a-z0-9]/g, "");
+      if (ficha.descritoresDeAtributo && ficha.descritoresDeAtributo.has(compacto)) continue;
+      if (!caixaAlta && comum(p)) continue;
+    }
 
     // Contexto fraco: sem BRAND, autoriza o que está no título/descrição atual.
     // Com BRAND, nunca autoriza marca explícita, caixa alta ou grafia
@@ -2341,6 +2361,46 @@ function segmentoTem(seg, p) {
   });
 }
 
+// F14 — tira só a ORAÇÃO do segmento que tem o termo do problema, quando o
+// resto se sustenta sozinho, em vez de apagar o item inteiro:
+//   "* Composição: 100% algodão, sem lycra"  → "* Composição: 100% algodão"
+//   "* Revestimento em borracha texturizada para uma pegada firme" →
+//     "* Revestimento em borracha texturizada"
+// Oração = pedaço entre vírgula, ";", " e ", " com ", " para ", " que ". A
+// cabeça da frase (1ª oração, fora de item "Rótulo: valores") nunca sai; o
+// que sobra precisa ter 2+ palavras de conteúdo (1+ depois de rótulo) e não
+// pode conter o termo. Sem isso → null (quem chama decide: apagar o segmento).
+// O texto resultante passa pela validação completa de novo.
+const SEPARADORES_DE_ORACAO = /(,\s+|;\s+|\s+e\s+|\s+com\s+|\s+para\s+|\s+que\s+)/i;
+function removerFragmento(texto, p) {
+  const m = /^(\s*[-•*–]\s*)?([\s\S]*?)([.!?]?)$/.exec(String(texto).trim());
+  if (!m) return null;
+  const marcador = m[1] || "";
+  const fim = m[3] || "";
+  const rot = /^([^:]{2,40}):\s*(.+)$/.exec(m[2]);
+  const prefixo = rot ? rot[1] + ": " : "";
+  const pedacos = (rot ? rot[2] : m[2]).split(SEPARADORES_DE_ORACAO);
+  if (pedacos.length < 3) return null;
+  const tem = (t) => segmentoTem({ texto: t }, p);
+  const out = [];
+  let removeu = false;
+  for (let k = 0; k < pedacos.length; k += 2) {
+    if (tem(pedacos[k])) {
+      if (k === 0 && !rot) return null;
+      removeu = true;
+      continue;
+    }
+    if (out.length) out.push(pedacos[k - 1]);
+    out.push(pedacos[k]);
+  }
+  if (!removeu || !out.length) return null;
+  const corpo = out.join("").replace(/(\s+(de|da|do|das|dos|com|para|e|em|que))+\s*$/i, "").replace(/[,;\s]+$/, "").trim();
+  if (!corpo || tem(corpo)) return null;
+  const conteudo = seo.extractTokens(corpo).filter((t) => !t.stopword && !CHAVES_FUNCIONAIS.has(t.key)).length;
+  if (conteudo < (rot ? 1 : 2)) return null;
+  return marcador + prefixo + corpo + fim;
+}
+
 // Aplica UMA rodada de correções SOFT. Devolve null se algum problema não
 // tem correção segura (vira HARD CORRECAO_EXCESSIVA).
 function corrigirUmaVez(descricao, usados, problemas, ficha, registro) {
@@ -2364,6 +2424,13 @@ function corrigirUmaVez(descricao, usados, problemas, ficha, registro) {
       if (alvos.some((seg) => seg.tipo !== "item" && seg.tipo !== "frase")) return { erro: "Problema na 1ª linha ou em título de seção (" + p.codigo + ")." };
       for (const seg of alvos) {
         const l = linhas[seg.i];
+        // F14 — só a oração com o termo sai quando o resto se sustenta
+        const resto = removerFragmento(seg.texto, p);
+        if (resto) {
+          linhas[seg.i] = l.replace(seg.texto, resto);
+          registro.removidos.push({ codigo: p.codigo, termos: p.termos, trecho: seg.texto, ficou: resto });
+          continue;
+        }
         linhas[seg.i] = seg.tipo === "item" ? null : l.replace(seg.texto, "").replace(/\s{2,}/g, " ").trim();
         registro.removidos.push({ codigo: p.codigo, termos: p.termos, trecho: seg.texto });
       }
@@ -2962,7 +3029,6 @@ async function gerarDescricao({ ficha, aiProvider }) {
 
   // F10 — polimento editorial (só forma; cada regra revalidada).
   const polida = polirDescricao(v.descricao, v.fatosUsados, ficha);
-  const porId = new Map(ficha.fatos.map((f) => [f.id, f]));
   return {
     ...conflitos,
     ...podados,
@@ -2972,16 +3038,22 @@ async function gerarDescricao({ ficha, aiProvider }) {
     descricao: polida.descricao,
     chars: polida.chars,
     limite: ficha.limite,
-    fatosUsados: polida.fatosUsados.map((id) => {
-      const f = porId.get(id);
-      if (f) return { id, label: f.label, value: f.value };
-      if (id === "categoria") return { id, label: "Categoria", value: ficha.categoria };
-      if (id === "contexto:titulo") return { id, label: "Título atual", value: null };
-      if (id === "contexto:descricao_atual") return { id, label: "Descrição atual", value: null };
-      const p = ficha.proibidos.find((x) => x.id === id);
-      return { id, label: p ? p.label : id, value: p ? p.value : null };
-    }),
+    fatosUsados: descreverFatosUsados(polida.fatosUsados, ficha),
   };
+}
+
+// ids de fatosUsados → { id, label, value } do contrato da rota.
+function descreverFatosUsados(ids, ficha) {
+  const porId = new Map(ficha.fatos.map((f) => [f.id, f]));
+  return (ids || []).map((id) => {
+    const f = porId.get(id);
+    if (f) return { id, label: f.label, value: f.value };
+    if (id === "categoria") return { id, label: "Categoria", value: ficha.categoria };
+    if (id === "contexto:titulo") return { id, label: "Título atual", value: null };
+    if (id === "contexto:descricao_atual") return { id, label: "Descrição atual", value: null };
+    const p = ficha.proibidos.find((x) => x.id === id);
+    return { id, label: p ? p.label : id, value: p ? p.value : null };
+  });
 }
 
 module.exports = {
@@ -2997,6 +3069,7 @@ module.exports = {
   normalizarIdFato,
   termosNaoComprovados,
   gerarDescricao,
+  descreverFatosUsados,
   extrairNumeros,
   SYSTEM,
   LIMITE_ML_PADRAO,
@@ -3006,4 +3079,13 @@ module.exports = {
   VOCABULARIO_NEUTRO,
   VOCABULARIO_SUBJETIVO,
   ATRIBUTOS_SEM_AUTORIDADE,
+  // Autorreparo (descricaoReparo.js) — só leitura dos mesmos auxiliares que a
+  // correção SOFT usa.
+  CODIGOS_HARD,
+  segmentosDe,
+  segmentoTem,
+  linhasPorSecao,
+  partesDaDescricao,
+  normalizarTexto,
+  removerFragmento,
 };

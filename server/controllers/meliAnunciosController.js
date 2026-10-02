@@ -37,6 +37,7 @@ const { assertClienteNaCarteira } = require("../services/squads/authorizationSer
 const tituloEngine = require("../services/meliAnuncios/seo/tituloEngine");
 const termosComplementaresEngine = require("../services/meliAnuncios/seo/termosComplementaresEngine");
 const descricaoEngine = require("../services/meliAnuncios/seo/descricaoEngine");
+const descricaoReparo = require("../services/meliAnuncios/seo/descricaoReparo");
 const aiProvider = require("../services/ai/aiProvider");
 
 function extrairClienteContaId(valor) {
@@ -2905,7 +2906,10 @@ async function gerarTermosComplementaresSeo(req, res) {
 //
 // Ordem: cliente → anúncio → conta (resolverContaDoAnuncio, F1) → descrição
 // atual + categoria (cache do /seo/titulos; falha = limite padrão 50.000,
-// sempre sob o teto operacional do engine) → IA → validação.
+// sempre sob o teto operacional do engine) → IA → validação → (com
+// SEO_DESCRICAO_AUTORREPARO ligado) no máximo 1 chamada de reparo restrita aos
+// trechos rejeitados; a versão reparada traz autorreparo { etapa, ... } e a
+// que não se resolve volta como a mesma DESCRICAO_INVALIDA.
 //
 // Respostas:
 //   200 { ok:true, descricao, chars, limite, fatosUsados:[{ id, label, value }] }
@@ -2960,7 +2964,8 @@ async function gerarDescricaoSeo(req, res) {
       descricaoAtual: desc.descricao,
       descricaoEstado: desc.estado,
     });
-    const resultado = await descricaoEngine.gerarDescricao({ ficha, aiProvider });
+    // Autorreparo atrás de SEO_DESCRICAO_AUTORREPARO (desligado = gerarDescricao puro).
+    const resultado = await descricaoReparo.gerarDescricaoSeo({ ficha, aiProvider });
     return res.json(resultado);
   } catch (err) {
     console.error("[anuncios-meli] gerarDescricaoSeo:", err.message);

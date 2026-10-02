@@ -360,6 +360,80 @@ async function run() {
       ok("catálogo/família não bloqueiam; sem clienteSlug → 400; anúncio inexistente → 404");
     }
     {
+      // Autorreparo pela rota real: mesma requisição, flag OFF × ON.
+      const PROMESSA = " Compre com confiança e receba tudo de forma simples e segura.";
+      const COM_CLAIM = BOA.replace("o material principal é sintético.", "o material principal é sintético e resistente ao uso diário.");
+      const REPARADA = "O fechamento é por cadarço e o material principal é sintético.";
+      const USADOS = ["brand", "attr:CLOSURE_TYPE", "attr:MAIN_MATERIAL"];
+      const sequencia = (...rs) => () => rs[Math.min(iaChamadas.length - 1, rs.length - 1)];
+      const anterior = process.env.SEO_DESCRICAO_AUTORREPARO;
+      try {
+        for (const [flag, ligado] of [[undefined, false], ["off", false], ["1", true]]) {
+          if (flag === undefined) delete process.env.SEO_DESCRICAO_AUTORREPARO;
+          else process.env.SEO_DESCRICAO_AUTORREPARO = flag;
+
+          // (a) rejeitável só por frase sem fato → remoção localizada (sem 2ª chamada)
+          reset();
+          iaResposta = sequencia({ ok: true, data: { descricao: BOA + PROMESSA, fatosUsados: USADOS } });
+          const ra = await chamar("MLB-A", CORPO);
+          assert.strictEqual(ra.status, 200);
+          assert.strictEqual(iaChamadas.length, 1);
+          if (!ligado) {
+            assert.deepStrictEqual([ra.corpo.ok, ra.corpo.codigo], [false, "DESCRICAO_INVALIDA"], "OFF: rejeição de hoje");
+            assert.ok(!("autorreparo" in ra.corpo));
+          } else {
+            assert.strictEqual(ra.corpo.ok, true, JSON.stringify(ra.corpo));
+            assert.strictEqual(ra.corpo.descricao, BOA);
+            assert.strictEqual(ra.corpo.autorreparo.etapa, "remocao");
+            assert.deepStrictEqual(ra.corpo.autorreparo.removidas.map((x) => x.trecho), [PROMESSA.trim()]);
+            assert.deepStrictEqual(ra.corpo.fatosUsados.map((f) => f.label), ["Marca", "Tipo de fechamento", "Material principal"]);
+            assert.strictEqual(ra.corpo.limite, 2500);
+          }
+          guardar();
+
+          // (b) claim em frase com fato → UMA chamada de reparo só com o trecho
+          reset();
+          iaResposta = sequencia({ ok: true, data: { descricao: COM_CLAIM, fatosUsados: USADOS } },
+            { ok: true, data: { trocas: [{ id: "S1", texto: REPARADA }] } },
+            { ok: true, data: { descricao: BOA, fatosUsados: USADOS } });
+          const rb = await chamar("MLB-A", CORPO);
+          assert.strictEqual(rb.status, 200);
+          if (!ligado) {
+            assert.deepStrictEqual([rb.corpo.ok, rb.corpo.codigo, iaChamadas.length], [false, "DESCRICAO_INVALIDA", 1]);
+          } else {
+            assert.strictEqual(iaChamadas.length, 2, "geração + 1 reparo, nunca mais");
+            assert.strictEqual(iaChamadas[1].task, "seo_description");
+            assert.ok(iaChamadas[1].prompt.includes("[S1]") && !iaChamadas[1].prompt.includes("[S2]"), "só o trecho rejeitado vai ao reparo");
+            assert.strictEqual(rb.corpo.ok, true, JSON.stringify(rb.corpo));
+            assert.strictEqual(rb.corpo.descricao, BOA, "fora do trecho tudo idêntico; nenhum atributo some");
+            assert.deepStrictEqual(rb.corpo.autorreparo.trocas.map((t) => t.depois), [REPARADA]);
+          }
+          guardar();
+
+          // (c) reparo que não resolve → mesma rejeição; aprovada na 1ª → igual a hoje
+          reset();
+          iaResposta = sequencia({ ok: true, data: { descricao: COM_CLAIM, fatosUsados: USADOS } },
+            { ok: true, data: { trocas: [{ id: "S1", texto: REPARADA + " Ideal para a marca Nike." }] } });
+          const rc = await chamar("MLB-A", CORPO);
+          assert.deepStrictEqual([rc.corpo.ok, rc.corpo.codigo], [false, "DESCRICAO_INVALIDA"]);
+          assert.ok(!("descricao" in rc.corpo));
+          assert.strictEqual(iaChamadas.length, ligado ? 2 : 1);
+          assert.strictEqual(!!rc.corpo.autorreparo, ligado);
+          guardar();
+          reset();
+          const rd = await chamar("MLB-A", CORPO);
+          assert.deepStrictEqual(Object.keys(rd.corpo).sort(), ["chars", "descricao", "fatosUsados", "limite", "ok"], "aprovada na 1ª: contrato de hoje");
+          assert.strictEqual(iaChamadas.length, 1);
+          assert.deepStrictEqual(escritasBanco, []);
+          guardar();
+        }
+      } finally {
+        if (anterior === undefined) delete process.env.SEO_DESCRICAO_AUTORREPARO;
+        else process.env.SEO_DESCRICAO_AUTORREPARO = anterior;
+      }
+      ok("autorreparo: flag ausente/off = rejeição de hoje (1 chamada); ON = remoção localizada ou 1 reparo restrito ao trecho, rejeição idêntica quando não resolve");
+    }
+    {
       assert.ok(todasChamadasMl.length > 0);
       assert.ok(todasChamadasMl.every((c) => c.metodo === "GET" &&
         (/^\/categories\/[^/]+$/.test(c.path) || /^\/items\/[^/]+\/description$/.test(c.path))),

@@ -3029,7 +3029,6 @@ async function gerarDescricao({ ficha, aiProvider }) {
 
   // F10 — polimento editorial (só forma; cada regra revalidada).
   const polida = polirDescricao(v.descricao, v.fatosUsados, ficha);
-  const porId = new Map(ficha.fatos.map((f) => [f.id, f]));
   return {
     ...conflitos,
     ...podados,
@@ -3039,16 +3038,22 @@ async function gerarDescricao({ ficha, aiProvider }) {
     descricao: polida.descricao,
     chars: polida.chars,
     limite: ficha.limite,
-    fatosUsados: polida.fatosUsados.map((id) => {
-      const f = porId.get(id);
-      if (f) return { id, label: f.label, value: f.value };
-      if (id === "categoria") return { id, label: "Categoria", value: ficha.categoria };
-      if (id === "contexto:titulo") return { id, label: "Título atual", value: null };
-      if (id === "contexto:descricao_atual") return { id, label: "Descrição atual", value: null };
-      const p = ficha.proibidos.find((x) => x.id === id);
-      return { id, label: p ? p.label : id, value: p ? p.value : null };
-    }),
+    fatosUsados: descreverFatosUsados(polida.fatosUsados, ficha),
   };
+}
+
+// ids de fatosUsados → { id, label, value } do contrato da rota.
+function descreverFatosUsados(ids, ficha) {
+  const porId = new Map(ficha.fatos.map((f) => [f.id, f]));
+  return (ids || []).map((id) => {
+    const f = porId.get(id);
+    if (f) return { id, label: f.label, value: f.value };
+    if (id === "categoria") return { id, label: "Categoria", value: ficha.categoria };
+    if (id === "contexto:titulo") return { id, label: "Título atual", value: null };
+    if (id === "contexto:descricao_atual") return { id, label: "Descrição atual", value: null };
+    const p = ficha.proibidos.find((x) => x.id === id);
+    return { id, label: p ? p.label : id, value: p ? p.value : null };
+  });
 }
 
 module.exports = {
@@ -3064,6 +3069,7 @@ module.exports = {
   normalizarIdFato,
   termosNaoComprovados,
   gerarDescricao,
+  descreverFatosUsados,
   extrairNumeros,
   SYSTEM,
   LIMITE_ML_PADRAO,
@@ -3073,8 +3079,8 @@ module.exports = {
   VOCABULARIO_NEUTRO,
   VOCABULARIO_SUBJETIVO,
   ATRIBUTOS_SEM_AUTORIDADE,
-  // Experimento de reparo localizado (descricaoReparo.js) — só leitura dos
-  // mesmos auxiliares que a correção SOFT usa.
+  // Autorreparo (descricaoReparo.js) — só leitura dos mesmos auxiliares que a
+  // correção SOFT usa.
   CODIGOS_HARD,
   segmentosDe,
   segmentoTem,

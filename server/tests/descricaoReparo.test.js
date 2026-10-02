@@ -1,7 +1,7 @@
 // server/tests/descricaoReparo.test.js
 //
-// EXPERIMENTO F13 — reparo localizado da descrição (descricaoReparo.js), com o
-// aiProvider SIMULADO. Nenhuma chamada real à IA, ao ML ou ao banco.
+// Autorreparo da descrição (descricaoReparo.js, F13/F14), com o aiProvider
+// SIMULADO. Nenhuma chamada real à IA, ao ML ou ao banco.
 //
 // Protege:
 //   - HARD em frase dispensável (sem fato) → só a frase sai, sem nova IA;
@@ -9,7 +9,9 @@
 //     vai para UMA chamada de reparo, com o texto rejeitado e a proibição de
 //     fato novo, e o resultado é revalidado por inteiro;
 //   - reparo que continua inválido → mesma rejeição de hoje (no máximo 2 chamadas);
-//   - aprovada na 1ª → 1 chamada, igual à produção.
+//   - aprovada na 1ª → 1 chamada, igual à produção;
+//   - gerarDescricaoSeo (o que a rota chama): flag OFF = gerarDescricao puro;
+//     ON = contrato da produção + autorreparo, rejeição idêntica quando falha.
 
 const assert = require("assert");
 const eng = require("../services/meliAnuncios/seo/descricaoEngine");
@@ -82,7 +84,7 @@ function provider(...respostas) {
 }
 
 (async () => {
-  console.log("descricaoReparo (experimento F13)");
+  console.log("descricaoReparo (autorreparo da descrição)");
 
   await check("pré-condição: o texto-base é aprovado pela validação de produção", async () => {
     const r = await eng.gerarDescricao({ ficha: FICHA, aiProvider: provider(resposta(texto(""))) });
@@ -231,6 +233,82 @@ function provider(...respostas) {
     assert.strictEqual(r.etapa, "erro");
     assert.strictEqual(r.codigo, "TIMEOUT");
     assert.strictEqual(p.chamadas.length, 1);
+  });
+
+  // ── gerarDescricaoSeo: o que a rota chama, com a flag OFF e ON ──────────────
+  const OFF = {};
+  const ON = { SEO_DESCRICAO_AUTORREPARO: "on" };
+
+  await check("flag: desligada por padrão; só 1/true/on ligam", async () => {
+    assert.strictEqual(rep.autorreparoAtivo({}), false);
+    for (const v of ["", "0", "false", "off", "sim", "yes", " ligado "]) assert.strictEqual(rep.autorreparoAtivo({ SEO_DESCRICAO_AUTORREPARO: v }), false, v);
+    for (const v of ["1", "true", "on", " ON ", "True"]) assert.strictEqual(rep.autorreparoAtivo({ SEO_DESCRICAO_AUTORREPARO: v }), true, v);
+  });
+
+  await check("OFF: resposta IDÊNTICA a gerarDescricao em aprovada, rejeitada e erro; 1 chamada; sem campo autorreparo", async () => {
+    for (const resp of [resposta(texto("")), resposta(texto(" Compre com confiança e receba tudo de forma simples e segura.")),
+      resposta(texto("", comFato)), { ok: false, codigo: "TIMEOUT", erro: "timeout" }]) {
+      const p = provider(resp, troca("A estrutura é de plástico."));
+      const r = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env: OFF });
+      assert.deepStrictEqual(r, await eng.gerarDescricao({ ficha: FICHA, aiProvider: provider(resp) }));
+      assert.strictEqual(p.chamadas.length, 1, "flag OFF nunca chama o reparo");
+      assert.ok(!("autorreparo" in r));
+    }
+  });
+
+  await check("ON + aprovada na 1ª: resposta idêntica à produção, 1 chamada", async () => {
+    const p = provider(resposta(texto("")));
+    const r = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env: ON });
+    assert.deepStrictEqual(r, await eng.gerarDescricao({ ficha: FICHA, aiProvider: provider(resposta(texto(""))) }));
+    assert.strictEqual(p.chamadas.length, 1);
+  });
+
+  await check("ON + remoção localizada: contrato ok da produção + autorreparo { remocao }, sem 2ª chamada", async () => {
+    const promessa = " Compre com confiança e receba tudo de forma simples e segura.";
+    const p = provider(resposta(texto(promessa)));
+    const r = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env: ON });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(p.chamadas.length, 1);
+    assert.strictEqual(r.autorreparo.etapa, "remocao");
+    assert.deepStrictEqual(r.autorreparo.removidas.map((x) => x.trecho), [promessa.trim()]);
+    assert.strictEqual(r.limite, FICHA.limite);
+    assert.strictEqual(r.chars, r.descricao.length);
+    assert.ok(r.fatosUsados.some((f) => f.id === "brand" && f.label === "Marca" && f.value === "Acme"), JSON.stringify(r.fatosUsados));
+    assert.ok(!/receba/.test(r.descricao));
+  });
+
+  await check("ON + reparo restrito: 2 chamadas, trocas expostas, todos os atributos estruturais seguem no texto", async () => {
+    const p = provider(resposta(texto("", comFato)), troca("A estrutura é de plástico."));
+    const r = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env: ON });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    assert.strictEqual(p.chamadas.length, 2);
+    assert.strictEqual(r.autorreparo.etapa, "reparo_ia");
+    assert.deepStrictEqual(r.autorreparo.trocas.map((t) => [t.id, t.antes, t.depois]), [["S1", comFato.trim(), "A estrutura é de plástico."]]);
+    assert.deepStrictEqual(rep.fatosPerdidos(texto("", comFato), r.descricao, FICHA, []), [], "zero atributo factual some");
+    assert.ok(r.fatosUsados.every((f) => f.label), "fatosUsados no formato { id, label, value }");
+  });
+
+  await check("ON + reparo que não resolve: a MESMA rejeição da produção + autorreparo { falha }; nunca mais de 2 chamadas", async () => {
+    const p = provider(resposta(texto("", comFato)), troca(comFato.trim()), resposta(texto("")));
+    const r = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env: ON });
+    const prod = await eng.gerarDescricao({ ficha: FICHA, aiProvider: provider(resposta(texto("", comFato))) });
+    assert.strictEqual(p.chamadas.length, 2);
+    const { autorreparo, ...resto } = r;
+    assert.deepStrictEqual(resto, prod, "mesmo codigo/motivo/problemas da produção");
+    assert.strictEqual(autorreparo.etapa, "falha");
+    assert.ok(!("descricao" in r), "texto inválido não chega ao front");
+  });
+
+  await check("ON + erro da IA no reparo ou na 1ª geração: contrato de erro de hoje", async () => {
+    const p = provider(resposta(texto("", comFato)), { ok: false, codigo: "TIMEOUT", erro: "timeout" });
+    const r = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env: ON });
+    assert.deepStrictEqual([r.ok, r.codigo, r.autorreparo.etapa, r.autorreparo.codigo], [false, "DESCRICAO_INVALIDA", "falha", "TIMEOUT"]);
+    const p2 = provider({ ok: false, codigo: "AI_RESPONSE_TRUNCATED", erro: "cortada" });
+    const r2 = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p2, env: ON });
+    assert.deepStrictEqual(r2, await eng.gerarDescricao({ ficha: FICHA, aiProvider: provider({ ok: false, codigo: "AI_RESPONSE_TRUNCATED", erro: "cortada" }) }));
+    assert.strictEqual(p2.chamadas.length, 1);
+    const r3 = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: { async gerarJSON() { throw new Error("boom"); } }, env: ON });
+    assert.strictEqual(r3.ok, false);
   });
 
   if (falhas) { console.error(`\n${falhas}/${total} falha(s)`); process.exit(1); }

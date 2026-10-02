@@ -1,8 +1,8 @@
 // server/services/meliAnuncios/seo/descricaoReparo.js
 // -----------------------------------------------------------------------------
-// Autorreparo da descrição (F13/F14) — AINDA NÃO está ligado a nenhuma rota.
-// A rota continua em descricaoEngine.gerarDescricao; do F14, só a correção SOFT
-// por oração (removerFragmento) e o descritor que não é marca vivem no motor.
+// Autorreparo da descrição (F13/F14). A rota POST /seo/descricao chama
+// gerarDescricaoSeo: com a flag SEO_DESCRICAO_AUTORREPARO desligada (padrão)
+// é exatamente descricaoEngine.gerarDescricao; ligada, roda o pipeline abaixo.
 //
 //   geração (a mesma de produção) → validação
 //     → A) reparo localizado: HARD em frase independente e dispensável →
@@ -364,7 +364,7 @@ async function gerarDescricaoComReparo({ ficha, aiProvider }) {
   if (local.ok) {
     const polida = polirSemPerder(local.v, ficha);
     return { ...base, ok: true, etapa: "remocao", hardIniciais, rejeitada, removidas: local.removidas,
-      validada: local.v.descricao, descricao: polida.descricao, chars: polida.chars };
+      validada: local.v.descricao, descricao: polida.descricao, chars: polida.chars, ...contratoAprovada(local.v, polida) };
   }
 
   // B) UMA chamada de reparo, restrita aos segmentos rejeitados
@@ -409,10 +409,80 @@ async function gerarDescricaoComReparo({ ficha, aiProvider }) {
     return { ...fim, ok: false, etapa: "falha", reparada: v1.descricao, hardFinais: ["FATO_PERDIDO"], fatosPerdidos: perdidos };
   }
   const polida = polirSemPerder(v1, ficha);
-  return { ...fim, ok: true, etapa: "reparo_ia", validada: v1.descricao, descricao: polida.descricao, chars: polida.chars };
+  return { ...fim, ok: true, etapa: "reparo_ia", validada: v1.descricao, descricao: polida.descricao, chars: polida.chars,
+    ...contratoAprovada(v1, polida) };
+}
+
+// O que a rota precisa de uma versão aprovada (mesmos campos de gerarDescricao).
+function contratoAprovada(v, polida) {
+  return {
+    fatosUsadosIds: polida.fatosUsados || v.fatosUsados || [],
+    avisos: v.avisos || [],
+    ajustesEditoriais: polida.ajustes || [],
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Flag do autorreparo na rota. Desligado por padrão: só "1", "true" ou "on"
+// em SEO_DESCRICAO_AUTORREPARO ligam; qualquer outro valor = desligado.
+// -----------------------------------------------------------------------------
+const ENV_AUTORREPARO = "SEO_DESCRICAO_AUTORREPARO";
+function autorreparoAtivo(env = process.env) {
+  return ["1", "true", "on"].includes(String(env[ENV_AUTORREPARO] || "").trim().toLowerCase());
+}
+
+// -----------------------------------------------------------------------------
+// gerarDescricaoSeo — o que a rota POST /seo/descricao chama. Nunca lança.
+//   flag OFF → exatamente descricaoEngine.gerarDescricao (1 chamada à IA).
+//   flag ON  → gerarDescricaoComReparo (no máximo 1 chamada de reparo):
+//     · aprovada na 1ª, erro da IA, FATOS_INSUFICIENTES etc. → a resposta da
+//       produção, sem mudança;
+//     · reparada (remoção localizada ou reparo restrito aos trechos) → o
+//       contrato ok da produção + autorreparo { etapa, removidas | trocas };
+//     · o reparo não resolveu → a MESMA rejeição da produção (DESCRICAO_INVALIDA,
+//       problemas da 1ª geração) + autorreparo { etapa:"falha", codigo }.
+// -----------------------------------------------------------------------------
+async function gerarDescricaoSeo({ ficha, aiProvider, env = process.env }) {
+  if (!autorreparoAtivo(env)) return eng.gerarDescricao({ ficha, aiProvider });
+  let r;
+  try {
+    r = await gerarDescricaoComReparo({ ficha, aiProvider });
+  } catch (e) {
+    // Defesa: o pipeline não lança, mas se lançar a rota não pode cair.
+    return { ok: false, codigo: "IA_ERRO", motivo: "Falha ao gerar a descrição com a IA." };
+  }
+  const prod = r.producao;
+  if (r.etapa === "primeira" || r.etapa === "erro") return prod;
+  if (!r.ok) {
+    const codigo = r.codigoReparo || (r.hardFinais || []).join(",") || "REPARO_INVALIDO";
+    return { ...prod, autorreparo: { etapa: "falha", codigo, chamadasIa: r.chamadasIa } };
+  }
+  // Mesmos campos que a produção devolveria se a 1ª versão tivesse passado:
+  // conflitos e o que a poda tirou vêm da 1ª geração; avisos, ajustes e fatos
+  // da versão reparada.
+  const herdados = {};
+  for (const k of ["conflitos", "itensRemovidos", "removidosDoNome", "nomeNeutro"]) if (prod[k] !== undefined) herdados[k] = prod[k];
+  const autorreparo = r.etapa === "remocao"
+    ? { etapa: "remocao", chamadasIa: r.chamadasIa, removidas: r.removidas }
+    : { etapa: "reparo_ia", chamadasIa: r.chamadasIa,
+      trocas: r.trocas.filter((t) => t.depois != null).map((t) => ({ id: t.id, antes: t.antes, depois: t.depois, ...(t.contida ? { contida: t.contida } : {}) })) };
+  return {
+    ...herdados,
+    ...(r.avisos.length ? { avisos: r.avisos } : {}),
+    ...(r.ajustesEditoriais.length ? { ajustesEditoriais: r.ajustesEditoriais } : {}),
+    ok: true,
+    descricao: r.descricao,
+    chars: r.chars,
+    limite: ficha.limite,
+    fatosUsados: eng.descreverFatosUsados(r.fatosUsadosIds, ficha),
+    autorreparo,
+  };
 }
 
 module.exports = {
+  gerarDescricaoSeo,
+  autorreparoAtivo,
+  ENV_AUTORREPARO,
   gerarDescricaoComReparo,
   repararLocalmente,
   montarPromptReparo,

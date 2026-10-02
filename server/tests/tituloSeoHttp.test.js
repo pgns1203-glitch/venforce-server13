@@ -272,8 +272,10 @@ async function run() {
       const r = await gerar("MLB-A", { clienteSlug: "cliente-a", clienteContaId: 10 });
       assert.strictEqual(r.corpo.limite, 50);
       assert.ok(r.corpo.sugestoes.every((s) => s.chars <= 50));
-      assert.ok(r.corpo.motivosDescarte.EXCEDE_LIMITE >= 1, "títulos acima de 50 tinham que ser descartados");
-      assert.ok(/No máximo 50 caracteres/.test(iaChamadas[0].prompt));
+      assert.ok((r.corpo.motivosDescarte.EXCEDE_LIMITE || 0) + r.corpo.recortados >= 1,
+        "títulos acima de 50 tinham que ser recortados ou descartados");
+      assert.ok(/entre 45 e 50 caracteres/.test(iaChamadas[0].prompt));
+      assert.ok(/Nunca ultrapasse 50/.test(iaChamadas[0].prompt));
 
       reset({ maxTitleLength: 120 });
       const r2 = await gerar("MLB-A", { clienteSlug: "cliente-a", clienteContaId: 10 });

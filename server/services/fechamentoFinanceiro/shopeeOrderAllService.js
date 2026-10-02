@@ -1439,6 +1439,30 @@ function shopeeVariationPackConflict(record) {
   return variationPack !== (titlePack !== null ? titlePack : 1);
 }
 
+function getShopeeModelItemMismatch(costRow, itemId, modelId) {
+  const costBaseModelId = normalizeShopeeId(costRow?.modelId);
+  const costBaseItemId = normalizeShopeeId(costRow?.id);
+  const performanceItemId = normalizeShopeeId(itemId);
+  const performanceModelId = normalizeShopeeId(modelId);
+
+  if (
+    !costBaseModelId ||
+    !costBaseItemId ||
+    !performanceItemId ||
+    !performanceModelId ||
+    costBaseModelId !== performanceModelId ||
+    costBaseItemId === performanceItemId
+  ) {
+    return null;
+  }
+
+  return {
+    modelId: performanceModelId,
+    costBaseItemId,
+    performanceItemId,
+  };
+}
+
 function resolveShopeeParentItemCost(costMap, costBridge, itemId, modelId) {
   const parentItemId = normalizeShopeeId(itemId);
   const model = normalizeShopeeId(modelId);
@@ -1700,6 +1724,9 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
       : "bridge_item_id";
   const stage = modelId ? "cost_bridge_variation" : "cost_bridge_item";
   const costRow = matchedId ? costMap.get(normalizeMatchKey(matchedId)) || null : null;
+  const modelItemMismatch = modelId
+    ? getShopeeModelItemMismatch(costRow, itemId, modelId)
+    : null;
 
   if (debugCollector && matchedId) {
     debugCollector.recordMatchAttempt({
@@ -1709,11 +1736,11 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
       field: sourceName,
       rawValue: identity.bridgeSku,
       normalizedKey: matchedId,
-      result: costRow ? "hit" : "miss",
+      result: costRow && !modelItemMismatch ? "hit" : "miss",
     });
   }
 
-  if (costRow) {
+  if (costRow && !modelItemMismatch) {
     return {
       costRow,
       source: sourceName,
@@ -1724,6 +1751,20 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
       matchedId,
       matchedValue: matchedId,
       ambiguous: false,
+    };
+  }
+
+  if (modelItemMismatch) {
+    return {
+      costRow: null,
+      source: "miss",
+      bridgeUsed: true,
+      bridgeIds,
+      bridgeSku: identity.bridgeSku,
+      identitySource: identity.source,
+      skuTried: identity.bridgeSku || skuTried,
+      ambiguous: false,
+      identityConflict: modelItemMismatch,
     };
   }
 
@@ -1768,7 +1809,8 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
 //   candidates só em "ambiguous_ids": os IDs conflitantes resolvidos pela
 //              ponte, sem pressupor equivalência entre identidades distintas
 //   reason     "not_found_in_performance_bridge" | "not_found_in_cost_base" |
-//              "ambiguous_bridge_candidates" | "zero_cost_in_base" | "not_found_direct"
+//              "ambiguous_bridge_candidates" | "model_item_mismatch" |
+//              "zero_cost_in_base" | "not_found_direct"
 function describeShopeeCostGap(line, costMatch, orderId) {
   if (costMatch.ambiguous) {
     // A pendência é o CONFLITO de IDs, não o SKU que os originou — a tela
@@ -1783,6 +1825,18 @@ function describeShopeeCostGap(line, costMatch, orderId) {
       sku: null,
       candidates,
       reason: "ambiguous_bridge_candidates",
+    };
+  }
+
+  if (costMatch.identityConflict) {
+    const conflict = costMatch.identityConflict;
+    return {
+      type: "variation_id",
+      value: String(conflict.modelId),
+      sku: costMatch.bridgeSku || null,
+      reason: "model_item_mismatch",
+      costBaseItemId: conflict.costBaseItemId,
+      performanceItemId: conflict.performanceItemId,
     };
   }
 

@@ -698,6 +698,7 @@ function parseCostRowsDetailed(rows) {
     ]);
     const modelIdRaw = findField(row, [
       "id model",
+      "idmodel",
       "id da variacao",
       "id da variação",
       "id de variacao",
@@ -822,6 +823,22 @@ function isShopeeCostValueValid(rawValue) {
   const text = String(rawValue ?? "").trim();
   if (!text) return false;
   return /\d/.test(text);
+}
+
+function hasShopeeModelItemMismatch(costRow, itemId, modelId) {
+  const costModelId = normalizeShopeeId(costRow?.modelId);
+  const costItemId = normalizeShopeeId(costRow?.id);
+  const saleItemId = normalizeShopeeId(itemId);
+  const saleModelId = normalizeShopeeId(modelId);
+
+  return !!(
+    costModelId &&
+    costItemId &&
+    saleItemId &&
+    saleModelId &&
+    costModelId === saleModelId &&
+    costItemId !== saleItemId
+  );
 }
 
 
@@ -1032,6 +1049,9 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
         continue;
       }
       const hit = costMap.get(key);
+      const modelItemMismatch = hit
+        ? hasShopeeModelItemMismatch(hit, sale.itemId, candidate.value)
+        : false;
       if (debugCollector) {
         debugCollector.recordMatchAttempt({
           engine: "shopee_performance",
@@ -1040,8 +1060,14 @@ function processShopee(salesRowsRaw, costRowsRaw, ads, venforce, affiliates, ord
           field: candidate.field,
           rawValue: candidate.value,
           normalizedKey: key,
-          result: hit ? "hit" : "miss",
+          result: hit && !modelItemMismatch ? "hit" : "miss",
         });
+      }
+      if (modelItemMismatch) {
+        // O Model ID é forte, mas a própria base também declara a qual item
+        // pai ele pertence. Se a Performance declarar outro pai, a identidade
+        // está conflitante e não é seguro cair no pai nem aceitar o custo.
+        break;
       }
       if (hit) {
         costRow = hit;

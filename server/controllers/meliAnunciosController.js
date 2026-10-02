@@ -33,6 +33,11 @@ const motorMargemService = require("../services/motorMargem/motorMargemService")
 const cliente360ProdutosEngine = require("../services/cliente360/cliente360ProdutosEngine");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
 const { mlFetch } = require("../utils/mlClient");
+const { assertClienteNaCarteira } = require("../services/squads/authorizationService");
+const tituloEngine = require("../services/meliAnuncios/seo/tituloEngine");
+const termosComplementaresEngine = require("../services/meliAnuncios/seo/termosComplementaresEngine");
+const descricaoEngine = require("../services/meliAnuncios/seo/descricaoEngine");
+const aiProvider = require("../services/ai/aiProvider");
 
 function extrairClienteContaId(valor) {
   return /^\d+$/.test(String(valor || "")) ? Number(valor) : null;
@@ -1511,15 +1516,20 @@ async function carregarDescricao(clienteId, itemId, mlUserId) {
 // Nome de categoria não muda: um cache em memória por processo evita bater
 // na API do ML de novo a cada abertura do mesmo anúncio (ou de outro anúncio
 // da mesma categoria).
+//
+// A MESMA resposta traz `settings.max_title_length` (limite de título da
+// categoria, doc oficial de Categorias e Atributos), usado pelo Title Engine
+// (SEO). Guardar os dois juntos evita uma segunda chamada por clique. O mesmo
+// vale para `settings.max_description_length` (Description Engine · F5).
 // ----------------------------------------------------------------------------
-const _cacheCategoria = new Map(); // category_id -> { nome, expiraEm }
+const _cacheCategoria = new Map(); // category_id -> { nome, maxTitleLength, maxDescriptionLength, expiraEm }
 const CATEGORIA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-async function carregarNomeCategoria(clienteId, categoryId, mlUserId) {
+async function carregarCategoria(clienteId, categoryId, mlUserId) {
   if (!categoryId) return null;
 
   const emCache = _cacheCategoria.get(categoryId);
-  if (emCache && emCache.expiraEm > Date.now()) return emCache.nome;
+  if (emCache && emCache.expiraEm > Date.now()) return emCache;
 
   try {
     const resp = await mlFetch(
@@ -1528,14 +1538,26 @@ async function carregarNomeCategoria(clienteId, categoryId, mlUserId) {
       { mlUserId }
     );
     if (resp && resp.ok && resp.data && resp.data.name) {
-      const nome = String(resp.data.name);
-      _cacheCategoria.set(categoryId, { nome, expiraEm: Date.now() + CATEGORIA_CACHE_TTL_MS });
-      return nome;
+      const max = resp.data.settings && resp.data.settings.max_title_length;
+      const maxDesc = resp.data.settings && resp.data.settings.max_description_length;
+      const entrada = {
+        nome: String(resp.data.name),
+        maxTitleLength: Number.isInteger(max) && max > 0 ? max : null,
+        maxDescriptionLength: Number.isInteger(maxDesc) && maxDesc > 0 ? maxDesc : null,
+        expiraEm: Date.now() + CATEGORIA_CACHE_TTL_MS,
+      };
+      _cacheCategoria.set(categoryId, entrada);
+      return entrada;
     }
   } catch (e) {
     // categoria é cosmético — o front cai para o category_id cru, nunca quebra
   }
   return null;
+}
+
+async function carregarNomeCategoria(clienteId, categoryId, mlUserId) {
+  const categoria = await carregarCategoria(clienteId, categoryId, mlUserId);
+  return categoria ? categoria.nome : null;
 }
 
 // ----------------------------------------------------------------------------
@@ -2664,8 +2686,10 @@ async function marcarRevisado(req, res) {
 
 // ----------------------------------------------------------------------------
 // POST /anuncios-meli/:itemId/otimizar
-// body: { clienteSlug, tipo }   tipo = seo | descricao | ficha_tecnica
+// body: { clienteSlug, clienteContaId?, tipo }   tipo = seo | descricao | ficha_tecnica
 // Gera sugestão textual com IA e salva no banco. NÃO atualiza o Mercado Livre.
+// clienteContaId: a operação selecionada — o anúncio tem que ser dela (409
+// ANUNCIO_DE_OUTRA_CONTA). Sem ele, só segue quando a conta é inequívoca.
 // ----------------------------------------------------------------------------
 async function otimizar(req, res) {
   try {
@@ -2674,6 +2698,7 @@ async function otimizar(req, res) {
 
     const resultado = await otimizadorService.otimizar({
       clienteSlug: clienteSlug,
+      clienteContaId: extrairClienteContaId(req.body && req.body.clienteContaId),
       itemId: itemId,
       tipo: tipo,
       userId: req.user && req.user.id,
@@ -2688,11 +2713,13 @@ async function otimizar(req, res) {
         otimizacao: resultado.otimizacao,
       });
     }
-    return res.status(http).json({
+    const corpo = {
       ok: false,
       codigo: resultado.codigo,
       motivo: resultado.motivo,
-    });
+    };
+    if (resultado.contas) corpo.contas = resultado.contas;
+    return res.status(http).json(corpo);
   } catch (err) {
     console.error("[anuncios-meli] otimizar:", err.message);
     return res.status(500).json({
@@ -2704,7 +2731,245 @@ async function otimizar(req, res) {
 }
 
 // ----------------------------------------------------------------------------
-// GET /anuncios-meli/:itemId/otimizacoes?clienteSlug=&tipo=
+// POST /anuncios-meli/:itemId/seo/titulos
+// body: { clienteSlug, clienteContaId? }
+//
+// Title Engine (SEO · F3): gera candidatos com a IA, valida cada um contra os
+// fatos do anúncio, pontua no CÓDIGO e devolve até 6 sugestões. NÃO escreve
+// no Mercado Livre nem persiste nada — "Usar" no front só muda o rascunho; a
+// escrita continua sendo o PATCH /conteudo do "Salvar alterações".
+//
+// Ordem: cliente → anúncio → conta (resolverContaDoAnuncio, F1) → trava de
+// título (mesma regra do PATCH /conteudo) → categoria (cache) → IA.
+//
+// Respostas:
+//   200 { ok:true, limite, sugestoes:[{ titulo, chars, score, breakdown }],
+//         recebidos, descartadas, motivosDescarte, aviso? }
+//   200 { ok:false, codigo, motivo }  — falha da IA / nenhum candidato válido
+//                                       (mesmo padrão do /otimizar)
+//   400 sem clienteSlug · 404 cliente/anúncio · 409 TITULO_NAO_EDITAVEL
+//   403/409 de conta (CONTA_NAO_PERTENCE_AO_CLIENTE, ANUNCIO_DE_OUTRA_CONTA,
+//   ANUNCIO_SEM_CONTA, MULTIPLE_MARKETPLACE_ACCOUNTS — com `contas`)
+// ----------------------------------------------------------------------------
+async function gerarTitulosSeo(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    if (!body.clienteSlug) {
+      return res.status(400).json({ ok: false, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(body.clienteSlug);
+    if (!cliente) return res.status(404).json({ ok: false, codigo: "NO_CLIENT", motivo: "Cliente não encontrado." });
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false, codigo: "NO_ITEM",
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let conta;
+    try {
+      conta = await anunciosService.resolverContaDoAnuncio({
+        clienteId: cliente.id,
+        anuncio,
+        clienteContaId: extrairClienteContaId(body.clienteContaId),
+        requireUsableGrant: false,
+      });
+    } catch (err) {
+      if (!err.statusCode) throw err;
+      const corpo = { ok: false, codigo: err.code || "ERRO_CONTA", motivo: err.message };
+      if (Array.isArray(err.contas)) corpo.contas = err.contas;
+      return res.status(err.statusCode).json(corpo);
+    }
+
+    if (conteudoService.tituloTravadoPorCatalogo(anuncio)) {
+      return res.status(409).json({
+        ok: false, codigo: "TITULO_NAO_EDITAVEL",
+        motivo: "O título deste anúncio é definido pelo catálogo do Mercado Livre e não pode ser alterado por aqui.",
+      });
+    }
+
+    // Limite real: o da categoria, nunca acima do que o "Salvar alterações"
+    // aceita (meliConteudoService.TITULO_MAX). Sem a categoria, o mesmo 60
+    // do campo de título da tela.
+    const categoria = await carregarCategoria(cliente.id, anuncio.category_id, conta.mlUserId);
+    const limite = Math.min(
+      (categoria && categoria.maxTitleLength) || conteudoService.TITULO_MAX,
+      conteudoService.TITULO_MAX
+    );
+
+    const fatos = tituloEngine.montarFatos(anuncio, {
+      categoriaNome: categoria ? categoria.nome : null,
+      limite,
+    });
+    const resultado = await tituloEngine.gerarTitulos({ fatos, aiProvider });
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[anuncios-meli] gerarTitulosSeo:", err.message);
+    return res.status(500).json({ ok: false, codigo: "ERRO_INTERNO", motivo: "Erro interno ao gerar títulos." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/seo/termos-complementares
+// body: { clienteSlug, clienteContaId?, tituloReferencia }
+//
+// Termos Complementares (SEO · F4R): termos factualizados do produto que o
+// título de referência (o RASCUNHO do título, não o persistido) ainda não
+// representa bem. Determinístico — não chama IA. ANÁLISE só leitura: não
+// escreve no Mercado Livre, não persiste nada e não tem relação com o MODEL
+// (que é dado factual do produto; as regras de escrita dele seguem no
+// PATCH /conteudo). Por isso catálogo/família/PARENT_PK não bloqueiam aqui.
+//
+// Ordem: tituloReferencia → cliente → anúncio → conta (resolverContaDoAnuncio,
+// F1) → nome da categoria (cache do /seo/titulos; falha = analisa sem ele).
+//
+// Respostas:
+//   200 { ok:true, termos:[…], excluidos:[…] }   (termos:[] = nada a complementar)
+//   400 SEM_CLIENTE / TITULO_REFERENCIA_INVALIDO · 404 cliente/anúncio
+//   403/409 de conta (mesmos códigos do /seo/titulos)
+// ----------------------------------------------------------------------------
+const TITULO_REFERENCIA_MAX = 200;
+
+async function gerarTermosComplementaresSeo(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    if (!body.clienteSlug) {
+      return res.status(400).json({ ok: false, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." });
+    }
+    // Os termos complementam o título que o usuário pretende salvar — sem ele
+    // não há referência. Nunca cai em silêncio para o título persistido.
+    const tituloReferencia = typeof body.tituloReferencia === "string" ? body.tituloReferencia.trim() : "";
+    if (!tituloReferencia || tituloReferencia.length > TITULO_REFERENCIA_MAX) {
+      return res.status(400).json({
+        ok: false, codigo: "TITULO_REFERENCIA_INVALIDO",
+        motivo: "Informe o título de referência (o título atual do rascunho).",
+      });
+    }
+
+    const cliente = await anunciosService.resolverCliente(body.clienteSlug);
+    if (!cliente) return res.status(404).json({ ok: false, codigo: "NO_CLIENT", motivo: "Cliente não encontrado." });
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false, codigo: "NO_ITEM",
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let conta;
+    try {
+      conta = await anunciosService.resolverContaDoAnuncio({
+        clienteId: cliente.id,
+        anuncio,
+        clienteContaId: extrairClienteContaId(body.clienteContaId),
+        requireUsableGrant: false,
+      });
+    } catch (err) {
+      if (!err.statusCode) throw err;
+      const corpo = { ok: false, codigo: err.code || "ERRO_CONTA", motivo: err.message };
+      if (Array.isArray(err.contas)) corpo.contas = err.contas;
+      return res.status(err.statusCode).json(corpo);
+    }
+
+    const categoria = await carregarCategoria(cliente.id, anuncio.category_id, conta.mlUserId);
+    const resultado = termosComplementaresEngine.gerarTermosComplementares({
+      anuncio,
+      tituloReferencia,
+      categoriaNome: categoria ? categoria.nome : null,
+    });
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[anuncios-meli] gerarTermosComplementaresSeo:", err.message);
+    return res.status(500).json({ ok: false, codigo: "ERRO_INTERNO", motivo: "Erro interno ao analisar os termos complementares." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/seo/descricao
+// body: { clienteSlug, clienteContaId? }
+//
+// Description Engine (SEO · F5): monta a ficha factual do anúncio, pede UMA
+// descrição à IA e valida deterministicamente (sem score). NÃO escreve no
+// Mercado Livre nem persiste nada — "Usar" no front só muda o rascunho; a
+// escrita continua sendo o PATCH /conteudo do "Salvar alterações".
+//
+// O contrato não recebe o rascunho: os fatos e a descrição atual vêm do
+// backend (snapshot do anúncio + leitura ao vivo do ML, a mesma do detalhe —
+// carregarDescricao, com "erro" distinto de "sem_descricao").
+//
+// Ordem: cliente → anúncio → conta (resolverContaDoAnuncio, F1) → descrição
+// atual + categoria (cache do /seo/titulos; falha = limite padrão 50.000,
+// sempre sob o teto operacional do engine) → IA → validação.
+//
+// Respostas:
+//   200 { ok:true, descricao, chars, limite, fatosUsados:[{ id, label, value }] }
+//   200 { ok:false, codigo, motivo, problemas? } — FATOS_INSUFICIENTES,
+//       DESCRICAO_ATUAL_INDISPONIVEL, erro da IA (código do provider, ex.
+//       AI_RESPONSE_TRUNCATED), DESCRICAO_INVALIDA (mesmo padrão do /seo/titulos)
+//   400 sem clienteSlug · 404 cliente/anúncio
+//   403/409 de conta (mesmos códigos do /seo/titulos)
+// ----------------------------------------------------------------------------
+async function gerarDescricaoSeo(req, res) {
+  try {
+    const { itemId } = req.params;
+    const body = req.body || {};
+    if (!body.clienteSlug) {
+      return res.status(400).json({ ok: false, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(body.clienteSlug);
+    if (!cliente) return res.status(404).json({ ok: false, codigo: "NO_CLIENT", motivo: "Cliente não encontrado." });
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false, codigo: "NO_ITEM",
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let conta;
+    try {
+      conta = await anunciosService.resolverContaDoAnuncio({
+        clienteId: cliente.id,
+        anuncio,
+        clienteContaId: extrairClienteContaId(body.clienteContaId),
+        requireUsableGrant: false,
+      });
+    } catch (err) {
+      if (!err.statusCode) throw err;
+      const corpo = { ok: false, codigo: err.code || "ERRO_CONTA", motivo: err.message };
+      if (Array.isArray(err.contas)) corpo.contas = err.contas;
+      return res.status(err.statusCode).json(corpo);
+    }
+
+    const [desc, categoria] = await Promise.all([
+      carregarDescricao(cliente.id, anuncio.item_id, conta.mlUserId),
+      carregarCategoria(cliente.id, anuncio.category_id, conta.mlUserId),
+    ]);
+
+    const ficha = descricaoEngine.montarFicha(anuncio, {
+      categoriaNome: categoria ? categoria.nome : null,
+      limiteCategoria: categoria ? categoria.maxDescriptionLength : null,
+      descricaoAtual: desc.descricao,
+      descricaoEstado: desc.estado,
+    });
+    const resultado = await descricaoEngine.gerarDescricao({ ficha, aiProvider });
+    return res.json(resultado);
+  } catch (err) {
+    console.error("[anuncios-meli] gerarDescricaoSeo:", err.message);
+    return res.status(500).json({ ok: false, codigo: "ERRO_INTERNO", motivo: "Erro interno ao gerar a descrição." });
+  }
+}
+
+// ----------------------------------------------------------------------------
+// GET /anuncios-meli/:itemId/otimizacoes?clienteSlug=&clienteContaId=&tipo=
 // Histórico de sugestões já geradas para um anúncio.
 // ----------------------------------------------------------------------------
 async function listarOtimizacoes(req, res) {
@@ -2720,14 +2985,15 @@ async function listarOtimizacoes(req, res) {
 
     const resultado = await otimizadorService.listarOtimizacoes({
       clienteSlug: clienteSlug,
+      clienteContaId: extrairClienteContaId(req.query && req.query.clienteContaId),
       itemId: itemId,
       tipo: tipo,
     });
 
     if (!resultado.ok) {
-      return res
-        .status(resultado.http || 400)
-        .json({ ok: false, motivo: resultado.motivo });
+      const corpo = { ok: false, motivo: resultado.motivo };
+      if (resultado.codigo) corpo.codigo = resultado.codigo;
+      return res.status(resultado.http || 400).json(corpo);
     }
     return res.json({ ok: true, otimizacoes: resultado.otimizacoes });
   } catch (err) {
@@ -2741,21 +3007,30 @@ async function listarOtimizacoes(req, res) {
 // ----------------------------------------------------------------------------
 // PATCH /anuncios-meli/otimizacoes/:id/aprovar
 // body: { tituloAprovado?, modeloAprovado?, descricaoAprovada?,
-//         fichaAprovadaJson?, observacao? }
+//         fichaAprovadaJson?, observacao?, clienteSlug?, clienteContaId? }
 // Registra escolha humana sobre a sugestão. NÃO envia nada ao Mercado Livre.
+//
+// O id sozinho não autoriza: com clienteSlug (já checado pelo guard de
+// carteira do router) a otimização tem que ser desse cliente; sem ele, o
+// cliente DA otimização passa pela mesma checagem de carteira
+// (assertClienteNaCarteira — o seam do guard, não uma regra nova).
 // ----------------------------------------------------------------------------
 async function aprovarOtimizacao(req, res) {
   try {
     const { id } = req.params;
+    const body = req.body || {};
     const resultado = await otimizadorService.aprovar({
       id: parseInt(id, 10),
-      dados: req.body || {},
+      dados: body,
       userId: req.user && req.user.id,
+      clienteSlug: body.clienteSlug || null,
+      clienteContaId: extrairClienteContaId(body.clienteContaId),
+      autorizarCliente: (clienteId) => assertClienteNaCarteira(req.user || {}, clienteId),
     });
     if (!resultado.ok) {
-      return res
-        .status(resultado.http || 400)
-        .json({ ok: false, motivo: resultado.motivo });
+      const corpo = { ok: false, motivo: resultado.motivo };
+      if (resultado.codigo) corpo.codigo = resultado.codigo;
+      return res.status(resultado.http || 400).json(corpo);
     }
     return res.json({ ok: true, otimizacao: resultado.otimizacao });
   } catch (err) {
@@ -3079,6 +3354,9 @@ module.exports = {
   simularMargem,
   marcarRevisado,
   otimizar,
+  gerarTitulosSeo,
+  gerarTermosComplementaresSeo,
+  gerarDescricaoSeo,
   listarOtimizacoes,
   aprovarOtimizacao,
   criacaoStatus,

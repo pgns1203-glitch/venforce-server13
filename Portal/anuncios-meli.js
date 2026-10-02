@@ -3352,7 +3352,12 @@
       salvando: false,
       confirmandoSaida: false,
       iaBloqueada: false,
-      alternativasAbertas: false,
+      // Title Engine (SEO): sugestões de título geradas sob demanda. Vivem só
+      // no modal (não são persistidas); "Usar" muda o rascunho, nunca o ML.
+      titulosSeo: novoEstadoTitulos(),
+      // Description Engine (SEO): UMA descrição por clique, validada no
+      // backend. Mesma regra: só o rascunho muda, nunca o ML.
+      descricaoSeo: novoEstadoDescricao(),
       carregado: false,
       // Preço: escrita REAL no Mercado Livre (PATCH .../preco). `salvando`
       // trava contra clique duplo/Enter duplo e contra o campo virar
@@ -4884,18 +4889,22 @@
     xhr.send(form);
   }
 
-  // ----- Título e Modelo: comparação com a IA ------------------------------
+  // ----- Título (comparação com a IA) e Modelo (dado factual) ---------------
   // A coluna "Atual" também é editável, mas NÃO é um segundo estado: os dois
   // inputs (este e o do cabeçalho/Catálogo) escrevem no MESMO
   // DET.rascunho[chave] e aplicarEstadosEdicao sincroniza o outro. Um valor,
   // duas vistas — salvar/descartar/reverter/usar sugestão continuam únicos.
   // O título aqui obedece à MESMA trava de catálogo/família do cabeçalho.
+  //
+  // O Modelo NÃO tem sugestão, geração nem IA (F4R): é dado factual/estrutural
+  // do produto (PARENT_PK em todas as categorias reais — auditoria F4.1), não
+  // superfície de SEO. Só edição manual, salva pelo mesmo PATCH /conteudo.
   function tituloEModeloHtml(a) {
     var tituloTravado = tituloTravadoPorCatalogo(a);
     return '<div class="am-det-section">' +
       '<div class="am-det-subhead">' +
         "<h4>Título</h4>" +
-        '<span id="am-det-status-seo">' + chipOtimizacao("seo", "titulo") + "</span>" +
+        '<span id="am-det-status-seo">' + chipTitulos() + "</span>" +
       "</div>" +
       '<div class="am-det-compare am-det-compare--compacto" id="am-det-compare-titulo">' +
         '<div class="am-det-compare__col">' +
@@ -4909,22 +4918,19 @@
           '<span class="am-det-compare__count" id="am-det-count-espelho-titulo">' +
             DET.rascunho.titulo.length + "/60 caracteres</span>" +
         "</div>" +
-        '<div class="am-det-compare__col" id="am-det-sug-titulo">' + sugestaoTituloHtml(AM.otimizacoes.seo) + "</div>" +
-        '<div class="am-det-compare__foot" id="am-det-foot-seo">' + footSeoHtml(AM.otimizacoes.seo) + "</div>" +
+        '<div class="am-det-compare__col" id="am-det-sug-titulo">' + sugestaoTitulosHtml() + "</div>" +
       "</div>" +
 
       '<div class="am-det-subhead">' +
         "<h4>Modelo</h4>" +
-        '<span id="am-det-status-modelo">' + chipOtimizacao("seo", "modelo") + "</span>" +
       "</div>" +
-      '<div class="am-det-compare am-det-compare--compacto" id="am-det-compare-modelo">' +
+      '<div class="am-det-compare am-det-compare--compacto am-det-compare--unico" id="am-det-compare-modelo">' +
         '<div class="am-det-compare__col">' +
-          '<div class="am-det-compare__label"><span>Atual · editável aqui ou no Catálogo</span></div>' +
+          '<div class="am-det-compare__label"><span>Dado do produto · editável aqui ou no Catálogo</span></div>' +
           '<input class="vf-input vf-input--sm am-det-compare__input" id="am-det-espelho-modelo" ' +
-            'aria-label="Modelo do anúncio (comparação com a IA)" placeholder="—" ' +
+            'aria-label="Modelo do anúncio" placeholder="—" ' +
             'data-campo="modelo" value="' + escapeAttr(DET.rascunho.modelo) + '" />' +
         "</div>" +
-        '<div class="am-det-compare__col" id="am-det-sug-modelo">' + sugestaoModeloHtml(AM.otimizacoes.seo) + "</div>" +
       "</div>" +
     "</div>";
   }
@@ -4955,68 +4961,123 @@
       (extras || "") + ">" + escapeHtml(rotulo) + "</button>";
   }
 
-  function sugestaoTituloHtml(otim) {
-    var cabeca = '<div class="am-det-compare__label">' + rotuloIa() + "</div>";
-    if (!otim || !otim.titulo_sugerido) {
-      return cabeca + vazioIaHtml("Gerar SEO", "seo");
-    }
-    var alts = ((tryParseJSON(otim.melhorias_json, {}) || {}).titulos_alternativos) || [];
-    var alertas = tryParseJSON(otim.alertas_json, []) || [];
-    var chars = otim.titulo_sugerido_chars || String(otim.titulo_sugerido).length;
+  // ----- Título: sugestões do Title Engine (SEO) ----------------------------
+  // POST /:itemId/seo/titulos devolve até 6 títulos com score CALCULADO pelo
+  // backend (fatos do anúncio, nunca nota da IA). A tela lista todos como
+  // "Sugestões" — sem destacar vencedor —, e "Usar" só muda o rascunho; quem
+  // escreve no Mercado Livre continua sendo "Salvar alterações".
+  function novoEstadoTitulos() {
+    return { estado: null, sugestoes: [], limite: 60, aviso: null, erro: null, codigo: null, descartadas: 0, seq: 0 };
+  }
 
-    var alternativas = "";
-    if (alts.length) {
-      alternativas = '<p class="am-det-compare__hint">+' + alts.length +
-        (alts.length === 1 ? " alternativa " : " alternativas ") +
-        '<a href="#" data-acao="ver-alternativas">' +
-        (DET.alternativasAbertas ? "ocultar" : "ver todas") + "</a></p>";
-      if (DET.alternativasAbertas) {
-        alternativas += '<ul class="am-det-alts">' + alts.map(function (t, i) {
-          return "<li><span>" + escapeHtml(t) + " <b>(" + String(t || "").length + "/60)</b></span>" +
-            '<span class="am-det-alts__btns">' +
-              btnGhost("copiar", "Copiar", ' data-fonte="titulo-alt" data-idx="' + i + '"') +
-              btnGhost("usar-sugestao", "Usar", ' data-campo="titulo" data-fonte="titulo-alt" data-idx="' + i + '"') +
-              btnGhost("aprovar-titulo", "Aprovar", ' data-fonte="titulo-alt" data-idx="' + i + '"') +
-            "</span></li>";
-        }).join("") + "</ul>";
+  function sugestaoTitulosHtml() {
+    var cabeca = '<div class="am-det-compare__label"><span>' + icIa() + "Sugestões da IA</span></div>";
+    if (DET.iaBloqueada) return cabeca + vazioIaHtml("Gerar títulos", "titulos");
+    if (tituloTravadoPorCatalogo(DET.anuncio)) {
+      return cabeca + '<p class="am-det-vazio">O título é gerenciado pelo Mercado Livre — não há sugestões de título para este anúncio.</p>';
+    }
+    var T = DET.titulosSeo;
+    var gerando = T.estado === "carregando";
+    var botaoGerar = function (rotulo) {
+      return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="gerar-titulos"' +
+        (gerando ? " disabled" : "") + ">" + escapeHtml(gerando ? "Gerando…" : rotulo) + "</button>";
+    };
+
+    if (T.estado === "ok" && T.sugestoes.length) {
+      var itens = T.sugestoes.map(function (sug, i) {
+        return "<li><span>" +
+            '<span class="vf-status is-info" title="Score calculado pelos fatos do anúncio">' + escapeHtml(String(sug.score)) + "</span> " +
+            escapeHtml(sug.titulo) + " <b>(" + sug.chars + "/" + T.limite + ")</b>" +
+          "</span>" +
+          '<span class="am-det-alts__btns">' + btnGhost("usar-titulo", "Usar", ' data-idx="' + i + '"') + "</span></li>";
+      }).join("");
+      var notas = [];
+      if (T.aviso) notas.push(escapeHtml(T.aviso));
+      if (T.descartadas) {
+        notas.push(T.descartadas + (T.descartadas === 1 ? " sugestão descartada" : " sugestões descartadas") +
+          " por não se apoiar nos dados do anúncio.");
       }
+      return cabeca + '<ul class="am-det-alts">' + itens + "</ul>" +
+        (notas.length ? '<p class="am-det-compare__hint">' + notas.join(" ") + "</p>" : "") +
+        acoesIaHtml([botaoGerar("Gerar novamente")]);
     }
 
-    return cabeca +
-      '<p class="am-det-readtext am-det-readtext--sug"><strong>' + escapeHtml(otim.titulo_sugerido) +
-        "</strong> (" + chars + "/60)</p>" +
-      alternativas +
-      listaIaHtml([], alertas) +
-      acoesIaHtml([
-        btnGhost("usar-sugestao", "Usar sugestão", ' data-campo="titulo" data-fonte="titulo-sugerido"'),
-        btnGhost("copiar", "Copiar", ' data-fonte="titulo-sugerido"'),
-        btnGhost("aprovar-titulo", "Aprovar", ' data-fonte="titulo-sugerido"'),
-        btnGhost("gerar", "Gerar novamente", ' data-tipo="seo"'),
-      ]);
-  }
-
-  function sugestaoModeloHtml(otim) {
-    var cabeca = '<div class="am-det-compare__label">' + rotuloIa() + "</div>";
-    if (!otim || !otim.modelo_sugerido) {
-      return cabeca + vazioIaHtml("Gerar SEO", "seo");
+    if (T.estado === "erro") {
+      return cabeca + '<p class="am-det-vazio">' + escapeHtml(T.erro || "Não foi possível gerar títulos.") + "</p>" +
+        (T.codigo === "TITULO_NAO_EDITAVEL" ? "" : acoesIaHtml([botaoGerar("Tentar novamente")]));
     }
-    return cabeca +
-      '<p class="am-det-readtext am-det-readtext--sug"><strong>' + escapeHtml(otim.modelo_sugerido) + "</strong></p>" +
-      acoesIaHtml([
-        btnGhost("usar-sugestao", "Usar sugestão", ' data-campo="modelo" data-fonte="modelo-sugerido"'),
-        btnGhost("copiar", "Copiar", ' data-fonte="modelo-sugerido"'),
-        btnGhost("aprovar-modelo", "Aprovar", ""),
-        btnGhost("gerar", "Gerar novamente", ' data-tipo="seo"'),
-      ]);
+
+    return cabeca + '<p class="am-det-vazio">' + (gerando ? "Gerando sugestões de título…" : "Nenhuma sugestão gerada ainda.") + "</p>" +
+      acoesIaHtml([botaoGerar("Gerar títulos")]);
   }
 
-  function footSeoHtml(otim) {
-    // Sem otimização ainda: rodapé vazio (e escondido via :empty) — a coluna
-    // da IA já diz que não há sugestão, o aviso só repetia isso.
-    if (!otim) return "";
-    var score = otim.score_seo != null ? otim.score_seo : 0;
-    return '<span class="am-det-compare__scoreline">Score SEO ' + score + "/100" +
-      (otim.motivo ? " — " + escapeHtml(otim.motivo) : "") + "</span>";
+  function chipTitulos() {
+    if (DET.iaBloqueada) return '<span class="vf-status is-empty">IA restrita a administradores</span>';
+    if (tituloTravadoPorCatalogo(DET.anuncio)) return '<span class="vf-status is-empty">Gerenciado pelo Mercado Livre</span>';
+    var T = DET.titulosSeo;
+    if (T.estado === "carregando") return '<span class="vf-status is-info">Gerando títulos…</span>';
+    if (T.estado === "erro") return '<span class="vf-status is-danger">Não foi possível gerar</span>';
+    if (T.estado === "ok") {
+      return '<span class="vf-status is-info">' + T.sugestoes.length +
+        (T.sugestoes.length === 1 ? " sugestão" : " sugestões") + "</span>";
+    }
+    return '<span class="vf-status is-empty">Aguardando geração</span>';
+  }
+
+  function repintarTitulos() {
+    var col = el("am-det-sug-titulo");
+    if (col) col.innerHTML = sugestaoTitulosHtml();
+    var chip = el("am-det-status-seo");
+    if (chip) chip.innerHTML = chipTitulos();
+  }
+
+  function gerarTitulos() {
+    if (!DET || !DET.anuncio || DET.titulosSeo.estado === "carregando") return;
+    if (tituloTravadoPorCatalogo(DET.anuncio)) return;
+    var meuToken = DET.token;
+    var T = DET.titulosSeo;
+    var minhaSeq = ++T.seq;
+    T.estado = "carregando";
+    T.erro = null;
+    T.codigo = null;
+    repintarTitulos();
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/seo/titulos", {
+      method: "POST",
+      body: corpo,
+    }).then(function (r) {
+      // Modal fechado, outro anúncio/conta, ou um "Gerar" mais novo no meio.
+      if (!DET || DET.token !== meuToken || DET.titulosSeo !== T || T.seq !== minhaSeq) return;
+      if (r.status === 403 && !(r.data && r.data.codigo)) {
+        DET.iaBloqueada = true;
+        renderDetalhe();
+        return;
+      }
+      var d = r.data || {};
+      if (!d.ok || !Array.isArray(d.sugestoes) || !d.sugestoes.length) {
+        T.estado = "erro";
+        T.erro = d.motivo || "Não foi possível gerar títulos.";
+        T.codigo = d.codigo || null;
+        T.sugestoes = [];
+        repintarTitulos();
+        toast(T.erro, "is-danger");
+        return;
+      }
+      T.estado = "ok";
+      T.sugestoes = d.sugestoes;
+      T.limite = d.limite || 60;
+      T.aviso = d.aviso || null;
+      T.descartadas = d.descartadas || 0;
+      repintarTitulos();
+    });
+  }
+
+  function usarTitulo(idx) {
+    var sug = DET && DET.titulosSeo.sugestoes[idx];
+    if (!sug || tituloTravadoPorCatalogo(DET.anuncio)) return;
+    usarSugestao("titulo", sug.titulo);
   }
 
   // Lista de melhorias (✓) e alertas (⚠) — mesmo desenho do canva.
@@ -5105,7 +5166,7 @@
       '<div class="am-det-compare">' +
         '<div class="am-det-compare__col">' + esquerda + "</div>" +
         '<div class="am-det-compare__col" id="am-det-sug-descricao">' +
-          sugestaoDescricaoHtml(AM.otimizacoes.descricao) + "</div>" +
+          sugestaoDescricaoHtml() + "</div>" +
       "</div>" +
     "</div>";
   }
@@ -5119,29 +5180,136 @@
     return "descrição atual do anúncio no Mercado Livre";
   }
 
-  function sugestaoDescricaoHtml(otim) {
-    var usada = !!(otim && otim.descricao_sugerida &&
-      DET.rascunho.descricao === otim.descricao_sugerida);
+  // ----- Descrição: sugestão do Description Engine (SEO) --------------------
+  // POST /:itemId/seo/descricao devolve UMA descrição, já validada pelo
+  // backend contra os fatos do anúncio (sem score). "Usar" só muda o rascunho;
+  // quem escreve no Mercado Livre continua sendo "Salvar alterações". O
+  // histórico/aprovação do otimizador legado não alimenta mais esta coluna.
+  function novoEstadoDescricao() {
+    return { estado: null, texto: "", chars: 0, limite: 0, fatosUsados: [], erro: null, codigo: null, problemas: [], seq: 0 };
+  }
+
+  function descricaoSugeridaUsada() {
+    var S = DET && DET.descricaoSeo;
+    return !!(S && S.estado === "ok" && S.texto && DET.rascunho.descricao === S.texto);
+  }
+
+  function sugestaoDescricaoHtml() {
+    var usada = descricaoSugeridaUsada();
     chipUsadaAtual = usada;
     var cabeca = '<div class="am-det-compare__label">' + rotuloIa() +
       (usada ? '<span class="vf-status is-success">Usada nesta edição</span>' : "") + "</div>";
-
-    if (!otim || !otim.descricao_sugerida) {
-      return cabeca + vazioIaHtml("Gerar descrição", "descricao");
+    if (DET.iaBloqueada) {
+      return cabeca + '<p class="am-det-vazio">Otimização por IA disponível para administradores.</p>';
     }
-    var melh = ((tryParseJSON(otim.melhorias_json, {}) || {}).itens) || [];
-    var alertas = tryParseJSON(otim.alertas_json, []) || [];
+    // Sem saber o que o anúncio tem hoje, uma sugestão poderia apagar conteúdo
+    // real — e o campo da esquerda está bloqueado pelo mesmo motivo.
+    if (DET.descricaoEstado === "erro") {
+      return cabeca + '<p class="am-det-vazio">A sugestão fica disponível quando a descrição atual puder ser lida.</p>';
+    }
 
-    return cabeca +
-      listaIaHtml(melh, alertas) +
-      '<p class="am-det-readtext am-det-readtext--sug am-det-readtext--bloco">' +
-        escapeHtml(otim.descricao_sugerida) + "</p>" +
-      acoesIaHtml([
-        btnGhost("usar-sugestao", "Usar sugestão", ' data-campo="descricao" data-fonte="descricao-sugerida"'),
-        btnGhost("copiar", "Copiar", ' data-fonte="descricao-sugerida"'),
-        btnGhost("aprovar-descricao", "Aprovar", ""),
-        btnGhost("gerar", "Gerar novamente", ' data-tipo="descricao"'),
-      ]);
+    var S = DET.descricaoSeo;
+    var gerando = S.estado === "carregando";
+    var botaoGerar = function (rotulo) {
+      return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="gerar-descricao"' +
+        (gerando ? " disabled" : "") + ">" + escapeHtml(gerando ? "Gerando…" : rotulo) + "</button>";
+    };
+
+    if (S.estado === "ok" && S.texto) {
+      var base = (S.fatosUsados || []).map(function (f) { return f && f.label; }).filter(Boolean);
+      return cabeca +
+        '<p class="am-det-readtext am-det-readtext--sug am-det-readtext--bloco">' + escapeHtml(S.texto) + "</p>" +
+        '<p class="am-det-compare__hint">' + S.chars + (S.limite ? "/" + S.limite : "") + " caracteres" +
+          (base.length ? " · com base em: " + escapeHtml(base.join(", ")) : "") + "</p>" +
+        acoesIaHtml([
+          btnGhost("usar-descricao", "Usar descrição", ""),
+          btnGhost("copiar", "Copiar", ' data-fonte="descricao-sugerida"'),
+          botaoGerar("Gerar novamente"),
+        ]);
+    }
+
+    if (S.estado === "erro") {
+      // Rejeição da checagem de fatos (DESCRICAO_INVALIDA): diz que NADA foi
+      // aplicado e lista cada motivo do backend, um por linha, em vez do
+      // parágrafo corrido. Outros erros (IA fora, resposta cortada) seguem
+      // com o motivo como veio.
+      if (S.codigo === "DESCRICAO_INVALIDA") {
+        var vistos = {};
+        var motivos = (S.problemas || []).map(function (p) {
+          var t = p && p.detalhe ? String(p.detalhe) : "";
+          if (t && p.termos && p.termos.length) t += " (" + p.termos.slice(0, 3).join(", ") + ")";
+          return t;
+        }).filter(function (t) { return t && !vistos[t] && (vistos[t] = true); });
+        return cabeca +
+          '<p class="am-det-vazio"><b>A descrição gerada foi rejeitada pela checagem de fatos.</b> ' +
+            "Nada foi aplicado ao rascunho nem ao anúncio.</p>" +
+          (motivos.length
+            ? listaIaHtml([], motivos)
+            : '<p class="am-det-vazio">' + escapeHtml(S.erro || "") + "</p>") +
+          acoesIaHtml([botaoGerar("Tentar novamente")]);
+      }
+      return cabeca + '<p class="am-det-vazio">' + escapeHtml(S.erro || "Não foi possível gerar a descrição.") + "</p>" +
+        acoesIaHtml([botaoGerar("Tentar novamente")]);
+    }
+
+    return cabeca + '<p class="am-det-vazio">' + (gerando ? "Gerando descrição…" : "Nenhuma sugestão gerada ainda.") + "</p>" +
+      acoesIaHtml([botaoGerar("Gerar descrição")]);
+  }
+
+  function repintarDescricao() {
+    var col = el("am-det-sug-descricao");
+    if (col) col.innerHTML = sugestaoDescricaoHtml();
+  }
+
+  function gerarDescricao() {
+    if (!DET || !DET.anuncio || DET.descricaoSeo.estado === "carregando") return;
+    if (DET.descricaoEstado === "erro") return;
+    var meuToken = DET.token;
+    var S = DET.descricaoSeo;
+    var minhaSeq = ++S.seq;
+    S.estado = "carregando";
+    S.erro = null;
+    S.codigo = null;
+    S.problemas = [];
+    repintarDescricao();
+
+    var corpo = { clienteSlug: AM.clienteAtual.slug };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    api("/anuncios-meli/" + encodeURIComponent(DET.anuncio.item_id) + "/seo/descricao", {
+      method: "POST",
+      body: corpo,
+    }).then(function (r) {
+      // Modal fechado, outro anúncio/conta, ou um "Gerar" mais novo no meio.
+      if (!DET || DET.token !== meuToken || DET.descricaoSeo !== S || S.seq !== minhaSeq) return;
+      if (r.status === 403 && !(r.data && r.data.codigo)) {
+        DET.iaBloqueada = true;
+        renderDetalhe();
+        return;
+      }
+      var d = r.data || {};
+      if (!d.ok || typeof d.descricao !== "string" || !d.descricao) {
+        S.estado = "erro";
+        S.erro = d.motivo || "Não foi possível gerar a descrição.";
+        S.codigo = d.codigo || null;
+        S.problemas = Array.isArray(d.problemas) ? d.problemas : [];
+        S.texto = "";
+        repintarDescricao();
+        toast(S.erro, "is-danger");
+        return;
+      }
+      S.estado = "ok";
+      S.texto = d.descricao;
+      S.chars = d.chars || d.descricao.length;
+      S.limite = d.limite || 0;
+      S.fatosUsados = Array.isArray(d.fatosUsados) ? d.fatosUsados : [];
+      repintarDescricao();
+    });
+  }
+
+  function usarDescricao() {
+    var S = DET && DET.descricaoSeo;
+    if (!S || S.estado !== "ok" || !S.texto || DET.descricaoEstado === "erro") return;
+    usarSugestao("descricao", S.texto);
   }
 
   // ----- Ficha técnica: atual × sugerida ------------------------------------
@@ -6468,12 +6636,12 @@
   // inteira; com ela, a coluna só é redesenhada quando o chip realmente vira.
   var chipUsadaAtual = null;
   function atualizarChipUsada() {
-    var otim = AM.otimizacoes.descricao;
-    var usada = !!(otim && otim.descricao_sugerida &&
-      DET.rascunho.descricao === otim.descricao_sugerida);
-    if (usada === chipUsadaAtual) return;
-    var alvo = el("am-det-sug-descricao");
-    if (alvo) alvo.innerHTML = sugestaoDescricaoHtml(otim);
+    // A origem ("preenchida a partir da sugestão da IA às …") muda nos mesmos
+    // momentos (usar, digitar, reverter) e só era desenhada no render inteiro.
+    var origem = el("am-det-desc-origem");
+    if (origem) origem.textContent = origemDescricao();
+    if (descricaoSugeridaUsada() === chipUsadaAtual) return;
+    repintarDescricao();
   }
 
   function descartarTudo() {
@@ -6652,13 +6820,10 @@
       return;
     }
     if (acao === "revisar") { alternarRevisao(alvo); return; }
-    if (acao === "ver-alternativas") {
-      e.preventDefault();
-      DET.alternativasAbertas = !DET.alternativasAbertas;
-      var col = el("am-det-sug-titulo");
-      if (col) col.innerHTML = sugestaoTituloHtml(AM.otimizacoes.seo);
-      return;
-    }
+    if (acao === "gerar-titulos") { gerarTitulos(); return; }
+    if (acao === "usar-titulo") { usarTitulo(Number(alvo.getAttribute("data-idx"))); return; }
+    if (acao === "gerar-descricao") { gerarDescricao(); return; }
+    if (acao === "usar-descricao") { usarDescricao(); return; }
     if (acao === "gerar") { gerar(alvo.getAttribute("data-tipo")); return; }
     if (acao === "copiar") { copiarTexto(textoDaFonte(alvo)); return; }
     if (acao === "copiar-ficha") { copiarFichaSugerida(); return; }
@@ -6666,9 +6831,6 @@
       usarSugestao(alvo.getAttribute("data-campo"), textoDaFonte(alvo));
       return;
     }
-    if (acao === "aprovar-titulo") { aprovarTitulo(textoDaFonte(alvo)); return; }
-    if (acao === "aprovar-modelo") { aprovarModelo(); return; }
-    if (acao === "aprovar-descricao") { aprovarDescricao(); return; }
     if (acao === "aprovar-ficha") { aprovarFicha(); return; }
   }
 
@@ -6676,18 +6838,10 @@
   // da descrição não precisam sobreviver a uma viagem pelo HTML.
   function textoDaFonte(botao) {
     var fonte = botao.getAttribute("data-fonte");
-    var seo = AM.otimizacoes.seo;
-    var desc = AM.otimizacoes.descricao;
-    if (fonte === "titulo-sugerido") return seo ? seo.titulo_sugerido : "";
-    if (fonte === "modelo-sugerido") return seo ? seo.modelo_sugerido : "";
-    if (fonte === "descricao-sugerida") return desc ? desc.descricao_sugerida : "";
+    if (fonte === "descricao-sugerida") return DET.descricaoSeo.estado === "ok" ? DET.descricaoSeo.texto : "";
     if (fonte === "descricao-atual") return DET.rascunho.descricao;
     if (fonte === "titulo-atual") return DET.rascunho.titulo;
     if (fonte === "modelo-atual") return DET.rascunho.modelo;
-    if (fonte === "titulo-alt") {
-      var alts = (seo && (tryParseJSON(seo.melhorias_json, {}) || {}).titulos_alternativos) || [];
-      return alts[Number(botao.getAttribute("data-idx"))] || "";
-    }
     return "";
   }
 
@@ -6723,7 +6877,8 @@
   // ===========================================================================
   function carregarHistoricoOtimizacoes(itemId, meuToken) {
     var url = "/anuncios-meli/" + encodeURIComponent(itemId) +
-              "/otimizacoes?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+              "/otimizacoes?clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+              (AM.contaMlId ? "&clienteContaId=" + encodeURIComponent(AM.contaMlId) : "");
     api(url).then(function (r) {
       if (!DET || DET.token !== meuToken) return;
       // 403 = otimizador ainda é admin-only. Não é o modal quebrado: o resto
@@ -6749,14 +6904,11 @@
     if (!DET || !DET.carregado) return;
     var attrs = tryParseJSON(DET.anuncio.attributes_json, []) || [];
     var alvos = [
-      ["am-det-sug-titulo", function () { return sugestaoTituloHtml(AM.otimizacoes.seo); }],
-      ["am-det-sug-modelo", function () { return sugestaoModeloHtml(AM.otimizacoes.seo); }],
-      ["am-det-sug-descricao", function () { return sugestaoDescricaoHtml(AM.otimizacoes.descricao); }],
+      ["am-det-sug-titulo", function () { return sugestaoTitulosHtml(); }],
+      ["am-det-sug-descricao", function () { return sugestaoDescricaoHtml(); }],
       ["am-det-sug-ficha", function () { return sugestaoFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
-      ["am-det-foot-seo", function () { return footSeoHtml(AM.otimizacoes.seo); }],
       ["am-det-foot-ficha", function () { return footFichaHtml(AM.otimizacoes.ficha_tecnica, attrs); }],
-      ["am-det-status-seo", function () { return chipOtimizacao("seo", "titulo"); }],
-      ["am-det-status-modelo", function () { return chipOtimizacao("seo", "modelo"); }],
+      ["am-det-status-seo", function () { return chipTitulos(); }],
       ["am-det-status-ficha", function () { return chipOtimizacao("ficha_tecnica", "ficha"); }],
     ];
     alvos.forEach(function (par) {
@@ -6779,9 +6931,13 @@
     }
     marcarChipsIa(tipo, '<span class="vf-status is-info">Consultando IA…</span>');
 
+    // A sugestão é da operação selecionada: o backend confere que o anúncio
+    // é desta conta (ClienteConta) antes de chamar a IA.
+    var corpoGerar = { clienteSlug: AM.clienteAtual.slug, tipo: tipo };
+    if (AM.contaMlId) corpoGerar.clienteContaId = AM.contaMlId;
     api("/anuncios-meli/" + encodeURIComponent(a.item_id) + "/otimizar", {
       method: "POST",
-      body: { clienteSlug: AM.clienteAtual.slug, tipo: tipo },
+      body: corpoGerar,
     }).then(function (r) {
       if (!DET || DET.token !== meuToken) return;
       if (!r.data || !r.data.ok) {
@@ -6802,9 +6958,7 @@
   }
 
   function marcarChipsIa(tipo, html) {
-    var ids = tipo === "ficha_tecnica"
-      ? ["am-det-status-ficha"]
-      : tipo === "descricao" ? [] : ["am-det-status-seo", "am-det-status-modelo"];
+    var ids = tipo === "ficha_tecnica" ? ["am-det-status-ficha"] : [];
     ids.forEach(function (id) {
       var no = el(id);
       if (no) no.innerHTML = html;
@@ -6814,29 +6968,10 @@
   // ===========================================================================
   // Aprovação — decisão INTERNA. Não publica nada no Mercado Livre.
   // ===========================================================================
-  function aprovarTitulo(titulo) {
-    var otim = AM.otimizacoes.seo;
-    if (!otim) { toast("Gere a sugestão primeiro."); return; }
-    if (!titulo || titulo.length > 60) { toast("Título inválido."); return; }
-    aprovar(otim.id, { tituloAprovado: titulo }, "Título aprovado (decisão interna).");
-  }
-
-  function aprovarModelo() {
-    var otim = AM.otimizacoes.seo;
-    if (!otim) { toast("Gere a sugestão primeiro."); return; }
-    var modelo = String((otim.modelo_sugerido || "")).trim();
-    if (!modelo) { toast("Modelo vazio."); return; }
-    aprovar(otim.id, { modeloAprovado: modelo }, "Modelo aprovado (decisão interna).");
-  }
-
-  function aprovarDescricao() {
-    var otim = AM.otimizacoes.descricao;
-    if (!otim) { toast("Gere a sugestão primeiro."); return; }
-    var desc = otim.descricao_sugerida || "";
-    if (!desc.trim()) { toast("Descrição vazia."); return; }
-    aprovar(otim.id, { descricaoAprovada: desc }, "Descrição aprovada (decisão interna).");
-  }
-
+  // A descrição não tem mais "Aprovar" na tela: a sugestão vem do Description
+  // Engine (POST /seo/descricao), que não gera registro no otimizador legado.
+  // O PATCH /aprovar com descricaoAprovada segue aceito no backend (dívida em
+  // CODIGO_LEGADO_AUDITORIA.md).
   function aprovarFicha() {
     var otim = AM.otimizacoes.ficha_tecnica;
     if (!otim) { toast("Gere a sugestão primeiro."); return; }
@@ -6846,9 +6981,13 @@
 
   function aprovar(otimId, dados, msgOk) {
     var meuToken = DET ? DET.token : 0;
+    // Cliente/conta vão junto: o backend não aprova só pelo id.
+    var corpoAprovar = Object.assign({}, dados);
+    if (AM.clienteAtual) corpoAprovar.clienteSlug = AM.clienteAtual.slug;
+    if (AM.contaMlId) corpoAprovar.clienteContaId = AM.contaMlId;
     api("/anuncios-meli/otimizacoes/" + otimId + "/aprovar", {
       method: "PATCH",
-      body: dados,
+      body: corpoAprovar,
     }).then(function (r) {
       if (!DET || DET.token !== meuToken) return;
       if (r.data && r.data.ok) {

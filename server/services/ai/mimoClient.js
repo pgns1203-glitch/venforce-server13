@@ -1,83 +1,70 @@
-// server/services/ai/claudeClient.js
+// server/services/ai/mimoClient.js
 // -----------------------------------------------------------------------------
-// Client isolado da API da Anthropic (Claude).
+// Client isolado da Xiaomi MiMo, via a API compatível com o protocolo Anthropic
+// Messages (doc oficial: mimo.mi.com/docs/en-US/api/chat/anthropic-api).
 //
-// Detalhe interno: NÃO é chamado direto pelos services do otimizador.
-// Quem fala com o resto do sistema é o aiProvider.js — este arquivo é só o
-// "driver" do provedor Claude. Para trocar/adicionar provedor (OpenAI, Gemini),
-// cria-se outro client e o aiProvider passa a apontar para ele.
+// O PROVEDOR é "mimo" — Anthropic é só o formato do transporte. Base URL,
+// chave e modelo são da MiMo; nada aqui lê ANTHROPIC_*.
 //
-// Sem dependências externas: usa o fetch nativo do Node (>= 18).
-// A chave vem SOMENTE de process.env.ANTHROPIC_API_KEY.
+// Mesma interface do claudeClient (gerarTexto, getModel, resolverModeloPadrao,
+// PROVIDER) e mesma política observável de retry/timeout. Não é chamado direto
+// pelos engines: quem fala com o resto do sistema é o aiProvider.
+//
+// Sem dependências externas: fetch nativo do Node (>= 18).
+// A chave vem SOMENTE de process.env.MIMO_API_KEY.
 // -----------------------------------------------------------------------------
 
-const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
+// Pay-as-you-go. (Token Plan usa outro host e outra chave; não suportado.)
+const MIMO_URL = "https://api.xiaomimimo.com/anthropic/v1/messages";
 
-// Modelo padrão: Haiku 4.5 (rápido e barato, suficiente para texto comercial).
-// Pode ser sobrescrito pela env ANTHROPIC_MODEL.
-const DEFAULT_MODEL = "claude-haiku-4-5-20251001";
+const DEFAULT_MODEL = "mimo-v2.6-pro";
 
-const PROVIDER = "anthropic";
+const PROVIDER = "mimo";
 
-// Timeout defensivo por tentativa — cobre conexão, headers e leitura do body.
+// Mesmo timeout por tentativa do claudeClient. Com thinking desligado a
+// geração é texto curto; não há motivo para esperar mais. Cobre a tentativa
+// inteira: conexão, headers e leitura do body.
 const TIMEOUT_MS = 45000;
 
-// Retry: no máximo UMA nova tentativa, só para falha transitória que
-// aconteceu ANTES de existir resposta da IA (429, 5xx/529, falha de rede).
-// TIMEOUT não é repetido: a tentativa já gastou 45s e uma segunda dobraria a
-// espera do operador. 4xx funcional (400/401/403/404/413) nunca é repetido.
+// Retry: no máximo UMA nova tentativa, só 429/5xx/rede (a doc marca 429, 500 e
+// 503 como "retryable"). TIMEOUT e 4xx funcional (400/401/402/403/404/421)
+// nunca são repetidos.
 const MAX_TENTATIVAS = 2;
 const RETRY_DELAY_PADRAO_MS = 1000;
 const RETRY_DELAY_MAX_MS = 5000;
 
-function getModel() {
-  return process.env.ANTHROPIC_MODEL || DEFAULT_MODEL;
-}
+// Faixa oficial de temperature (default da MiMo: 1.0).
+const TEMPERATURE_MIN = 0;
+const TEMPERATURE_MAX = 1.5;
 
-// Modelo padrão do provedor + de onde ele veio (para diagnóstico/log).
 function resolverModeloPadrao() {
-  return process.env.ANTHROPIC_MODEL
-    ? { model: process.env.ANTHROPIC_MODEL, origem: "ANTHROPIC_MODEL" }
-    : { model: DEFAULT_MODEL, origem: "DEFAULT_MODEL" };
+  const env = String(process.env.MIMO_MODEL || "").trim();
+  return env ? { model: env, origem: "MIMO_MODEL" } : { model: DEFAULT_MODEL, origem: "DEFAULT_MODEL" };
+}
+
+function getModel() {
+  return resolverModeloPadrao().model;
 }
 
 // ---------------------------------------------------------------------------
-// aceitaTemperature — o modelo aceita o parâmetro `temperature`?
+// montarCorpo — request no formato Anthropic-compatible da MiMo.
 //
-// A API não expõe essa capacidade de forma consultável por request, e os
-// modelos novos da Anthropic REMOVERAM os parâmetros de amostragem (enviar
-// `temperature` devolve 400 em Opus 4.7+, Sonnet 5+, Fable, e Sonnet 5.5
-// recusa valor diferente do padrão). Por isso é uma ALLOWLIST pequena por
-// família/versão, não uma denylist: um modelo desconhecido ou mais novo cai
-// no caminho seguro (não envia) em vez de quebrar com 400.
+// thinking: SEMPRE desligado. Na MiMo ele vem LIGADO por padrão nos modelos
+// V2.6/V2.5 e, ligado, ignora temperature/top_p (força 1.0/0.95). Título e
+// descrição não precisam de raciocínio estendido.
 //
-// Aceitam:  família claude-3* (legado) e Opus/Sonnet/Haiku da geração 4
-//           até a versão 4.6 (inclusive o default atual, Haiku 4.5).
-// Omitem:   todo o resto (Opus 4.7/4.8/5/5.5, Sonnet 5/5.5, Fable, Mythos,
-//           e qualquer nome que não case com o padrão).
+// temperature: com thinking desligado a MiMo respeita o valor; é limitado à
+// faixa oficial [0, 1.5]. Sem número, fica o default do provedor.
 // ---------------------------------------------------------------------------
-function aceitaTemperature(model) {
-  const id = String(model || "").trim().toLowerCase();
-  if (/^claude-3(?:[-.]|$)/.test(id)) return true;
-  const m = id.match(/^claude-(opus|sonnet|haiku)-(\d+)(?:-(\d+))?(?:-|$)/);
-  if (!m) return false;
-  const major = Number(m[2]);
-  // "claude-sonnet-4-20250514": o segundo número é data, não versão menor.
-  const minorBruto = m[3] != null ? Number(m[3]) : 0;
-  const minor = m[3] != null && m[3].length >= 6 ? 0 : minorBruto;
-  return major === 4 && minor <= 6;
-}
-
-// Monta o corpo da requisição. Separado para ser testável sem rede.
 function montarCorpo({ model, system, prompt, maxTokens, temperature }) {
   const body = {
     model,
     max_tokens: maxTokens || 1500,
     messages: [{ role: "user", content: String(prompt || "") }],
+    thinking: { type: "disabled" },
   };
-  if (aceitaTemperature(model)) {
-    body.temperature = typeof temperature === "number" ? temperature : 0.4;
+  if (typeof temperature === "number" && Number.isFinite(temperature)) {
+    body.temperature = Math.min(TEMPERATURE_MAX, Math.max(TEMPERATURE_MIN, temperature));
   }
   if (system) body.system = String(system);
   return body;
@@ -98,6 +85,7 @@ const _deps = {
   timeoutMs: TIMEOUT_MS,
 };
 
+// A doc não promete Retry-After; se vier, é respeitado (com teto).
 function atrasoRetry(resultado) {
   const s = resultado && resultado.retryAfterSeg;
   if (typeof s === "number" && Number.isFinite(s) && s >= 0) {
@@ -107,29 +95,20 @@ function atrasoRetry(resultado) {
 }
 
 // ---------------------------------------------------------------------------
-// gerarTexto — chamada bruta ao Claude.
+// gerarTexto — chamada bruta à MiMo. Mesmo contrato do claudeClient.
 //
-// Parâmetros:
-//   { system, prompt, maxTokens?, temperature?, model? }
+// Parâmetros: { system, prompt, maxTokens?, temperature?, model? }
 //
-// `model` vem resolvido pelo aiProvider (modelo da task); ausente = getModel().
-// A regra de temperature (aceitaTemperature) vale para o modelo efetivo.
-//
-// Retorno padronizado (NUNCA lança — sempre devolve objeto):
+// Retorno padronizado (NUNCA lança):
 //   sucesso -> { ok:true,  texto, provider, model, usage, stopReason, tentativas }
 //   erro    -> { ok:false, erro, codigo, provider, model, tentativas }
 //
-// Códigos de erro possíveis:
-//   NO_API_KEY | HTTP_<status> | TIMEOUT | NETWORK | EMPTY_RESPONSE
-//
-// `stopReason` é o stop_reason cru da API ("end_turn", "max_tokens", ...).
-// Quem precisa de resposta completa (gerarJSON) decide o que fazer com
-// "max_tokens" — aqui o texto parcial ainda é devolvido como sucesso para
-// não mudar o contrato de gerarTexto.
+// Códigos: NO_API_KEY | HTTP_<status> | TIMEOUT | NETWORK | EMPTY_RESPONSE |
+//          CONTENT_FILTER (stop_reason "content_filter": texto omitido).
 // ---------------------------------------------------------------------------
 async function gerarTexto(opts) {
   const { system, prompt, maxTokens, temperature } = opts || {};
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.MIMO_API_KEY;
   const pedido = opts && typeof opts.model === "string" ? opts.model.trim() : "";
   const model = pedido || getModel();
 
@@ -137,7 +116,7 @@ async function gerarTexto(opts) {
     return {
       ok: false,
       codigo: "NO_API_KEY",
-      erro: "ANTHROPIC_API_KEY não está configurada no servidor.",
+      erro: "MIMO_API_KEY não está configurada no servidor.",
       provider: PROVIDER,
       model,
       tentativas: 0,
@@ -159,7 +138,7 @@ async function gerarTexto(opts) {
 
 // F6.2: o timeout cobre a requisição INTEIRA — headers e leitura do body.
 // Antes o timer era cancelado assim que os headers chegavam, e um body lento
-// ficava sem teto.
+// ficava sem teto (chamada real de 142 s com TIMEOUT_MS de 45 s).
 async function chamarUmaVez(args) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), _deps.timeoutMs);
@@ -204,12 +183,11 @@ function resultadoTimeout(model) {
 async function executarChamada({ apiKey, model, body }, signal) {
   let resp;
   try {
-    resp = await fetch(ANTHROPIC_URL, {
+    resp = await fetch(MIMO_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
+        "api-key": apiKey,
       },
       body: JSON.stringify(body),
       signal,
@@ -226,7 +204,7 @@ async function executarChamada({ apiKey, model, body }, signal) {
   }
 
   if (!resp.ok) {
-    // não loga corpo de erro inteiro para não vazar nada sensível.
+    // não repassa corpo de erro inteiro para não vazar nada sensível.
     // Body de erro lento: o timeout corta a leitura, mas o status já é
     // conhecido — fica HTTP_<status> (e a política de retry dele).
     let detalhe = "";
@@ -251,7 +229,7 @@ async function executarChamada({ apiKey, model, body }, signal) {
       erro:
         "A API da IA respondeu com erro " +
         resp.status +
-        (detalhe ? " (" + detalhe + ")" : "") +
+        (detalhe ? " (" + String(detalhe).slice(0, 200) + ")" : "") +
         ".",
       provider: PROVIDER,
       model,
@@ -273,7 +251,22 @@ async function executarChamada({ apiKey, model, body }, signal) {
     };
   }
 
-  // O conteúdo vem em data.content[], blocos do tipo "text".
+  const stopReason = (data && data.stop_reason) || null;
+
+  // Conteúdo omitido pelo filtro da MiMo: não é resposta utilizável.
+  if (stopReason === "content_filter") {
+    return {
+      ok: false,
+      codigo: "CONTENT_FILTER",
+      erro: "A IA bloqueou a resposta pelo filtro de conteúdo do provedor.",
+      provider: PROVIDER,
+      model,
+      usage: (data && data.usage) || null,
+      stopReason,
+    };
+  }
+
+  // Só blocos "text"; blocos "thinking" (se algum dia vierem) são ignorados.
   const texto = Array.isArray(data && data.content)
     ? data.content
         .filter((b) => b && b.type === "text" && typeof b.text === "string")
@@ -281,8 +274,6 @@ async function executarChamada({ apiKey, model, body }, signal) {
         .join("\n")
         .trim()
     : "";
-
-  const stopReason = (data && data.stop_reason) || null;
 
   if (!texto) {
     return {
@@ -309,10 +300,10 @@ module.exports = {
   gerarTexto,
   getModel,
   resolverModeloPadrao,
-  aceitaTemperature,
   montarCorpo,
   PROVIDER,
   DEFAULT_MODEL,
+  MIMO_URL,
   TIMEOUT_MS,
   MAX_TENTATIVAS,
   _deps,

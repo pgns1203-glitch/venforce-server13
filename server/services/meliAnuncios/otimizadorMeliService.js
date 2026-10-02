@@ -26,10 +26,10 @@ const db =
     : _dbModule.pool || _dbModule.default || _dbModule;
 
 const aiProvider = require("../ai/aiProvider");
+const { AI_TASKS } = require("../ai/aiTasks");
 const prompts = require("./otimizadorMeliPrompts");
 const anunciosService = require("./meliAnunciosService");
 const { mlFetch } = require("../../utils/mlClient");
-const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 
 // Tipos suportados pelo agente. Quem é admin pode rodar qualquer um;
 // expansão futura entra aqui.
@@ -249,18 +249,45 @@ function normalizarModeloIndexador(modelo, titulo) {
 
 // -----------------------------------------------------------------------------
 // Busca a descrição atual do anúncio via API do ML (read-only).
-// Falha silenciosa: descrição é opcional para o prompt.
+// Nunca lança: a descrição é opcional para o prompt. Mas "não tem" e "não
+// consegui ler" são estados distintos (mesma regra do detalhe):
+//   { texto, estado: "ok" }            — veio texto
+//   { texto: null, estado: "sem_descricao" } — o ML respondeu vazio / 404
+//   { texto: null, estado: "erro" }    — rede, token, 5xx: não dá para saber
 // -----------------------------------------------------------------------------
 async function buscarDescricaoAtual(clienteId, itemId, mlUserId = null) {
   try {
     const resp = await mlFetch(clienteId, "/items/" + encodeURIComponent(itemId) + "/description", { mlUserId });
-    if (resp && resp.ok && resp.data) {
-      return resp.data.plain_text || resp.data.text || null;
+    if (resp && resp.ok) {
+      const texto = resp.data ? resp.data.plain_text || resp.data.text || null : null;
+      if (texto && String(texto).trim()) return { texto: String(texto), estado: "ok" };
+      return { texto: null, estado: "sem_descricao" };
     }
+    if (resp && resp.status === 404) return { texto: null, estado: "sem_descricao" };
   } catch (e) {
-    // ignora — descrição é opcional
+    // cai no "erro" abaixo
   }
-  return null;
+  return { texto: null, estado: "erro" };
+}
+
+// Erro estrutural de conta (resolveMarketplaceAccountContext /
+// resolverContaDoAnuncio) → retorno padronizado do service, que nunca lança.
+// Erro sem statusCode (banco, bug) continua subindo para o 500 do controller.
+function falhaDeConta(err) {
+  if (!err || !err.statusCode) throw err;
+  const r = {
+    ok: false,
+    http: err.statusCode,
+    codigo: err.code || "ERRO_CONTA",
+    motivo: err.message,
+  };
+  if (Array.isArray(err.contas)) r.contas = err.contas;
+  return r;
+}
+
+function normalizarContaId(v) {
+  if (v == null || v === "") return null;
+  return /^\d+$/.test(String(v)) ? Number(v) : null;
 }
 
 // -----------------------------------------------------------------------------
@@ -278,7 +305,7 @@ async function salvarOtimizacao(reg) {
         score_seo, motivo, melhorias_json, alertas_json,
         ai_provider, ai_model, prompt_version,
         usage_json, input_tokens, output_tokens,
-        raw_response_json, created_by, updated_at
+        raw_response_json, created_by, cliente_conta_id, updated_at
       ) VALUES (
         $1,$2,$3,$4,
         $5,$6,
@@ -289,7 +316,7 @@ async function salvarOtimizacao(reg) {
         $16,$17,$18,$19,
         $20,$21,$22,
         $23,$24,$25,
-        $26,$27, NOW()
+        $26,$27,$28, NOW()
       )
       RETURNING *;`,
     [
@@ -309,6 +336,10 @@ async function salvarOtimizacao(reg) {
       reg.output_tokens != null ? reg.output_tokens : null,
       reg.raw_response_json ? JSON.stringify(reg.raw_response_json) : null,
       reg.created_by || null,
+      // Conta (operação) para a qual a sugestão foi gerada — auditoria.
+      // NULL quando não há conta conhecida (cliente legado sem ClienteConta);
+      // nunca inferida.
+      reg.cliente_conta_id != null ? reg.cliente_conta_id : null,
     ]
   );
   return rows[0];
@@ -317,11 +348,15 @@ async function salvarOtimizacao(reg) {
 // -----------------------------------------------------------------------------
 // otimizar — função principal.
 //
+// clienteContaId (opcional): a operação selecionada na tela. Quando vem, o
+// anúncio precisa pertencer a ela (resolverContaDoAnuncio). Quando não vem,
+// só segue se a conta do anúncio for inequívoca — nunca "a principal".
+//
 // Retorno padronizado (NUNCA lança):
 //   sucesso        -> { ok:true, tipo, otimizacao }
-//   erro validável -> { ok:false, http, codigo, motivo }
+//   erro validável -> { ok:false, http, codigo, motivo, contas? }
 // -----------------------------------------------------------------------------
-async function otimizar({ clienteSlug, itemId, tipo, userId }) {
+async function otimizar({ clienteSlug, clienteContaId = null, itemId, tipo, userId }) {
   await ensureSchema();
 
   if (!clienteSlug) return { ok: false, http: 400, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." };
@@ -346,37 +381,32 @@ async function otimizar({ clienteSlug, itemId, tipo, userId }) {
     };
   }
 
-  // Para descrição e ficha técnica buscamos a descrição atual via ML.
-  // SEO não precisa — corta tokens à toa.
-  let descricaoAtual = null;
-  if (tipo === "descricao" || tipo === "ficha_tecnica") {
-    // O próprio anúncio já sabe de qual conta veio (gravado na sincronização).
-    // Só quando essa informação não existir (linha sincronizada antes desta
-    // coluna existir) é que caímos na resolução legada — que ainda assim
-    // nunca escolhe "a principal" em silêncio se houver 2+ contas ativas.
-    let mlUserId = anuncio.ml_user_id || null;
-    if (!mlUserId) {
-      try {
-        const contexto = await resolveMarketplaceAccountContext({
-          clienteId: cliente.id,
-          marketplace: "meli",
-          requireUsableGrant: false,
-        });
-        mlUserId = contexto.mlUserId || null;
-      } catch (err) {
-        // Este service nunca lança — ambiguidade de conta em item legado
-        // (sincronizado antes de existir cliente_conta_id) vira erro
-        // estruturado, não um crash, e não impede o fluxo com fallback
-        // silencioso de "conta principal".
-        if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
-          return { ok: false, http: 409, codigo: err.code, motivo: err.message, contas: err.contas };
-        }
-      }
-    }
-    descricaoAtual = await buscarDescricaoAtual(cliente.id, anuncio.item_id, mlUserId);
+  // Cliente → ClienteConta → anúncio. Vale para TODOS os tipos (inclusive
+  // seo, que não chama o ML): a sugestão fica registrada para uma operação,
+  // e ela precisa ser a do anúncio.
+  let conta;
+  try {
+    conta = await anunciosService.resolverContaDoAnuncio({
+      clienteId: cliente.id,
+      anuncio,
+      clienteContaId: normalizarContaId(clienteContaId),
+      requireUsableGrant: false,
+    });
+  } catch (err) {
+    return falhaDeConta(err);
   }
 
-  const promptTexto = prompts.montarPrompt(tipo, anuncio, { descricaoAtual });
+  // Para descrição e ficha técnica buscamos a descrição atual via ML, com o
+  // usuário ML da conta provada acima. SEO não precisa — corta tokens à toa.
+  let descricaoAtual = null;
+  let descricaoEstado = null;
+  if (tipo === "descricao" || tipo === "ficha_tecnica") {
+    const lida = await buscarDescricaoAtual(cliente.id, anuncio.item_id, conta.mlUserId);
+    descricaoAtual = lida.texto;
+    descricaoEstado = lida.estado;
+  }
+
+  const promptTexto = prompts.montarPrompt(tipo, anuncio, { descricaoAtual, descricaoEstado });
   if (!promptTexto) {
     return { ok: false, http: 400, codigo: "TIPO_INVALIDO", motivo: "Tipo de otimização não suportado." };
   }
@@ -387,6 +417,7 @@ async function otimizar({ clienteSlug, itemId, tipo, userId }) {
   else if (tipo === "ficha_tecnica") maxTokens = 1800;
 
   const ia = await aiProvider.gerarJSON({
+    task: AI_TASKS.LEGACY_OPTIMIZER,
     system: prompts.SYSTEM_BASE,
     prompt: promptTexto,
     maxTokens,
@@ -415,6 +446,7 @@ async function otimizar({ clienteSlug, itemId, tipo, userId }) {
   const base = {
     cliente_id: cliente.id,
     cliente_slug: cliente.slug,
+    cliente_conta_id: conta.contaId != null ? conta.contaId : null,
     item_id: anuncio.item_id,
     sku: anuncio.sku || null,
     tipo,
@@ -473,17 +505,44 @@ async function otimizar({ clienteSlug, itemId, tipo, userId }) {
 
 // -----------------------------------------------------------------------------
 // listarOtimizacoes — histórico de sugestões de um anúncio.
+//
+// Com clienteContaId: o anúncio (quando está no banco) tem que ser da conta,
+// e só entram sugestões dessa conta ou legadas (cliente_conta_id NULL —
+// geradas antes de a conta ser registrada; continuam legíveis). Sem ele, o
+// comportamento é o de antes: tudo do cliente para aquele item.
 // -----------------------------------------------------------------------------
-async function listarOtimizacoes({ clienteSlug, itemId, tipo }) {
+async function listarOtimizacoes({ clienteSlug, clienteContaId = null, itemId, tipo }) {
   await ensureSchema();
 
   const cliente = await anunciosService.resolverCliente(clienteSlug);
   if (!cliente) return { ok: false, http: 404, motivo: "Cliente não encontrado." };
 
+  const contaPedida = normalizarContaId(clienteContaId);
+  if (contaPedida != null) {
+    try {
+      const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+      if (anuncio) {
+        await anunciosService.resolverContaDoAnuncio({
+          clienteId: cliente.id, anuncio, clienteContaId: contaPedida, requireUsableGrant: false,
+        });
+      } else {
+        await anunciosService.resolverContextoConta({
+          clienteId: cliente.id, clienteContaId: contaPedida, requireUsableGrant: false,
+        });
+      }
+    } catch (err) {
+      return falhaDeConta(err);
+    }
+  }
+
   const params = [cliente.id, String(itemId)];
   let sql = `SELECT * FROM meli_anuncio_otimizacoes
               WHERE cliente_id = $1 AND item_id = $2`;
-  if (tipo) { params.push(tipo); sql += ` AND tipo = $3`; }
+  if (tipo) { params.push(tipo); sql += ` AND tipo = $${params.length}`; }
+  if (contaPedida != null) {
+    params.push(contaPedida);
+    sql += ` AND (cliente_conta_id = $${params.length} OR cliente_conta_id IS NULL)`;
+  }
   sql += ` ORDER BY created_at DESC LIMIT 50;`;
 
   const { rows } = await db.query(sql, params);
@@ -494,9 +553,20 @@ async function listarOtimizacoes({ clienteSlug, itemId, tipo }) {
 // aprovar — registra escolha humana da sugestão. Nada vai pro ML.
 //
 // body: { tituloAprovado, modeloAprovado, descricaoAprovada,
-//         fichaAprovadaJson, observacao }
+//         fichaAprovadaJson, observacao, clienteSlug?, clienteContaId? }
+//
+// A otimização é achada pelo id, mas o id sozinho não autoriza nada:
+//   - com clienteSlug (o guard de carteira do router já o validou), a
+//     otimização tem que ser desse cliente — de outro cliente é 404, sem
+//     confirmar que o id existe;
+//   - sem clienteSlug (consumidor antigo), o cliente DA OTIMIZAÇÃO passa pela
+//     mesma checagem de carteira via `autorizarCliente` (injetado pelo
+//     controller). Sem esse callback, recusa (fail closed);
+//   - com clienteContaId, a conta tem que ser do cliente e, quando a
+//     otimização registrou a conta, a mesma. Otimização legada (conta NULL)
+//     continua aprovável dentro do cliente certo.
 // -----------------------------------------------------------------------------
-async function aprovar({ id, dados, userId }) {
+async function aprovar({ id, dados, userId, clienteSlug = null, clienteContaId = null, autorizarCliente = null }) {
   await ensureSchema();
   if (!id) return { ok: false, http: 400, motivo: "Informe o id da otimização." };
 
@@ -504,10 +574,45 @@ async function aprovar({ id, dados, userId }) {
   const sel = await db.query(
     `SELECT * FROM meli_anuncio_otimizacoes WHERE id = $1 LIMIT 1;`, [id]
   );
-  if (!sel.rows.length) {
-    return { ok: false, http: 404, motivo: "Otimização não encontrada." };
-  }
+  const naoEncontrada = { ok: false, http: 404, codigo: "OTIMIZACAO_NAO_ENCONTRADA", motivo: "Otimização não encontrada." };
+  if (!sel.rows.length) return naoEncontrada;
   const otim = sel.rows[0];
+  if (otim.cliente_id == null) {
+    return {
+      ok: false, http: 409, codigo: "OTIMIZACAO_SEM_CLIENTE",
+      motivo: "Esta otimização não tem cliente registrado e não pode ser aprovada.",
+    };
+  }
+
+  if (clienteSlug) {
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente || Number(cliente.id) !== Number(otim.cliente_id)) return naoEncontrada;
+  } else if (typeof autorizarCliente === "function") {
+    try {
+      await autorizarCliente(otim.cliente_id);
+    } catch (err) {
+      return falhaDeConta(err);
+    }
+  } else {
+    return { ok: false, http: 400, codigo: "SEM_CLIENTE", motivo: "Informe o clienteSlug." };
+  }
+
+  const contaPedida = normalizarContaId(clienteContaId);
+  if (contaPedida != null) {
+    try {
+      await anunciosService.resolverContextoConta({
+        clienteId: otim.cliente_id, clienteContaId: contaPedida, requireUsableGrant: false,
+      });
+    } catch (err) {
+      return falhaDeConta(err);
+    }
+    if (otim.cliente_conta_id != null && Number(otim.cliente_conta_id) !== contaPedida) {
+      return {
+        ok: false, http: 409, codigo: "OTIMIZACAO_DE_OUTRA_CONTA",
+        motivo: "Esta sugestão foi gerada para outra conta do cliente.",
+      };
+    }
+  }
 
   const d = dados || {};
   const tituloAprovado = d.tituloAprovado != null ? String(d.tituloAprovado).trim() : null;

@@ -121,6 +121,37 @@ Foco solicitado:
 
 ---
 
+### 9) Geração de MODEL do otimizador IA legado — sem consumidor no Portal
+
+- **arquivos**: `server/services/meliAnuncios/otimizadorMeliService.js` (`normalizarModeloIndexador` ~L222, uso ~L467; `modelo_sugerido`/`modelo_aprovado` em `meli_anuncio_otimizacoes`; `modeloAprovado` no aprovar ~L617), `server/services/meliAnuncios/otimizadorMeliPrompts.js` (`modelo_sugerido` no JSON pedido à IA ~L181), `PATCH /anuncios-meli/otimizacoes/:id/aprovar` (`modeloAprovado`), `Portal/anuncios-meli.js` (`APROVACAO_POR_CAMPO.modelo`, ~L5097).
+- **para que parece servir**: o `POST /:itemId/otimizar` tipo `seo` pede à IA título + MODEL como lista de palavras-chave; o aprovar registra o MODEL aprovado como decisão interna.
+- **ativo ou legado**: **legado a partir da F4R (SEO ML, 2026-10-01)**. Decisão de produto: **MODEL não é superfície de SEO**, é dado factual/estrutural do produto (auditoria F4.1: MODEL `hierarchy=PARENT_PK` em 768/768 categorias reais do portfólio, ~74% também `catalog_required`; a família de User Products é agrupada pelos PARENT_PK). O Portal não oferece mais geração, sugestão, cópia nem aprovação de MODEL; o título já usa o Title Engine (F3).
+- **evidência**: nenhum `data-tipo="seo"`, `aprovar-modelo` ou `modelo-sugerido` em `Portal/anuncios-meli.js`; o teste headless 45a/45e do modal prova a ausência. O backend continua aceitando por compatibilidade (histórico antigo é lido).
+- **risco de remover**: **médio** — o histórico em `meli_anuncio_otimizacoes` tem `modelo_sugerido`/`modelo_aprovado` já gravados; o tipo `seo` ainda serve o título legado para quem chamar a API direto.
+- **recomendação**: **remover depois**, numa limpeza própria: tirar `modelo_sugerido` do prompt e do `normalizarModeloIndexador`, parar de aceitar `modeloAprovado` (manter as colunas só como leitura de histórico) e apagar `APROVACAO_POR_CAMPO.modelo`.
+
+---
+
+### 10) Saneamento de MODEL estrutural legado (keyword stuffing) — dívida de DADOS
+
+- **onde**: valores do atributo `MODEL` dos anúncios no Mercado Livre (espelhados em `meli_anuncios.modelo` / `attributes_json`), não código.
+- **o que é**: a auditoria F4.1 (somente leitura, 2026-09-30) achou indício de keyword stuffing em **~45% dos MODEL preenchidos** (8.927 de 19.792): listas com vírgulas, ≥ 6 palavras, > 60 caracteres ou repetição do título. Presente nos 21 clientes; 6.784 desses anúncios estão em família de User Products — ou seja, MODEL `PARENT_PK` cheio de palavras-chave definindo família hoje. Heurística = **indício**, não verdade.
+- **risco**: alterar MODEL `PARENT_PK` mexe na identidade do produto/família (a doc do ML diz que a família é definida pelos PARENT_PK e que o PUT em `/items` é replicado a todos os itens do User Product). Correção automática ou em lote é **arriscada**.
+- **recomendação**: **não corrigir automaticamente**. Frente futura "Saneamento de MODEL estrutural legado": primeiro só detectar e alertar (por anúncio, com o motivo do indício), decisão humana caso a caso, nenhum backfill.
+
+---
+
+### 11) Geração de DESCRIÇÃO do otimizador IA legado — sem consumidor no Portal
+
+- **arquivos**: `server/services/meliAnuncios/otimizadorMeliService.js` (tipo `descricao` em `otimizar`, `validarDescricao`, `descricao_atual`/`descricao_sugerida`/`descricao_aprovada` em `meli_anuncio_otimizacoes`; `descricaoAprovada` no `aprovar`), `server/services/meliAnuncios/otimizadorMeliPrompts.js` (prompt de descrição, `blocoDadosCompleto`), `POST /anuncios-meli/:itemId/otimizar` com `tipo: "descricao"`, `PATCH /anuncios-meli/otimizacoes/:id/aprovar` (`descricaoAprovada`), `Portal/anuncios-meli.js` (`APROVACAO_POR_CAMPO.descricao`).
+- **para que parece servir**: gerar uma descrição pelo prompt antigo (sem ficha factual nem validação determinística), gravar no histórico e registrar a aprovação interna.
+- **ativo ou legado**: **legado a partir da F5 (SEO ML, 2026-10-01)**. A coluna "Sugestão da IA" da Descrição passou a usar o Description Engine (`POST /:itemId/seo/descricao`: ficha factual → IA → validação, sem persistência, sem score). O Portal não chama mais `/otimizar` com `tipo: "descricao"`, não lê `descricao_sugerida` do histórico e não oferece "Aprovar" para a descrição.
+- **evidência**: nenhum `data-tipo="descricao"`, `aprovar-descricao` ou `descricao_sugerida` em `Portal/anuncios-meli.js`; os testes headless 17, 19 e 46a provam a ausência. O backend continua aceitando por compatibilidade (o histórico antigo continua legível; o tipo `ficha_tecnica` do mesmo otimizador segue em uso).
+- **risco de remover**: **médio** — `meli_anuncio_otimizacoes` já tem `descricao_sugerida`/`descricao_aprovada` gravados; alguém pode chamar a API direto.
+- **recomendação**: **remover depois**, numa limpeza própria junto com o item 9: tirar o tipo `descricao` do `otimizar` e do prompt antigo, parar de aceitar `descricaoAprovada` (colunas ficam só como leitura de histórico) e apagar `APROVACAO_POR_CAMPO.descricao`.
+
+---
+
 ## Resumo executivo (curto)
 
 - **Mais claramente legado/duplicado**: `server/auth/*` (auth por `clients.json`) e `extension/options.js` (fluxo antigo sem Bearer token, desalinhado com a API).

@@ -222,6 +222,71 @@ async function resolverContextoConta({ clienteId, clienteContaId = null, require
   };
 }
 
+// Prova que um anúncio JÁ CARREGADO (obterAnuncio) pertence à operação
+// selecionada e devolve a conta/usuário ML a usar. Não é uma segunda
+// resolução de conta: toda validação de conta passa por resolverContextoConta
+// acima; aqui só se compara o resultado com o que o próprio anúncio sabe de
+// si (cliente_conta_id / ml_user_id, gravados na sincronização).
+//
+// Com clienteContaId explícito:
+//   - a conta é validada (pertence ao cliente, é meli, está ativa);
+//   - o anúncio tem que ser dela: cliente_conta_id igual, ou — linha sem
+//     cliente_conta_id — ml_user_id igual ao external_account_id da conta;
+//   - linha sem nenhum dos dois só passa quando o cliente tem uma única conta
+//     ML ativa (mesma regra de includeLegacy da listagem); com 2+ não há como
+//     provar de qual conta ela veio → 409 ANUNCIO_SEM_CONTA.
+// Sem clienteContaId:
+//   - o anúncio que sabe a própria conta é inequívoco: usa a dele;
+//   - linha legada cai em resolverContextoConta sem conta, que com 2+ contas
+//     ativas lança MULTIPLE_MARKETPLACE_ACCOUNTS (409). Nunca "a principal".
+//
+// Lança erro com statusCode/code (mesmo formato de resolveMarketplaceAccountContext).
+// Retorna { contaId: number|null, mlUserId: string|null }.
+function erroConta(statusCode, code, message) {
+  const err = new Error(message);
+  err.statusCode = statusCode;
+  err.code = code;
+  return err;
+}
+
+async function resolverContaDoAnuncio({ clienteId, anuncio, clienteContaId = null, requireUsableGrant = false }) {
+  const contaDoItem = anuncio && anuncio.cliente_conta_id != null ? Number(anuncio.cliente_conta_id) : null;
+  const mlDoItem = anuncio && anuncio.ml_user_id ? String(anuncio.ml_user_id) : null;
+
+  if (clienteContaId != null) {
+    const pedida = Number(clienteContaId);
+    const ctx = await resolverContextoConta({ clienteId, clienteContaId: pedida, requireUsableGrant });
+    const mlDaConta = ctx.mlUserId ? String(ctx.mlUserId) : null;
+
+    if (contaDoItem != null) {
+      if (contaDoItem !== pedida) {
+        throw erroConta(409, "ANUNCIO_DE_OUTRA_CONTA", "Este anúncio não pertence à conta selecionada.");
+      }
+    } else if (mlDoItem && mlDaConta) {
+      if (mlDoItem !== mlDaConta) {
+        throw erroConta(409, "ANUNCIO_DE_OUTRA_CONTA", "Este anúncio não pertence à conta selecionada.");
+      }
+    } else if (!ctx.includeLegacy) {
+      throw erroConta(
+        409,
+        "ANUNCIO_SEM_CONTA",
+        "Não foi possível confirmar a conta deste anúncio. Sincronize os anúncios desta conta e tente novamente."
+      );
+    }
+    return { contaId: pedida, mlUserId: mlDoItem || mlDaConta };
+  }
+
+  if (contaDoItem != null) {
+    if (mlDoItem) return { contaId: contaDoItem, mlUserId: mlDoItem };
+    const ctx = await resolverContextoConta({ clienteId, clienteContaId: contaDoItem, requireUsableGrant });
+    return { contaId: contaDoItem, mlUserId: ctx.mlUserId || null };
+  }
+  if (mlDoItem) return { contaId: null, mlUserId: mlDoItem };
+
+  const ctx = await resolverContextoConta({ clienteId, clienteContaId: null, requireUsableGrant });
+  return { contaId: ctx.contaId, mlUserId: ctx.mlUserId || null };
+}
+
 // -----------------------------------------------------------------------------
 // Catálogo
 // -----------------------------------------------------------------------------
@@ -705,6 +770,7 @@ module.exports = {
   listarClientes,
   resolverCliente,
   resolverContextoConta,
+  resolverContaDoAnuncio,
   itemIdsExistentes,
   listarAnuncios,
   obterResumo,

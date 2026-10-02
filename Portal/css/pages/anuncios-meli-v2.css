@@ -2041,6 +2041,12 @@
   padding: 8px 18px;
 }
 
+/* Bloco sem coluna da IA (Modelo — dado factual, sem sugestão): uma coluna
+   só, largura total. */
+.vf-page-anuncios-meli .am-det-compare--unico {
+  grid-template-columns: 1fr;
+}
+
 .vf-page-anuncios-meli .am-det-compare__count {
   display: block;
   margin-top: 4px;

@@ -158,18 +158,43 @@
    1-principal" (Main.dc.html, /design), que usa padding/tamanhos próprios
    e cores "-strong" — por isso os overrides, em vez dos tokens genéricos
    do componente compartilhado (usado sem overrides em Atividade etc). */
+/* Grade 8 → 4 → 2 sem card órfão (antes era flex-wrap: 7+1, 6+2, 5+3).
+   O número de colunas sai da LARGURA DA PRÓPRIA FAIXA, não da viewport
+   (a sidebar abre e fecha): o mínimo de cada coluna é 1/8 da faixa
+   quando ela tem ≥ 1240px (abaixo disso o
+   rodapé de "Pausados"/"Sem SKU" quebrava em 2 linhas), 1/4 quando tem ≥ 520px e 1/2 abaixo disso —
+   o clamp() com (limite − 100%) × 999 vira um degrau. Como o mínimo é
+   exatamente a fração da faixa, o auto-fill nunca deixa sobra para uma
+   coluna vazia nem para um card sozinho.
+   Os filetes entre cards são o gap de 1px sobre o fundo de borda (o
+   cartão é que tem a superfície), porque o card que abre cada fileira
+   muda com o número de colunas e border-left não sabe disso. */
 .vf-page-anuncios-meli .am-resumo {
+  --am-kpi-gap: 1px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(
+    calc((100% - 7 * var(--am-kpi-gap)) / 8 - 0.5px),
+    (1240px - 100%) * 999,
+    clamp(
+      calc((100% - 3 * var(--am-kpi-gap)) / 4 - 0.5px),
+      (520px - 100%) * 999,
+      calc((100% - var(--am-kpi-gap)) / 2 - 0.5px))), 1fr));
+  gap: var(--am-kpi-gap);
+  overflow: hidden;
+  background: var(--vf-border);
   box-shadow: var(--vf-shadow-xs);
 }
 
 .vf-page-anuncios-meli .am-resumo .am-kpi {
   appearance: none;
+  min-width: 0;
   margin: 0;
-  padding: 12px 14px;
-  background: transparent;
+  padding: 12px;
+  background: var(--vf-surface);
   border-top: none;
   border-right: none;
   border-bottom: none;
+  border-left: none;
   font: inherit;
   color: inherit;
   text-align: left;
@@ -390,12 +415,70 @@
      7d e margem são as únicas que nascem "carregando"/"—" e se resolvem
      DEPOIS (GET /performance), mas ocupam a MESMA grade desde o primeiro
      render — nunca uma coluna que aparece só quando o dado chega, ou a
-     expansão desalinharia do cabeçalho. */
-  --am-cols: 52px minmax(220px, 2.2fr) 116px 92px 84px 80px 96px 104px 100px 150px 40px;
-  overflow: hidden;
+     expansão desalinharia do cabeçalho.
+
+     Cada coluna tem um MÍNIMO (o que o maior conteúdo dela precisa sem
+     quebrar no meio — e, nas colunas de número, o rótulo do cabeçalho em
+     uma linha) e uma fração da sobra. A soma dos mínimos é --am-min-w: com
+     o card mais largo que isso as 11 colunas cabem inteiras; abaixo disso
+     a LISTA rola na horizontal dentro do próprio card (cabeçalho, linhas e
+     painel expandido juntos). Nunca overflow:hidden aqui — ele cortava
+     Score e Ação calados em qualquer card abaixo de ~1330px. */
+  --am-pad-x: var(--vf-sp-4);
+  --am-gap: var(--vf-sp-2);
+  --am-c-thumb: 44px;
+  --am-c-anuncio: 156px;
+  --am-c-status: 68px;
+  --am-c-preco: 80px;
+  --am-c-estoque: 56px;
+  --am-c-vendidos: 60px;
+  --am-c-fat: 84px;
+  --am-c-metricas: 124px;
+  --am-c-margem: 76px; /* "Em conciliação" (≈75px) inteiro */
+  --am-c-score: 104px;
+  --am-c-acao: 56px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  container: am-lista / inline-size;
   background: var(--vf-surface);
   border: 1px solid var(--vf-border);
   border-radius: var(--vf-radius);
+}
+
+/* Cabeçalho, linhas e o painel de expansão (irmão da linha) têm a MESMA
+   largura mínima: é o que faz tudo rolar junto, sem o painel encolher
+   enquanto a linha de cima rola. A grade e o mínimo são montados AQUI (e
+   não em .am-listagem) para a container query abaixo poder trocar
+   --am-c-anuncio — o container não pode estilizar a si mesmo. */
+.vf-page-anuncios-meli .am-listagem > * {
+  --am-cols:
+    var(--am-c-thumb)
+    minmax(var(--am-c-anuncio), 4fr)
+    minmax(var(--am-c-status), 0.8fr)
+    minmax(var(--am-c-preco), 1fr)
+    minmax(var(--am-c-estoque), 0.6fr)
+    minmax(var(--am-c-vendidos), 0.6fr)
+    minmax(var(--am-c-fat), 0.9fr)
+    minmax(var(--am-c-metricas), 1.1fr)
+    minmax(var(--am-c-margem), 0.9fr)
+    minmax(var(--am-c-score), 1fr)
+    var(--am-c-acao);
+  --am-min-w: calc(
+    var(--am-c-thumb) + var(--am-c-anuncio) + var(--am-c-status) +
+    var(--am-c-preco) + var(--am-c-estoque) + var(--am-c-vendidos) +
+    var(--am-c-fat) + var(--am-c-metricas) + var(--am-c-margem) +
+    var(--am-c-score) + var(--am-c-acao) +
+    10 * var(--am-gap) + 2 * var(--am-pad-x));
+  min-width: var(--am-min-w);
+}
+
+/* Já está rolando (lista mais estreita que --am-min-w com o mínimo
+   compacto): então não há por que espremer o Anúncio — ele ganha largura
+   para título e meta caberem, e a rolagem absorve a diferença. */
+@container am-lista (max-width: 1019.98px) {
+  .vf-page-anuncios-meli .am-listagem > * {
+    --am-c-anuncio: 280px;
+  }
 }
 
 .vf-page-anuncios-meli .am-listagem__head,
@@ -404,16 +487,17 @@
   display: grid;
   grid-template-columns: var(--am-cols);
   align-items: center;
-  gap: var(--vf-sp-4);
+  gap: var(--am-gap);
 }
 
 .vf-page-anuncios-meli .am-listagem__head {
-  padding: var(--vf-sp-2) var(--vf-sp-5);
+  padding: var(--vf-sp-2) var(--am-pad-x);
   background: var(--vf-surface-2);
   border-bottom: 1px solid var(--vf-border);
 }
 
 .vf-page-anuncios-meli .am-listagem__head span {
+  white-space: nowrap;
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-semibold);
   letter-spacing: var(--vf-ls-caps);
@@ -422,7 +506,7 @@
 }
 
 .vf-page-anuncios-meli .am-row {
-  padding: var(--vf-sp-3) var(--vf-sp-5);
+  padding: var(--vf-sp-3) var(--am-pad-x);
   border-bottom: 1px solid var(--vf-border);
   cursor: pointer;
 }
@@ -445,8 +529,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 52px;
-  height: 52px;
+  width: var(--am-c-thumb);
+  height: var(--am-c-thumb);
   overflow: hidden;
   color: var(--vf-text-placeholder, var(--vf-text-muted));
   background: var(--vf-surface-2);
@@ -460,11 +544,37 @@
   object-fit: contain;
 }
 
-.vf-page-anuncios-meli .am-row__main {
+/* Título numa linha só; identificadores e badges fluem LADO A LADO embaixo
+   dele e só descem quando não cabem — antes cada um ocupava a própria
+   linha e os badges ainda quebravam em duas. O que quebra é sempre ENTRE
+   tokens (cada filho é nowrap, ver abaixo), nunca no meio de um. */
+.vf-page-anuncios-meli .am-row__main,
+.vf-page-anuncios-meli .am-mlb__main {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px var(--vf-sp-3);
   min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-row__titulo,
+.vf-page-anuncios-meli .am-mlb__titulo {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-row__ids > *,
+.vf-page-anuncios-meli .am-mlb__ids > *,
+.vf-page-anuncios-meli .am-row__badges .vf-tag,
+.vf-page-anuncios-meli .am-mlb__badges .vf-tag,
+.vf-page-anuncios-meli .am-listagem .vf-status,
+.vf-page-anuncios-meli .am-row__preco,
+.vf-page-anuncios-meli .am-mlb__preco,
+.vf-page-anuncios-meli .am-row__num,
+.vf-page-anuncios-meli .am-mlb__num,
+.vf-page-anuncios-meli .am-margem,
+.vf-page-anuncios-meli .am-faturamento {
+  white-space: nowrap;
 }
 
 .vf-page-anuncios-meli .am-row__titulo {
@@ -480,7 +590,10 @@
 
 .vf-page-anuncios-meli .am-row__ids {
   display: flex;
-  gap: var(--vf-sp-3);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--vf-sp-3);
+  min-width: 0;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
 }
@@ -492,8 +605,7 @@
 .vf-page-anuncios-meli .am-row__badges {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 1px;
+  gap: 4px;
 }
 
 /* ------------------------------------------------------------
@@ -627,10 +739,10 @@
 .vf-page-anuncios-meli .am-variacao__head {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--vf-sp-2) var(--vf-sp-3);
+  gap: var(--vf-sp-1) var(--vf-sp-3);
   align-items: baseline;
-  padding: var(--vf-sp-3) var(--vf-sp-5) var(--vf-sp-1)
-           calc(var(--vf-sp-5) + 52px + var(--vf-sp-4));
+  padding: var(--vf-sp-2) var(--am-pad-x) 0
+           calc(var(--am-pad-x) + var(--am-c-thumb) + var(--am-gap));
 }
 
 /* O nome é a manchete do nível: mesmo peso do título de um anúncio,
@@ -660,7 +772,7 @@
    .am-mlb__thumb) — nunca o padding da linha, que deslocaria a grade
    inteira. */
 .vf-page-anuncios-meli .am-mlb {
-  padding: var(--vf-sp-2) var(--vf-sp-5);
+  padding: var(--vf-sp-2) var(--am-pad-x);
   cursor: pointer;
 }
 
@@ -669,6 +781,10 @@
    isso que faz o par Clássico/Premium ler como um bloco em vez de duas
    linhas soltas. Mexe só na altura: padding vertical, nunca horizontal,
    que deslocaria a grade. */
+.vf-page-anuncios-meli .am-variacao__head + .am-mlb {
+  padding-top: var(--vf-sp-1);
+}
+
 .vf-page-anuncios-meli .am-mlb--irma {
   padding-top: var(--vf-sp-1);
 }
@@ -706,11 +822,10 @@
   object-fit: contain;
 }
 
+/* Layout de .am-mlb__main fica na regra compartilhada com .am-row__main
+   (título em cima, ids + badges lado a lado) — aqui só o espaçamento. */
 .vf-page-anuncios-meli .am-mlb__main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  row-gap: 2px;
 }
 
 .vf-page-anuncios-meli .am-mlb__titulo {
@@ -725,8 +840,9 @@
 .vf-page-anuncios-meli .am-mlb__ids {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--vf-sp-3);
+  gap: 2px var(--vf-sp-3);
   align-items: center;
+  min-width: 0;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
 }
@@ -736,8 +852,7 @@
 .vf-page-anuncios-meli .am-mlb__badges {
   display: flex;
   flex-wrap: wrap;
-  gap: 5px;
-  margin-top: 1px;
+  gap: 4px;
 }
 
 /* Condição comercial (Clássico / Premium). Quando o nível do MLBU
@@ -747,6 +862,8 @@
    dentro da célula de identificação, ao lado do MLB — nunca numa coluna
    nova, que desalinharia a expansão do cabeçalho. */
 .vf-page-anuncios-meli .am-mlb__cond {
+  white-space: nowrap;
+  line-height: var(--vf-lh-tight);
   padding: 1px var(--vf-sp-2);
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text-secondary);
@@ -962,7 +1079,7 @@
    embaixo empurrava o conteúdo e descentralizava a linha. */
 .vf-page-anuncios-meli .am-margem {
   display: grid;
-  grid-template-columns: max-content auto;
+  grid-template-columns: minmax(0, max-content) auto;
   justify-content: start;
   align-items: center;
   column-gap: 6px;
@@ -995,6 +1112,16 @@
    (LABELS de marginStatus.js): "Prejuízo", "Em conciliação", "Não
    validado", "Dado suspeito", ou a mensagem de contexto não-pronto (Base
    não vinculada etc.). Nunca um texto inventado aqui. */
+/* Rótulo do Motor ("Em conciliação", "Não validado"…) NUNCA corta: a
+   coluna Margem tem largura mínima para o mais longo deles. Só a mensagem
+   que traz o texto inteiro no title (contexto não-pronto, "Base não
+   vinculada…", ou rótulo acompanhado do (i)) pode terminar em reticências. */
+.vf-page-anuncios-meli .am-margem__estado[title] {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .vf-page-anuncios-meli .am-margem__estado {
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-semibold);
@@ -1385,14 +1512,18 @@
   gap: 2px;
 }
 
+/* Medidor compacto (52×28, mesma proporção do viewBox 64×34): a linha
+   ficava alta por causa dele. Valor e legenda continuam visíveis. */
 .vf-page-anuncios-meli .am-gauge__wrap {
   position: relative;
-  width: 64px;
-  height: 34px;
+  width: 52px;
+  height: 28px;
 }
 
 .vf-page-anuncios-meli .am-gauge__wrap svg {
   display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .vf-page-anuncios-meli .am-gauge__track {
@@ -2886,20 +3017,8 @@
     max-width: none;
   }
 
-  /* Tabela operacional em telas estreitas: rola na horizontal em vez de
-     espremer colunas — nenhum dado fica escondido. */
-  .vf-page-anuncios-meli .am-listagem {
-    overflow-x: auto;
-  }
-
-  .vf-page-anuncios-meli .am-listagem__head,
-  .vf-page-anuncios-meli .am-row,
-  /* O painel do agrupador acompanha a mesma largura mínima da linha:
-     sem isso ele encolheria enquanto a linha acima rola, e as colunas
-     do MLB deixariam de bater com as do cabeçalho. */
-  .vf-page-anuncios-meli .am-grupo-painel {
-    min-width: 720px;
-  }
+  /* A rolagem horizontal da tabela não depende mais de ponto de quebra:
+     vale em qualquer largura abaixo de --am-min-w (ver .am-listagem). */
 }
 
 @media (max-width: 480px) {

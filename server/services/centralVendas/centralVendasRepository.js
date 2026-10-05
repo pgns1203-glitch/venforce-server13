@@ -3,6 +3,8 @@ const path = require("path");
 const pool = require("../../config/database");
 const { classificarComponenteFinanceiro } = require("./centralVendasComponenteLedger");
 const { comRetryTransitorio } = require("./centralVendasTransientRetry");
+const { comPrazo } = require("../../utils/comPrazo");
+const { prazos } = require("./centralVendasPrazos");
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "central_vendas_schema.sql");
 
@@ -120,26 +122,63 @@ async function getClienteBySlug(clienteSlug, db = pool) {
 // com callback 100% banco e idempotente (nada de HTTP/efeito externo dentro):
 // ele roda de novo do zero. Uma transação abortada nunca é reaproveitada.
 // `pool: pg`, `sleep`, `random` existem para injeção em teste.
+// queryTimeoutMs (OPT-IN): prazo POR QUERY dentro da transação. Sem ele o comportamento é o de sempre (o
+// callback recebe o próprio client). Com ele, uma query/COMMIT sem resposta nesse prazo (conexão presa ou
+// perdida — incidente P0 2026-10-02: a gravação do import grande esperava para sempre) rejeita com
+// PG_QUERY_TIMEOUT e a conexão é DESCARTADA (release(err)): o servidor desfaz a transação ao perder a sessão.
+// Nenhum ROLLBACK é enviado a uma conexão presa (ele também penduraria). O prazo é por query, não total:
+// uma gravação grande e saudável não é cortada por demorar.
 async function withTransaction(callback, {
-  retryTransient = false, pool: pg = pool, sleep, random, baseMs,
+  retryTransient = false, pool: pg = pool, sleep, random, baseMs, queryTimeoutMs = null,
 } = {}) {
   const umaTentativa = async () => {
     const client = await pg.connect();
     let descartar;
+    let liberado = false;
+    let perdida = null;
+    const liberar = (err) => {
+      if (liberado) return;
+      liberado = true;
+      client.release(err);
+    };
+    let db = client;
+    if (Number(queryTimeoutMs) > 0) {
+      db = {
+        query: (...args) => {
+          if (perdida) return Promise.reject(perdida);
+          return comPrazo(client.query(...args), queryTimeoutMs, {
+            code: "PG_QUERY_TIMEOUT",
+            message: `Query do PostgreSQL sem resposta em ${Math.round(queryTimeoutMs)} ms; conexão descartada.`,
+            onTimeout: (err) => { perdida = err; liberar(err); },
+          });
+        },
+      };
+    }
     try {
-      await client.query("BEGIN");
-      const result = await callback(client);
-      await client.query("COMMIT");
+      await db.query("BEGIN");
+      if (Number(queryTimeoutMs) > 0) {
+        // Cancelamento NO SERVIDOR (não só abandono no cliente): a query que passar do prazo é cancelada pelo
+        // PostgreSQL (statement_timeout, que também cobre espera de lock) e uma transação aberta cujo cliente
+        // sumiu é encerrada (idle_in_transaction_session_timeout). Margem de 5 s para o prazo do cliente vencer
+        // primeiro no caso comum e devolver o erro PG_QUERY_TIMEOUT. SET LOCAL: vale só nesta transação.
+        const ms = Math.ceil(Number(queryTimeoutMs)) + 5000;
+        await db.query(`SET LOCAL statement_timeout = ${ms}`);
+        await db.query(`SET LOCAL idle_in_transaction_session_timeout = ${ms * 2}`);
+      }
+      const result = await callback(db);
+      await db.query("COMMIT");
       return result;
     } catch (err) {
-      try {
-        await client.query("ROLLBACK");
-      } catch (rollbackErr) {
-        descartar = rollbackErr; // não devolve ao pool uma conexão quebrada
+      if (!perdida) {
+        try {
+          await db.query("ROLLBACK");
+        } catch (rollbackErr) {
+          descartar = rollbackErr; // não devolve ao pool uma conexão quebrada
+        }
       }
       throw err;
     } finally {
-      client.release(descartar);
+      liberar(descartar);
     }
   };
   if (!retryTransient) return umaTentativa();
@@ -385,7 +424,7 @@ async function persistCentralVendasImport({
     // Só INSERTs a partir de motorPayload já em memória (a coleta HTTP acontece
     // ANTES): reexecutar do zero depois de 40P01/40001 é seguro e idempotente,
     // porque a tentativa abortada foi revertida por inteiro.
-  }, { retryTransient: true });
+  }, { retryTransient: true, queryTimeoutMs: prazos().dbQueryMs });
 }
 
 // clienteContaId + includeLegacy implementam a política de escopo de conta

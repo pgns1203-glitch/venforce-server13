@@ -21,6 +21,8 @@
 
 const pool = require("../../config/database");
 const { comRetryTransitorio } = require("./centralVendasTransientRetry");
+const { comPrazo } = require("../../utils/comPrazo");
+const { prazos } = require("./centralVendasPrazos");
 
 const TIMEZONE = "America/Sao_Paulo";
 const MARKETPLACE = "meli";
@@ -206,6 +208,7 @@ function defaultDeps() {
     ensureCentralVendasTables: repository.ensureCentralVendasTables,
     criarSyncRun: runService.criarSyncRun,
     obterSyncRun: runService.obterSyncRun,
+    marcarRunFailed: runService.marcarRunFailed,
     executarSyncRun: worker.executarSyncRun,
     sincronizarAdsCliente: adsSync.sincronizarAdsCliente,
     reconstruirSnapshotMensal: adapter.reconstruirSnapshotMensal,
@@ -216,6 +219,9 @@ function defaultDeps() {
     agora: () => Date.now(),
     observarIntervaloMs: OBSERVAR_INTERVALO_MS,
     observarTimeoutMs: OBSERVAR_TIMEOUT_MS,
+    // Prazos (incidente P0 2026-10-02): sem eles, 3 unidades presas ocupam as 3 vagas da rodada até um restart.
+    unidadeTimeoutMs: prazos().unidadeMs,
+    fechamentoTimeoutMs: prazos().fechamentoMs,
     logger: console,
   };
 }
@@ -326,16 +332,39 @@ async function processarUnidade(unidade, deps) {
   let executouAqui = false;
   if (run.status === "queued") {
     try {
-      const resultado = await deps.executarSyncRun({
+      // Prazo por unidade: devolve a VAGA de concorrência se a coleta/gravação ficar sem resposta. Além disso o
+      // run vira failed (abaixo) e a publicação exige run completed (publicarRun), então nada é publicado tarde.
+      // O trabalho abandonado recebe um AbortSignal: ao estourar o prazo ele aborta o HTTP em voo e para nos
+      // próximos pontos seguros (antes de cada etapa e de toda gravação) — não segue gravando "por baixo".
+      const cancelador = new AbortController();
+      const resultado = await comPrazo(deps.executarSyncRun({
         run,
         context,
         params: { clienteSlug: conta.clienteSlug, dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, marketplace: MARKETPLACE },
         db: deps.db,
+        signal: cancelador.signal,
+      }), deps.unidadeTimeoutMs, {
+        code: "UNIDADE_TIMEOUT",
+        message: `Unidade ${rotulo} sem concluir em ${Math.round((deps.unidadeTimeoutMs || 0) / 60000)} min; vaga liberada.`,
+        onTimeout: () => cancelador.abort(),
       });
       executouAqui = resultado !== null && resultado !== undefined;
     } catch (err) {
       execErro = err;
       executouAqui = true;
+      if (err && err.code === "UNIDADE_TIMEOUT") {
+        deps.logger.error(`${LOG} conta ${rotulo} run #${run.id}: ${err.message}`);
+        if (typeof deps.marcarRunFailed === "function") {
+          try {
+            await comPrazo(
+              deps.marcarRunFailed(run.id, { code: "SYNC_RUN_UNIT_TIMEOUT", message: err.message }, deps.db),
+              15000, { code: "FECHAR_RUN_TIMEOUT" }
+            );
+          } catch (fecharErr) {
+            deps.logger.warn(`${LOG} conta ${rotulo} run #${run.id}: não foi possível fechar o run preso (${fecharErr.code || fecharErr.message})`);
+          }
+        }
+      }
     }
   }
   base.executadoPor = executouAqui ? "cron" : "outro_processo";
@@ -495,12 +524,12 @@ async function executarRodada(opts, depsOverride = {}) {
     const todasPublicadas = grupo.resultados.every((r) => r.publicado);
     if (todasPublicadas) {
       try {
-        grupo.ads = await deps.sincronizarAdsCliente({
+        grupo.ads = await comPrazo(deps.sincronizarAdsCliente({
           cliente: grupo.cliente,
           competencia: grupo.competencia,
           contas: grupo.contas.map((c) => ({ clienteContaId: c.clienteContaId })),
           segmento: grupo.segmento,
-        });
+        }), deps.fechamentoTimeoutMs, { code: "FECHAMENTO_TIMEOUT", message: `Ads de ${rotulo} sem resposta no prazo.` });
         deps.logger.log(
           `${LOG} ads ${rotulo} atualizado contas=${grupo.ads.contas}`
             + ` investimento=${grupo.ads.investimentoAds} gmv=${grupo.ads.gmvAds}`
@@ -516,13 +545,13 @@ async function executarRodada(opts, depsOverride = {}) {
       deps.logger.log(`${LOG} ads ${rotulo} não atualizado: ${grupo.ads.motivo}`);
     }
     try {
-      grupo.snapshot = await deps.reconstruirSnapshotMensal({
+      grupo.snapshot = await comPrazo(deps.reconstruirSnapshotMensal({
         cliente: grupo.cliente,
         competencia: grupo.competencia,
         contas: grupo.contas.map((c) => ({ clienteContaId: c.clienteContaId })),
         segmento: grupo.segmento,
         origem,
-      });
+      }), deps.fechamentoTimeoutMs, { code: "FECHAMENTO_TIMEOUT", message: `Snapshot de ${rotulo} sem resposta no prazo.` });
     } catch (err) {
       grupo.snapshot = { atualizado: false, motivo: "ERRO_ADAPTADOR", erro: resumirErro(err) };
     }

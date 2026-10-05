@@ -20,6 +20,11 @@
 
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
+const { comPrazoPadrao } = require("./centralVendasPrazos");
+const { assertNaoCancelado } = require("../../utils/comPrazo");
+// Coleta com PRAZO por chamada (incidente P0 2026-10-02). `mlFetch` continua vindo do require do topo: quem o
+// substitui no carregamento do módulo (testes) continua sendo respeitado.
+const mlFetchCentral = comPrazoPadrao(mlFetch, "mlMs");
 const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 const { toNumber, round2 } = require("../../utils/numberUtils");
 const { normalizeId } = require("../../utils/textUtils");
@@ -135,6 +140,9 @@ const ORDERS_TRANSIENT_NETWORK_CODES = new Set([
 
 function isErroTransitorioDeRede(err) {
   if (!err) return false;
+  // Prazo da coleta (mlFetch com timeoutMs): "o Mercado Livre não respondeu" é transitório e repete a página.
+  // ML_DEADLINE_EXCEEDED/ML_ABORTED (prazo esgotado antes de enviar / cancelado) NÃO são.
+  if (err.name === "MlTimeoutError") return err.code === "ML_TIMEOUT";
   if (err.statusCode) return false;
   if (typeof err.code === "string" && err.code.startsWith("ML_")) return false;
   if (err.name === "AbortError" || err.name === "TimeoutError") return true;
@@ -159,11 +167,12 @@ function sleep(ms) {
 // Uma página de /orders/search com retry limitado. Devolve a MESMA forma de
 // mlFetch ({ ok, status, data }) — quem chama decide o erro final, então o
 // contrato de fetchAllOrders para respostas não-ok não muda.
-async function fetchOrdersPageComRetry(clienteId, path, sellerId, { mlFetchFn, sleepFn, maxAttempts }) {
+async function fetchOrdersPageComRetry(clienteId, path, sellerId, { mlFetchFn, sleepFn, maxAttempts, signal = null }) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    assertNaoCancelado(signal, "página de pedidos");
     let resp;
     try {
-      resp = await mlFetchFn(clienteId, path, { mlUserId: sellerId });
+      resp = await mlFetchFn(clienteId, path, { mlUserId: sellerId, ...(signal ? { signal } : {}) });
     } catch (err) {
       if (isErroTransitorioDeRede(err) && attempt < maxAttempts) {
         const delay = ordersBackoffDelayMs(attempt, null);
@@ -195,7 +204,7 @@ async function fetchOrdersPageComRetry(clienteId, path, sellerId, { mlFetchFn, s
 //
 // O 5º argumento é só ponto de injeção de teste (mlFetch/sleep/tentativas).
 async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo, {
-  mlFetchFn = mlFetch, sleepFn = sleep, maxAttempts = ORDERS_MAX_ATTEMPTS,
+  mlFetchFn = mlFetchCentral, sleepFn = sleep, maxAttempts = ORDERS_MAX_ATTEMPTS, signal = null,
 } = {}) {
   const seen = new Map();
   let receivedRaw = 0;
@@ -217,7 +226,7 @@ async function fetchAllOrders(clienteId, sellerId, dateFrom, dateTo, {
     });
 
     const { ok, status, data, attempts } = await fetchOrdersPageComRetry(
-      clienteId, `/orders/search?${qs}`, sellerId, { mlFetchFn, sleepFn, maxAttempts }
+      clienteId, `/orders/search?${qs}`, sellerId, { mlFetchFn, sleepFn, maxAttempts, signal }
     );
 
     if (!ok) {
@@ -803,7 +812,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
   // em andamento). Sem accountContext, comportamento idêntico ao pré-M2.
   async function sincronizarVendasMeli({
     clienteSlug, clienteContaId = null, competencia, dateFrom, dateTo, marketplace = "meli",
-    accountContext = null, runId = null,
+    accountContext = null, runId = null, signal = null,
   }) {
     const slug = normalizeSlug(clienteSlug);
     const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
@@ -876,7 +885,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     if (sourceService) await sourceService.iniciarFonte({ runId, source: "orders", db });
     let ordersResult;
     try {
-      ordersResult = await fetchAllOrders(cliente.id, sellerId, from, to);
+      ordersResult = await fetchAllOrders(cliente.id, sellerId, from, to, signal ? { signal } : {});
     } catch (err) {
       if (sourceService) {
         await sourceService.marcarFonteFalha({
@@ -930,6 +939,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // (CLAIMS_LOOKAHEAD_DAYS) para alcançar o pós-venda aberto depois do mês da
     // venda, e esse conjunto garante que só claims desses pedidos entrem no
     // fechamento — claim de pedido externo é descartado.
+    assertNaoCancelado(signal, "frete/pós-venda/pagamentos");
     const shipmentIds = orders.map((o) => o.shipping?.id).filter((v) => v != null);
     const orderIds = new Set(orders.map((o) => String(o.id)));
     if (sourceService) {
@@ -1207,6 +1217,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       }
     }
 
+    assertNaoCancelado(signal, "gravar o import");
     let pedidosPersistidos = 0;
     let itensPersistidos = 0;
     let componentesPersistidos = 0;
@@ -1283,6 +1294,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       // intervalo do run com o mês desta competência — nunca o mês inteiro
       // quando o run só tocou um pedaço dele.
       const { coverageFrom, coverageTo } = coverageParaCompetencia(comp, from, to);
+      assertNaoCancelado(signal, "gravar o import da competência");
       const persisted = await repository.persistCentralVendasImport({
         cliente,
         marketplace: marketplaceNorm,

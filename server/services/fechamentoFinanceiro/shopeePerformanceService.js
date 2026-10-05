@@ -680,7 +680,12 @@ function parseCostRowsDetailed(rows) {
   const parsed = [];
   const unidentifiedRows = [];
   const scientificNotationIds = [];
+  // Linhas da base agrupadas pelo último ID do ITEM visto acima delas
+  // (inclusive linhas de variação com o ID do item apagado). Só serve para
+  // RECUSAR custo quando o bloco de um item diverge — nunca para atribuir.
+  const rowsByBlockItemId = new Map();
   let lastIdentifiedItemId = null;
+  let currentBlockItemId = null;
 
   for (const [rowIndex, row] of (Array.isArray(rows) ? rows : []).entries()) {
     const itemIdRaw = findField(row, [
@@ -798,7 +803,7 @@ function parseCostRowsDetailed(rows) {
     pushKey(modelIdRaw);
     pushKey(skuRaw);
 
-    parsed.push({
+    const parsedRow = {
       id,
       modelId,
       sku: skuKey,
@@ -813,10 +818,17 @@ function parseCostRowsDetailed(rows) {
       rawCost: String(costFieldRaw ?? "").trim(),
       costValid: isShopeeCostValueValid(costFieldRaw),
       taxPercent,
-    });
+    };
+    parsed.push(parsedRow);
+
+    if (id) currentBlockItemId = id;
+    if (currentBlockItemId) {
+      if (!rowsByBlockItemId.has(currentBlockItemId)) rowsByBlockItemId.set(currentBlockItemId, []);
+      rowsByBlockItemId.get(currentBlockItemId).push(parsedRow);
+    }
   }
 
-  return { parsed, unidentifiedRows, scientificNotationIds };
+  return { parsed, unidentifiedRows, scientificNotationIds, rowsByBlockItemId };
 }
 
 function isShopeeCostValueValid(rawValue) {
@@ -902,7 +914,7 @@ function calculateShopeeItem(sale, costRow) {
 
 
 function buildShopeeCostMap(costRowsRaw) {
-  const { parsed: costRows, unidentifiedRows, scientificNotationIds } =
+  const { parsed: costRows, unidentifiedRows, scientificNotationIds, rowsByBlockItemId } =
     parseCostRowsDetailed(costRowsRaw);
   if (!costRows.length) {
     throw createBadRequestError("Não consegui identificar linhas válidas na planilha de custos.");
@@ -935,6 +947,7 @@ function buildShopeeCostMap(costRowsRaw) {
   Object.defineProperty(costMap, "costBaseIndex", {
     value: Object.freeze({
       rowsByItemId,
+      rowsByBlockItemId,
       itemsWithUnidentifiedRowsBelow,
       unidentifiedRowsCount: unidentifiedRows.length,
       scientificNotationIds,

@@ -2,9 +2,11 @@
 
 ## Escopo
 
-Ajuste local do gerador de descrição de anúncios do Mercado Livre. Não altera o Title Engine, o campo Modelo, a aplicação da sugestão ao rascunho nem o salvamento no Mercado Livre. Sem commit, deploy ou mudança de configuração de produção.
+Ajuste do gerador de descrição de anúncios do Mercado Livre. Não altera o Title Engine, o campo Modelo nem o salvamento no Mercado Livre. O uso de uma sugestão com advertências continua sendo uma ação explícita que altera somente o rascunho. A primeira etapa foi publicada no PR #219; o novo escopo de exibição informativa não implica commit, push ou deploy automático.
 
 Plano aprovado: `.hermes/plans/2026-10-02_143034-seo-descricao-bloqueios-proporcionais.md`.
+
+Extensão aprovada: `.hermes/plans/2026-10-05_110057-seo-descricao-sempre-visivel.md`. Substitui a política de ocultar texto reprovado pela exibição com avisos.
 
 O vault canônico `docs/obsidian-map` não está presente neste checkout. Esta nota registra o comportamento implementado e a pendência de sincronização com o vault; não cria um vault substituto nem modifica os relatórios históricos dos experimentos.
 
@@ -14,7 +16,7 @@ O vault canônico `docs/obsidian-map` não está presente neste checkout. Esta n
 2. A IA propõe uma descrição; os validadores verificam fatos, marcas, números, compatibilidade, alegações e linguagem proibida.
 3. Problemas SOFT podem receber correção determinística; problemas HARD não são ignorados.
 4. Se habilitado, o autorreparo mantém seu contrato: remoção localizada ou uma única chamada adicional de IA restrita aos segmentos rejeitados, seguida de revalidação.
-5. O texto aprovado recebe polimento editorial e é devolvido como sugestão.
+5. O texto aprovado recebe polimento editorial e é devolvido como sugestão. Se houver reprovação, a geração original permanece disponível para revisão, sem substituir o original por uma correção recusada.
 6. A UI apresenta texto e contexto dos ajustes; “Usar descrição” altera somente o rascunho. “Salvar alterações” continua sendo o caminho de escrita.
 
 `SEO_DESCRICAO_AUTORREPARO` permanece desligado por padrão. Apenas os valores existentes `1`, `true` e `on` o habilitam. Nenhum ambiente foi modificado.
@@ -75,10 +77,22 @@ O estado de SEO da descrição conserva `avisos`, `ajustesEditoriais` e `autorre
 
 - Sucesso: apresenta avisos e ajustes editoriais em linguagem legível, além de explicar remoção localizada ou reparo por IA quando presentes.
 - Falha de autorreparo: explica que o reparo foi tentado e não resolveu, preservando o motivo original e os problemas do backend.
-- Não expõe a descrição rejeitada nem adiciona “Usar” em resposta inválida.
+- Uma descrição gerada não vazia é exibida mesmo reprovada por contradição ou qualidade. A advertência e os problemas aparecem junto do texto; “Usar descrição”, “Copiar” e “Gerar novamente” permanecem disponíveis. A indicação não representa aprovação dos fatos.
 - Textos provenientes do backend são escapados antes da inserção em HTML.
 - Os controles existentes de sequência/token continuam impedindo resposta atrasada de contaminar outro modal/contexto.
 - Exibir ajuste/autorreparo não aplica nem salva a sugestão automaticamente.
+
+## Disponibilidade do texto versus validação
+
+O contrato distingue o resultado da validação da disponibilidade da sugestão. `ok: false` com `codigo: DESCRICAO_INVALIDA` continua sinalizando reprovação, preservando as decisões internas do autorreparo. A resposta inclui `descricao`, `chars`, `limite` e `validacao.aprovada: false` quando existe uma geração original não vazia. Uma resposta aprovada indica `validacao.aprovada: true`.
+
+Quando o autorreparo falha, a resposta conserva a primeira geração e seu diagnóstico, não promove uma segunda versão recusada a aprovada. Quando funciona, a descrição reparada e aprovada continua sendo a sugestão apresentada. As correções SOFT seguras e o polimento de descrições aprovadas permanecem existentes.
+
+Erros técnicos sem texto, resposta vazia, contexto indisponível e autorização/conta recusada continuam sendo erros reais. A UI só aceita a advertência de validação em uma resposta HTTP bem-sucedida do endpoint; a presença de um campo de texto não permite contornar respostas de permissão. Não se inventa descrição na ausência de conteúdo da IA.
+
+Os diagnósticos de marca, medidas, compatibilidade, logística e qualidade não são desativados: passam a orientar a revisão humana em vez de ocultar o texto. O operador pode usar texto com erro; deve revisar os avisos antes de salvar. A geração e o clique em “Usar” não escrevem no Mercado Livre.
+
+Ao conservar a geração original, o backend a revalida para incluir também problemas que tinham sido removidos pela poda ou pela tentativa de correção interna. Não devolve metadados alegando remoções/correções aplicadas ao fallback original. A UI mantém a advertência mesmo depois de “Usar”, além do indicador de uso no rascunho.
 
 ## Validação
 
@@ -98,7 +112,7 @@ Comandos principais:
 
 IA e Mercado Livre são simulados nos testes; não houve rodada de IA real nem aferição da taxa de aprovação em produção.
 
-Resultados finais das suítes específicas: Description Engine 70 verificações; autorreparo 22; HTTP de descrição 13; seoText 59; Title Engine 50; HTTP de título 8; modal de anúncios 129. Total: **351 verificações aprovadas em sete suítes**. Os casos novos cobrem também a recusa de reconstrução com rótulo parcial: material de uma parte não é promovido a material genérico do produto e o reconhecimento da fronteira real de uma instrução sem pontuação, inclusive com continuação após linha vazia.
+Resultados da etapa anterior (PR #219): Description Engine 70 verificações; autorreparo 22; HTTP de descrição 13; seoText 59; Title Engine 50; HTTP de título 8; modal de anúncios 129. Total: **351 verificações aprovadas em sete suítes**. Os casos cobrem também a recusa de reconstrução com rótulo parcial: material de uma parte não é promovido a material genérico do produto e o reconhecimento da fronteira real de uma instrução sem pontuação, inclusive com continuação após linha vazia. Estes números não substituem a revalidação da extensão informativa.
 
 A revisão independente encontrou regressão na análise por linha de claims compostos atravessando newline. A implementação final mantém a análise global anterior e mascara somente a palavra “firme” na cópia interna da instrução exata autorizada em COMO USAR. A descrição devolvida não é alterada por essa máscara. Claims como `Baixo\nconsumo` e `Revestimento\neletrostático` continuam rejeitados, inclusive na rota HTTP com autorreparo desligado; testes também cobrem instrução segura junto de claim inseguro e repetição da instrução em outra seção.
 
@@ -107,6 +121,14 @@ Após as duas correções localizadas apontadas pela revisão, a re-verificaçã
 A suíte geral `npm --prefix server test` parou em `server/tests/basesTiktok.test.js:768` com “cliente é opcional para TikTok (só MELI exige)”. A mesma falha foi reproduzida executando esse teste numa cópia limpa do HEAD, criada com `git archive`, usando apenas as dependências já instaladas. Nenhum stash/reset ou alteração no checkout foi feito para essa comparação. A suíte geral não é GREEN; os arquivos posteriores à falha não foram executados pelo runner e nenhuma exclusão `TEST_SKIP` foi aplicada.
 
 ## Gate manual autenticado
+
+### Validação da extensão informativa
+
+A rodada final da extensão passou em sete suítes: engine 72, reparo 22, HTTP descrição 13, seoText 59, Title Engine 50, HTTP título 8 e UI 131 — **355 verificações aprovadas**. Foram exercitados original reprovado, uso/cópia reais no harness, manutenção do aviso após uso, erro da segunda IA, texto vazio, diagnóstico de material/medida conflitante, escaping (incluindo contadores), 403/409/erro técnico e descarte de respostas atrasadas.
+
+A revisão independente final foi aprovada, sem erro de lógica ou segurança encontrado no escopo. Os hashes SHA256 dos quatro arquivos de produção examinados foram comparados com o snapshot da execução final e coincidiram. Sintaxe e integridade do diff passaram. A suíte geral foi reexecutada e voltou a parar na falha preexistente de `basesTiktok.test.js:768`; não é GREEN. Evidência agregada local: `C:/Users/vicap/AppData/Local/Temp/venforce-seo-advisory-verificacao.json`.
+
+Após a implementação e a validação local, commit/push e abertura de um novo PR foram autorizados pelo usuário. A publicação do código para revisão não implica merge, deploy ou conclusão do gate autenticado. IA/ML/banco são simulados nos testes; o harness de UI usa um navegador real com respostas controladas, não uma sessão autenticada de produção.
 
 Pendente: as portas locais verificadas (3000, 3001, 5173, 8080) não apresentaram serviço ativo e não foi identificado ambiente local patched autenticado. Não foi iniciado um backend com configuração de produção nem feita escrita no Mercado Livre.
 

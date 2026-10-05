@@ -3874,9 +3874,10 @@ async function run() {
       descricaoSeoHandler = null;
     });
 
-    await check("46o — cenário de teste: falha do autorreparo preserva motivo, sem texto inválido nem Usar", async () => {
+    await check("46o — reprovação e falha do autorreparo exibem original com aviso e uso somente no rascunho", async () => {
       descricaoSeoHandler = () => ({ status: 200, corpo: { ok: false, codigo: "DESCRICAO_INVALIDA",
-        motivo: "Motivo de teste: afirmação sem fonte.", descricao: "TEXTO INVALIDO DE TESTE",
+        motivo: "Motivo de teste: afirmação sem fonte.", descricao: "TEXTO INVALIDO DE TESTE", validacao: { aprovada: false },
+        avisos: [{ acao: "Revisar linguagem comercial de teste", trecho: "Oferta de teste" }],
         problemas: [{ detalhe: "Afirmação sem fonte de teste." }],
         autorreparo: { etapa: "falha", chamadasIa: 2, codigo: "REPARO_AINDA_INVALIDO" } } });
       await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
@@ -3884,8 +3885,25 @@ async function run() {
       const col = await colunaDescricao();
       assert.ok(/reparo automático foi tentado, mas não resolveu/i.test(col), col);
       assert.ok(col.includes("Motivo de teste: afirmação sem fonte."), col);
-      assert.ok(!/TEXTO INVALIDO DE TESTE|REPARO_AINDA_INVALIDO|antes da aprovação/.test(col), col);
-      assert.strictEqual(await nUsarDescricao(), 0);
+      assert.ok(col.includes("TEXTO INVALIDO DE TESTE"), "o original reprovado deve permanecer disponível");
+      assert.ok(col.includes("Revisar linguagem comercial de teste: Oferta de teste"), "avisos SOFT devem permanecer legíveis");
+      assert.ok(/A descrição foi gerada, mas contém pontos que precisam de revisão/.test(col), col);
+      assert.ok(!/REPARO_AINDA_INVALIDO|antes da aprovação|rejeitada pela checagem/.test(col), col);
+      assert.strictEqual(await nUsarDescricao(), 1);
+      assert.deepStrictEqual(await botaoGerarDescricao(), { texto: "Gerar novamente", disabled: false });
+      assert.strictEqual(await cdp.evaluate('document.querySelectorAll(\'#am-det-sug-descricao [data-fonte="descricao-sugerida"]\').length'), 1);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), DESC_A, "não aplica automaticamente");
+      const antes = pedidos.length;
+      await cdp.evaluate("window.__copiaAviso = ''; Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: function(t){ window.__copiaAviso = t; return Promise.resolve(); } } });");
+      await clicar(cdp, '#am-det-sug-descricao [data-fonte="descricao-sugerida"]');
+      assert.strictEqual(await cdp.evaluate("window.__copiaAviso"), "TEXTO INVALIDO DE TESTE");
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="usar-descricao"]');
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), "TEXTO INVALIDO DE TESTE");
+      assert.ok((await colunaDescricao()).includes("Usada nesta edição"));
+      assert.ok((await colunaDescricao()).includes("precisam de revisão"), "usar não apaga o diagnóstico");
+      assert.ok(await cdp.evaluate("!!document.getElementById('am-det-savebar')"));
+      assert.deepStrictEqual(pedidos.slice(antes), [], "Copiar e Usar não fazem requisições");
+      await clicar(cdp, '.am-det-modal [data-acao="descartar"]');
       descricaoSeoHandler = null;
     });
 
@@ -3894,11 +3912,17 @@ async function run() {
       // de estado antes da rede, não apenas a ocultação do HTML durante loading.
       const fonte = fs.readFileSync(path.join(PORTAL_DIR, "anuncios-meli.js"), "utf8");
       const gerarReal = fonte.slice(fonte.indexOf("  function gerarDescricao() {"), fonte.indexOf("  function usarDescricao() {"));
-      const estadoTeste = { estado: "ok", seq: 0, texto: "Texto anterior de teste", avisos: [{ acao: "Teste" }],
-        ajustesEditoriais: ["ITEM_CONTIDO"], autorreparo: { etapa: "remocao" } };
+      const estadoTeste = { estado: "aviso", seq: 0, texto: "Texto anterior de teste", chars: 23, limite: 2500,
+        fatosUsados: [{ label: "Marca anterior" }], problemas: [{ detalhe: "Contradição anterior" }], avisos: [{ acao: "Teste" }],
+        ajustesEditoriais: ["ITEM_CONTIDO"], autorreparo: { etapa: "falha" } };
       const detTeste = { anuncio: { item_id: "TESTE-LOCAL" }, descricaoSeo: estadoTeste, descricaoEstado: "ok", token: "teste" };
       new Function("DET", "AM", "api", "repintarDescricao", gerarReal + "; gerarDescricao();")(
         detTeste, { clienteAtual: { slug: "teste-local" } }, () => new Promise(() => {}), () => {});
+      assert.strictEqual(estadoTeste.texto, "", "texto reprovado limpo antes da resposta");
+      assert.strictEqual(estadoTeste.chars, 0);
+      assert.strictEqual(estadoTeste.limite, 0);
+      assert.deepStrictEqual(estadoTeste.fatosUsados, []);
+      assert.deepStrictEqual(estadoTeste.problemas, []);
       assert.deepStrictEqual(estadoTeste.avisos, [], "avisos limpos antes da resposta");
       assert.deepStrictEqual(estadoTeste.ajustesEditoriais, [], "ajustes limpos antes da resposta");
       assert.strictEqual(estadoTeste.autorreparo, null, "autorreparo limpo antes da resposta");
@@ -3942,6 +3966,8 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-sug-descricao [data-teste-seo]').length"), 0);
       assert.strictEqual(await cdp.evaluate("window.__xssSeoTeste || 0"), 0);
       descricaoSeoHandler = () => ({ status: 200, corpo: { ok: false, codigo: "DESCRICAO_INVALIDA", motivo: ataqueTeste,
+        descricao: ataqueTeste, chars: ataqueTeste, limite: ataqueTeste, validacao: { aprovada: false },
+        avisos: [{ acao: ataqueTeste, trecho: ataqueTeste, termos: [ataqueTeste] }],
         problemas: [{ detalhe: ataqueTeste, termos: [ataqueTeste] }], autorreparo: { etapa: "falha", chamadasIa: 2 } } });
       await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
       await waitFor(cdp, "document.getElementById('am-det-sug-descricao').innerText.includes('reparo automático foi tentado')", "falha não apareceu");
@@ -3964,6 +3990,55 @@ async function run() {
       assert.ok(!(await colunaDescricao()).includes("Usada nesta edição"));
       assert.deepStrictEqual(pedidos.slice(antes).filter((u) => /\/conteudo|\/preco|\/fotos|\/imagens|\/aprovar|\/otimizar/.test(u)), []);
       descricaoSeoHandler = null;
+    });
+
+    await check("46t — somente HTTP de sucesso com DESCRICAO_INVALIDA permite fallback; permissões, contexto e texto vazio continuam erros", async () => {
+      const cenarios = [
+        { status: 403, codigo: "DESCRICAO_INVALIDA" },
+        { status: 409, codigo: "DESCRICAO_INVALIDA" },
+        { status: 500, codigo: "DESCRICAO_INVALIDA" },
+        { status: 200, codigo: "CONTA_AMBIGUA" },
+        { status: 200, codigo: "DESCRICAO_INVALIDA", descricao: "   " },
+        { status: 200, codigo: "AI_RESPONSE_TRUNCATED" },
+      ];
+      for (const [i, cenario] of cenarios.entries()) {
+        const motivo = "Bloqueio de teste " + i;
+        descricaoSeoHandler = () => ({ status: cenario.status, corpo: { ok: false, codigo: cenario.codigo,
+          motivo, descricao: cenario.descricao === undefined ? "TEXTO FORA DO CONTEXTO" : cenario.descricao,
+          validacao: { aprovada: false } } });
+        await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+        await waitFor(cdp, `document.getElementById('am-det-sug-descricao').innerText.includes(${JSON.stringify(motivo)})`, "erro não apareceu");
+        assert.strictEqual(await nUsarDescricao(), 0, JSON.stringify(cenario));
+        assert.ok(!(await colunaDescricao()).includes("TEXTO FORA DO CONTEXTO"));
+        assert.strictEqual(await cdp.evaluate('document.querySelectorAll(\'#am-det-sug-descricao [data-fonte="descricao-sugerida"]\').length'), 0);
+        assert.strictEqual(await cdp.evaluate("document.getElementById('am-det-descricao').value"), DESC_A);
+      }
+      descricaoSeoHandler = () => ({ status: 200, corpo: { ok: false, codigo: "DESCRICAO_INVALIDA",
+        descricao: "Original de teste sem metadados opcionais", motivo: "Revisar original de teste", validacao: { aprovada: false } } });
+      await clicar(cdp, '#am-det-sug-descricao [data-acao="gerar-descricao"]');
+      await waitFor(cdp, "document.querySelector('#am-det-sug-descricao [data-acao=\"usar-descricao\"]')", "fallback sem metadados não apareceu");
+      assert.ok((await colunaDescricao()).includes("Revisar original de teste"));
+      assert.ok((await colunaDescricao()).includes("precisam de revisão"));
+      descricaoSeoHandler = null;
+    });
+
+    await check("46u — fallback atrasado não atravessa token de modal/conta, identidade de estado ou sequência", async () => {
+      const fonte = fs.readFileSync(path.join(PORTAL_DIR, "anuncios-meli.js"), "utf8");
+      const gerarReal = fonte.slice(fonte.indexOf("  function gerarDescricao() {"), fonte.indexOf("  function usarDescricao() {"));
+      for (const invalidar of [det => { det.token = "outra-conta"; }, det => { det.descricaoSeo = {}; }, det => { det.descricaoSeo.seq++; }]) {
+        const estado = { estado: null, seq: 0 };
+        const det = { anuncio: { item_id: "TESTE-ATRASADO" }, descricaoSeo: estado, descricaoEstado: "ok", token: "conta-original" };
+        let resolver;
+        let renders = 0;
+        new Function("DET", "AM", "api", "repintarDescricao", "toast", gerarReal + "; gerarDescricao();")(
+          det, { clienteAtual: { slug: "teste-local" } }, () => new Promise(resolve => { resolver = resolve; }),
+          () => { renders++; }, () => { throw new Error("fallback não deveria gerar toast fatal"); });
+        invalidar(det);
+        resolver({ status: 200, data: { ok: false, codigo: "DESCRICAO_INVALIDA", descricao: "ORIGINAL ATRASADO", validacao: { aprovada: false } } });
+        await Promise.resolve();
+        assert.strictEqual(estado.texto, "", "resposta obsoleta não preenche texto");
+        assert.strictEqual(renders, 1, "somente render de carregamento, nunca resposta obsoleta");
+      }
     });
 
     await check("46m — em todo o percurso, nenhum PATCH /conteudo levou descrição que não veio de 'Usar'/digitação", async () => {

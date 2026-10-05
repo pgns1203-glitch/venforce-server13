@@ -312,13 +312,48 @@ async function run() {
     ok("13. fatoUsado desconhecido → FATO_DESCONHECIDO; lista ausente → FATOS_USADOS_INVALIDOS");
   }
 
+  // Disponibilidade é independente da aprovação: fallback é a geração ORIGINAL.
+  {
+    const original = "  " + BOA + "\r\n\r\nBENEFÍCIOS\r\nBaixo consumo.  ";
+    const f = ficha();
+    const p = provider({ ok: true, data: { descricao: original, fatosUsados: ["brand", "[attr:COLOR]", "attr:INEXISTENTE"] } });
+    const r = await engine.gerarDescricao({ ficha: f, aiProvider: p });
+    assert.deepStrictEqual([r.ok, r.codigo], [false, "DESCRICAO_INVALIDA"]);
+    assert.strictEqual(r.descricao, original, "não devolver texto podado/corrigido/polido ao rejeitar");
+    assert.deepStrictEqual(r.validacao, { aprovada: false });
+    assert.strictEqual(r.chars, original.length);
+    assert.strictEqual(r.limite, f.limite);
+    assert.deepStrictEqual(r.fatosUsados.map((x) => x.id), ["brand", "attr:COLOR"]);
+    assert.ok(r.problemas.some((p) => p.codigo === "CLAIM_OBJETIVO_SEM_FONTE"));
+    assert.strictEqual(p.chamadas.length, 1);
+    ok("rejeição mantém geração original disponível, validação negativa e fatos conhecidos");
+  }
+
+  // Diagnóstico do fallback deve corresponder ao texto ORIGINAL exibido.
+  {
+    const original = BOA + "\n\nESPECIFICAÇÕES\n* Categoria: Tênis\n* Cor: Azul Marinho acetinado.\n\nBENEFÍCIOS\nBaixo consumo.";
+    const r = await engine.gerarDescricao({ ficha: ficha(), aiProvider: provider({ ok: true, data: { descricao: original, fatosUsados: USADOS } }) });
+    assert.strictEqual(r.descricao, original);
+    assert.ok(r.problemas.some((p) => p.codigo === "ITEM_IRRELEVANTE"), "item podado continua no original e precisa de diagnóstico");
+    assert.ok(r.problemas.some((p) => p.codigo === "TERMO_NAO_COMPROVADO" && p.termos.includes("acetinado")), "correção recusada não oculta diagnóstico original");
+    for (const campo of ["avisos", "itensRemovidos", "removidosDoNome", "nomeNeutro", "ajustesEditoriais"]) {
+      assert.ok(!(campo in r), campo + " não pode alegar alteração aplicada ao original");
+    }
+    ok("fallback original tem diagnósticos originais, sem metadados de correção aplicada");
+  }
+
   // 14 ─ resposta vazia
   {
     assert.deepStrictEqual(codigos(valida("   \n  ")), ["VAZIA"]);
     const r = await engine.gerarDescricao({ ficha: ficha(), aiProvider: provider({ ok: true, data: { descricao: "", fatosUsados: [] } }) });
     assert.deepStrictEqual([r.ok, r.codigo], [false, "DESCRICAO_INVALIDA"]);
     assert.deepStrictEqual(r.problemas.map((p) => p.codigo), ["VAZIA"]);
-    ok("14. resposta vazia → VAZIA / DESCRICAO_INVALIDA");
+    for (const descricao of ["", "   \r\n  "]) {
+      const vazia = await engine.gerarDescricao({ ficha: ficha(), aiProvider: provider({ ok: true, data: { descricao, fatosUsados: [] } }) });
+      assert.ok(!("descricao" in vazia) && !("chars" in vazia));
+      assert.deepStrictEqual(vazia.validacao, { aprovada: false });
+    }
+    ok("14. resposta vazia → VAZIA / DESCRICAO_INVALIDA sem texto disponível");
   }
 
   // 15 ─ acima do limite
@@ -330,6 +365,11 @@ async function run() {
     const fCurta = ficha({}, { limiteCategoria: 200 });
     assert.strictEqual(fCurta.limite, 200, "limite da categoria menor que o teto vale");
     assert.ok(codigos(valida(BOA, fCurta)).includes("EXCEDE_LIMITE"));
+    const r = await engine.gerarDescricao({ ficha: fCurta, aiProvider: provider({ ok: true, data: { descricao: BOA, fatosUsados: USADOS } }) });
+    assert.strictEqual(r.descricao, BOA, "limite não trunca texto recusado");
+    assert.ok(!r.ok && r.problemas.some((p) => p.codigo === "EXCEDE_LIMITE"));
+    assert.strictEqual(r.chars, BOA.length);
+    assert.strictEqual(r.limite, 200);
     assert.strictEqual(ficha({}, { limiteCategoria: null }).limite, engine.TETO_OPERACIONAL, "sem categoria: fallback 50.000 → teto");
     ok("15. acima do limite (min(categoria, teto 2500); fallback 50.000) → EXCEDE_LIMITE");
   }
@@ -385,7 +425,8 @@ async function run() {
     const prov = provider({ ok: true, data: { descricao: "  " + BOA.replace(/\n/g, "\r\n") + "  ", fatosUsados: USADOS.concat(["brand"]) } });
     const r = await engine.gerarDescricao({ ficha: f, aiProvider: prov });
     assert.strictEqual(r.ok, true, JSON.stringify(r));
-    assert.deepStrictEqual(Object.keys(r).sort(), ["chars", "descricao", "fatosUsados", "limite", "ok"], "sem score de nenhum tipo");
+    assert.deepStrictEqual(Object.keys(r).sort(), ["chars", "descricao", "fatosUsados", "limite", "ok", "validacao"], "sem score de nenhum tipo");
+    assert.deepStrictEqual(r.validacao, { aprovada: true });
     assert.strictEqual(r.descricao, BOA, "normaliza CRLF e espaços das pontas");
     assert.deepStrictEqual(r.fatosUsados.map((x) => x.id), USADOS, "IDs deduplicados, na ordem");
     assert.deepStrictEqual(r.fatosUsados[0], { id: "brand", label: "Marca", value: "Molekinho" });
@@ -1384,6 +1425,16 @@ async function run() {
       { id: "WEIGHT", name: "Peso", value: "32.5 kg" }, { id: "MAX_WEIGHT_SUPPORTED", name: "Peso máximo suportado", value: "100 kg" }],
     "Dimensões de 140 cm de comprimento, 54,5 cm de largura e 135,5 cm de altura. Com peso de 32,5 kg, para até 100 kg.");
     assert.deepStrictEqual(tipos(esteira), [["attr:TOTAL_LENGTH", "MEDIDA", "descricao_atual"]]);
+    for (const [f, original] of [[short, "Short saia em jeans.\n\nBENEFÍCIOS\nBaixo consumo."],
+      [esteira, "Esteira elétrica com 140 cm de comprimento.\n\nBENEFÍCIOS\nBaixo consumo."]]) {
+      const r = await engine.gerarDescricao({ ficha: f, aiProvider: provider({ ok: true, data: { descricao: original, fatosUsados: [] } }) });
+      assert.deepStrictEqual([r.ok, r.codigo], [false, "DESCRICAO_INVALIDA"]);
+      assert.strictEqual(r.descricao, original, "conflito não oculta nem mutila a geração");
+      assert.ok(r.problemas.some((p) => p.codigo === "CONFLITO_DE_FONTES"), "diagnóstico original inclui material/medida conflitante");
+      assert.strictEqual(r.chars, original.length);
+      assert.strictEqual(r.limite, f.limite);
+      assert.ok(!("removidosDoNome" in r));
+    }
     // faixa (mínima/máxima) × título
     const bastao = mk("Bastão De Luz Rgb 3500k 5500k", [{ id: "MIN_COLOR_TEMPERATURE", name: "Temperatura mínima da cor", value: "3000 K" },
       { id: "MAX_COLOR_TEMPERATURE", name: "Temperatura máxima da cor", value: "6000 K" }]);
@@ -1830,7 +1881,8 @@ async function run() {
     const p = provider({ ok: true, data: { descricao: ruim, fatosUsados: [] } });
     const gerada = await engine.gerarDescricao({ ficha: f, aiProvider: p });
     assert.ok(!gerada.ok && gerada.problemas.some((q) => q.codigo === "FATO_PERDIDO"));
-    assert.ok(!("descricao" in gerada));
+    assert.strictEqual(gerada.descricao, ruim);
+    assert.deepStrictEqual(gerada.validacao, { aprovada: false });
     // Presença em outro trecho preserva o fato; omissão desde o início não é perda.
     assert.ok(engine.validarComCorrecoes(ruim.replace("em plástico.", "em plástico azul."), [], f).valida);
     assert.ok(engine.validarComCorrecoes(base, [], f).valida);

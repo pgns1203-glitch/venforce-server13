@@ -3034,12 +3034,13 @@ function montarPrompt(ficha) {
 
 // -----------------------------------------------------------------------------
 // gerarDescricao — uma chamada ao LLM e a validação. Nunca lança.
-//   { ok:true,  descricao, chars, limite, fatosUsados:[{ id, label, value }], itensRemovidos? }
-//   { ok:false, codigo, motivo, problemas?, itensRemovidos? }
+//   { ok:true, descricao, chars, limite, validacao:{aprovada:true}, fatosUsados, itensRemovidos? }
+//   { ok:false, codigo, motivo, problemas?, validacao?, descricao?, chars?, limite?, fatosUsados? }
+//   DESCRICAO_INVALIDA: geração original não vazia disponível, validacao.aprovada=false.
 //   itensRemovidos (F7A.8): itens que a poda tirou (repetiam a introdução ou eram irrelevantes).
 //   removidosDoNome (F7A.11): trechos em conflito tirados da 1ª linha.
 //   avisos (F7B): correções SOFT aplicadas (trecho removido, rótulo removido…) e avisos.
-//   problemas (F7B): só os problemas HARD que bloquearam.
+//   problemas: bloqueios internos + diagnósticos do original no fallback rejeitado.
 //   nomeNeutro (F7A.12): nome montado de fatos quando a limpeza deixou a 1ª linha sem tipo de produto.
 //   itensRemovidos também traz os itens duplicados (F7A.12).
 //     codigo: FATOS_INSUFICIENTES · DESCRICAO_ATUAL_INDISPONIVEL · IA_ERRO ·
@@ -3107,20 +3108,37 @@ async function gerarDescricao({ ficha, aiProvider }) {
   };
 
   // F7B — problema SOFT é corrigido (remoção/correção determinística) e o
-  // texto é revalidado; só problema HARD descarta a geração.
+  // texto é revalidado; HARD reprova, mas não oculta a geração original.
   const v = validarComCorrecoes(poda.descricao, d.fatosUsados, ficha);
   const avisos = v.avisos && v.avisos.length ? { avisos: v.avisos } : {};
   if (!v.valida) {
     const bloqueios = v.hard && v.hard.length ? v.hard : v.problemas;
+    // O fallback não recebeu as correções: diagnosticar também a geração
+    // original, inclusive problemas que a poda/correção interna retirou.
+    const original = validarDescricao(d.descricao, d.fatosUsados, ficha);
+    const problemas = Array.from(new Map(
+      bloqueios.concat(original.problemas || []).map((p) => [JSON.stringify(p), p])
+    ).values());
     return {
       ok: false,
       codigo: "DESCRICAO_INVALIDA",
       motivo: "A descrição gerada não passou na validação: " + bloqueios.map((p) => p.detalhe).join(" ") +
         " Tente gerar novamente.",
-      problemas: bloqueios,
+      problemas,
+      validacao: { aprovada: false },
+      // Disponibilidade não implica aprovação. Ao rejeitar, conservar a geração
+      // original, nunca uma versão parcialmente podada/corrigida.
+      ...(d.descricao.trim() ? {
+        descricao: d.descricao,
+        chars: d.descricao.length,
+        limite: ficha.limite,
+        fatosUsados: descreverFatosUsados(Array.from(new Set(
+          (Array.isArray(d.fatosUsados) ? d.fatosUsados : [])
+            .filter((id) => typeof id === "string")
+            .map(normalizarIdFato).filter((id) => ficha.idsConhecidos.has(id))
+        )), ficha),
+      } : {}),
       ...conflitos,
-      ...podados,
-      ...avisos,
     };
   }
 
@@ -3132,6 +3150,7 @@ async function gerarDescricao({ ficha, aiProvider }) {
     ...avisos,
     ...(polida.ajustes.length ? { ajustesEditoriais: polida.ajustes } : {}),
     ok: true,
+    validacao: { aprovada: true },
     descricao: polida.descricao,
     chars: polida.chars,
     limite: ficha.limite,

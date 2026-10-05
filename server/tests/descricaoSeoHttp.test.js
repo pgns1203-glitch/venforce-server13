@@ -223,8 +223,9 @@ async function run() {
       reset();
       const r = await chamar("MLB-A", CORPO);
       assert.strictEqual(r.status, 200, JSON.stringify(r.corpo));
-      assert.deepStrictEqual(Object.keys(r.corpo).sort(), ["chars", "descricao", "fatosUsados", "limite", "ok"], "sem score");
+      assert.deepStrictEqual(Object.keys(r.corpo).sort(), ["chars", "descricao", "fatosUsados", "limite", "ok", "validacao"], "sem score");
       assert.strictEqual(r.corpo.ok, true);
+      assert.deepStrictEqual(r.corpo.validacao, { aprovada: true });
       assert.strictEqual(r.corpo.descricao, BOA);
       assert.strictEqual(r.corpo.limite, 2500, "50.000 da categoria → teto operacional");
       assert.deepStrictEqual(r.corpo.fatosUsados, [
@@ -318,6 +319,7 @@ async function run() {
         assert.strictEqual(r.status, 200);
         assert.deepStrictEqual([r.corpo.ok, r.corpo.codigo], [false, codigo]);
         assert.ok(typeof r.corpo.motivo === "string" && r.corpo.motivo.length > 0);
+        assert.ok(!("descricao" in r.corpo));
         guardar();
       }
       ok("erros do provider → 200 { ok:false, codigo (TRUNCATED/JSON/HTTP/NO_API_KEY), motivo } — contrato do /seo/titulos");
@@ -329,14 +331,17 @@ async function run() {
       assert.strictEqual(r.status, 200);
       assert.deepStrictEqual([r.corpo.ok, r.corpo.codigo], [false, "DESCRICAO_INVALIDA"]);
       const cods = r.corpo.problemas.map((p) => p.codigo);
-      // F7B: problemas = só os HARD que bloquearam (FATO_DESCONHECIDO é SOFT)
+      // HARD continuam detectados; diagnósticos do original incluem SOFT não aplicados.
       for (const c of ["NOME_NAO_COMPROVADO", "ATRIBUTO_PROIBIDO", "NUMERO_NAO_COMPROVADO", "LINGUAGEM_PROIBIDA"]) {
         assert.ok(cods.includes(c), c + " ∉ " + cods);
       }
-      assert.ok(!cods.includes("FATO_DESCONHECIDO"));
-      assert.ok(!("descricao" in r.corpo), "texto inválido não chega ao front");
+      assert.ok(cods.includes("FATO_DESCONHECIDO"), "id desconhecido ainda está na resposta original da IA");
+      assert.strictEqual(r.corpo.descricao, "Tênis Nike impermeável para homem com 40 cm. Frete grátis!");
+      assert.deepStrictEqual(r.corpo.validacao, { aprovada: false });
+      assert.strictEqual(r.corpo.chars, r.corpo.descricao.length);
+      assert.strictEqual(r.corpo.limite, 2500);
       guardar();
-      ok("geração inválida → 200 { ok:false, DESCRICAO_INVALIDA, problemas } sem devolver o texto");
+      ok("geração inválida → 200 com original disponível e validação negativa");
     }
     {
       reset({ anuncios: [anuncio({ marca: null, modelo: null, attributes_json: [{ id: "BRAND", name: "Marca", value: "Genérica" }] })], descricao: "sem" });
@@ -381,10 +386,13 @@ async function run() {
           if (!ligado) {
             assert.deepStrictEqual([ra.corpo.ok, ra.corpo.codigo], [false, "DESCRICAO_INVALIDA"], "OFF: rejeição de hoje");
             assert.ok(!("autorreparo" in ra.corpo));
+            assert.strictEqual(ra.corpo.descricao, BOA + PROMESSA);
+            assert.deepStrictEqual(ra.corpo.validacao, { aprovada: false });
           } else {
             assert.strictEqual(ra.corpo.ok, true, JSON.stringify(ra.corpo));
             assert.strictEqual(ra.corpo.descricao, BOA);
             assert.strictEqual(ra.corpo.autorreparo.etapa, "remocao");
+            assert.deepStrictEqual(ra.corpo.validacao, { aprovada: true });
             assert.deepStrictEqual(ra.corpo.autorreparo.removidas.map((x) => x.trecho), [PROMESSA.trim()]);
             assert.deepStrictEqual(ra.corpo.fatosUsados.map((f) => f.label), ["Marca", "Tipo de fechamento", "Material principal"]);
             assert.strictEqual(ra.corpo.limite, 2500);
@@ -405,10 +413,30 @@ async function run() {
             assert.strictEqual(iaChamadas[1].task, "seo_description");
             assert.ok(iaChamadas[1].prompt.includes("[S1]") && !iaChamadas[1].prompt.includes("[S2]"), "só o trecho rejeitado vai ao reparo");
             assert.strictEqual(rb.corpo.ok, true, JSON.stringify(rb.corpo));
+            assert.deepStrictEqual(rb.corpo.validacao, { aprovada: true });
             assert.strictEqual(rb.corpo.descricao, BOA, "fora do trecho tudo idêntico; nenhum atributo some");
             assert.deepStrictEqual(rb.corpo.autorreparo.trocas.map((t) => t.depois), [REPARADA]);
           }
           guardar();
+
+          // Erro da segunda IA conserva primeira geração e seus diagnósticos.
+          reset();
+          iaResposta = sequencia({ ok: true, data: { descricao: COM_CLAIM, fatosUsados: USADOS } },
+            { ok: false, codigo: "TIMEOUT", erro: "reparo indisponível" });
+          const erroReparo = await chamar("MLB-A", CORPO);
+          assert.strictEqual(erroReparo.corpo.descricao, COM_CLAIM);
+          assert.deepStrictEqual(erroReparo.corpo.validacao, { aprovada: false });
+          assert.strictEqual(iaChamadas.length, ligado ? 2 : 1);
+          if (ligado) assert.strictEqual(erroReparo.corpo.autorreparo.codigo, "TIMEOUT");
+          guardar();
+          for (const data of [{ descricao: "   \n  ", fatosUsados: [] }, { texto: "sem descrição recuperável" }]) {
+            reset();
+            iaResposta = () => ({ ok: true, data });
+            const semTexto = await chamar("MLB-A", CORPO);
+            assert.ok(!semTexto.corpo.ok && !("descricao" in semTexto.corpo));
+            assert.strictEqual(iaChamadas.length, 1);
+            guardar();
+          }
 
           // (c) reparo que não resolve → mesma rejeição; aprovada na 1ª → igual a hoje
           reset();
@@ -416,13 +444,14 @@ async function run() {
             { ok: true, data: { trocas: [{ id: "S1", texto: REPARADA + " Ideal para a marca Nike." }] } });
           const rc = await chamar("MLB-A", CORPO);
           assert.deepStrictEqual([rc.corpo.ok, rc.corpo.codigo], [false, "DESCRICAO_INVALIDA"]);
-          assert.ok(!("descricao" in rc.corpo));
+          assert.strictEqual(rc.corpo.descricao, COM_CLAIM, "falha não substitui original pela segunda versão com Nike");
+          assert.deepStrictEqual(rc.corpo.validacao, { aprovada: false });
           assert.strictEqual(iaChamadas.length, ligado ? 2 : 1);
           assert.strictEqual(!!rc.corpo.autorreparo, ligado);
           guardar();
           reset();
           const rd = await chamar("MLB-A", CORPO);
-          assert.deepStrictEqual(Object.keys(rd.corpo).sort(), ["chars", "descricao", "fatosUsados", "limite", "ok"], "aprovada na 1ª: contrato de hoje");
+          assert.deepStrictEqual(Object.keys(rd.corpo).sort(), ["chars", "descricao", "fatosUsados", "limite", "ok", "validacao"], "aprovada na 1ª: contrato de hoje");
           assert.strictEqual(iaChamadas.length, 1);
           assert.deepStrictEqual(escritasBanco, []);
           guardar();
@@ -457,7 +486,8 @@ async function run() {
           const perdida = await chamar("MLB-A", CORPO);
           assert.strictEqual(perdida.status, 200);
           assert.ok(!perdida.corpo.ok && perdida.corpo.problemas.some((p) => p.codigo === "FATO_PERDIDO"));
-          assert.ok(!("descricao" in perdida.corpo));
+          assert.strictEqual(perdida.corpo.descricao, base + "\n\nDESTAQUES DO PRODUTO\nA cor azul marinho tem acabamento acetinado.");
+          assert.deepStrictEqual(perdida.corpo.validacao, { aprovada: false });
           assert.strictEqual(iaChamadas.length, flag === "on" ? 2 : 1);
           guardar();
           if (flag === "off") {
@@ -467,7 +497,8 @@ async function run() {
               iaResposta = () => ({ ok: true, data: { descricao: base + "\n\n" + secao + "\n" + claim, fatosUsados: [] } });
               const insegura = await chamar("MLB-A", CORPO);
               assert.ok(!insegura.corpo.ok && insegura.corpo.problemas.some((p) => p.codigo === "CLAIM_OBJETIVO_SEM_FONTE"), JSON.stringify(insegura.corpo));
-              assert.ok(!("descricao" in insegura.corpo));
+              assert.strictEqual(insegura.corpo.descricao, base + "\n\n" + secao + "\n" + claim);
+              assert.deepStrictEqual(insegura.corpo.validacao, { aprovada: false });
               assert.strictEqual(iaChamadas.length, 1);
               guardar();
             }

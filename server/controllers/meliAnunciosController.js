@@ -2909,13 +2909,16 @@ async function gerarTermosComplementaresSeo(req, res) {
 // sempre sob o teto operacional do engine) → IA → validação → (com
 // SEO_DESCRICAO_AUTORREPARO ligado) no máximo 1 chamada de reparo restrita aos
 // trechos rejeitados; a versão reparada traz autorreparo { etapa, ... } e a
-// que não se resolve volta como a mesma DESCRICAO_INVALIDA.
+// que não se resolve volta como DESCRICAO_INVALIDA com a primeira descrição
+// disponível para revisão humana; reprovação não significa ocultação.
 //
 // Respostas:
 //   200 { ok:true, descricao, chars, limite, fatosUsados:[{ id, label, value }] }
 //   200 { ok:false, codigo, motivo, problemas? } — FATOS_INSUFICIENTES,
 //       DESCRICAO_ATUAL_INDISPONIVEL, erro da IA (código do provider, ex.
-//       AI_RESPONSE_TRUNCATED), DESCRICAO_INVALIDA (mesmo padrão do /seo/titulos)
+//       AI_RESPONSE_TRUNCATED). DESCRICAO_INVALIDA inclui descricao/chars/limite
+//       e validacao.aprovada:false se a IA gerou texto não vazio; a UI exibe
+//       esse texto com aviso e permite uso explícito somente no rascunho.
 //   400 sem clienteSlug · 404 cliente/anúncio
 //   403/409 de conta (mesmos códigos do /seo/titulos)
 // ----------------------------------------------------------------------------

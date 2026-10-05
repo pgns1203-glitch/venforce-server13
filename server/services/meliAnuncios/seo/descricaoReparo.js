@@ -407,7 +407,7 @@ function autorreparoAtivo(env = process.env) {
 //     · reparada (remoção localizada ou reparo restrito aos trechos) → o
 //       contrato ok da produção + autorreparo { etapa, removidas | trocas };
 //     · o reparo não resolveu → a MESMA rejeição da produção (DESCRICAO_INVALIDA,
-//       problemas da 1ª geração) + autorreparo { etapa:"falha", codigo }.
+//       problemas e texto ORIGINAL da 1ª geração) + autorreparo { etapa:"falha", codigo }.
 // -----------------------------------------------------------------------------
 async function gerarDescricaoSeo({ ficha, aiProvider, env = process.env }) {
   if (!autorreparoAtivo(env)) return eng.gerarDescricao({ ficha, aiProvider });
@@ -438,6 +438,7 @@ async function gerarDescricaoSeo({ ficha, aiProvider, env = process.env }) {
     ...(r.avisos.length ? { avisos: r.avisos } : {}),
     ...(r.ajustesEditoriais.length ? { ajustesEditoriais: r.ajustesEditoriais } : {}),
     ok: true,
+    validacao: { aprovada: true },
     descricao: r.descricao,
     chars: r.chars,
     limite: ficha.limite,

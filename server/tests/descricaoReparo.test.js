@@ -270,6 +270,7 @@ function provider(...respostas) {
     assert.strictEqual(r.ok, true, JSON.stringify(r));
     assert.strictEqual(p.chamadas.length, 1);
     assert.strictEqual(r.autorreparo.etapa, "remocao");
+    assert.deepStrictEqual(r.validacao, { aprovada: true });
     assert.deepStrictEqual(r.autorreparo.removidas.map((x) => x.trecho), [promessa.trim()]);
     assert.strictEqual(r.limite, FICHA.limite);
     assert.strictEqual(r.chars, r.descricao.length);
@@ -296,19 +297,36 @@ function provider(...respostas) {
     const { autorreparo, ...resto } = r;
     assert.deepStrictEqual(resto, prod, "mesmo codigo/motivo/problemas da produção");
     assert.strictEqual(autorreparo.etapa, "falha");
-    assert.ok(!("descricao" in r), "texto inválido não chega ao front");
+    assert.strictEqual(r.descricao, texto("", comFato), "falha mantém primeira geração");
+    assert.deepStrictEqual(r.validacao, { aprovada: false });
   });
 
   await check("ON + erro da IA no reparo ou na 1ª geração: contrato de erro de hoje", async () => {
     const p = provider(resposta(texto("", comFato)), { ok: false, codigo: "TIMEOUT", erro: "timeout" });
     const r = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env: ON });
     assert.deepStrictEqual([r.ok, r.codigo, r.autorreparo.etapa, r.autorreparo.codigo], [false, "DESCRICAO_INVALIDA", "falha", "TIMEOUT"]);
+    assert.strictEqual(r.descricao, texto("", comFato));
+    assert.strictEqual(r.chars, r.descricao.length);
+    assert.deepStrictEqual(r.validacao, { aprovada: false });
+    assert.strictEqual(p.chamadas.length, 2);
+    const pThrow = provider(resposta(texto("", comFato)), () => { throw new Error("reparo indisponível"); });
+    const rThrow = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: pThrow, env: ON });
+    assert.strictEqual(rThrow.descricao, texto("", comFato));
+    assert.strictEqual(rThrow.autorreparo.codigo, "IA_ERRO");
+    assert.strictEqual(pThrow.chamadas.length, 2);
     const p2 = provider({ ok: false, codigo: "AI_RESPONSE_TRUNCATED", erro: "cortada" });
     const r2 = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p2, env: ON });
     assert.deepStrictEqual(r2, await eng.gerarDescricao({ ficha: FICHA, aiProvider: provider({ ok: false, codigo: "AI_RESPONSE_TRUNCATED", erro: "cortada" }) }));
     assert.strictEqual(p2.chamadas.length, 1);
     const r3 = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: { async gerarJSON() { throw new Error("boom"); } }, env: ON });
     assert.strictEqual(r3.ok, false);
+    for (const r of [r2, r3]) assert.ok(!("descricao" in r));
+    for (const env of [OFF, ON]) {
+      const p = provider(resposta("   \n  "));
+      const vazia = await rep.gerarDescricaoSeo({ ficha: FICHA, aiProvider: p, env });
+      assert.ok(!vazia.ok && !("descricao" in vazia));
+      assert.strictEqual(p.chamadas.length, 1, "sem segmento não há nova IA");
+    }
   });
 
   await check("guarda SOFT: reparo não pode tratar FATO_PERDIDO como autorização de apagar o fato", async () => {
@@ -320,7 +338,8 @@ function provider(...respostas) {
     const p = provider(resposta(t), troca(""));
     const r = await rep.gerarDescricaoSeo({ ficha: f, aiProvider: p, env: ON });
     assert.strictEqual(r.ok, false, JSON.stringify(r));
-    assert.ok(!("descricao" in r));
+    assert.strictEqual(r.descricao, t);
+    assert.deepStrictEqual(r.validacao, { aprovada: false });
     assert.strictEqual(p.chamadas.length, 2);
     assert.ok(p.chamadas[1].prompt.includes("DEVEM continuar nele: Cor: Azul"), p.chamadas[1].prompt);
     const seguro = provider(resposta(t), troca("A cor é azul."));

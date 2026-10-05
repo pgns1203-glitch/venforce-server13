@@ -5191,7 +5191,7 @@
 
   function descricaoSugeridaUsada() {
     var S = DET && DET.descricaoSeo;
-    return !!(S && S.estado === "ok" && S.texto && DET.rascunho.descricao === S.texto);
+    return !!(S && (S.estado === "ok" || S.estado === "aviso") && S.texto && DET.rascunho.descricao === S.texto);
   }
 
   function avisosDescricaoHtml(S) {
@@ -5237,13 +5237,25 @@
         (gerando ? " disabled" : "") + ">" + escapeHtml(gerando ? "Gerando…" : rotulo) + "</button>";
     };
 
-    if (S.estado === "ok" && S.texto) {
+    if ((S.estado === "ok" || S.estado === "aviso") && S.texto) {
+      var advertencia = "";
+      if (S.estado === "aviso") {
+        var motivosRevisao = (S.problemas || []).map(function (p) {
+          var t = typeof p === "string" ? p : (p && p.detalhe ? String(p.detalhe) : "");
+          if (t && p && Array.isArray(p.termos) && p.termos.length) t += " (" + p.termos.slice(0, 3).join(", ") + ")";
+          return t;
+        }).filter(function (t, i, todos) { return t && todos.indexOf(t) === i; });
+        advertencia = '<p class="am-det-vazio" role="status"><b>A descrição foi gerada, mas contém pontos que precisam de revisão.</b> Nada foi aplicado automaticamente.</p>' +
+          (S.autorreparo && S.autorreparo.etapa === "falha"
+            ? '<p class="am-det-vazio">O reparo automático foi tentado, mas não resolveu os pontos de revisão. ' + escapeHtml(S.erro || "") + "</p>" : "") +
+          (motivosRevisao.length ? listaIaHtml([], motivosRevisao) : '<p class="am-det-vazio">' + escapeHtml(S.erro || "Revise o texto antes de usar.") + "</p>");
+      }
       var base = (S.fatosUsados || []).map(function (f) { return f && f.label; }).filter(Boolean);
-      return cabeca +
+      return cabeca + advertencia +
         '<p class="am-det-readtext am-det-readtext--sug am-det-readtext--bloco">' + escapeHtml(S.texto) + "</p>" +
-        '<p class="am-det-compare__hint">' + S.chars + (S.limite ? "/" + S.limite : "") + " caracteres" +
+        '<p class="am-det-compare__hint">' + escapeHtml(String(S.chars)) + (S.limite ? "/" + escapeHtml(String(S.limite)) : "") + " caracteres" +
           (base.length ? " · com base em: " + escapeHtml(base.join(", ")) : "") + "</p>" +
-        avisosDescricaoHtml(S) + acoesIaHtml([
+        avisosDescricaoHtml(S.estado === "aviso" ? { avisos: S.avisos } : S) + acoesIaHtml([
           btnGhost("usar-descricao", "Usar descrição", ""),
           btnGhost("copiar", "Copiar", ' data-fonte="descricao-sugerida"'),
           botaoGerar("Gerar novamente"),
@@ -5293,6 +5305,10 @@
     var S = DET.descricaoSeo;
     var minhaSeq = ++S.seq;
     S.estado = "carregando";
+    S.texto = "";
+    S.chars = 0;
+    S.limite = 0;
+    S.fatosUsados = [];
     S.erro = null;
     S.codigo = null;
     S.problemas = [];
@@ -5318,7 +5334,9 @@
       S.avisos = Array.isArray(d.avisos) ? d.avisos : [];
       S.ajustesEditoriais = Array.isArray(d.ajustesEditoriais) ? d.ajustesEditoriais : [];
       S.autorreparo = d.autorreparo || null;
-      if (!d.ok || typeof d.descricao !== "string" || !d.descricao) {
+      var textoDisponivel = typeof d.descricao === "string" && d.descricao.trim().length > 0;
+      var advisory = !d.ok && d.codigo === "DESCRICAO_INVALIDA";
+      if (r.status < 200 || r.status >= 300 || (!d.ok && !advisory) || !textoDisponivel) {
         S.estado = "erro";
         S.erro = d.motivo || "Não foi possível gerar a descrição.";
         S.codigo = d.codigo || null;
@@ -5328,7 +5346,10 @@
         toast(S.erro, "is-danger");
         return;
       }
-      S.estado = "ok";
+      S.estado = advisory ? "aviso" : "ok";
+      S.erro = advisory ? (d.motivo || "Revise o texto antes de usar.") : null;
+      S.codigo = advisory ? d.codigo : null;
+      S.problemas = advisory && Array.isArray(d.problemas) ? d.problemas : [];
       S.texto = d.descricao;
       S.chars = d.chars || d.descricao.length;
       S.limite = d.limite || 0;
@@ -5339,7 +5360,7 @@
 
   function usarDescricao() {
     var S = DET && DET.descricaoSeo;
-    if (!S || S.estado !== "ok" || !S.texto || DET.descricaoEstado === "erro") return;
+    if (!S || (S.estado !== "ok" && S.estado !== "aviso") || !S.texto || DET.descricaoEstado === "erro") return;
     usarSugestao("descricao", S.texto);
   }
 
@@ -6869,7 +6890,7 @@
   // da descrição não precisam sobreviver a uma viagem pelo HTML.
   function textoDaFonte(botao) {
     var fonte = botao.getAttribute("data-fonte");
-    if (fonte === "descricao-sugerida") return DET.descricaoSeo.estado === "ok" ? DET.descricaoSeo.texto : "";
+    if (fonte === "descricao-sugerida") return (DET.descricaoSeo.estado === "ok" || DET.descricaoSeo.estado === "aviso") ? DET.descricaoSeo.texto : "";
     if (fonte === "descricao-atual") return DET.rascunho.descricao;
     if (fonte === "titulo-atual") return DET.rascunho.titulo;
     if (fonte === "modelo-atual") return DET.rascunho.modelo;

@@ -19,6 +19,10 @@
 // completude auditável por Sync Run.
 
 const { mpFetch } = require("../../utils/mercadoPagoClient");
+const { comPrazoPadrao } = require("./centralVendasPrazos");
+// Coleta com PRAZO por chamada (incidente P0 2026-10-02). `mpFetch` continua vindo do require do topo: quem o
+// substitui no carregamento do módulo (testes) continua sendo respeitado.
+const mpFetchCentral = comPrazoPadrao(mpFetch, "mpMs");
 const { round2 } = require("../../utils/numberUtils");
 
 const MP_PAYMENTS_BATCH_SIZE = 200;  // payments por lote — próximo lote só inicia após este concluir
@@ -189,7 +193,7 @@ function normalizePayment(raw) {
   };
 }
 
-function createCentralVendasMpPaymentsService({ mpFetchFn = mpFetch, sleepFn = sleep } = {}) {
+function createCentralVendasMpPaymentsService({ mpFetchFn = mpFetchCentral, sleepFn = sleep } = {}) {
   // Consulta 1 Payment com retry seguro. Resultado sempre no formato
   // { collected, payment, httpStatus, motivo, tentativas, erro }.
   //   collected: true SOMENTE quando GET /v1/payments/{id} respondeu 200 —

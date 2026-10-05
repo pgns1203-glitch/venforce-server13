@@ -20,6 +20,7 @@
 const pool = require("../../config/database");
 const runService = require("./centralVendasSyncRunService");
 const sourceService = require("./centralVendasSyncSourceService");
+const { assertNaoCancelado } = require("../../utils/comPrazo");
 
 const CONCORRENCIA = Number(process.env.CENTRAL_VENDAS_SYNC_CONCURRENCY) || 1;
 
@@ -68,7 +69,7 @@ function resumoDoResultado(resultado) {
 // sempre os defaults reais (pool global, motor de sync real).
 async function executarSyncRun({
   run, context, params, db = pool, sincronizarVendasMeli: syncFnOverride = null,
-  marginSnapshotEnqueue: marginSnapshotEnqueueOverride = null,
+  marginSnapshotEnqueue: marginSnapshotEnqueueOverride = null, signal = null,
 }) {
   const marcado = await runService.marcarRunRunning(run.id, db);
   if (!marcado) {
@@ -90,7 +91,11 @@ async function executarSyncRun({
       marketplace: params.marketplace,
       accountContext: context, // identidade congelada — não re-resolvida aqui
       runId: run.id,
+      ...(signal ? { signal } : {}),
     });
+    // Prazo por unidade já estourado (o run foi fechado como failed por quem abandonou esta execução): não
+    // calcula completude, não publica nem enfileira margem — o catch abaixo só fecha o que ficou aberto.
+    assertNaoCancelado(signal, "fechar o run");
 
     // M3 — completude por fonte: eixo separado do status técnico (run.status
     // continua completed/failed exatamente como no M2). Nunca calculado no

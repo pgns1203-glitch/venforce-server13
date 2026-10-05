@@ -78,6 +78,10 @@
 // sozinha, pelo diagnóstico, qual dos 3 cenários é o real.
 
 const { mlFetch } = require("../../utils/mlClient");
+const { comPrazoPadrao } = require("./centralVendasPrazos");
+// Coleta com PRAZO por chamada (incidente P0 2026-10-02). `mlFetch` continua vindo do require do topo: quem o
+// substitui no carregamento do módulo (testes) continua sendo respeitado.
+const mlFetchCentral = comPrazoPadrao(mlFetch, "mlMs");
 
 const CLAIMS_PAGE_LIMIT = 100;
 const CLAIMS_MAX_PAGES = 100; // offset máximo documentado: 9.999
@@ -548,7 +552,7 @@ function computeClaimsCompleteness({
   };
 }
 
-function createCentralVendasClaimsService({ mlFetchFn = mlFetch, sleepFn = sleep } = {}) {
+function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn = sleep } = {}) {
   async function fetchPage(clienteId, path, maxAttempts, mlUserId) {
     let lastReason = "erro_fetch";
 

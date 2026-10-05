@@ -12,6 +12,10 @@
 // cada lote e retry seguro por shipment.
 
 const { mlFetch } = require("../../utils/mlClient");
+const { comPrazoPadrao } = require("./centralVendasPrazos");
+// Coleta com PRAZO por chamada (incidente P0 2026-10-02). `mlFetch` continua vindo do require do topo: quem o
+// substitui no carregamento do módulo (testes) continua sendo respeitado.
+const mlFetchCentral = comPrazoPadrao(mlFetch, "mlMs");
 const { round2 } = require("../../utils/numberUtils");
 
 const FRETE_BATCH_SIZE = 200;   // shipments por lote — próximo lote só inicia após este concluir
@@ -104,7 +108,7 @@ function pLimit(concorrencia) {
     });
 }
 
-function createCentralVendasFreteService({ mlFetchFn = mlFetch, sleepFn = sleep } = {}) {
+function createCentralVendasFreteService({ mlFetchFn = mlFetchCentral, sleepFn = sleep } = {}) {
   // Consulta um shipment com retry seguro. Resultado sempre no formato
   // { valor, custoSeller, receitaComprador, status, motivo, tentativas, erro,
   //   collected, httpStatus }.

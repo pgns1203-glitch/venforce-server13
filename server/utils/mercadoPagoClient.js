@@ -16,6 +16,7 @@ const {
   refreshMlGrant,
   sanitizeErrorMessage,
 } = require("../services/mlTokenService");
+const { comPrazo } = require("./comPrazo");
 
 const MP_API = "https://api.mercadopago.com";
 
@@ -46,7 +47,24 @@ function assertPathRelativoSeguro(path) {
 // Report — MP2). Mesma máquina de refresh em 401/mesmo grant account-aware/
 // mesmo Retry-After de mpFetch original; só troca como o corpo da resposta é
 // lido (`readBody`).
+// options.timeoutMs (OPT-IN, como no mlFetch): aborta o fetch e rejeita com MP_TIMEOUT se não houver
+// resposta nesse prazo; a obtenção do token entra na corrida. Sem ele, nada muda.
 async function mpFetchCore(clienteId, path, options, readBody) {
+  const { timeoutMs = null, ...semPrazo } = options || {};
+  if (!(Number(timeoutMs) > 0)) return mpFetchCoreSemPrazo(clienteId, path, semPrazo, readBody);
+  const controller = new AbortController();
+  return comPrazo(
+    mpFetchCoreSemPrazo(clienteId, path, { ...semPrazo, signal: semPrazo.signal || controller.signal }, readBody),
+    timeoutMs,
+    {
+      code: "MP_TIMEOUT",
+      message: `O Mercado Pago não respondeu em ${Math.round(timeoutMs)} ms.`,
+      onTimeout: () => controller.abort(),
+    }
+  );
+}
+
+async function mpFetchCoreSemPrazo(clienteId, path, options, readBody) {
   assertPathRelativoSeguro(path);
   const { mlUserId, noRefresh = false, ...fetchOptions } = options;
 

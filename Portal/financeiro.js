@@ -1887,6 +1887,7 @@ const SHOPEE_COST_GAP_REASON_LABEL = {
   zero_cost_in_base: "encontrado na base, mas sem custo cadastrado (0)",
   not_found_direct: "não encontrado na base de custos",
   cost_only_on_parent_item: "custo só no item pai",
+  item_variation_cost_undetermined: "anúncio com custos diferentes na base — cadastre o custo da variação",
 };
 
 // zero_cost_in_base agora diz QUAL problema o custo tem.

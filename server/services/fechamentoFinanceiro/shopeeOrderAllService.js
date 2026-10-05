@@ -1163,6 +1163,60 @@ function selectShopeeBridgeIdentityBySkuTokenFuzzy(line, costBridge) {
   return null;
 }
 
+// FIN-390 — linha do Order.all SEM SKU nenhum e SEM variação, só com o nome
+// do produto. Nenhuma estratégia acima a avalia (todas exigem SKU ou
+// variação), mas a Performance identifica esses anúncios pelo Item ID.
+//
+// Resolve SOMENTE a identidade do ITEM — nunca custo, nunca um Model ID
+// escolhido. "Produto único" prova o ANÚNCIO, não a variação vendida:
+//   1. só se aplica sem SKU (nenhum campo) e sem variação, com produto;
+//   2. título NORMALIZADO exatamente igual — nada de sobreposição de tokens;
+//   3. mais de um Item ID com esse título -> ambíguo, marcado `crossItem`
+//      (itens diferentes nunca se equivalem financeiramente);
+//   4. um Item ID -> o conjunto COMPLETO de registros desse item na
+//      Performance (uniqueBridgeRecords): um só -> identidade resolvida e o
+//      custo segue as regras normais de Model ID/Item ID; vários -> ambíguo
+//      entre variações do MESMO item, para a equivalência financeira por
+//      item decidir (ou ficar sem custo).
+function selectShopeeBridgeIdentityByProductUnique(line, allRecords) {
+  const hasAnySku = [...SHOPEE_BRIDGE_SKU_FIELDS, "skuMainRef", "skuPrinciple"].some(
+    (field) => normalizeShopeeIdentityText(line[field])
+  );
+  if (hasAnySku) return null;
+  if (normalizeShopeeIdentityText(line.variationName)) return null;
+
+  const productKey = normalizeShopeeIdentityText(line.product);
+  if (!productKey) return null;
+
+  const exact = allRecords.filter(
+    (record) => normalizeShopeeIdentityText(record.productName) === productKey
+  );
+  const itemIds = Array.from(
+    new Set(exact.map((record) => normalizeShopeeId(record.itemId)).filter(Boolean))
+  ).sort();
+  if (itemIds.length === 0) return null;
+
+  const base = {
+    record: null,
+    source: "product_unique",
+    bridgeSku: null,
+    ambiguityKey: line.product,
+  };
+
+  if (itemIds.length > 1) {
+    return { ...base, ambiguous: true, crossItem: true, records: uniqueBridgeRecords(exact) };
+  }
+
+  const itemId = itemIds[0];
+  const itemRecords = uniqueBridgeRecords(
+    allRecords.filter((record) => normalizeShopeeId(record.itemId) === itemId)
+  );
+  if (itemRecords.length === 1) {
+    return { ...base, ambiguous: false, record: itemRecords[0], records: itemRecords, itemId };
+  }
+  return { ...base, ambiguous: true, crossItem: false, records: itemRecords, itemId };
+}
+
 // Ordem estrita da ponte:
 //   1. Número de referência SKU -> índice SKU da Variação;
 //   2. sufixo histórico controlado (-V / -0);
@@ -1172,7 +1226,8 @@ function selectShopeeBridgeIdentityBySkuTokenFuzzy(line, costBridge) {
 //   6. variação exata + evidência de título (FIN-21);
 //   7. atributos da variação (sem quantidade) + título + pack compatível
 //      (FIN-24, só tentado quando o item 6 não resolveu nada);
-//   8. conjunto de tokens do SKU com UM token truncado (último recurso).
+//   8. conjunto de tokens do SKU com UM token truncado;
+//   9. produto exato -> UM Item ID, só sem SKU e sem variação (FIN-390).
 function selectShopeeBridgeIdentity(line, costBridge) {
   const allRecords = getShopeeCostBridgeRecords(costBridge);
   if (allRecords.length === 0) return null;
@@ -1259,7 +1314,10 @@ function selectShopeeBridgeIdentity(line, costBridge) {
   );
   if (titleVariationAliasIdentity) return titleVariationAliasIdentity;
 
-  return selectShopeeBridgeIdentityBySkuTokenFuzzy(line, costBridge);
+  const skuTokenFuzzyIdentity = selectShopeeBridgeIdentityBySkuTokenFuzzy(line, costBridge);
+  if (skuTokenFuzzyIdentity) return skuTokenFuzzyIdentity;
+
+  return selectShopeeBridgeIdentityByProductUnique(line, allRecords);
 }
 
 // ── Equivalência financeira POR ITEM ────────────────────────────────────────
@@ -1347,6 +1405,14 @@ function selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap) {
   if (topItems.length !== 1) return null;
 
   const { itemId, records } = topItems[0];
+  return resolveShopeeItemFinancialEquivalence(line, itemId, records, costMap);
+}
+
+// Guardas 4–10 da equivalência financeira por item, para um item JÁ
+// identificado — pelo corte de título acima ou pelo produto exato
+// (product_unique). Mesma regra, uma implementação só.
+function resolveShopeeItemFinancialEquivalence(line, itemId, records, costMap) {
+  if (!costMap || typeof costMap.get !== "function") return null;
   const uniqueRecords = uniqueBridgeRecords(records);
   // Com um candidato SÓ, não há "variação indeterminada" — há uma variação
   // específica que as estratégias de atributo/título acima já viram e
@@ -1537,6 +1603,55 @@ function resolveShopeeParentItemCost(costMap, costBridge, itemId, modelId) {
   return { costRow: first, parentItemId, modelId: model, blockedBy: null, ...parentInfo };
 }
 
+// Anúncio "sem variação" na Performance NÃO prova Model ID único: a base
+// pode ter várias linhas sob o mesmo item (ID do item só na primeira). Antes
+// de usar o custo pelo Item ID, o bloco inteiro do item na base precisa
+// concordar em custo e imposto — senão a variação vendida decide o custo e
+// ela é desconhecida. Retorna o motivo do bloqueio, ou null.
+function shopeeItemCostBlockIssue(costMap, itemId) {
+  const index = getShopeeCostBaseIndex(costMap);
+  if (!index || !(index.rowsByBlockItemId instanceof Map)) return "cost_base_index_unavailable";
+  if (index.itemsWithUnidentifiedRowsBelow.has(itemId)) return "unidentified_rows_below_item";
+
+  const rows = index.rowsByBlockItemId.get(itemId) || [];
+  if (rows.length <= 1) return null;
+  const first = rows[0];
+  const sameFinancials = rows.every(
+    (row) =>
+      round2(Number(row.cost || 0)) === round2(Number(first.cost || 0)) &&
+      round2(Number(row.taxPercent || 0)) === round2(Number(first.taxPercent || 0)) &&
+      shopeeCostIssue(row) === shopeeCostIssue(first)
+  );
+  return sameFinancials ? null : "item_rows_diverge";
+}
+
+function shopeeItemFinancialEquivalenceMatch(itemEquivalence, line, debugCollector, resolvedBy) {
+  const bridgeIds = bridgeIdsFromRecords(itemEquivalence.records);
+  if (debugCollector) {
+    debugCollector.recordMatchAttempt({
+      engine: "shopee_real",
+      stage: "cost_bridge_identity",
+      orderId: line.id,
+      field: itemEquivalence.source,
+      rawValue: [line.product, line.variationName].filter(Boolean).join(" | "),
+      normalizedKey: itemEquivalence.itemId,
+      result: "hit",
+    });
+  }
+  return {
+    costRow: itemEquivalence.costRow,
+    source: "bridge_item_financial_equivalent",
+    bridgeUsed: true,
+    bridgeIds,
+    identitySource: itemEquivalence.source,
+    ...(resolvedBy ? { itemIdentitySource: resolvedBy } : {}),
+    identityAmbiguous: false,
+    financiallyEquivalent: true,
+    variationUndetermined: true,
+    ambiguous: false,
+  };
+}
+
 function shopeeParentItemMatch(parent, identitySource, bridgeSku, debugCollector, line) {
   if (debugCollector) {
     debugCollector.recordMatchAttempt({
@@ -1634,29 +1749,7 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   if (!identity) {
     const itemEquivalence = selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap);
     if (itemEquivalence) {
-      const bridgeIds = bridgeIdsFromRecords(itemEquivalence.records);
-      if (debugCollector) {
-        debugCollector.recordMatchAttempt({
-          engine: "shopee_real",
-          stage: "cost_bridge_identity",
-          orderId: line.id,
-          field: itemEquivalence.source,
-          rawValue: [line.product, line.variationName].filter(Boolean).join(" | "),
-          normalizedKey: itemEquivalence.itemId,
-          result: "hit",
-        });
-      }
-      return {
-        costRow: itemEquivalence.costRow,
-        source: "bridge_item_financial_equivalent",
-        bridgeUsed: true,
-        bridgeIds,
-        identitySource: itemEquivalence.source,
-        identityAmbiguous: false,
-        financiallyEquivalent: true,
-        variationUndetermined: true,
-        ambiguous: false,
-      };
+      return shopeeItemFinancialEquivalenceMatch(itemEquivalence, line, debugCollector);
     }
     return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds: null, skuTried, ambiguous: false };
   }
@@ -1675,7 +1768,28 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   }
 
   if (identity.ambiguous) {
-    const equivalentCost = resolveEquivalentShopeeBridgeCost(costMap, identity.records);
+    // product_unique: item ÚNICO com várias variações -> só a equivalência
+    // financeira por item (todos válidos, custo + imposto iguais) resolve.
+    // Vários ITENS com o mesmo título nunca se equivalem — fica ambíguo.
+    if (identity.source === "product_unique" && !identity.crossItem) {
+      const itemEquivalence = resolveShopeeItemFinancialEquivalence(
+        line,
+        identity.itemId,
+        identity.records,
+        costMap
+      );
+      if (itemEquivalence) {
+        return shopeeItemFinancialEquivalenceMatch(
+          itemEquivalence,
+          line,
+          debugCollector,
+          identity.source
+        );
+      }
+    }
+    const equivalentCost = identity.source === "product_unique"
+      ? null
+      : resolveEquivalentShopeeBridgeCost(costMap, identity.records);
     if (equivalentCost) {
       return {
         costRow: equivalentCost.costRow,
@@ -1719,10 +1833,44 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
       ? "bridge_title_variation"
       : identity.source === "title_variation_alias"
       ? "bridge_title_variation_alias"
+      : identity.source === "product_unique"
+      ? "bridge_product_unique"
       : modelId
       ? "bridge_variation_id"
       : "bridge_item_id";
   const stage = modelId ? "cost_bridge_variation" : "cost_bridge_item";
+
+  // product_unique sem Model ID na Performance: o custo pelo Item ID só vale
+  // se o bloco do item na base não divergir (ver shopeeItemCostBlockIssue).
+  const itemCostBlockedBy =
+    identity.source === "product_unique" && !modelId
+      ? shopeeItemCostBlockIssue(costMap, itemId)
+      : null;
+  if (itemCostBlockedBy) {
+    if (debugCollector) {
+      debugCollector.recordMatchAttempt({
+        engine: "shopee_real",
+        stage,
+        orderId: line.id,
+        field: itemCostBlockedBy,
+        rawValue: line.product,
+        normalizedKey: itemId,
+        result: "miss",
+      });
+    }
+    return {
+      costRow: null,
+      source: "miss",
+      bridgeUsed: true,
+      bridgeIds,
+      bridgeSku: null,
+      identitySource: identity.source,
+      skuTried,
+      ambiguous: false,
+      itemCostBlockedBy,
+      itemCostBlockedItemId: itemId,
+    };
+  }
   const costRow = matchedId ? costMap.get(normalizeMatchKey(matchedId)) || null : null;
   const modelItemMismatch = modelId
     ? getShopeeModelItemMismatch(costRow, itemId, modelId)
@@ -1879,6 +2027,19 @@ function describeShopeeCostGap(line, costMatch, orderId) {
       ...(parentDiag.variationCount ? { variationCount: parentDiag.variationCount } : {}),
     };
   }
+  // product_unique identificou o ITEM, mas a base tem custos diferentes sob
+  // ele (ou linhas sem ID logo abaixo): a variação vendida decide o custo e
+  // não é conhecida. Ajuste de base: custo por ID da Variação/único.
+  if (costMatch.itemCostBlockedBy) {
+    return {
+      type: "item_id",
+      value: String(costMatch.itemCostBlockedItemId),
+      sku: null,
+      reason: "item_variation_cost_undetermined",
+      blockedBy: costMatch.itemCostBlockedBy,
+    };
+  }
+
   const parentAbsent =
     parentDiag && parentDiag.parentInCostBase === false
       ? { parentItemId: parentDiag.parentItemId, parentInCostBase: false }
@@ -2010,6 +2171,7 @@ function processShopeeFinancialOrders({
   let bridgeTitleVariationAliasMatchCount = 0;
   let bridgeSkuTokenSetMatchCount = 0;
   let bridgeSkuTokenFuzzyMatchCount = 0;
+  let bridgeProductUniqueMatchCount = 0;
   let bridgeItemFinancialEquivalentMatchCount = 0;
   let bridgeParentItemSingleModelMatchCount = 0;
   let revenueParentItemFallback = 0;
@@ -2216,6 +2378,9 @@ function processShopeeFinancialOrders({
           if (costMatch.identitySource === "sku_token_fuzzy") {
             bridgeSkuTokenFuzzyMatchCount += 1;
           }
+          if (costMatch.identitySource === "product_unique") {
+            bridgeProductUniqueMatchCount += 1;
+          }
           if (costMatch.identitySource === "item_financial_equivalent") {
             bridgeItemFinancialEquivalentMatchCount += 1;
           }
@@ -2363,6 +2528,13 @@ function processShopeeFinancialOrders({
       "candidato era único)."
     );
   }
+  if (bridgeProductUniqueMatchCount > 0) {
+    executiveNotes.push(
+      `COST_BRIDGE_PRODUCT_UNIQUE: ${bridgeProductUniqueMatchCount} linha(s) sem SKU e sem variação no Order.all ` +
+      "foram identificadas pelo título exato do produto, que na performance pertence a um único anúncio; " +
+      "o custo veio do ID desse anúncio (ou do seu único ID de variação) na base."
+    );
+  }
   if (bridgeItemFinancialEquivalentMatchCount > 0) {
     executiveNotes.push(
       `COST_BRIDGE_ITEM_FINANCIAL_EQUIVALENT: ${bridgeItemFinancialEquivalentMatchCount} linha(s) foram conciliadas ` +
@@ -2504,6 +2676,7 @@ function processShopeeFinancialOrders({
       bridgeTitleVariationAliasMatchCount,
       bridgeSkuTokenSetMatchCount,
       bridgeSkuTokenFuzzyMatchCount,
+      bridgeProductUniqueMatchCount,
       bridgeItemFinancialEquivalentMatchCount,
       bridgeParentItemSingleModelMatchCount,
       parentItemFallbackCoverage: coveragePercent(revenueParentItemFallback),

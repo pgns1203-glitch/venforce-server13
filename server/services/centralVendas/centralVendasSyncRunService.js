@@ -67,6 +67,24 @@ async function ensureTables(db = pool) {
 // Estados finais nunca voltam para running (ver seção 4 da especificação).
 const ESTADOS_FINAIS = new Set(["completed", "failed"]);
 
+// Dia (YYYY-MM-DD) de uma coluna DATE. O driver pg devolve um Date na meia-noite
+// LOCAL; String(Date) vira "Thu Oct 01 ..." e o validador de criarSyncRun o recusa
+// (incidente 2026-10-02: 201 falhas do agendador). Os getters locais devolvem o
+// dia certo em qualquer fuso; toISOString erraria o dia a leste de UTC.
+function formatarDiaIso(valor) {
+  if (valor instanceof Date) {
+    if (Number.isNaN(valor.getTime())) return null;
+    const mes = String(valor.getMonth() + 1).padStart(2, "0");
+    const dia = String(valor.getDate()).padStart(2, "0");
+    return `${valor.getFullYear()}-${mes}-${dia}`;
+  }
+  if (typeof valor === "string") {
+    const m = /^(\d{4}-\d{2}-\d{2})(?:$|[T ])/.exec(valor);
+    return m ? m[1] : null;
+  }
+  return null;
+}
+
 function sanitizeRun(row) {
   if (!row) return null;
   return {
@@ -80,8 +98,8 @@ function sanitizeRun(row) {
     grantId: row.grant_id != null ? Number(row.grant_id) : null,
     baseId: row.base_id != null ? Number(row.base_id) : null,
     baseResolutionMode: row.base_resolution_mode || null,
-    dateFrom: row.date_from ? String(row.date_from).slice(0, 10) : null,
-    dateTo: row.date_to ? String(row.date_to).slice(0, 10) : null,
+    dateFrom: formatarDiaIso(row.date_from),
+    dateTo: formatarDiaIso(row.date_to),
     // M3 — eixo separado do status técnico (ver seção 40 da spec): um run
     // completed pode ter completenessStatus 'partial'. Sempre derivado de
     // central_vendas_sync_sources via calcularCompletudeDoRun, nunca escrito
@@ -353,7 +371,7 @@ async function reconciliarRunsNoturnosInterrompidos({ antesDe, db = pool }) {
 
 async function listarPeriodosNoturnosPendentes({ antesDe, db = pool }) {
   const result = await db.query(
-    `SELECT DISTINCT date_from, date_to
+    `SELECT DISTINCT TO_CHAR(r.date_from, 'YYYY-MM-DD') AS date_from, TO_CHAR(r.date_to, 'YYYY-MM-DD') AS date_to
        FROM central_vendas_sync_runs r
       WHERE r.requested_by IS NULL
         AND r.created_at < $1
@@ -379,11 +397,10 @@ async function listarPeriodosNoturnosPendentes({ antesDe, db = pool }) {
       ORDER BY date_from, date_to`,
     [antesDe]
   );
-  return result.rows.map((row) => ({
-    competencia: String(row.date_from).slice(0, 7),
-    dateFrom: String(row.date_from).slice(0, 10),
-    dateTo: String(row.date_to).slice(0, 10),
-  }));
+  return result.rows.map((row) => {
+    const dateFrom = formatarDiaIso(row.date_from);
+    return { competencia: dateFrom ? dateFrom.slice(0, 7) : null, dateFrom, dateTo: formatarDiaIso(row.date_to) };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +539,7 @@ module.exports = {
   reconciliarRunsNoturnosInterrompidos,
   listarPeriodosNoturnosPendentes,
   sanitizeRun,
+  formatarDiaIso,
   ESTADOS_FINAIS,
   QUEUED_STALE_MINUTES,
   RUNNING_STALE_MINUTES,

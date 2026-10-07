@@ -176,6 +176,90 @@
   font-size: var(--vf-fs-md);
 }
 
+/* Com imagem: o logo inteiro, sem corte (contain), sobre superfície clara. */
+.vf-page-clientes .vf-cli-avatar--imagem {
+  overflow: hidden;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+}
+
+.vf-page-clientes .vf-cli-avatar--imagem img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Avatar do cabeçalho é um botão: clicar adiciona/troca a imagem. A câmera
+   só aparece no hover/foco, para não poluir quem só está consultando. */
+.vf-page-clientes .vf-cli-avatar--editavel {
+  position: relative;
+  padding: 0;
+  border: 1px dashed var(--vf-border-strong);
+  cursor: pointer;
+  font-family: var(--vf-font-display);
+  font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-clientes .vf-cli-avatar--editavel.vf-cli-avatar--imagem {
+  border-style: solid;
+  border-color: var(--vf-border);
+}
+
+.vf-page-clientes .vf-cli-avatar__camera {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  background: rgba(27, 29, 40, 0.55);
+  color: var(--vf-text-on-primary);
+  opacity: 0;
+  transition: opacity var(--vf-duration-fast) var(--vf-ease);
+}
+
+.vf-page-clientes .vf-cli-avatar--editavel:hover .vf-cli-avatar__camera,
+.vf-page-clientes .vf-cli-avatar--editavel:focus-visible .vf-cli-avatar__camera,
+.vf-page-clientes .vf-cli-avatar--editavel.is-enviando .vf-cli-avatar__camera {
+  opacity: 1;
+}
+
+.vf-page-clientes .vf-cli-avatar--editavel:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 2px;
+}
+
+.vf-page-clientes .vf-cli-imagem-acoes {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  margin-top: 2px;
+}
+
+/* Ação textual discreta (Adicionar/Trocar/Remover imagem). */
+.vf-page-clientes .vf-cli-link {
+  appearance: none;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+  cursor: pointer;
+}
+
+.vf-page-clientes .vf-cli-link:hover {
+  text-decoration: underline;
+}
+
+.vf-page-clientes .vf-cli-link:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
 .vf-page-clientes .vf-cli-item__main {
   display: flex;
   flex: 1 1 auto;
@@ -358,22 +442,24 @@
   gap: var(--vf-sp-2) var(--vf-sp-3);
 }
 
-/* Sigla neutra do marketplace — identifica a seção sem usar cor semântica
-   (verde/laranja/vermelho ficam reservados para estado). */
-.vf-page-clientes .vf-cli-mp__sigla {
+/* Logo oficial do marketplace — identifica a seção. É a cor da MARCA (logo),
+   não uma cor semântica de estado; fica contida num quadro neutro. */
+.vf-page-clientes .vf-cli-mp__icone {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
   border-radius: var(--vf-radius-sm);
   border: 1px solid var(--vf-border);
-  background: var(--vf-neutral-bg);
-  font-family: var(--vf-font-display);
-  font-size: 0.625rem;
-  font-weight: var(--vf-fw-extrabold);
-  letter-spacing: 0.02em;
-  color: var(--vf-text-secondary);
+  background: var(--vf-surface);
+}
+
+.vf-page-clientes .vf-cli-mp__icone img {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .vf-page-clientes .vf-cli-mp__titulo {

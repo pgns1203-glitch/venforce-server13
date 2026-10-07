@@ -105,11 +105,17 @@ const CONTAS_POR_CLIENTE = new Map(); // slug -> { estado: 'carregando'|'ok'|'er
 let SELECIONADO = null;               // slug do cliente aberto no painel
 let FILTRO = "todos";                 // 'todos' | 'atencao' | 'sem_contas'
 let RECARREGAR_AO_VOLTAR = null;      // slug cujo grant pode ter mudado numa aba de conexão ML
+const IMAGENS = new Map();            // cliente.id -> data URL da miniatura
+let IMAGENS_DISPONIVEL = false;       // backend já tem /cliente-imagens?
+let IMAGEM_ENVIANDO = false;
 
 const MARKETPLACES = [
-  { key: "meli", label: "Mercado Livre", sigla: "ML" },
-  { key: "shopee", label: "Shopee", sigla: "SH" },
-  { key: "tiktok", label: "TikTok Shop", sigla: "TT" },
+  // Logos oficiais salvos no próprio Portal (sem dependência externa):
+  // Mercado Livre = favicon oficial de mercadolivre.com.br; Shopee e TikTok =
+  // Simple Icons (CC0) nas cores oficiais das marcas.
+  { key: "meli", label: "Mercado Livre", icone: "assets/marketplaces/mercado-livre.svg" },
+  { key: "shopee", label: "Shopee", icone: "assets/marketplaces/shopee.svg" },
+  { key: "tiktok", label: "TikTok Shop", icone: "assets/marketplaces/tiktok-shop.svg" },
 ];
 
 function setClientesFeedback(message, type = "neutral") {
@@ -294,6 +300,7 @@ async function loadClientes({ selecionar } = {}) {
   renderFiltros();
   renderLista();
   renderDetalhe();
+  carregarImagens();
   carregarTodasAsContas();
 }
 
@@ -640,8 +647,14 @@ function iniciais(nome) {
   return (partes.slice(0, 2).map((p) => p[0]).join("") || "?").toUpperCase();
 }
 
+// Squads legados em produção já trazem "Legado" no próprio nome ("Squad 8 ·
+// Legado") — o sufixo só entra quando o nome ainda não diz isso, senão a
+// tela mostrava "Squad 8 · Legado · Legado".
 function squadTexto(c) {
-  return c.squad ? `${c.squad.nome}${isLegado(c.squad) ? " · Legado" : ""}` : "Sem Squad";
+  if (!c.squad) return "Sem Squad";
+  const nome = String(c.squad.nome || "");
+  const sufixo = isLegado(c.squad) && !/legado/i.test(nome) ? " · Legado" : "";
+  return `${nome}${sufixo}`;
 }
 
 function diagnosticoDoCliente(slug) {
@@ -704,7 +717,7 @@ function renderLista() {
     const inativo = c.ativo === false ? `<span class="vf-tag is-neutral vf-cli-item__tag">Inativo</span>` : "";
     return `
       <button type="button" class="vf-cli-item${ativo ? " is-active" : ""}" data-slug="${escapeHTML(c.slug)}"${ativo ? ' aria-current="true"' : ""}>
-        <span class="vf-cli-avatar" aria-hidden="true">${escapeHTML(iniciais(c.nome))}</span>
+        ${avatarHtml(c)}
         <span class="vf-cli-item__main">
           <span class="vf-cli-item__nome"><span class="vf-cli-item__nome-texto">${escapeHTML(c.nome || c.slug)}</span>${inativo}</span>
           <span class="vf-cli-item__meta"><span class="vf-cli-cell-squad${c.squad ? "" : " is-missing"}">${escapeHTML(squadTexto(c))}</span> · ${escapeHTML(metaContas)}</span>
@@ -729,6 +742,146 @@ function selecionarCliente(slug) {
   // Em tela estreita o painel fica abaixo da lista: leva o usuário até ele.
   if (window.matchMedia("(max-width: 899.98px)").matches) {
     clientesDetalhe.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+}
+
+// ── IMAGEM DO CLIENTE ────────────────────────────────────────────────────
+// Miniatura guardada em /cliente-imagens (backend). Qualquer usuário interno
+// troca a imagem de um cliente que enxerga — é só identificação visual.
+// Se o backend ainda não tiver a rota (404, deploy fora de ordem), a tela
+// segue com as iniciais e simplesmente não oferece o upload.
+async function carregarImagens() {
+  try {
+    const data = await apiFetch("/cliente-imagens");
+    IMAGENS.clear();
+    (Array.isArray(data.imagens) ? data.imagens : []).forEach((i) => {
+      if (i && i.clienteId && i.imagem) IMAGENS.set(Number(i.clienteId), i.imagem);
+    });
+    IMAGENS_DISPONIVEL = true;
+  } catch (err) {
+    IMAGENS_DISPONIVEL = false;
+    if (err.status !== 404) console.error("[clientes] falha ao carregar imagens", err);
+  }
+  agendarRenderLista();
+  try { renderDetalhe(); } catch (err) { console.error("[clientes] falha ao desenhar o painel", err); }
+}
+
+function imagemDoCliente(c) {
+  return c && c.id != null ? IMAGENS.get(Number(c.id)) || null : null;
+}
+
+function avatarHtml(c, extra = "") {
+  const img = imagemDoCliente(c);
+  return img
+    ? `<span class="vf-cli-avatar vf-cli-avatar--imagem${extra}" aria-hidden="true"><img src="${escapeHTML(img)}" alt=""></span>`
+    : `<span class="vf-cli-avatar${extra}" aria-hidden="true">${escapeHTML(iniciais(c.nome))}</span>`;
+}
+
+const ICONE_CAMERA = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></svg>';
+
+function avatarEditavelHtml(c) {
+  if (!IMAGENS_DISPONIVEL) return avatarHtml(c, " vf-cli-avatar--lg");
+  const img = imagemDoCliente(c);
+  const rotulo = img ? `Trocar a imagem de ${c.nome || c.slug}` : `Adicionar uma imagem para ${c.nome || c.slug}`;
+  const miolo = img ? `<img src="${escapeHTML(img)}" alt="">` : escapeHTML(iniciais(c.nome));
+  return `
+    <button type="button" class="vf-cli-avatar vf-cli-avatar--lg vf-cli-avatar--editavel${img ? " vf-cli-avatar--imagem" : ""}"
+            data-acao="trocar-imagem" aria-label="${escapeHTML(rotulo)}" title="${img ? "Trocar imagem" : "Adicionar imagem"}">
+      ${miolo}
+      <span class="vf-cli-avatar__camera" aria-hidden="true">${ICONE_CAMERA}</span>
+    </button>`;
+}
+
+function acoesImagemHtml(c) {
+  if (!IMAGENS_DISPONIVEL) return "";
+  const img = imagemDoCliente(c);
+  return `
+    <div class="vf-cli-imagem-acoes">
+      <button type="button" class="vf-cli-link" data-acao="trocar-imagem">${img ? "Trocar imagem" : "Adicionar imagem"}</button>
+      ${img ? `<span class="vf-cli-sep" aria-hidden="true">·</span><button type="button" class="vf-cli-link" data-acao="remover-imagem">Remover</button>` : ""}
+    </div>`;
+}
+
+// Reduz para uma miniatura 256×256 (logo inteiro, proporção preservada,
+// fundo transparente) antes de enviar — o backend aceita até 300 KB.
+function lerArquivoComoImagem(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Não foi possível ler esta imagem.")); };
+    img.src = url;
+  });
+}
+
+function gerarMiniatura(img, lado = 256) {
+  const canvas = document.createElement("canvas");
+  canvas.width = lado;
+  canvas.height = lado;
+  const ctx = canvas.getContext("2d");
+  const escala = Math.min(lado / img.naturalWidth, lado / img.naturalHeight, 1) || 1;
+  const w = Math.round(img.naturalWidth * escala);
+  const h = Math.round(img.naturalHeight * escala);
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, Math.round((lado - w) / 2), Math.round((lado - h) / 2), w, h);
+  let dataUrl = canvas.toDataURL("image/webp", 0.9);
+  if (!dataUrl.startsWith("data:image/webp")) dataUrl = canvas.toDataURL("image/png");
+  return dataUrl;
+}
+
+const LIMITE_ENVIO_BYTES = 300 * 1024;
+function bytesDoDataUrl(dataUrl) {
+  const b64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  return Math.floor((b64.length * 3) / 4);
+}
+
+async function enviarImagemCliente(file) {
+  const c = CLIENTES_LISTA.find((x) => x.slug === SELECIONADO);
+  if (!c || !file || IMAGEM_ENVIANDO) return;
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) {
+    setClientesFeedback("Use uma imagem PNG, JPG ou WebP.", "danger");
+    return;
+  }
+  if (file.size > 10 * 1024 * 1024) {
+    setClientesFeedback("Imagem grande demais. Use um arquivo de até 10 MB.", "danger");
+    return;
+  }
+  IMAGEM_ENVIANDO = true;
+  clientesDetalhe.querySelector(".vf-cli-avatar--editavel")?.classList.add("is-enviando");
+  try {
+    const original = await lerArquivoComoImagem(file);
+    let dataUrl = gerarMiniatura(original);
+    if (bytesDoDataUrl(dataUrl) > LIMITE_ENVIO_BYTES) dataUrl = gerarMiniatura(original, 160);
+    const data = await apiFetch(`/cliente-imagens/${encodeURIComponent(c.slug)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ imagem: dataUrl }),
+    });
+    IMAGENS.set(Number(c.id), data?.imagem?.imagem || dataUrl);
+    setClientesFeedback(`Imagem de "${c.nome}" atualizada.`, "success");
+  } catch (err) {
+    setClientesFeedback(`Não foi possível salvar a imagem: ${err.message}`, "danger");
+  } finally {
+    IMAGEM_ENVIANDO = false;
+    agendarRenderLista();
+    renderDetalhe();
+  }
+}
+
+async function removerImagemCliente() {
+  const c = CLIENTES_LISTA.find((x) => x.slug === SELECIONADO);
+  if (!c || IMAGEM_ENVIANDO) return;
+  IMAGEM_ENVIANDO = true;
+  try {
+    await apiFetch(`/cliente-imagens/${encodeURIComponent(c.slug)}`, { method: "DELETE" });
+    IMAGENS.delete(Number(c.id));
+    setClientesFeedback(`Imagem de "${c.nome}" removida.`, "success");
+  } catch (err) {
+    setClientesFeedback(`Não foi possível remover a imagem: ${err.message}`, "danger");
+  } finally {
+    IMAGEM_ENVIANDO = false;
+    agendarRenderLista();
+    renderDetalhe();
   }
 }
 
@@ -810,7 +963,7 @@ function renderDetalhe() {
     return `
       <section class="vf-cli-mp" data-mp="${mp.key}" aria-labelledby="mp-titulo-${mp.key}">
         <div class="vf-cli-mp__cabecalho">
-          <span class="vf-cli-mp__sigla" aria-hidden="true">${mp.sigla}</span>
+          <span class="vf-cli-mp__icone" aria-hidden="true"><img src="${mp.icone}" alt="" width="18" height="18"></span>
           <h3 class="vf-cli-mp__titulo" id="mp-titulo-${mp.key}">${escapeHTML(mp.label)}</h3>
           <span class="vf-cli-mp__contagem">${escapeHTML(contagem)}</span>
           <span class="vf-cli-mp__espaco"></span>
@@ -825,7 +978,7 @@ function renderDetalhe() {
 
   clientesDetalhe.innerHTML = `
     <div class="vf-cli-cabecalho">
-      <span class="vf-cli-avatar vf-cli-avatar--lg" aria-hidden="true">${escapeHTML(iniciais(c.nome))}</span>
+      ${avatarEditavelHtml(c)}
       <div class="vf-cli-cabecalho__main">
         <h2 class="vf-cli-cabecalho__nome">${escapeHTML(c.nome || c.slug)}</h2>
         <div class="vf-cli-cabecalho__meta">
@@ -834,6 +987,7 @@ function renderDetalhe() {
           <span class="vf-mono vf-cli-slug">${escapeHTML(c.slug)}</span>
           ${inativo}
         </div>
+        ${acoesImagemHtml(c)}
       </div>
       ${acoesCliente}
       <div class="vf-cli-situacao">${situacao}</div>
@@ -1310,12 +1464,20 @@ clientesDetalhe.addEventListener("click", (e) => {
     const form = clientesDetalhe.querySelector(`[data-form="${mp}"]`);
     if (form) form.hidden = true;
   } else if (acao === "recarregar-contas") carregarContas(SELECIONADO);
+  else if (acao === "trocar-imagem") document.getElementById("cliente-imagem-input")?.click();
+  else if (acao === "remover-imagem") removerImagemCliente();
 });
 clientesDetalhe.addEventListener("submit", (e) => {
   const form = e.target.closest("[data-form]");
   if (!form) return;
   e.preventDefault();
   criarContaNoCliente(SELECIONADO, form.getAttribute("data-form"));
+});
+
+document.getElementById("cliente-imagem-input")?.addEventListener("change", (e) => {
+  const file = e.target.files?.[0];
+  e.target.value = ""; // permite escolher o mesmo arquivo de novo
+  if (file) enviarImagemCliente(file);
 });
 
 document.addEventListener("click", (e) => {

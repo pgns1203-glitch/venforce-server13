@@ -22,6 +22,7 @@ import { TabelaHierarquica, useExpansao } from "../components/painelContas/Tabel
 import { LancamentoManualDrawer } from "../components/painelContas/LancamentoManualDrawer.jsx";
 import { colunasVisiveis } from "../components/painelContas/colunas.js";
 import { rotularCompetencia, rotularCompetenciaCurta } from "../utils/dates.js";
+import { formatarMoeda } from "../utils/currency.js";
 
 // Situações diferentes, mensagens diferentes. "Nenhum resultado" para tudo
 // obriga a pessoa a descobrir sozinha o que aconteceu. Cada vazio diz O QUE
@@ -129,8 +130,9 @@ export default function PainelContasPage() {
     semanasContasPorCliente, carregarSemanasContas,
     composicaoPorCliente, carregarComposicao,
     salvarManual, removerManual, lancamentosDaConta, historicoLancamento,
-    permissoes, competenciaAtual, atualizacoes, atualizarCliente, dispensarAtualizacao,
+    permissoes, competenciaAtual, atualizacoes, atualizarCliente, dispensarAtualizacao, modo,
   } = painel;
+  const modoManual = modo?.codigo === "manual";
 
   const { grupos, alternar: alternarGrupo } = useGruposDeColunas();
   const expansao = useExpansao();
@@ -139,6 +141,27 @@ export default function PainelContasPage() {
 
   const abrirLancamento = useCallback((cliente, conta) => setLancamento({ cliente, conta }), []);
   const fecharLancamento = useCallback(() => setLancamento(null), []);
+
+  // Confirmação explícita: o drawer fecha ao salvar, então a tela diz O QUE
+  // foi gravado (conta, competência, FAT) com o valor devolvido pelo servidor.
+  const [confirmacao, setConfirmacao] = useState(null);
+  const salvarComConfirmacao = useCallback(async (clienteId, contaId, valores) => {
+    const resposta = await salvarManual(clienteId, contaId, valores);
+    const conta = resposta?.conta;
+    const fat = conta?.resumo?.fat;
+    setConfirmacao({
+      titulo: "Lançamento salvo",
+      texto: `${conta?.rotulo || "Conta"} · ${rotularCompetencia(resposta?.competencia || competencia)}`
+        + `${fat != null ? ` · FAT ${formatarMoeda(fat, { casas: 2 })}` : ""} · Origem: Manual`,
+    });
+    return resposta;
+  }, [salvarManual, competencia]);
+  const removerComConfirmacao = useCallback(async (clienteId, contaId) => {
+    const resposta = await removerManual(clienteId, contaId);
+    setConfirmacao({ titulo: "Lançamento removido", texto: `${resposta?.conta?.rotulo || "Conta"} · ${rotularCompetencia(competencia)}` });
+    return resposta;
+  }, [removerManual, competencia]);
+  useEffect(() => { setConfirmacao(null); }, [competencia]);
 
   // Do histórico do drawer para outra competência: a tela troca de mês e o
   // drawer reabre na MESMA conta quando a lista daquele mês chega — nunca
@@ -178,6 +201,30 @@ export default function PainelContasPage() {
           </div>
         </header>
 
+        {modoManual && (
+          <div className="vf-banner is-info vf-banner--compact" role="note" data-testid="banner-modo-manual">
+            <div className="vf-banner__content">
+              <p className="vf-banner__title">Painel em modo manual</p>
+              <p className="vf-banner__description">
+                Os valores lançados pela equipe prevalecem sobre a API (inclusive Mercado Livre) e nenhuma rotina
+                automática os substitui. Para faturamento e métricas de referência, consulte a Central de Margem.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {confirmacao && (
+          <div className="vf-banner is-success vf-banner--compact" role="status" data-testid="confirmacao-lancamento">
+            <div className="vf-banner__content">
+              <p className="vf-banner__title">{confirmacao.titulo}</p>
+              <p className="vf-banner__description">{confirmacao.texto}</p>
+            </div>
+            <div className="vf-banner__actions">
+              <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => setConfirmacao(null)} aria-label="Fechar confirmação">✕</button>
+            </div>
+          </div>
+        )}
+
         {clientes && (
           <SecoesMarketplace secoes={secoesMarketplace} ativa={marketplace} onSelecionar={setMarketplace} />
         )}
@@ -213,6 +260,7 @@ export default function PainelContasPage() {
             grupos={grupos} onAlternarGrupo={alternarGrupo}
             resumoCarteira={resumoCarteira} atualizando={atualizando}
             competenciaAtual={competenciaAtual} podeAtualizar={permissoes.atualizarDados === true}
+            modoManual={modoManual}
           />
         )}
 
@@ -249,7 +297,9 @@ export default function PainelContasPage() {
                     Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
                     diferente.{visao?.fonte === "manual"
                       ? ` ${visao.rotulo} não tem integração automática: os números entram por lançamento manual em cada conta.`
-                      : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
+                      : modoManual
+                        ? " O Painel está em modo manual: os números entram por lançamento em cada conta."
+                        : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
                   </p>
                 </div>
               </div>
@@ -298,8 +348,9 @@ export default function PainelContasPage() {
           cliente={lancamento.cliente}
           contaInicial={lancamento.conta}
           competencia={competencia}
-          onSalvar={salvarManual}
-          onRemover={removerManual}
+          onSalvar={salvarComConfirmacao}
+          onRemover={removerComConfirmacao}
+          modoManual={modoManual}
           onFechar={fecharLancamento}
           onCarregarLancamentos={lancamentosDaConta}
           onCarregarHistorico={historicoLancamento}

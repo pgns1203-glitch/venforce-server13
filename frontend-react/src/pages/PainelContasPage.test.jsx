@@ -488,3 +488,64 @@ describe("acesso por Squad", () => {
     expect(descreverAcesso(null)).toBeNull();
   });
 });
+
+describe("modo manual (PAINEL_CONTAS_AUTO_UPDATE_ENABLED desligada)", () => {
+  const modoManual = { codigo: "manual", rotulo: "Modo manual", manualPrevalece: true, atualizacaoAutomatica: false };
+  // Conta ML COM dado da API: no modo manual a equipe lança por cima.
+  const mlComApi = () => cliente({
+    contas: [{
+      ...cliente().contas[0], podeLancarManual: true,
+    }],
+    podeLancarManual: true,
+  });
+
+  it("diz que o Painel está em modo manual e não promete atualização automática", () => {
+    mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual }));
+    render(<PainelContasPage />);
+    expect(screen.getByTestId("banner-modo-manual")).toHaveTextContent("Painel em modo manual");
+    expect(screen.getByTestId("banner-modo-manual")).toHaveTextContent(/prevalecem sobre a API/);
+    expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("Modo manual");
+    expect(screen.getByTestId("regra-atualizacao")).not.toHaveTextContent("até ontem");
+    expect(screen.queryByRole("button", { name: /atualizar dados de/i })).toBeNull();
+  });
+
+  it("modo automático não mostra a faixa de modo manual", () => {
+    mocks.usePainelContas.mockReturnValue(estado({ modo: { codigo: "automatico" } }));
+    render(<PainelContasPage />);
+    expect(screen.queryByTestId("banner-modo-manual")).toBeNull();
+  });
+
+  it("ML com API aceita lançamento, mostra a referência e confirma o que foi salvo", async () => {
+    const salvarManual = vi.fn().mockResolvedValue({
+      ok: true, competencia: "2026-09",
+      conta: { rotulo: "Mercado Livre 1 · ACME", fonte: { tipo: "manual" }, resumo: resumo({ fat: 7000 }) },
+    });
+    mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual, clientes: [mlComApi()], salvarManual }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
+    await userEvent.click(screen.getByRole("button", { name: /lançar dados — mercado livre 1 · acme/i }));
+    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
+    expect(within(drawer).getByTestId("referencia-api")).toHaveTextContent("Referência da API");
+    expect(within(drawer).getByText(/prevalece sobre a API/)).toBeInTheDocument();
+    await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "7000");
+    await userEvent.click(within(drawer).getByRole("button", { name: /salvar lançamento/i }));
+    expect(salvarManual).toHaveBeenCalledWith(1, 11, expect.objectContaining({ faturamento: 7000 }));
+    const confirmacao = await screen.findByTestId("confirmacao-lancamento");
+    expect(confirmacao).toHaveTextContent("Lançamento salvo");
+    expect(confirmacao).toHaveTextContent("Mercado Livre 1 · ACME");
+    expect(confirmacao).toHaveTextContent("Origem: Manual");
+  });
+
+  it("falha ao salvar fica no drawer com a mensagem do servidor, sem confirmação falsa", async () => {
+    const salvarManual = vi.fn().mockRejectedValue(new Error("Seu papel não permite lançar dados manuais."));
+    mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual, clientes: [mlComApi()], salvarManual }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
+    await userEvent.click(screen.getByRole("button", { name: /lançar dados — mercado livre 1 · acme/i }));
+    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
+    await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "7000");
+    await userEvent.click(within(drawer).getByRole("button", { name: /salvar lançamento/i }));
+    expect(await within(drawer).findByRole("alert")).toHaveTextContent("Seu papel não permite");
+    expect(screen.queryByTestId("confirmacao-lancamento")).toBeNull();
+  });
+});

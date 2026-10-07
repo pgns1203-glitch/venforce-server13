@@ -235,3 +235,24 @@ describe("rastreabilidade sob demanda", () => {
     expect(onIrParaCompetencia).toHaveBeenCalledWith(3, 31, "2026-08");
   });
 });
+
+describe("modo manual", () => {
+  it("conta ML com manual vigente reabre preenchida com o valor gravado e mostra a referência da API", () => {
+    const ml = conta(11, {
+      rotulo: "Mercado Livre 1 · ACME", fonte: { tipo: "manual", rotulo: "Manual" },
+      resumo: { fat: 3000000 },
+      referenciaApi: { fat: 2833602, dadosAte: "2026-09-28", rotulo: "API" },
+      manual: { valores: { fat: 3000000, lc: 450000, mc: 0.15, ads: null }, gmvAds: null, statusRegistro: "vigente", atualizadoPor: "Ana" },
+    });
+    render(
+      <LancamentoManualDrawer
+        cliente={{ id: 1, nome: "AMR", contas: [ml] }} contaInicial={ml} competencia="2026-09"
+        onSalvar={vi.fn()} onRemover={vi.fn()} onFechar={vi.fn()} modoManual
+      />
+    );
+    expect(campo("Faturamento (R$)")).toHaveValue("3000000");
+    expect(campo("Lucro de contribuição (R$)")).toHaveValue("450000");
+    expect(screen.getByTestId("referencia-api")).toHaveTextContent("Referência da API");
+    expect(screen.getByText(/prevalece sobre a API/)).toBeInTheDocument();
+  });
+});

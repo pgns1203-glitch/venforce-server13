@@ -68,8 +68,16 @@ function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "", ch
   );
 }
 
-export function RegraAtualizacao({ competencia, competenciaAtual, podeAtualizar }) {
+export function RegraAtualizacao({ competencia, competenciaAtual, podeAtualizar, modoManual = false }) {
   const corrente = competencia === competenciaAtual;
+  // Modo manual: o Painel não promete atualização que não vai acontecer.
+  if (modoManual) {
+    return (
+      <span className="vf-ph-regra" data-testid="regra-atualizacao">
+        <span>Modo manual: valores lançados pela equipe · atualização automática desligada</span>
+      </span>
+    );
+  }
   return (
     <span className="vf-ph-regra" data-testid="regra-atualizacao">
       <span>Atualização automática: {corrente ? "até ontem" : "mês encerrado"}</span>
@@ -89,7 +97,7 @@ export function ToolbarPainel({
   temFiltroAtivo, onLimpar,
   grupos, onAlternarGrupo,
   resumoCarteira, atualizando,
-  competenciaAtual = competenciaPadrao, podeAtualizar = false,
+  competenciaAtual = competenciaPadrao, podeAtualizar = false, modoManual = false,
 }) {
   const competencias = useMemo(() => competenciasDisponiveis(competenciaPadrao, competencia), [competenciaPadrao, competencia]);
   // Controle sem efeito não aparece: um squad só.
@@ -186,7 +194,7 @@ export function ToolbarPainel({
             )}
             {atualizando && <span className="vf-ph-resumo__atualizando">Atualizando…</span>}
           </p>
-          <RegraAtualizacao competencia={competencia} competenciaAtual={competenciaAtual} podeAtualizar={podeAtualizar} />
+          <RegraAtualizacao competencia={competencia} competenciaAtual={competenciaAtual} podeAtualizar={podeAtualizar} modoManual={modoManual} />
         </div>
       )}
     </div>

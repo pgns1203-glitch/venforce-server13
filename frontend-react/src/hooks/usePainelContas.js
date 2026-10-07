@@ -268,8 +268,8 @@ export function usePainelContas() {
       .finally(() => composicaoEmCursoRef.current.delete(chave));
   }, []);
 
-  // Lançamento manual: o servidor é a autoridade (validação, precedência do
-  // automático, auditoria). Depois de gravar, a lista é recarregada inteira —
+  // Lançamento manual: o servidor é a autoridade (validação, precedência,
+  // auditoria). Depois de gravar, a lista é recarregada inteira —
   // consolidado, status e contagens do topo mudam juntos, nunca remendados
   // no cliente.
   const salvarManual = useCallback(async (clienteId, contaId, valores) => {
@@ -431,6 +431,8 @@ export function usePainelContas() {
     acesso: dados?.acesso || null,
     visao: dados?.visao || null,
     permissoes: dados?.permissoes || { lancarManual: false, atualizarDados: false },
+    // Modo do Painel decidido no servidor (PAINEL_CONTAS_AUTO_UPDATE_ENABLED).
+    modo: dados?.modo || null,
     competenciaAtual: dados?.competenciaAtual || competenciaPadrao,
     carregando, erro, recarregar,
     // A tabela continua na tela durante a troca de filtro; `atualizando` é o

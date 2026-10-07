@@ -49,6 +49,7 @@ const { configConexao } = require("../../config/databaseConexao");
 const { assertClienteNaCarteira } = require("../squads/authorizationService");
 const noturno = require("../centralVendas/centralVendasNoturnoService");
 const { competenciaValida } = require("./painelContasManual");
+const painelModo = require("./painelContasModo");
 
 const TIMEZONE = "America/Sao_Paulo";
 const ORIGEM = "painel-sob-demanda";
@@ -273,6 +274,9 @@ function defaultDeps() {
     hoje: () => noturno.hojeNoFuso(new Date(), TIMEZONE),
     agora: () => new Date(),
     env: process.env,
+    // Modo manual do Painel (PAINEL_CONTAS_AUTO_UPDATE_ENABLED != "true"):
+    // este botão é a única escrita automática PRÓPRIA do Painel — desligado.
+    autoUpdateHabilitado: () => painelModo.autoUpdateHabilitado(process.env),
     logger: console,
   };
 }
@@ -387,6 +391,11 @@ async function executarJob(job, contexto, deps) {
 async function iniciarAtualizacao(user, clienteRef, competencia, depsOverride = {}) {
   const deps = { ...defaultDeps(), ...depsOverride };
   if (!ehAdmin(user)) throw erro(403, "SEM_PERMISSAO", "Atualizar dados sob demanda é restrito a administradores.");
+  // Antes de qualquer query, lock ou sync: no modo manual nada é disparado.
+  if (!deps.autoUpdateHabilitado()) {
+    throw erro(409, "PAINEL_MODO_MANUAL",
+      "O Painel de Contas está em modo manual: a atualização automática está desligada. Lance os valores manualmente.");
+  }
   if (!competenciaValida(competencia)) throw erro(400, "COMPETENCIA_INVALIDA", "competencia inválida (esperado YYYY-MM).");
   const periodo = periodoSobDemanda(competencia, deps.hoje());
   const cliente = await deps.assertClienteNaCarteira(user, clienteRef, deps.db);

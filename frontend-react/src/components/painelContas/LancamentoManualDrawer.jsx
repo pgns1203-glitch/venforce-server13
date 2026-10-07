@@ -160,8 +160,11 @@ function CompetenciasDaConta({ carregar, competencia, onAbrir }) {
   );
 }
 
+// Abre com o que está GRAVADO para a conta × competência (vigente ou guardado
+// sob o automático) — reabrir o drawer nunca mostra o formulário vazio quando
+// existe lançamento.
 function valoresIniciais(conta) {
-  const m = conta?.fonte?.tipo === "manual" ? conta.manual : null;
+  const m = conta?.manual || null;
   return {
     faturamento: paraCampo(m?.valores?.fat),
     lucroContribuicao: paraCampo(m?.valores?.lc),
@@ -183,7 +186,7 @@ const CAMPOS = [
 
 export function LancamentoManualDrawer({
   cliente, contaInicial, competencia, onSalvar, onRemover, onFechar,
-  onCarregarLancamentos, onCarregarHistorico, onIrParaCompetencia,
+  onCarregarLancamentos, onCarregarHistorico, onIrParaCompetencia, modoManual = false,
 }) {
   const idTitulo = useId();
   const contas = useMemo(() => (cliente?.contas || []).filter((c) => c.podeLancarManual), [cliente]);
@@ -231,7 +234,8 @@ export function LancamentoManualDrawer({
   const lcDerivado = !invalido && fat !== null && mc !== null && lc === null ? fat * mc : null;
   const acos = !invalido && ads !== null && gmv > 0 ? ads / gmv : null;
   const tacos = !invalido && ads !== null && fat > 0 ? ads / fat : null;
-  const temManual = conta?.fonte?.tipo === "manual";
+  const temManual = Boolean(conta?.manual);
+  const ref = conta?.referenciaApi || (conta?.fonte?.tipo === "api" ? { fat: conta.resumo?.fat, dadosAte: conta.dadosAte, rotulo: conta.fonte.rotulo } : null);
   const limites = useMemo(() => limitesDataReferencia(competencia), [competencia]);
   const dataRef = campos.dataReferencia;
   const dataRefInvalida = Boolean(dataRef) && (dataRef < limites.min || dataRef > limites.max);
@@ -389,10 +393,27 @@ export function LancamentoManualDrawer({
                 )}
                 {erroServidor && <p className="vf-field__error" role="alert">{erroServidor}</p>}
 
+                {ref && ref.fat != null && (
+                  <p className="vf-ph-drawer__nota" data-testid="referencia-api">
+                    Referência da {ref.rotulo || "API"}: FAT {formatarMoeda(ref.fat, { casas: 2 })}
+                    {ref.dadosAte ? ` (dados até ${formatarData(ref.dadosAte)})` : ""}.
+                  </p>
+                )}
+
                 <p className="vf-ph-drawer__nota">
-                  O dado fica marcado como <strong>MANUAL</strong>. Se a integração publicar esta competência, o automático
-                  passa a ser o exibido e este lançamento continua guardado. Cada competência é um registro próprio:
-                  salvar este mês não altera os outros.
+                  {modoManual ? (
+                    <>
+                      O dado fica marcado como <strong>MANUAL</strong> e <strong>prevalece sobre a API</strong> enquanto o
+                      Painel estiver em modo manual — nenhuma rotina automática o substitui. Cada competência é um registro
+                      próprio: salvar este mês não altera os outros.
+                    </>
+                  ) : (
+                    <>
+                      O dado fica marcado como <strong>MANUAL</strong>. Se a integração publicar esta competência, o automático
+                      passa a ser o exibido e este lançamento continua guardado. Cada competência é um registro próprio:
+                      salvar este mês não altera os outros.
+                    </>
+                  )}
                 </p>
 
                 {temManual && <Registro conta={conta} competencia={competencia} />}

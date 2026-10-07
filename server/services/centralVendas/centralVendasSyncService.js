@@ -965,7 +965,10 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       // `orders`: só para o índice em memória shipmentId->orderIds (RUN 7 —
       // claim.resource="shipment" vinculado por order.shipping.id). Nenhuma
       // chamada de API extra é feita a partir disso.
-      buscarClaimsPorPeriodo({ clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to, orderIds, orders }),
+      buscarClaimsPorPeriodo({
+        clienteId: cliente.id, sellerId, dateFrom: from, dateTo: to, orderIds, orders,
+        ordersCompletos: ordersCompleteness?.complete === true,
+      }),
       sourceService
         ? coletarPaymentsMp({ clienteId: cliente.id, sellerId, orders })
         : Promise.resolve(null),
@@ -1133,7 +1136,10 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         // Returns: universo esperado real (seção 29/30) — claims de devolução
         // que precisavam de detalhe via GET .../claims/{id}/returns, não
         // claims.length inteiro (nem todo claim exige esse detalhe).
-        const returnsExpected = claimsLote.returnsPendentesTotal ?? 0;
+        // Devoluções de pedidos de OUTRO período (shipment fora do índice
+        // completo do período) não fazem parte do universo esperado deste run.
+        const returnsForaDoPeriodo = claimsLote.returnsForaDoPeriodo ?? 0;
+        const returnsExpected = Math.max(0, (claimsLote.returnsPendentesTotal ?? 0) - returnsForaDoPeriodo);
         const returnsResolved = claimsLote.returnsResolvidos ?? 0;
         const returnsUnresolved = claimsLote.returnsNaoResolvidos ?? 0;
         const returnsComplete = returnsUnresolved === 0;
@@ -1149,6 +1155,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
           metadata: {
             resolved: returnsResolved,
             unresolved: returnsUnresolved,
+            foraDoPeriodo: returnsForaDoPeriodo,
             // Diagnóstico seguro (whitelist fixa, sem token/payload completo)
             // de CADA devolução que ficou sem vínculo — antes só existia o
             // contador agregado, e a causa real nunca sobrevivia ao console.log

@@ -369,12 +369,40 @@ async function reconciliarRunsNoturnosInterrompidos({ antesDe, db = pool }) {
   return result.rows || [];
 }
 
-async function listarPeriodosNoturnosPendentes({ antesDe, db = pool }) {
+// Órfãos noturnos ANTIGOS (queued/running criados antes de `desde`) não são
+// retomados: viram failed SYNC_RUN_ORPHAN_EXPIRED. Sem isso, qualquer run
+// noturno esquecido (dias atrás, rodada interrompida) era retomado em massa no
+// próximo boot com a flag ligada — períodos velhos × TODAS as contas
+// elegíveis. Só runs noturnos (requested_by IS NULL); manual nunca é tocado.
+async function expirarRunsNoturnosOrfaos({ antesDe, desde, db = pool }) {
   const result = await db.query(
-    `SELECT DISTINCT TO_CHAR(r.date_from, 'YYYY-MM-DD') AS date_from, TO_CHAR(r.date_to, 'YYYY-MM-DD') AS date_to
+    `/* cv:expirar-orfaos-noturnos */
+     UPDATE central_vendas_sync_runs
+        SET status = 'failed', finished_at = NOW(), updated_at = NOW(),
+            error_code = 'SYNC_RUN_ORPHAN_EXPIRED',
+            error_message = 'Run noturno órfão antigo demais para retomar; o próximo agendamento cobre o período.'
+      WHERE requested_by IS NULL
+        AND status IN ('queued','running')
+        AND created_at < $1
+        AND created_at < $2
+      RETURNING id`,
+    [antesDe, desde]
+  );
+  return result.rows || [];
+}
+
+// `desde` (opcional): só períodos com pendência criada a partir deste instante
+// (janela de recuperação). Cada período devolve também os clientes pendentes,
+// para a retomada não reprocessar a carteira inteira.
+async function listarPeriodosNoturnosPendentes({ antesDe, desde = null, db = pool }) {
+  const result = await db.query(
+    `SELECT DISTINCT p.date_from, p.date_to, p.clientes FROM (
+     SELECT TO_CHAR(r.date_from, 'YYYY-MM-DD') AS date_from, TO_CHAR(r.date_to, 'YYYY-MM-DD') AS date_to,
+            array_agg(DISTINCT r.cliente_slug ORDER BY r.cliente_slug) AS clientes
        FROM central_vendas_sync_runs r
       WHERE r.requested_by IS NULL
         AND r.created_at < $1
+        AND ($2::timestamptz IS NULL OR r.created_at >= $2::timestamptz)
         AND (
           r.status IN ('queued','running')
           OR (
@@ -394,12 +422,19 @@ async function listarPeriodosNoturnosPendentes({ antesDe, db = pool }) {
             )
           )
         )
-      ORDER BY date_from, date_to`,
-    [antesDe]
+      GROUP BY r.date_from, r.date_to
+     ) p
+      ORDER BY p.date_from, p.date_to`,
+    [antesDe, desde]
   );
   return result.rows.map((row) => {
     const dateFrom = formatarDiaIso(row.date_from);
-    return { competencia: dateFrom ? dateFrom.slice(0, 7) : null, dateFrom, dateTo: formatarDiaIso(row.date_to) };
+    return {
+      competencia: dateFrom ? dateFrom.slice(0, 7) : null,
+      dateFrom,
+      dateTo: formatarDiaIso(row.date_to),
+      ...(Array.isArray(row.clientes) ? { clientes: row.clientes.filter(Boolean) } : {}),
+    };
   });
 }
 
@@ -538,6 +573,7 @@ module.exports = {
   buscarRunCompletedPublicadoEquivalente,
   reconciliarRunsNoturnosInterrompidos,
   listarPeriodosNoturnosPendentes,
+  expirarRunsNoturnosOrfaos,
   sanitizeRun,
   formatarDiaIso,
   ESTADOS_FINAIS,

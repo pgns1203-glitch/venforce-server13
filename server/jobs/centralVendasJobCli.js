@@ -21,9 +21,12 @@ function parseArgs(argv) {
   return args;
 }
 
+// Opt-in EXPLÍCITO, igual ao scheduler interno (centralVendasNoturnoScheduler):
+// antes a ausência da variável ligava o job, então um Render Cron Job
+// esquecido sincronizava produção mesmo com a automação "desligada" no
+// serviço web. Agora só "true" liga — os dois mecanismos têm a mesma chave.
 function jobHabilitado(env) {
-  const valor = String(env.CENTRAL_VENDAS_NOTURNO_ENABLED ?? "").trim().toLowerCase();
-  return !(valor === "false" || valor === "0" || valor === "off");
+  return String(env.CENTRAL_VENDAS_NOTURNO_ENABLED ?? "").trim().toLowerCase() === "true";
 }
 
 // Roda `executar()` e devolve o exit code. Erro estrutural (banco fora,

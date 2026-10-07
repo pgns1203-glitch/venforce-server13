@@ -27,6 +27,7 @@
 //     sem tabela de lock, sem lock preso.
 
 const { TIMEZONE } = require("./centralVendasNoturnoService");
+const { lerMsPositivo } = require("../../config/databaseConexao");
 
 const HORA_PADRAO = "03:00";
 // Namespace próprio (mlTokenService usa 1296845907/1296845908; squadService
@@ -37,6 +38,14 @@ const LOCK_CHAVE_RODADA = 1;
 // reagendado em vez de rodar cedo demais.
 const TOLERANCIA_DISPARO_MS = 1000;
 const RECUPERACAO_RETRY_MS = 30000;
+// Teto de UMA rodada/recuperação neste processo. Cada unidade já tem prazo
+// (centralVendasPrazos), mas uma espera fora delas (preparação, listagem,
+// snapshot) deixava `emExecucao` true para sempre: todo disparo seguinte era
+// "já em andamento" até um restart. Estourado o teto, o scheduler volta a
+// agendar; a rodada antiga continua segurando o advisory lock até terminar,
+// então nada roda em paralelo com ela (o próximo disparo vê
+// RODADA_EM_OUTRA_INSTANCIA). CENTRAL_VENDAS_NOTURNO_RODADA_TIMEOUT_MS ajusta.
+const RODADA_TIMEOUT_PADRAO_MS = 6 * 60 * 60 * 1000;
 
 const LOG = "[sync-scheduler]";
 
@@ -224,7 +233,7 @@ function createScheduler(depsOverride = {}) {
     estado.emExecucao = true;
     estado.progresso = null;
     const inicio = deps.agora();
-    const promessa = (async () => {
+    const execucao = (async () => {
       let lock;
       try {
         lock = await deps.adquirirLockGlobal(deps.getPool());
@@ -268,7 +277,27 @@ function createScheduler(depsOverride = {}) {
       // Rede de segurança: nada daqui pode virar unhandled rejection no Web Service.
       deps.logger.error(`${LOG} erro: ${mensagemSegura(err)}`);
       return { executada: false, motivo: "ERRO" };
-    }).finally(() => {
+    });
+
+    const tetoMs = lerMsPositivo(deps.env.CENTRAL_VENDAS_NOTURNO_RODADA_TIMEOUT_MS, RODADA_TIMEOUT_PADRAO_MS);
+    let timerTeto = null;
+    const teto = new Promise((resolve) => {
+      timerTeto = deps.setTimeoutFn(() => {
+        const p = estado.progresso || {};
+        deps.logger.error(
+          `${LOG} ${tipo === "recuperacao" ? "recuperação" : "rodada"} excedeu ${Math.round(tetoMs / 60000)} min`
+            + ` (${p.concluidas ?? 0}/${p.total ?? "?"}${p.unidade ? ` últimaUnidade=${p.unidade}` : ""})`
+            + " — scheduler liberado; a rodada antiga segue com o lock até terminar"
+        );
+        resolve({ executada: false, motivo: "RODADA_TIMEOUT" });
+      }, tetoMs);
+      if (timerTeto && typeof timerTeto.unref === "function") timerTeto.unref();
+    });
+
+    // O finally roda UMA vez, quando a corrida termina (rodada ou teto) — a
+    // rodada abandonada que termina depois não toca mais o estado.
+    const promessa = Promise.race([execucao, teto]).finally(() => {
+      if (timerTeto) deps.clearTimeoutFn(timerTeto);
       estado.emExecucao = false;
       estado.promessaAtiva = null;
     });
@@ -382,6 +411,7 @@ module.exports = {
   habilitado,
   adquirirLockGlobal,
   HORA_PADRAO,
+  RODADA_TIMEOUT_PADRAO_MS,
   LOCK_NAMESPACE,
   LOCK_CHAVE_RODADA,
 };

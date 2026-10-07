@@ -638,14 +638,18 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn 
   // Resolve o pedido de claims de devolução que NÃO têm vínculo direto com order.
   // Não há chamada indiscriminada: só entram claims com indicação de devolução e
   // sem `resource=order`.
-  async function resolverReturnsSemVinculo({ clienteId, claims, mlUserId, maxAttempts, shipmentToOrderIds }) {
+  // `indiceCompleto`: o chamador garante que `shipmentToOrderIds` foi montado
+  // com TODOS os Orders do período (fonte orders completa). Só então um claim
+  // resource=shipment cujo shipment não pertence a nenhum pedido do período
+  // pode ser afirmado como de OUTRO período (ver foraDoPeriodo abaixo).
+  async function resolverReturnsSemVinculo({ clienteId, claims, mlUserId, maxAttempts, shipmentToOrderIds, indiceCompleto = false }) {
     const pendentes = (claims || []).filter((claim) => {
       if (String(claim?.resource || "").toLowerCase() === "order") return false;
       return claimHasReturn(claim) && claim?.id != null;
     });
 
     if (!pendentes.length) {
-      return { tentados: 0, resolvidos: 0, naoResolvidos: 0, truncados: 0, pendentesTotal: 0, diagnosticos: [] };
+      return { tentados: 0, resolvidos: 0, naoResolvidos: 0, foraDoPeriodo: 0, truncados: 0, pendentesTotal: 0, diagnosticos: [] };
     }
 
     // Diagnóstico de chegada de `orders` (RUN 8): a soma dos tamanhos dos
@@ -745,23 +749,52 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn 
     // da chamada isolada): um claim truncado pelo teto de detalhe, mas
     // resolvido pelo shipment no laço acima, é resolvido de verdade — nunca
     // API extra, e o vínculo já existia em memória (seção 6/10 do prompt).
+    //
+    // Escopo (bug RETURNS_UNRESOLVED de outro mês): a busca de claims usa uma
+    // janela [início do período, hoje] para alcançar o pós-venda tardio, então
+    // traz também devoluções de pedidos de OUTROS meses. Um claim
+    // resource=shipment cujo shipment não está no índice COMPLETO dos pedidos
+    // do período (0 matches) e cujo detalhe não trouxe order_id não é de um
+    // pedido deste período — antes era contado como pendência dele e
+    // rebaixava o mês inteiro para "partial". Pack ambíguo (2+ matches),
+    // resource desconhecido ou índice incompleto continuam não resolvidos.
     let resolvidos = 0;
     let naoResolvidos = 0;
+    let foraDoPeriodo = 0;
     for (const claim of pendentes) {
-      if (claim.resolvedOrderId != null) resolvidos++;
-      else naoResolvidos++;
+      if (claim.resolvedOrderId != null) {
+        resolvidos++;
+        continue;
+      }
+      const claimResourceId = normalizeCrossId(claim?.resource_id);
+      const shipmentDeOutroPeriodo = indiceCompleto
+        && String(claim?.resource || "").toLowerCase() === "shipment"
+        && claimResourceId
+        && shipmentToOrderIds instanceof Map
+        && !shipmentToOrderIds.has(claimResourceId);
+      if (shipmentDeOutroPeriodo) {
+        claim.foraDoPeriodo = true;
+        foraDoPeriodo++;
+      } else {
+        naoResolvidos++;
+      }
+    }
+    for (const d of diagnosticos) {
+      const claim = pendentes.find((c) => String(c.id) === d.claimId);
+      d.classificacao = claim?.foraDoPeriodo ? "fora_do_periodo" : "nao_resolvido";
     }
 
     console.log(
       `[centralVendas] claims returns detalhe: pendentes=${pendentes.length}`
         + ` tentados=${alvos.length} resolvidos=${resolvidos}`
-        + ` naoResolvidos=${naoResolvidos}`
+        + ` naoResolvidos=${naoResolvidos} foraDoPeriodo=${foraDoPeriodo}`
     );
 
     return {
       tentados: alvos.length,
       resolvidos,
       naoResolvidos,
+      foraDoPeriodo,
       truncados,
       // Universo esperado real de Returns (seção 29/30 da spec M3): todos os
       // claims de devolução que precisavam de detalhe, não apenas os que
@@ -782,6 +815,10 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn 
     // shipmentId->orderIds (buildShipmentOrderIndex). Nenhuma chamada de API
     // adicional é feita a partir daqui.
     orders = null,
+    // true só quando a fonte orders do período veio COMPLETA (o chamador sabe
+    // pela completude da Orders API). Habilita classificar devolução de
+    // shipment alheio ao período como "fora do período" em vez de pendência.
+    ordersCompletos = false,
     limit = CLAIMS_PAGE_LIMIT,
     maxAttempts = CLAIMS_MAX_ATTEMPTS,
     lookaheadDays = CLAIMS_LOOKAHEAD_DAYS,
@@ -816,6 +853,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn 
       returnsResolvidos: 0,
       returnsNaoResolvidos: 0,
       returnsPendentesTotal: 0,
+      returnsForaDoPeriodo: 0,
       returnsDiagnosticos: [],
       claimsForaDoPeriodo: 0,
       pedidosComClaims: 0,
@@ -944,8 +982,21 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn 
     console.log("[centralVendas] claims por resource:", resourceCounts);
 
     const shipmentToOrderIds = buildShipmentOrderIndex(orders);
+    // Índice confiável para afirmar "shipment de outro período": orders
+    // completos E TODO pedido do período entrou no índice (id + shipping.id).
+    // Basta UM pedido sem shipping.id para o claim poder ser dele — aí nada é
+    // afirmado (continua não resolvido). "O índice tem algum shipment" NÃO é
+    // prova de completude. Período completo sem nenhum pedido: nenhum shipment
+    // pode ser dele, então a prova é inequívoca.
+    const listaOrders = Array.isArray(orders) ? orders : [];
+    const pedidosForaDoIndice = listaOrders.filter(
+      (o) => !normalizeCrossId(o?.id) || !normalizeCrossId(o?.shipping?.id)
+    ).length;
+    const indiceCompleto = ordersCompletos === true
+      && Array.isArray(orders)
+      && pedidosForaDoIndice === 0;
     const returns = await resolverReturnsSemVinculo({
-      clienteId, claims, mlUserId: sellerId, maxAttempts, shipmentToOrderIds,
+      clienteId, claims, mlUserId: sellerId, maxAttempts, shipmentToOrderIds, indiceCompleto,
     });
 
     const claimsMapCompleto = buildClaimsMap(claims);
@@ -998,6 +1049,7 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn 
       returnsResolvidos: returns.resolvidos,
       returnsNaoResolvidos: returns.naoResolvidos,
       returnsPendentesTotal: returns.pendentesTotal,
+      returnsForaDoPeriodo: returns.foraDoPeriodo,
       returnsDiagnosticos: returns.diagnosticos,
       claimsForaDoPeriodo,
       pedidosComClaims: claimsMap.size,

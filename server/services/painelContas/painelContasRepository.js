@@ -201,18 +201,34 @@ async function medirSobreposicaoDosImports(importIds) {
 
 // Último sync_run de cada conta que toca a competência. Só status/código/data
 // — error_message pode carregar texto de terceiros e não sai daqui.
+// `travado`: queued/running além do limite de abandono — um run órfão de
+// restart não é exibido como "sincronizando" para sempre. Nada é
+// transicionado aqui (só leitura). Limites:
+//   running            → RUNNING_STALE_MINUTES da Central (a unidade noturna já
+//                        tem prazo de 30 min, então além disso está parada);
+//   queued manual      → QUEUED_STALE_MINUTES da Central;
+//   queued noturno     → teto da RODADA: a rodada cria todas as unidades como
+//                        queued antes de executar, então horas na fila durante
+//                        uma rodada saudável é normal.
 async function listarUltimoRunPorConta(contaIds, { inicio, fim }) {
   if (!Array.isArray(contaIds) || !contaIds.length) return [];
+  const { QUEUED_STALE_MINUTES, RUNNING_STALE_MINUTES } = require("../centralVendas/centralVendasSyncRunService");
+  const { RODADA_TIMEOUT_PADRAO_MS } = require("../centralVendas/centralVendasNoturnoScheduler");
+  const { lerMsPositivo } = require("../../config/databaseConexao");
+  const rodadaMin = Math.ceil(lerMsPositivo(process.env.CENTRAL_VENDAS_NOTURNO_RODADA_TIMEOUT_MS, RODADA_TIMEOUT_PADRAO_MS) / 60000);
   const { rows } = await pool.query(
     `/* painelContas:ULTIMO_RUN_POR_CONTA */
      SELECT DISTINCT ON (r.cliente_conta_id)
-            r.id, r.cliente_conta_id, r.status, r.error_code, r.created_at
+            r.id, r.cliente_conta_id, r.status, r.error_code, r.created_at,
+            ((r.status = 'queued' AND r.requested_by IS NOT NULL AND r.created_at < NOW() - make_interval(mins => $4::int))
+              OR (r.status = 'queued' AND r.requested_by IS NULL AND r.created_at < NOW() - make_interval(mins => $6::int))
+              OR (r.status = 'running' AND COALESCE(r.started_at, r.created_at) < NOW() - make_interval(mins => $5::int))) AS travado
        FROM central_vendas_sync_runs r
       WHERE r.cliente_conta_id = ANY($1::int[])
         AND r.date_from <= $3::date
         AND r.date_to >= $2::date
       ORDER BY r.cliente_conta_id, r.created_at DESC, r.id DESC`,
-    [contaIds, inicio, fim]
+    [contaIds, inicio, fim, QUEUED_STALE_MINUTES, RUNNING_STALE_MINUTES, rodadaMin]
   );
   return rows;
 }

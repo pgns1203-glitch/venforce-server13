@@ -3,6 +3,7 @@
 // e retorna o mesmo shape de dados que buildResultadoFromBaseMetrics em process.js.
 
 const XLSX = require("xlsx");
+const { getMeliAbcMetrics } = require("./curvaAbcMeli");
 
 function toText(v) {
   if (v === null || v === undefined) return "";
@@ -243,36 +244,41 @@ function processarFechamentoMeli(buffer) {
   }
 }
 
-function compilarFechamentosMeli(buffers) {
+function compilarFechamentosMeli(buffers, nomes = []) {
   if (!Array.isArray(buffers) || !buffers.length) {
     return { error: "Lista de arquivos inválida." };
   }
 
-  const allMetrics = [];
-
-  for (const buf of buffers) {
-    const r = getMeliBaseMetrics(buf);
-    if (r.error) continue;
-    allMetrics.push(...r.baseMetrics);
-  }
-
-  if (!allMetrics.length) {
-    return { error: "Nenhum arquivo Meli válido para compilar." };
-  }
-
-  // Mescla por id de anúncio
+  // Mescla por MLB. Cada planilha é lida uma vez e só as métricas sobrevivem
+  // à iteração. Qualquer falha derruba a compilação inteira: uma curva anual
+  // com meses faltando, sem aviso, seria um resultado errado.
   const merged = new Map();
-  for (const r of allMetrics) {
-    const key = r.id || r.produto;
-    if (!merged.has(key)) {
-      merged.set(key, { ...r });
-    } else {
+
+  for (let i = 0; i < buffers.length; i++) {
+    let r;
+    try {
+      r = getMeliAbcMetrics(buffers[i]);
+    } catch (err) {
+      r = { error: err instanceof Error ? err.message : "Erro ao processar planilha Meli." };
+    }
+
+    if (r.error) {
+      const nomeArquivo = nomes[i] || `arquivo ${i + 1}`;
+      return { error: `Não foi possível processar ${nomeArquivo}: ${r.error}` };
+    }
+
+    for (const row of r.baseMetrics) {
+      const key = row.id || row.produto;
+      if (!merged.has(key)) {
+        merged.set(key, { ...row });
+        continue;
+      }
       const acc = merged.get(key);
-      acc.faturamento += r.faturamento;
-      acc.unidades += r.unidades;
-      acc.pedidos += r.pedidos;
-      if (r.temAds) acc.temAds = true;
-      if (r.tipoAnuncio && !acc.tipoAnuncio) acc.tipoAnuncio = r.tipoAnuncio;
+      acc.faturamento += row.faturamento;
+      acc.unidades += row.unidades;
+      acc.pedidos += row.pedidos;
+      if (row.temAds) acc.temAds = true;
+      if (row.tipoAnuncio && !acc.tipoAnuncio) acc.tipoAnuncio = row.tipoAnuncio;
     }
   }
 

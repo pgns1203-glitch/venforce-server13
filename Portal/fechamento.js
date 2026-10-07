@@ -18,6 +18,7 @@ function getToken() {
 
 const TOKEN = getToken();
 const API_BASE = "https://venforce-server.onrender.com";
+const MAX_PLANILHAS = 12; // mesmo limite do backend (POST /fechamentos/compilar)
 let dadosAtuais = null;
 let abaAtiva = "abc";
 let processamentoAtivo = false;
@@ -120,7 +121,7 @@ function updateFilePresentation(input, message = "") {
 
   if (nameEl) {
     nameEl.textContent = input.multiple
-      ? `${files.length} arquivo(s) selecionado(s)`
+      ? `${files.length} ${files.length === 1 ? "planilha selecionada" : "planilhas selecionadas"}`
       : files[0].name;
   }
   if (infoEl) {
@@ -141,9 +142,10 @@ function validateInputFiles(input) {
     setStatus("Apenas arquivos .xlsx são aceitos.", "danger");
     return false;
   }
-  if (input.multiple && files.length > 20) {
-    updateFilePresentation(input, "Selecione no máximo 20 arquivos.");
-    setStatus("A compilação aceita no máximo 20 arquivos.", "danger");
+  if (input.multiple && files.length > MAX_PLANILHAS) {
+    const message = `Selecione no máximo ${MAX_PLANILHAS} planilhas.`;
+    updateFilePresentation(input, message);
+    setStatus(`${message} Você selecionou ${files.length}.`, "danger");
     return false;
   }
   updateFilePresentation(input);
@@ -180,10 +182,10 @@ function initFechamentoDragDrop(inputId, acceptExt = ".xlsx") {
     if (!files?.length) return;
 
     const valid = Array.from(files).every((f) => f.name.toLowerCase().endsWith(acceptExt));
-    if (!valid || (input.multiple && files.length > 20)) {
+    if (!valid || (input.multiple && files.length > MAX_PLANILHAS)) {
       const message = !valid
         ? `Apenas arquivos ${acceptExt} são aceitos.`
-        : "Selecione no máximo 20 arquivos.";
+        : `Selecione no máximo ${MAX_PLANILHAS} planilhas.`;
       updateFilePresentation(input, message);
       setStatus(message, "danger");
       return;
@@ -774,7 +776,7 @@ async function compilarArquivos() {
       formData.append("files", arquivo);
     });
 
-    const res = await fetch("https://venforce-server.onrender.com/fechamentos/compilar", {
+    const res = await fetch(`${API_BASE}/fechamentos/compilar`, {
       method: "POST",
       headers: { Authorization: "Bearer " + TOKEN },
       body: formData

@@ -16,7 +16,9 @@ const user = JSON.parse(localStorage.getItem("vf-user") || "{}");
 //     é liberado para admin/user/membro com gate de carteira. Toda mutação
 //     (criar/remover cliente, criar conta, base, grant, ativar…) continua
 //     requireAdmin no backend — então a UI simplesmente não as oferece a
-//     quem não é admin, em vez de deixar o clique cair num 403.
+//     quem não é admin, em vez de deixar o clique cair num 403. Exceção:
+//     Conectar/Reconectar e "Copiar link de conexão" do Mercado Livre são
+//     para todos (rota pública; ver acoesConexaoMl).
 // Persona seller continua sendo desviada pelo Shell V3 para seller.html.
 const IS_ADMIN = String(user.role || "").toLowerCase() === "admin";
 initLayout();
@@ -753,7 +755,7 @@ function renderDetalhe() {
 
   const avisoLeitura = IS_ADMIN ? "" : `
     <div class="vf-alert is-info vf-cli-aviso-leitura" role="note">
-      Você vê as contas da sua carteira. Conectar contas, definir bases e outras alterações são feitas por um administrador.
+      Você pode conectar contas do Mercado Livre e copiar o link de conexão para o cliente. Definir bases, criar contas e outras alterações são feitas por um administrador.
     </div>`;
 
   const secoes = carregando || reg.estado === "erro" ? "" : MARKETPLACES.map((mp) => {
@@ -849,10 +851,8 @@ function criarCardConta(slug, conta) {
     ${diag.dica ? `<p class="vf-cli-conta__dica">${escapeHTML(diag.dica)}</p>` : ""}
   `;
 
-  if (IS_ADMIN) {
-    const acoes = montarAcoesConta(slug, conta, diag);
-    if (acoes.primaria || acoes.secundaria || acoes.menu.length) card.appendChild(renderAcoesConta(acoes));
-  }
+  const acoes = IS_ADMIN ? montarAcoesConta(slug, conta, diag) : montarAcoesContaLeitura(slug, conta, diag);
+  if (acoes.primaria || acoes.secundaria || acoes.menu.length) card.appendChild(renderAcoesConta(acoes));
   return card;
 }
 
@@ -860,6 +860,31 @@ function criarCardConta(slug, conta) {
 // Uma ação principal pelo ESTADO da conta (o próximo passo dela), uma
 // secundária, e o resto num menu "⋯". Todas chamam exatamente as mesmas
 // rotas da tela anterior.
+// Conectar/Reconectar e "Copiar link de conexão" são para TODOS os usuários:
+// o link /ml/conectar-conta/:id é público no backend (é o mesmo link que o
+// cliente vendedor recebe) e a proteção de reconexão — mesmo seller
+// esperado — é aplicada no callback do servidor, não aqui. Todo o resto
+// (base, principal, ativar, testar, desconectar) é requireAdmin no backend
+// e por isso só aparece para admin, em montarAcoesConta().
+function acoesConexaoMl(slug, conta) {
+  const link = getMlConectarContaLink(conta.id);
+  return {
+    conectar: { label: conta.grant ? "Reconectar" : "Conectar conta", href: link, externo: true, aoAbrir: () => { RECARREGAR_AO_VOLTAR = slug; } },
+    copiar: { label: "Copiar link de conexão", run: (btn) => copiarLinkConta(link, btn) },
+  };
+}
+
+function montarAcoesContaLeitura(slug, conta, diag) {
+  const vazio = { primaria: null, secundaria: null, menu: [] };
+  if (conta.marketplace !== "meli" || conta.ativo === false) return vazio;
+  const { conectar, copiar } = acoesConexaoMl(slug, conta);
+  if (["sem_grant", "desconectada", "grant_problema"].includes(diag.code)) {
+    return { primaria: conectar, secundaria: copiar, menu: [] };
+  }
+  // Conta já conectada: a conexão continua à mão, sem competir com nada.
+  return { primaria: null, secundaria: copiar, menu: [conectar] };
+}
+
 function montarAcoesConta(slug, conta, diag) {
   if (conta.ativo === false) {
     return {
@@ -895,9 +920,7 @@ function montarAcoesConta(slug, conta, diag) {
   }
 
   const temGrant = !!conta.grant;
-  const link = getMlConectarContaLink(conta.id);
-  const conectar = { label: temGrant ? "Reconectar" : "Conectar conta", href: link, externo: true, aoAbrir: () => { RECARREGAR_AO_VOLTAR = slug; } };
-  const copiar = { label: "Copiar link de conexão", run: (btn) => copiarLinkConta(link, btn) };
+  const { conectar, copiar } = acoesConexaoMl(slug, conta);
   const testar = temGrant ? { label: "Testar conexão", run: (btn) => testarGrantConta(slug, conta, btn) } : null;
   const desconectar = temGrant ? {
     label: "Desconectar do Mercado Livre",

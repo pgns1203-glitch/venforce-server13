@@ -502,11 +502,30 @@ describe("modo manual (PAINEL_CONTAS_AUTO_UPDATE_ENABLED desligada)", () => {
   it("diz que o Painel está em modo manual e não promete atualização automática", () => {
     mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual }));
     render(<PainelContasPage />);
-    expect(screen.getByTestId("banner-modo-manual")).toHaveTextContent("Painel em modo manual");
-    expect(screen.getByTestId("banner-modo-manual")).toHaveTextContent(/prevalecem sobre a API/);
+    // Selo compacto no cabeçalho (não mais uma faixa da largura da tela): o
+    // aviso curto está sempre visível; a explicação completa abre em "Entender".
+    const indicador = screen.getByTestId("banner-modo-manual");
+    expect(indicador).toHaveTextContent("Modo manual");
+    expect(indicador).toHaveTextContent(/prevalecem sobre a API/);
+    expect(within(screen.getByRole("banner")).getByTestId("banner-modo-manual")).toBe(indicador);
     expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("Modo manual");
     expect(screen.getByTestId("regra-atualizacao")).not.toHaveTextContent("até ontem");
     expect(screen.queryByRole("button", { name: /atualizar dados de/i })).toBeNull();
+  });
+
+  it("'Entender' abre e fecha a explicação completa do modo manual", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual }));
+    render(<PainelContasPage />);
+    const entender = screen.getByRole("button", { name: "Entender" });
+    expect(entender).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Painel em modo manual")).toBeNull();
+    await userEvent.click(entender);
+    expect(entender).toHaveAttribute("aria-expanded", "true");
+    const detalhe = screen.getByRole("region", { name: "Sobre o modo manual" });
+    expect(detalhe).toHaveTextContent("Painel em modo manual");
+    expect(detalhe).toHaveTextContent(/nenhuma rotina automática os substitui/);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("region", { name: "Sobre o modo manual" })).toBeNull();
   });
 
   it("modo automático não mostra a faixa de modo manual", () => {

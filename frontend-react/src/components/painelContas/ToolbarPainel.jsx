@@ -54,7 +54,9 @@ export function competenciasDisponiveis(competenciaPadrao, selecionada) {
   return lista.sort().reverse();
 }
 
-function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "", children }) {
+// Cada número carrega a MESMA forma de estado da tabela (● ok · ◆ alerta ·
+// ○ sem dado): o resumo e as linhas falam a mesma língua.
+function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "", ponto = "", children }) {
   const ativo = statusAtual === status;
   return (
     <button
@@ -63,6 +65,7 @@ function ItemResumo({ valor, rotulo, status, statusAtual, onStatus, tom = "", ch
       aria-pressed={ativo}
       onClick={() => onStatus(ativo ? "todos" : status)}
     >
+      {ponto && <span className={`vf-ph-resumo__ponto ${ponto}`} aria-hidden="true" />}
       {children || <><span className="vf-ph-resumo__n">{formatarNumero(valor)}</span> {rotulo}</>}
     </button>
   );
@@ -74,7 +77,7 @@ export function RegraAtualizacao({ competencia, competenciaAtual, podeAtualizar,
   if (modoManual) {
     return (
       <span className="vf-ph-regra" data-testid="regra-atualizacao">
-        <span>Modo manual: valores lançados pela equipe · atualização automática desligada</span>
+        <span>Modo manual · atualização automática desligada</span>
       </span>
     );
   }
@@ -173,18 +176,18 @@ export function ToolbarPainel({
       {r && (
         <div className="vf-ph-resumo" data-testid="resumo-carteira">
           <p className="vf-ph-resumo__numeros" aria-live="polite">
-            <ItemResumo status="com_dados" statusAtual={status} onStatus={onStatus} tom="is-principal">
+            <ItemResumo status="com_dados" statusAtual={status} onStatus={onStatus} tom="is-principal" ponto="is-success">
               <span className="vf-ph-resumo__n">{formatarNumero(r.comDados)}</span>
               {" de "}
               <span className="vf-ph-resumo__n vf-ph-resumo__n--total">{formatarNumero(r.operacionais)}</span> clientes com dados
             </ItemResumo>
-            {r.parciais > 0 && <ItemResumo valor={r.parciais} rotulo="parciais" status="parcial" statusAtual={status} onStatus={onStatus} />}
-            {r.semDados > 0 && <ItemResumo valor={r.semDados} rotulo="sem dados" status="sem_dados" statusAtual={status} onStatus={onStatus} />}
+            {r.parciais > 0 && <ItemResumo valor={r.parciais} rotulo="parciais" status="parcial" statusAtual={status} onStatus={onStatus} ponto="is-warning" />}
+            {r.semDados > 0 && <ItemResumo valor={r.semDados} rotulo="sem dados" status="sem_dados" statusAtual={status} onStatus={onStatus} ponto="is-empty" />}
             {r.atencao > 0 && (
               <ItemResumo
                 valor={r.atencao}
                 rotulo={r.atencao === 1 ? "precisa de ação" : "precisam de ação"}
-                status="atencao" statusAtual={status} onStatus={onStatus} tom="is-alerta"
+                status="atencao" statusAtual={status} onStatus={onStatus} tom="is-alerta" ponto="is-warning"
               />
             )}
             {!mostrarLegado && r.legadoOcultos > 0 && (

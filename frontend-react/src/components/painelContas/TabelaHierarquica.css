@@ -22,23 +22,33 @@
   border-radius: var(--vf-radius-sm);
 }
 
-/* Larguras das duas colunas-âncora. São fixas porque o deslocamento sticky da
-   segunda coluna depende da largura exata da primeira — uma coluna elástica
-   deixaria a segunda flutuando sobre a primeira no scroll horizontal.
-   Base = notebook (1280px com a sidebar do Shell): as duas âncoras + seis
-   métricas cabem sem rolar; acima disso a sobra vai para o nome do cliente e
-   para o piso das métricas. */
+/* Larguras das duas colunas-âncora. São fixas POR TELA porque o
+   deslocamento sticky da segunda coluna depende da largura exata da primeira
+   (uma coluna elástica deixaria a segunda flutuando sobre a primeira no
+   scroll horizontal) — mas acompanham a viewport: em 1440 o nome tem ~290px,
+   em 1920 ~380px. O resto da largura vai INTEIRO para as métricas, sem coluna
+   de folga: em monitor grande os números ganham respiro, em vez de sobrar
+   um vazio à direita da tabela. Abaixo do piso, rola na horizontal. */
 .vf-ph-table {
-  --vf-ph-col-cliente: 256px;
-  /* Squad + "↻ Atualizar" na 1ª linha; "dados até dd/mm/aaaa · API" e
-     "atualizado dd/mm/aaaa, hh:mm" cabem numa linha cada, sem cortar. */
-  --vf-ph-col-contexto: 196px;
-  /* Onde fica o eixo do cliente (centro do chevron): as contas e o histórico
+  --vf-ph-col-cliente: clamp(272px, 20vw, 420px);
+  /* Squad + origem + "↻ Atualizar" na 1ª linha; "atualizado dd/mm/aaaa,
+     hh:mm" na 2ª. */
+  --vf-ph-col-contexto: clamp(212px, 14.5vw, 288px);
+  /* Onde fica o eixo do cliente (centro do chevron): as contas e o detalhe
      penduram numa linha fina que desce exatamente daqui. */
   --vf-ph-eixo: calc(var(--vf-table-cell-px) + 6px);
-  /* Onde começa o texto das filhas: um degrau inteiro depois do nome do pai. */
-  --vf-ph-recuo-filha: calc(var(--vf-table-cell-px) + 34px);
+  /* Onde fica o chevron da conta: um degrau depois do eixo (o "galho"). */
+  --vf-ph-galho: calc(var(--vf-ph-eixo) + 16px);
+  /* Onde começa o texto das filhas: depois do chevron da conta. */
+  --vf-ph-recuo-filha: calc(var(--vf-ph-galho) + 14px);
   width: 100%;
+}
+
+/* Com "↻ Atualizar" (admin, modo automático) a 1ª linha do contexto leva
+   squad + origem + botão: a coluna cresce, e o nome cede um pouco. */
+.vf-ph-table.tem-atualizar {
+  --vf-ph-col-cliente: clamp(256px, 18vw, 400px);
+  --vf-ph-col-contexto: clamp(276px, 19vw, 340px);
 }
 
 .vf-ph-table .vf-ph-th-ancora,
@@ -55,47 +65,23 @@
   max-width: var(--vf-ph-col-contexto);
 }
 
-/* Coluna de folga: recolhe toda a largura excedente num lugar só, para as
-   métricas não se espalharem pela tela e o número ficar perto do cabeçalho. */
-.vf-ph-table .vf-ph-folga {
-  width: 100%;
-  padding: 0;
-  border-left: none;
-}
-
 .vf-ph-th-metrica,
 .vf-ph-table td.num {
-  min-width: 84px;
+  min-width: 96px;
 }
 
 @media (max-width: 1499px) {
   .vf-ph-table td.num,
   .vf-ph-table th.vf-ph-th-metrica {
-    padding-left: 10px;
-    padding-right: 10px;
+    padding-left: 8px;
+    padding-right: 12px;
   }
 }
 
 @media (min-width: 1500px) {
-  .vf-ph-table {
-    --vf-ph-col-cliente: 360px;
-    --vf-ph-col-contexto: 216px;
-  }
-
   .vf-ph-th-metrica,
   .vf-ph-table td.num {
     min-width: 112px;
-  }
-}
-
-@media (min-width: 1800px) {
-  .vf-ph-table {
-    --vf-ph-col-cliente: 420px;
-  }
-
-  .vf-ph-th-metrica,
-  .vf-ph-table td.num {
-    min-width: 128px;
   }
 }
 
@@ -315,6 +301,15 @@
   font-size: var(--vf-control-fs);
 }
 
+/* FAT do cliente: o número que se procura primeiro — um tamanho acima. */
+.vf-ph-row--cliente > td.vf-ph-col--fat {
+  padding-top: 9px;
+}
+
+.vf-ph-row--cliente .vf-ph-col--fat .vf-ph-valor {
+  font-size: var(--vf-fs-sm);
+}
+
 .vf-ph-cliente {
   display: flex;
   flex-direction: column;
@@ -354,12 +349,13 @@
   white-space: nowrap;
 }
 
+/* Estado · ação · dados até: quebra de linha em vez de cortar — a frase de
+   ação ("1 conta precisa de ação") nunca vira reticências. */
 .vf-ph-cliente__meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  gap: 1px 5px;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
   white-space: nowrap;
@@ -369,9 +365,14 @@
   color: var(--vf-text-secondary);
 }
 
-/* Sem dado: o motivo (ou "N contas precisam de ação") ganha linha própria;
-   ele encolhe com reticências, "último dado" nunca. */
+/* Duas linhas de meta: sem dado, o motivo (ou "N contas precisam de ação")
+   ganha linha própria — ele encolhe com reticências, "último dado" nunca;
+   com dado, a ação/progresso desce para a linha de baixo. */
+.vf-ph-cliente__meta--empilhado,
 .vf-ph-cliente__meta--vazio {
+  /* Uma linha flex só: a largura das linhas é a da célula (com wrap, cada
+     linha esticaria até o próprio conteúdo e as reticências sumiriam). */
+  flex-wrap: nowrap;
   flex-direction: column;
   align-items: stretch;
   gap: 2px;
@@ -398,6 +399,7 @@
 
 .vf-ph-cliente__meta-linha > .vf-ph-motivo::before,
 .vf-ph-cliente__meta-linha > .vf-ph-acoes::before,
+.vf-ph-cliente__meta-linha > .vf-ph-progresso::before,
 .vf-ph-cliente__meta-linha > .vf-ph-ultimo:first-child::before {
   content: none;
 }
@@ -407,7 +409,7 @@
 .vf-ph-row--cliente.is-aberto > .vf-ph-ancora::after {
   content: "";
   position: absolute;
-  top: 26px;
+  top: 25px;
   bottom: 0;
   left: var(--vf-ph-eixo);
   width: 1px;
@@ -441,6 +443,7 @@
 .vf-ph-motivo::before,
 .vf-ph-acoes::before,
 .vf-ph-progresso::before,
+.vf-ph-dados-ate::before,
 .vf-ph-ultimo::before {
   content: "·";
   margin-right: 5px;
@@ -498,16 +501,70 @@
 }
 
 .vf-ph-contexto__topo {
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 2px var(--vf-sp-2);
+  flex-wrap: nowrap;
+  gap: 6px;
   min-height: 20px;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
 }
 
+/* Falta largura: a origem cede primeiro (reticências + title), o squad depois. */
 .vf-ph-contexto__topo > .vf-tag {
   flex: 0 1 auto;
+  min-width: 3.5em;
+}
+
+.vf-ph-contexto__topo > .vf-ph-origem {
+  flex: 0 100 auto;
+  min-width: 2.5em;
+}
+
+/* ── Origem do número (API · Manual · API + manual) ─────────────────────
+   O MESMO selo no cliente e na conta. API = contorno neutro; Manual = tom
+   informativo (o do selo "Modo manual" do cabeçalho); misto = contorno
+   informativo. Sem fonte = tracejado. Cor é a segunda pista: o texto diz. */
+.vf-ph-origem {
+  display: inline-block;
+  height: 18px;
   max-width: 100%;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 1px solid var(--vf-border-strong);
+  border-radius: 4px;
+  background: var(--vf-surface);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  line-height: 16px;
+  color: var(--vf-text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-ph-origem.is-manual {
+  border-color: var(--vf-info-border);
+  background: var(--vf-info-bg);
+  color: var(--vf-info-strong);
+}
+
+.vf-ph-origem.is-misto {
+  border-color: var(--vf-info-border);
+  color: var(--vf-info-strong);
+}
+
+.vf-ph-origem.is-vazio {
+  border-style: dashed;
+  background: transparent;
+  color: var(--vf-text-muted);
+  font-weight: var(--vf-fw-regular);
+}
+
+/* Legenda do FAT lançado pela equipe: discreta, no tom do selo "Manual". */
+.vf-ph-valor__origem {
+  display: block;
+  margin-top: 1px;
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-info-strong);
 }
 
 .vf-ph-contexto > .vf-ph-meta {
@@ -609,22 +666,38 @@
   .vf-ph-atualizar__icone.is-girando { animation: none; }
 }
 
-/* "Lançar dados": ação SECUNDÁRIA da conta — texto-link, não botão cheio. */
+/* "Lançar dados" / "Editar dados": AÇÃO da conta — botão pequeno com borda,
+   alinhado à direita da coluna (perto do número que ele altera). Roxo só no
+   hover/foco e em "Editar" (já existe lançamento). */
 .vf-ph-lancar.vf-btn {
-  height: auto;
+  flex: 0 0 auto;
+  height: 22px;
   min-height: 0;
-  margin-top: 1px;
-  padding: 0;
+  margin-left: auto;
+  padding: 0 var(--vf-sp-2);
+  border: 1px solid var(--vf-border-strong);
+  border-radius: 4px;
+  background: var(--vf-surface);
   font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-medium);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-lancar.vf-btn.is-editar {
+  border-color: var(--vf-primary-border);
   color: var(--vf-primary-strong);
-  background: none;
 }
 
 .vf-ph-lancar.vf-btn:hover:not(:disabled) {
-  background: none;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  border-color: var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
+.vf-ph-contexto__conta {
+  flex-wrap: nowrap;
+  min-height: 22px;
+  gap: 6px;
 }
 
 .vf-ph-aviso {
@@ -650,11 +723,11 @@
 
 .vf-ph-toggle--conta {
   align-items: flex-start;
-  padding: 5px var(--vf-table-cell-px);
+  padding: 6px var(--vf-table-cell-px) 6px calc(var(--vf-ph-galho) - 6px);
 }
 
-.vf-ph-row--conta > td.num {
-  padding-top: 6px;
+.vf-ph-row--conta > td {
+  padding-top: 7px;
 }
 
 .vf-ph-row--conta .vf-ph-valor {
@@ -709,7 +782,23 @@
   flex-direction: column;
   gap: 2px;
   min-width: 0;
-  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px) - 20px);
+  padding-left: 0;
+}
+
+/* Galho: um traço curto do eixo até o chevron da conta — a conta "pendura"
+   no cliente (├). Mesma linha fina do eixo, nenhuma cor nova. */
+.vf-ph-row--conta > .vf-ph-ancora::after {
+  content: "";
+  position: absolute;
+  top: 15px;
+  left: var(--vf-ph-eixo);
+  width: calc(var(--vf-ph-galho) - var(--vf-ph-eixo) - 8px);
+  height: 1px;
+  background: var(--vf-border-strong);
+}
+
+.vf-ph-row--conta.is-acao > .vf-ph-ancora::after {
+  background: var(--vf-warning);
 }
 
 .vf-ph-row--conta.is-inativa .vf-ph-conta__canal {
@@ -738,7 +827,9 @@
 .vf-ph-row--mes > .vf-ph-ancora::before,
 .vf-ph-row--semana > .vf-ph-ancora::before,
 .vf-ph-row--estado > td::before,
-.vf-ph-row--esqueleto > td::before {
+.vf-ph-row--esqueleto > td::before,
+.vf-ph-row--ferramentas > td::before,
+.vf-ph-row--composicao > td::before {
   content: "";
   position: absolute;
   top: 0;
@@ -749,7 +840,9 @@
 }
 
 .vf-ph-row--estado > td,
-.vf-ph-row--esqueleto > td {
+.vf-ph-row--esqueleto > td,
+.vf-ph-row--ferramentas > td,
+.vf-ph-row--composicao > td {
   position: relative;
 }
 
@@ -760,19 +853,11 @@
   font-size: var(--vf-fs-2xs);
 }
 
-.vf-ph-toggle--historico,
 .vf-ph-toggle--mes {
   align-items: center;
   gap: 6px;
-  padding-top: 5px;
-  padding-bottom: 6px;
 }
 
-.vf-ph-toggle--historico {
-  padding-left: calc(var(--vf-ph-recuo-filha) - 16px);
-}
-
-.vf-ph-toggle--historico .vf-ph-indent,
 .vf-ph-toggle--mes .vf-ph-indent {
   display: block;
   min-width: 0;
@@ -782,20 +867,70 @@
   white-space: nowrap;
 }
 
-.vf-ph-toggle--historico .vf-ph-chevron,
 .vf-ph-toggle--mes .vf-ph-chevron {
   width: 10px;
   height: 10px;
   margin-top: 0;
 }
 
-.vf-ph-historico__rotulo {
-  font-weight: var(--vf-fw-medium);
-  color: var(--vf-text-muted);
+/* ── Ferramentas do cliente aberto ──────────────────────────────────────
+   "Composição do faturamento" e "Consolidado semanal": duas ações na MESMA
+   linha, no recuo das contas, presas à esquerda no scroll horizontal. */
+.vf-ph-row--ferramentas > td {
+  padding: 3px var(--vf-table-cell-px) 5px;
 }
 
-.vf-ph-row--historico .vf-ph-toggle:hover .vf-ph-historico__rotulo {
+.vf-ph-ferramentas {
+  position: sticky;
+  left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px var(--vf-sp-2);
+  width: max-content;
+  padding-left: calc(var(--vf-ph-galho) - 6px - var(--vf-table-cell-px) - 6px);
+}
+
+.vf-ph-detalhe {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 var(--vf-sp-2) 0 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: var(--vf-fs-2xs);
   color: var(--vf-text-secondary);
+  cursor: pointer;
+}
+
+.vf-ph-detalhe .vf-ph-chevron {
+  width: 10px;
+  height: 10px;
+  margin-top: 0;
+}
+
+.vf-ph-detalhe:hover {
+  background: var(--vf-surface-hover);
+}
+
+.vf-ph-detalhe:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
+}
+
+.vf-ph-detalhe .vf-ph-historico__rotulo {
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-detalhe:hover .vf-ph-historico__rotulo,
+.vf-ph-detalhe.is-aberto .vf-ph-historico__rotulo {
+  color: var(--vf-text);
+}
+
+.vf-ph-historico__rotulo {
+  font-weight: var(--vf-fw-medium);
 }
 
 /* ── Mês (dentro do histórico) ──────────────────────────────────────────── */
@@ -1262,23 +1397,76 @@
   cursor: help;
 }
 
-/* ── Composição do faturamento (demonstrativo por conta) ────────────────── */
+/* ── Composição do faturamento: seção de detalhe ───────────────────────
+   Ocupa a largura VISÍVEL da tabela (--vf-ph-viewport, medida no
+   componente), no recuo das contas e presa à esquerda no scroll horizontal.
+   Duas colunas: o demonstrativo (uma coluna por conta, valor e pedidos na
+   mesma linha) e, na largura que sobra, a leitura — definições e notas. Uma
+   moldura fina, nenhuma sombra: detalhe da linha, não card. */
 .vf-ph-row--composicao > td {
-  padding: var(--vf-sp-2) var(--vf-table-cell-px) var(--vf-sp-3);
-  background: var(--vf-bg);
+  padding: 2px var(--vf-table-cell-px) 10px;
   border-top: none;
+  background: var(--vf-bg);
 }
 
 .vf-ph-comp {
   position: sticky;
-  left: var(--vf-table-cell-px);
-  width: max-content;
-  max-width: min(1100px, 92vw);
-  padding-left: calc(var(--vf-ph-recuo-filha) - var(--vf-table-cell-px) - 14px);
-  overflow-x: auto;
+  left: calc(var(--vf-ph-galho) - 6px);
+  box-sizing: border-box;
+  width: calc(var(--vf-ph-viewport, 100%) - var(--vf-ph-galho) + 6px - var(--vf-table-cell-px) - 1px);
+  margin-left: calc(var(--vf-ph-galho) - 6px - var(--vf-table-cell-px));
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  white-space: normal;
 }
 
+.vf-ph-comp__cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px var(--vf-sp-4);
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+  border-radius: calc(var(--vf-radius-sm) - 1px) calc(var(--vf-radius-sm) - 1px) 0 0;
+}
+
+.vf-ph-comp__titulo {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-ph-comp__escopo {
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+.vf-ph-comp__formula {
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+/* Demonstrativo e leitura lado a lado enquanto couber; sem largura para a
+   leitura (várias contas em 1440), ela desce e ocupa a linha inteira. */
+.vf-ph-comp__corpo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+}
+
+.vf-ph-comp__corpo > .vf-ph-comp__tabela {
+  flex: 0 0 auto;
+}
+
+/* Tabela aninhada: anula o que a tabela-mãe (.vf-table/.vf-ph-table) aplica
+   a todo th/td descendente — caixa alta, fundo, régua, sticky, padding. */
 .vf-ph-table .vf-ph-comp__tabela {
+  margin: 4px 0 6px;
   border-collapse: collapse;
   font-size: var(--vf-fs-xs);
   font-variant-numeric: tabular-nums;
@@ -1286,33 +1474,37 @@
 
 .vf-ph-table .vf-ph-comp__tabela th,
 .vf-ph-table .vf-ph-comp__tabela td {
-  /* Tabela aninhada: anula o que a tabela-mãe (.vf-table/.vf-ph-table)
-     aplica a todo th/td descendente — caixa alta, fundo, régua, sticky. */
   position: static;
   height: auto;
-  padding: 5px var(--vf-sp-3);
-  border-top: none;
+  padding: 4px 14px;
+  border: none;
   border-bottom: 1px solid var(--vf-border);
+  background: transparent;
+  box-shadow: none;
+  font-size: var(--vf-fs-xs);
   text-align: left;
   text-transform: none;
   letter-spacing: 0;
-  vertical-align: top;
-  background: var(--vf-surface);
+  vertical-align: baseline;
+  white-space: nowrap;
 }
 
 .vf-ph-table .vf-ph-comp__tabela .num {
   text-align: right;
 }
 
-.vf-ph-table .vf-ph-comp__tabela thead th {
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text-secondary);
-  border-bottom-color: var(--vf-border-strong);
-  white-space: nowrap;
+/* Hover da linha INTEIRA do demonstrativo (rótulo e valores juntos). */
+.vf-ph-table .vf-ph-comp__tabela tbody tr:hover > th,
+.vf-ph-table .vf-ph-comp__tabela tbody tr:hover > td {
+  background: var(--vf-surface-hover);
 }
 
-.vf-ph-table .vf-ph-comp__tabela .is-soma {
-  box-shadow: inset 1px 0 0 var(--vf-border-strong);
+.vf-ph-table .vf-ph-comp__tabela thead th {
+  padding-top: 6px;
+  padding-bottom: 5px;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  vertical-align: bottom;
 }
 
 .vf-ph-comp__conta,
@@ -1321,42 +1513,48 @@
 }
 
 .vf-ph-comp__periodo,
-.vf-ph-comp__pedidos,
-.vf-ph-comp__ajuda {
+.vf-ph-comp__pedidos {
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-regular);
   color: var(--vf-text-muted);
 }
 
-.vf-ph-comp__ajuda {
-  display: block;
+/* Soma das contas: separada por um traço e um fundo levíssimo. */
+.vf-ph-table .vf-ph-comp__tabela .is-soma {
+  box-shadow: inset 1px 0 0 var(--vf-border-strong);
+  background: var(--vf-surface-2);
 }
 
 .vf-ph-table .vf-ph-comp__tabela tbody th {
+  min-width: 12.5rem;
   font-weight: var(--vf-fw-medium);
   color: var(--vf-text);
-  min-width: 15rem;
+  cursor: help;
 }
 
-.vf-ph-comp__linha.is-exclusao th {
-  padding-left: var(--vf-sp-5);
+.vf-ph-table .vf-ph-comp__linha.is-exclusao th {
+  padding-left: 26px;
   font-weight: var(--vf-fw-regular);
   color: var(--vf-text-secondary);
 }
 
+/* Valor e pedidos na MESMA linha: a coluna de pedidos tem largura fixa, então
+   os valores ficam alinhados à direita entre si em todas as linhas. */
 .vf-ph-comp__moeda {
-  display: block;
-  white-space: nowrap;
+  display: inline-block;
+  font-family: var(--vf-font-display);
+  color: var(--vf-text);
 }
 
 .vf-ph-comp__pedidos {
-  display: block;
-  white-space: nowrap;
+  display: inline-block;
+  min-width: 7.5em;
+  margin-left: var(--vf-sp-3);
+  text-align: right;
 }
 
 .vf-ph-comp__valor.is-forte .vf-ph-comp__moeda {
   font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text);
 }
 
 .vf-ph-comp__linha.is-exclusao .vf-ph-comp__moeda {
@@ -1367,29 +1565,118 @@
   color: var(--vf-text-disabled);
 }
 
-.vf-ph-comp__linha.is-total th,
-.vf-ph-comp__linha.is-total td {
+.vf-ph-table .vf-ph-comp__linha.is-total th,
+.vf-ph-table .vf-ph-comp__linha.is-total td {
   border-top: 1px solid var(--vf-border-strong);
+  padding-top: 6px;
+  padding-bottom: 6px;
+  font-weight: var(--vf-fw-semibold);
 }
 
-.vf-ph-comp__linha.is-conferencia th,
-.vf-ph-comp__linha.is-conferencia td {
+.vf-ph-table .vf-ph-comp__linha.is-total .vf-ph-comp__moeda {
+  font-size: var(--vf-fs-sm);
+}
+
+.vf-ph-table .vf-ph-comp__linha.is-conferencia th,
+.vf-ph-table .vf-ph-comp__linha.is-conferencia td {
   border-bottom: none;
   font-size: var(--vf-fs-2xs);
 }
 
-.vf-ph-comp__notas {
-  margin: var(--vf-sp-2) 0 0;
-  padding-left: 1.1em;
-  max-width: 72ch;
+.vf-ph-comp__conferencia .vf-status {
+  font-size: var(--vf-fs-2xs);
+}
+
+/* Coluna de leitura: o que cada grupo significa e as notas da conferência. */
+.vf-ph-comp__lado {
+  flex: 1 1 340px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+  padding: 10px 16px 12px;
+  margin-left: -1px;
+  border-left: 1px solid var(--vf-border);
+  box-shadow: 0 -1px 0 var(--vf-border);
+  font-size: var(--vf-fs-2xs);
+  line-height: var(--vf-lh-snug);
+  color: var(--vf-text-muted);
+}
+
+/* Pedidos por conta: bruto → válidos · fora do FAT (contagens do servidor). */
+.vf-ph-comp__fluxos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px var(--vf-sp-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-ph-comp__fluxo {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.vf-ph-comp__fluxo-conta {
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
-  white-space: normal;
+}
+
+.vf-ph-comp__fluxo-numeros {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text);
+  white-space: nowrap;
+}
+
+/* Definições: termo em cima, explicação embaixo; em colunas quando há largura. */
+.vf-ph-comp__definicoes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--vf-sp-2) var(--vf-sp-5);
+  margin: 0;
+  padding-top: var(--vf-sp-2);
+  border-top: 1px dashed var(--vf-border);
+}
+
+.vf-ph-comp__definicoes > div {
+  min-width: 0;
+}
+
+.vf-ph-comp__definicoes dt {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-comp__definicoes dd {
+  margin: 0;
+}
+
+.vf-ph-comp__notas {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  max-width: 96ch;
+  padding: 0 0 0 1.1em;
 }
 
 .vf-ph-comp__vazio {
-  margin: 0;
+  margin: 0 0 0 calc(var(--vf-ph-galho) - 6px - var(--vf-table-cell-px));
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-secondary);
   white-space: normal;
+}
+
+/* Tela estreita: o demonstrativo rola dentro da própria seção. */
+@media (max-width: 1100px) {
+  .vf-ph-comp__corpo > .vf-ph-comp__tabela {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+  }
 }

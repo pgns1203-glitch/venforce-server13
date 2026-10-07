@@ -13,7 +13,7 @@
 // Layout: container WIDE + densidade compacta. Header e toolbar são fixos em
 // altura; só a tabela cresce.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { usePainelContas } from "../hooks/usePainelContas.js";
 import { ToolbarPainel, OPCOES_STATUS } from "../components/painelContas/ToolbarPainel.jsx";
 import { SecoesMarketplace } from "../components/painelContas/SecoesMarketplace.jsx";
@@ -101,6 +101,53 @@ function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, o
       titulo="Sua carteira está vazia"
       descricao="Nenhum cliente ativo está atribuído a você no momento. Fale com o coordenador do seu squad se isso for inesperado."
     />
+  );
+}
+
+// Modo manual: SEMPRE visível, mas do tamanho de um selo no cabeçalho — não
+// uma faixa da largura da tela. "Entender" abre a explicação completa num
+// painel ancorado (fecha com Esc ou clicando fora).
+export function IndicadorModoManual() {
+  const [aberto, setAberto] = useState(false);
+  const ref = useRef(null);
+  const id = useId();
+  useEffect(() => {
+    if (!aberto) return undefined;
+    const fechar = (evento) => {
+      if (evento.type === "keydown" ? evento.key === "Escape" : !ref.current?.contains(evento.target)) setAberto(false);
+    };
+    document.addEventListener("mousedown", fechar);
+    document.addEventListener("keydown", fechar);
+    return () => {
+      document.removeEventListener("mousedown", fechar);
+      document.removeEventListener("keydown", fechar);
+    };
+  }, [aberto]);
+
+  return (
+    <div className="vf-ph-modo" role="note" data-testid="banner-modo-manual" ref={ref}>
+      <span className="vf-ph-modo__selo">Modo manual</span>
+      <span className="vf-ph-modo__texto">Valores lançados pela equipe prevalecem sobre a API.</span>
+      <button
+        type="button"
+        className="vf-ph-modo__entender"
+        aria-expanded={aberto}
+        aria-controls={id}
+        onClick={() => setAberto((v) => !v)}
+      >
+        Entender
+      </button>
+      {aberto && (
+        <div id={id} className="vf-ph-modo__detalhe" role="region" aria-label="Sobre o modo manual">
+          <p className="vf-ph-modo__detalhe-titulo">Painel em modo manual</p>
+          <p>
+            Os valores lançados pela equipe prevalecem sobre a API (inclusive Mercado Livre) e nenhuma rotina automática
+            os substitui. Em conta com dado da API, o lançamento mostra o valor da API como referência.
+          </p>
+          <p>Para faturamento e métricas de referência, consulte a Central de Margem.</p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -192,29 +239,17 @@ export default function PainelContasPage() {
       <div className="vf-page-container vf-page-container--wide vf-ph-page">
         <header className="vf-page-header vf-ph-header">
           <div className="vf-page-header__main">
-            <p className="vf-page-header__eyebrow">Controle da carteira</p>
             <h1 className="vf-page-header__title">Painel de Contas</h1>
             <p className="vf-page-header__description">
               {rotularCompetencia(competencia)} · dados operacionais da carteira
               {descreverAcesso(acesso) && <span data-testid="escopo-acesso"> · {descreverAcesso(acesso)}</span>}
             </p>
           </div>
+          {modoManual && <IndicadorModoManual />}
         </header>
 
-        {modoManual && (
-          <div className="vf-banner is-info vf-banner--compact" role="note" data-testid="banner-modo-manual">
-            <div className="vf-banner__content">
-              <p className="vf-banner__title">Painel em modo manual</p>
-              <p className="vf-banner__description">
-                Os valores lançados pela equipe prevalecem sobre a API (inclusive Mercado Livre) e nenhuma rotina
-                automática os substitui. Para faturamento e métricas de referência, consulte a Central de Margem.
-              </p>
-            </div>
-          </div>
-        )}
-
         {confirmacao && (
-          <div className="vf-banner is-success vf-banner--compact" role="status" data-testid="confirmacao-lancamento">
+          <div className="vf-banner is-success vf-banner--compact vf-ph-confirmacao" role="status" data-testid="confirmacao-lancamento">
             <div className="vf-banner__content">
               <p className="vf-banner__title">{confirmacao.titulo}</p>
               <p className="vf-banner__description">{confirmacao.texto}</p>
@@ -223,10 +258,6 @@ export default function PainelContasPage() {
               <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => setConfirmacao(null)} aria-label="Fechar confirmação">✕</button>
             </div>
           </div>
-        )}
-
-        {clientes && (
-          <SecoesMarketplace secoes={secoesMarketplace} ativa={marketplace} onSelecionar={setMarketplace} />
         )}
 
         {erro && !clientes && erro.status === 403 && (
@@ -249,21 +280,6 @@ export default function PainelContasPage() {
           </div>
         )}
 
-        {clientes && (
-          <ToolbarPainel
-            busca={busca} onBusca={setBusca}
-            competencia={competencia} onCompetencia={setCompetencia} competenciaPadrao={competenciaPadrao}
-            squadId={squadId} onSquad={setSquadId} squadsDisponiveis={squadsDisponiveis}
-            status={status} onStatus={setStatus}
-            mostrarLegado={mostrarLegado} onMostrarLegado={setMostrarLegado}
-            temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
-            grupos={grupos} onAlternarGrupo={alternarGrupo}
-            resumoCarteira={resumoCarteira} atualizando={atualizando}
-            competenciaAtual={competenciaAtual} podeAtualizar={permissoes.atualizarDados === true}
-            modoManual={modoManual}
-          />
-        )}
-
         {!clientes && carregando && (
           <div className="vf-stack vf-ph-esqueleto">
             <div className="vf-skeleton vf-skeleton--title" />
@@ -273,73 +289,91 @@ export default function PainelContasPage() {
           </div>
         )}
 
-        {clientes && clientes.length === 0 && (
-          <EstadoVazio
-            busca={busca}
-            squadId={squadId}
-            status={status}
-            competencia={competencia}
-            squadsDisponiveis={squadsDisponiveis}
-            onLimpar={limparFiltros}
-            onStatus={setStatus}
-            visao={visao}
-            onConsolidado={() => setMarketplace(null)}
-          />
-        )}
+        {/* Um painel só: seções → filtros → resumo → tabela. A moldura é da
+            ferramenta inteira, não de cada peça — nada fica "solto" na tela. */}
+        {clientes && (
+          <section className="vf-ph-painel" aria-label="Carteira">
+            <SecoesMarketplace secoes={secoesMarketplace} ativa={marketplace} onSelecionar={setMarketplace} />
+            <ToolbarPainel
+              busca={busca} onBusca={setBusca}
+              competencia={competencia} onCompetencia={setCompetencia} competenciaPadrao={competenciaPadrao}
+              squadId={squadId} onSquad={setSquadId} squadsDisponiveis={squadsDisponiveis}
+              status={status} onStatus={setStatus}
+              mostrarLegado={mostrarLegado} onMostrarLegado={setMostrarLegado}
+              temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
+              grupos={grupos} onAlternarGrupo={alternarGrupo}
+              resumoCarteira={resumoCarteira} atualizando={atualizando}
+              competenciaAtual={competenciaAtual} podeAtualizar={permissoes.atualizarDados === true}
+              modoManual={modoManual}
+            />
 
-        {temClientes && (
-          <>
+            {clientes.length === 0 && (
+              <EstadoVazio
+                busca={busca}
+                squadId={squadId}
+                status={status}
+                competencia={competencia}
+                squadsDisponiveis={squadsDisponiveis}
+                onLimpar={limparFiltros}
+                onStatus={setStatus}
+                visao={visao}
+                onConsolidado={() => setMarketplace(null)}
+              />
+            )}
+
             {competenciaSemDado && (
-              <div className="vf-banner is-info vf-banner--compact" role="status">
-                <div className="vf-banner__content">
-                  <p className="vf-banner__title">Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}</p>
-                  <p className="vf-banner__description">
-                    Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
-                    diferente.{visao?.fonte === "manual"
-                      ? ` ${visao.rotulo} não tem integração automática: os números entram por lançamento manual em cada conta.`
-                      : modoManual
-                        ? " O Painel está em modo manual: os números entram por lançamento em cada conta."
-                        : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
-                  </p>
-                </div>
+              <div className="vf-ph-aviso" role="status">
+                <p className="vf-ph-aviso__titulo">Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}</p>
+                <p className="vf-ph-aviso__texto">
+                  Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
+                  diferente.{visao?.fonte === "manual"
+                    ? ` ${visao.rotulo} não tem integração automática: os números entram por lançamento manual em cada conta.`
+                    : modoManual
+                      ? " O Painel está em modo manual: os números entram por lançamento em cada conta."
+                      : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
+                </p>
               </div>
             )}
 
-            <TabelaHierarquica
-              clientes={clientes}
-              competencia={competencia}
-              colunas={colunas}
-              grupos={grupos}
-              expansao={expansao}
-              mesesPorCliente={mesesPorCliente}
-              carregarMeses={carregarMeses}
-              semanasPorChave={semanasPorChave}
-              carregarSemanas={carregarSemanas}
-              semanasContasPorCliente={semanasContasPorCliente}
-              carregarSemanasContas={carregarSemanasContas}
-              composicaoPorCliente={composicaoPorCliente}
-              carregarComposicao={carregarComposicao}
-              atualizando={atualizando}
-              onLancar={abrirLancamento}
-              competenciaAtual={competenciaAtual}
-              atualizacoes={atualizacoes}
-              podeAtualizar={permissoes.atualizarDados === true}
-              onAtualizar={atualizarCliente}
-              onDispensarAtualizacao={dispensarAtualizacao}
-              mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
-            />
+            {temClientes && (
+              <TabelaHierarquica
+                clientes={clientes}
+                competencia={competencia}
+                colunas={colunas}
+                grupos={grupos}
+                expansao={expansao}
+                mesesPorCliente={mesesPorCliente}
+                carregarMeses={carregarMeses}
+                semanasPorChave={semanasPorChave}
+                carregarSemanas={carregarSemanas}
+                semanasContasPorCliente={semanasContasPorCliente}
+                carregarSemanasContas={carregarSemanasContas}
+                composicaoPorCliente={composicaoPorCliente}
+                carregarComposicao={carregarComposicao}
+                atualizando={atualizando}
+                onLancar={abrirLancamento}
+                competenciaAtual={competenciaAtual}
+                atualizacoes={atualizacoes}
+                podeAtualizar={permissoes.atualizarDados === true}
+                onAtualizar={atualizarCliente}
+                onDispensarAtualizacao={dispensarAtualizacao}
+                mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
+              />
+            )}
+          </section>
+        )}
 
-            <p className="vf-ph-rodape">
-              {marketplace
-                ? <>Seção {visao?.rotulo || marketplace}: o número de cada cliente soma só as contas {visao?.rotulo || marketplace}; as
-                    demais operações ficam no Consolidado. {marketplace === "meli"
-                    ? "Ads é medido por cliente (Mercado Livre)."
-                    : "Ads aqui é só o lançado manualmente nestas contas."}</>
-                : <>O número do cliente é o consolidado das contas indicadas ao lado do nome; ao expandir, cada conta mostra o
-                    próprio número (o mesmo da Central de Vendas) e pode abrir suas semanas reais. Ads é medido por cliente.</>}
-              {" "}API = sincronização; Manual = lançado pela equipe.
-            </p>
-          </>
+        {temClientes && (
+          <p className="vf-ph-rodape">
+            {marketplace
+              ? <>Seção {visao?.rotulo || marketplace}: o número de cada cliente soma só as contas {visao?.rotulo || marketplace}; as
+                  demais operações ficam no Consolidado. {marketplace === "meli"
+                  ? "Ads é medido por cliente (Mercado Livre)."
+                  : "Ads aqui é só o lançado manualmente nestas contas."}</>
+              : <>O número do cliente é o consolidado das contas indicadas ao lado do nome; ao expandir, cada conta mostra o
+                  próprio número (o mesmo da Central de Vendas) e pode abrir suas semanas reais. Ads é medido por cliente.</>}
+            {" "}API = sincronização; Manual = lançado pela equipe.
+          </p>
         )}
       </div>
 

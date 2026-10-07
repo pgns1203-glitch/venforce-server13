@@ -7,15 +7,19 @@
 //
 // ── Os níveis ────────────────────────────────────────────────────────────
 // CLIENTE    → o número CONSOLIDADO da competência selecionada — a linha
-//              DOMINANTE. Escopo escrito ("Consolidado · 3 contas"), estado
-//              compacto e, quando alguma conta pede ação, UMA frase ("2 contas
-//              precisam de ação") em vez de repetir o botão de cada conta. Na
-//              coluna de contexto, sempre: dados até · fonte · atualizado em.
-//              Sem dado, a linha diz POR QUÊ — nunca mostra outro mês.
-// CONTA      → cada conta/operação, SECUNDÁRIA e recuada, com o próprio
-//              número (o mesmo escopo que a Central de Vendas mostra ao
-//              selecionar a conta). É nela que mora "Lançar dados". Já vem na
-//              lista: abrir um cliente não custa requisição.
+//              DOMINANTE. Nome + escopo ("Consolidado · 3 contas"), estado ·
+//              dados até e, quando alguma conta pede ação, UMA frase na linha
+//              de baixo ("2 contas precisam de ação") em vez de repetir o botão
+//              de cada conta. Na coluna de contexto: squad + selo de origem
+//              (API · Manual · API + manual) e "atualizado em". Sem dado, a
+//              linha diz POR QUÊ — nunca mostra outro mês.
+// CONTA      → cada conta/operação, SECUNDÁRIA e pendurada no eixo do
+//              cliente (galho ├), com o próprio número (o mesmo escopo que a
+//              Central de Vendas mostra ao selecionar a conta). É nela que
+//              mora a AÇÃO "Lançar dados" / "Editar dados". Já vem na lista:
+//              abrir um cliente não custa requisição.
+// DETALHES   → uma linha de ferramentas: "Composição do faturamento" (seção
+//              de detalhe na largura visível) e "Consolidado semanal".
 //
 // ATUALIZAR  → admin: "↻ Atualizar" na linha do cliente dispara a atualização
 //              sob demanda (servidor). Em curso, a âncora diz o período
@@ -121,7 +125,9 @@ function marcaParcial(coluna, custos) {
   return (custos.indicadores || ["lc", "mc"]).includes(coluna.chave);
 }
 
-function Celula({ coluna, valor, variacao, titulo, custos = null }) {
+// `manual`: o FAT LANÇADO numa conta ganha uma legenda discreta embaixo —
+// só no FAT e só na conta (no cliente, estado e selo de origem já dizem).
+function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false }) {
   const texto = formatarValor(coluna.tipo, valor);
   const delta = lerVariacao(coluna.tipo, variacao);
   const indisponivel = coluna.tipo === "indisponivel";
@@ -140,6 +146,7 @@ function Celula({ coluna, valor, variacao, titulo, custos = null }) {
     >
       <span className={`vf-ph-valor${ausente ? " is-ausente" : ""}${negativo ? " is-negativo" : ""}`}>{texto}</span>
       {delta && <Delta sentido={coluna.sentido} valor={delta.valor} texto={delta.texto} />}
+      {manual && coluna.chave === "fat" && !ausente && <span className="vf-ph-valor__origem">manual</span>}
       {!ausente && marcaParcial(coluna, custos) && (
         <span className="vf-ph-parcial" title={textoCoberturaParcial(custos)} aria-label={textoCoberturaParcial(custos)}>
           <span aria-hidden="true">◐ {formatarPercentual(custos.cobertura)}</span>
@@ -165,29 +172,32 @@ function dataCurta(iso, competencia) {
   return String(iso).slice(0, 4) === String(competencia).slice(0, 4) ? completa.slice(0, 5) : completa;
 }
 
-// Frescor do CLIENTE, sempre as três peças — ausente vira "—", nunca some:
-//   dados até 28/09/2026 · API
-//   atualizado 29/09/2026 06:20
-// É contexto (4ª prioridade da linha): tipografia menor e cinza, no tom
-// `text-muted` (AA) — mais baixo que isso deixaria de ser legível. Em
-// andamento, quem fala é o botão ↻ — esta linha continua mostrando a última
-// atualização concluída, que ainda é verdade.
+// Origem do número: API · Manual · API + manual — o MESMO selo no cliente e
+// na conta. Neutro para API; Manual em tom informativo (o mesmo do aviso de
+// modo manual), para o valor lançado se distinguir sem gritar.
+function Origem({ fonte, vazio = "sem fonte" }) {
+  if (!fonte) {
+    return vazio ? <span className="vf-ph-origem is-vazio" title="Sem fonte na competência">{vazio}</span> : null;
+  }
+  return (
+    <span className={`vf-ph-origem is-${fonte.tipo || "api"}`} title={`Origem do dado: ${fonte.rotulo}`}>
+      {fonte.rotulo}
+    </span>
+  );
+}
+
+// Frescor do CLIENTE: quando a última atualização concluída aconteceu —
+// ausente vira "—", nunca some. "Dados até" mora ao lado do estado, na
+// âncora (o mesmo lugar que na conta). Em andamento, quem fala é o botão ↻ —
+// esta linha continua mostrando a última atualização concluída.
 function FrescorCliente({ cliente, concluidaAgora }) {
   return (
-    <>
-      <span className="vf-ph-contexto__linha vf-ph-meta">
-        <span>dados até {cliente.dadosAte ? formatarData(cliente.dadosAte) : AUSENTE}</span>
-        <span title={cliente.fonte ? `Fonte do dado: ${cliente.fonte.rotulo}` : "Sem fonte na competência"}>
-          · {cliente.fonte?.rotulo || "sem fonte"}
-        </span>
+    <span className="vf-ph-contexto__linha vf-ph-meta">
+      <span className={concluidaAgora ? "vf-ph-frescor--ok" : undefined}>
+        {concluidaAgora && <span aria-hidden="true">✓ </span>}
+        atualizado {cliente.atualizadoEm ? formatarDataHora(cliente.atualizadoEm) : AUSENTE}
       </span>
-      <span className="vf-ph-contexto__linha vf-ph-meta">
-        <span className={concluidaAgora ? "vf-ph-frescor--ok" : undefined}>
-          {concluidaAgora && <span aria-hidden="true">✓ </span>}
-          atualizado {cliente.atualizadoEm ? formatarDataHora(cliente.atualizadoEm) : AUSENTE}
-        </span>
-      </span>
-    </>
+    </span>
   );
 }
 
@@ -325,6 +335,15 @@ function LinhaAtualizacao({ cliente, atualizacao, colSpan, onAtualizar, onDispen
   );
 }
 
+// Seta de expansão: traço, não glifo — nítida em qualquer fonte, e gira.
+function Chevron({ aberto }) {
+  return (
+    <svg className="vf-ph-chevron" data-aberto={aberto ? "true" : "false"} aria-hidden="true" viewBox="0 0 12 12" focusable="false">
+      <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 // Área de expansão: o BOTÃO ocupa a célula inteira, não só o chevron.
 function CelulaExpansivel({ aberto, onClick, rotuloAcessivel, nivel, children }) {
   return (
@@ -336,9 +355,7 @@ function CelulaExpansivel({ aberto, onClick, rotuloAcessivel, nivel, children })
         aria-expanded={aberto}
         aria-label={rotuloAcessivel}
       >
-        <svg className="vf-ph-chevron" data-aberto={aberto ? "true" : "false"} aria-hidden="true" viewBox="0 0 12 12" focusable="false">
-          <path d="M4.5 2.5 8 6l-3.5 3.5" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
+        <Chevron aberto={aberto} />
         <span className="vf-ph-ancora__conteudo">{children}</span>
       </button>
     </th>
@@ -384,10 +401,17 @@ function textoAcoes(n) {
   return n === 1 ? "1 conta precisa de ação" : `${n} contas precisam de ação`;
 }
 
+// "Lançar dados" / "Editar dados": AÇÃO da conta — botão pequeno com borda,
+// não texto solto. Editar (já existe lançamento) ganha o tom da marca.
 function BotaoLancar({ rotulo, onClick, editar = false }) {
   return (
-    <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm vf-ph-lancar" onClick={onClick} aria-label={rotulo}>
-      {editar ? "Editar manual" : "Lançar dados"}
+    <button
+      type="button"
+      className={`vf-btn vf-btn--sm vf-ph-lancar${editar ? " is-editar" : ""}`}
+      onClick={onClick}
+      aria-label={rotulo}
+    >
+      {editar ? "Editar dados" : "Lançar dados"}
     </button>
   );
 }
@@ -406,7 +430,6 @@ function LinhaSemana({ semana, colunas, origem = "consolidado" }) {
       {colunas.map((c) => (
         <Celula key={c.chave} coluna={c} valor={semana.resumo?.[c.chave] ?? null} />
       ))}
-      <td className="vf-ph-folga" />
     </tr>
   );
 }
@@ -414,7 +437,7 @@ function LinhaSemana({ semana, colunas, origem = "consolidado" }) {
 function LinhaMes({ clienteId, clienteNome, mes, selecionada, aberto, onAlternar, semanasPorChave, carregarSemanas, colunas }) {
   const chave = `${clienteId}:${mes.competencia}`;
   const estado = semanasPorChave[chave];
-  const colSpan = colunas.length + 3;
+  const colSpan = colunas.length + 2;
   const rotulo = rotularCompetenciaCurta(mes.competencia);
 
   useEffect(() => {
@@ -445,7 +468,6 @@ function LinhaMes({ clienteId, clienteNome, mes, selecionada, aberto, onAlternar
         {colunas.map((c) => (
           <Celula key={c.chave} coluna={c} valor={mes.resumo?.[c.chave] ?? null} variacao={mes.variacaoVsMesAnterior?.[c.chave]} />
         ))}
-        <td className="vf-ph-folga" />
       </tr>
 
       {aberto && estado?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={2} rotulo="Carregando semanas" />}
@@ -505,7 +527,7 @@ function LinhaConta({
   const motivo = semDado && !sincronizandoAgora && conta.status?.motivo && conta.status.codigo !== "sem_integracao"
     ? conta.status.motivo
     : null;
-  const colSpan = colunas.length + 3;
+  const colSpan = colunas.length + 2;
   const semanasConta = estadoSemanas?.contas?.find((item) => Number(item.contaId) === Number(conta.id))?.semanas;
 
   useEffect(() => {
@@ -550,14 +572,16 @@ function LinhaConta({
           </span>
         </CelulaExpansivel>
         <td className="vf-table__sticky-cell vf-ph-contexto">
-          {conta.fonte && <span className="vf-ph-meta" title={`Fonte do dado: ${conta.fonte.rotulo}`}>{conta.fonte.rotulo}</span>}
-          {conta.podeLancarManual && (
-            <BotaoLancar
-              rotulo={`${conta.fonte?.tipo === "manual" ? "Editar manual" : "Lançar dados"} — ${conta.rotulo}`}
-              editar={conta.fonte?.tipo === "manual"}
-              onClick={() => onLancar(cliente, conta)}
-            />
-          )}
+          <span className="vf-ph-contexto__linha vf-ph-contexto__conta">
+            <Origem fonte={conta.fonte} vazio={null} />
+            {conta.podeLancarManual && (
+              <BotaoLancar
+                rotulo={`${conta.fonte?.tipo === "manual" ? "Editar dados" : "Lançar dados"} — ${conta.rotulo}`}
+                editar={conta.fonte?.tipo === "manual"}
+                onClick={() => onLancar(cliente, conta)}
+              />
+            )}
+          </span>
         </td>
         {colunas.map((c) => {
           const semAdsPorConta = c.grupo === "ads" && adsPorCliente;
@@ -568,10 +592,10 @@ function LinhaConta({
               valor={semAdsPorConta ? null : conta.resumo?.[c.chave] ?? null}
               titulo={semAdsPorConta ? NOTA_ADS_POR_CONTA : undefined}
               custos={conta.custos}
+              manual={conta.fonte?.tipo === "manual"}
             />
           );
         })}
-        <td className="vf-ph-folga" />
       </tr>
       {aberto && estadoSemanas?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={2} rotulo="Carregando semanas da conta" />}
       {aberto && estadoSemanas?.erro && !estadoSemanas.carregando && (
@@ -591,43 +615,80 @@ function LinhaConta({
   );
 }
 
-// Composição do faturamento: gatilho na expansão do cliente + demonstrativo
-// por conta (lazy). Só existe quando alguma conta ativa tem pedidos
-// importados — conta manual não tem pedido para compor.
+// Detalhes do cliente aberto: "Composição do faturamento" e "Consolidado
+// semanal" são DUAS ações de uma mesma linha de ferramentas, logo abaixo das
+// contas — não duas linhas de tabela vazias. Cada botão abre o seu bloco
+// embaixo (composição primeiro, histórico depois), e ambos são lazy.
+function BotaoDetalhe({ aberto, onClick, rotuloAcessivel, children }) {
+  return (
+    <button
+      type="button"
+      className={`vf-ph-detalhe${aberto ? " is-aberto" : ""}`}
+      onClick={onClick}
+      aria-expanded={aberto}
+      aria-label={rotuloAcessivel}
+    >
+      <Chevron aberto={aberto} />
+      {children}
+    </button>
+  );
+}
+
+function LinhaFerramentas({ cliente, colSpan, composicao, historico }) {
+  return (
+    <tr className="vf-ph-row vf-ph-row--historico vf-ph-row--ferramentas">
+      <td colSpan={colSpan}>
+        <div className="vf-ph-ferramentas">
+          {composicao && (
+            <BotaoDetalhe
+              aberto={composicao.aberto}
+              onClick={composicao.onAlternar}
+              rotuloAcessivel={`Composição do faturamento de ${cliente.nome} por conta — ${composicao.aberto ? "recolher" : "expandir"}`}
+            >
+              <span className="vf-ph-historico__rotulo">Composição do faturamento</span>
+              <span className="vf-ph-meta">por conta</span>
+            </BotaoDetalhe>
+          )}
+          {historico && (
+            <BotaoDetalhe
+              aberto={historico.aberto}
+              onClick={historico.onAlternar}
+              rotuloAcessivel={`Consolidado semanal do cliente ${cliente.nome} — ${historico.aberto ? "recolher" : "expandir"} histórico`}
+            >
+              <span className="vf-ph-historico__rotulo">Consolidado semanal do cliente</span>
+              <span className="vf-ph-meta">histórico mensal</span>
+            </BotaoDetalhe>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+// Composição do faturamento: demonstrativo por conta (lazy). Só existe
+// quando alguma conta ativa tem pedidos importados — conta manual não tem
+// pedido para compor.
 export function temComposicao(cliente) {
   return (cliente.contas || []).some((c) => c.ativa && c.importId != null);
 }
 
-function LinhasComposicao({ cliente, competencia, aberto, onAlternar, estado, carregar, colSpan }) {
+function LinhasComposicao({ cliente, competencia, aberto, estado, carregar, colSpan }) {
   useEffect(() => {
     if (aberto && !estado) carregar(cliente.id, competencia);
   }, [aberto, estado, carregar, cliente.id, competencia]);
 
+  if (!aberto) return null;
   return (
     <>
-      <tr className="vf-ph-row vf-ph-row--historico vf-ph-row--composicao-gatilho">
-        <CelulaExpansivel
-          aberto={aberto}
-          onClick={onAlternar}
-          nivel="historico"
-          rotuloAcessivel={`Composição do faturamento de ${cliente.nome} por conta — ${aberto ? "recolher" : "expandir"}`}
-        >
-          <span className="vf-ph-indent">
-            <span className="vf-ph-historico__rotulo">Composição do faturamento</span>
-            <span className="vf-ph-meta"> · por conta</span>
-          </span>
-        </CelulaExpansivel>
-        <td colSpan={colSpan - 1} />
-      </tr>
-      {aberto && estado?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={1} rotulo="Carregando composição do faturamento" />}
-      {aberto && estado?.erro && !estado.carregando && (
+      {estado?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={1} rotulo="Carregando composição do faturamento" />}
+      {estado?.erro && !estado.carregando && (
         <LinhaErro
           colSpan={colSpan}
           mensagem={`Não foi possível carregar a composição. ${estado.erro.mensagem}`}
           onTentar={() => carregar(cliente.id, competencia, { forcar: true })}
         />
       )}
-      {aberto && estado?.contas && !estado.carregando && (
+      {estado?.contas && !estado.carregando && (
         <tr className="vf-ph-row vf-ph-row--composicao">
           <td colSpan={colSpan}>
             <DemonstrativoComposicao contas={estado.contas} somaDasContas={estado.somaDasContas} competencia={competencia} />
@@ -635,27 +696,6 @@ function LinhasComposicao({ cliente, competencia, aberto, onAlternar, estado, ca
         </tr>
       )}
     </>
-  );
-}
-
-function LinhaHistorico({ cliente, aberto, onAlternar, colunas }) {
-  return (
-    <tr className="vf-ph-row vf-ph-row--historico">
-      <CelulaExpansivel
-        aberto={aberto}
-        onClick={onAlternar}
-        nivel="historico"
-        rotuloAcessivel={`Consolidado semanal do cliente ${cliente.nome} — ${aberto ? "recolher" : "expandir"} histórico`}
-      >
-        <span className="vf-ph-indent">
-          <span className="vf-ph-historico__rotulo">Consolidado semanal do cliente</span>
-          <span className="vf-ph-meta"> · histórico mensal</span>
-        </span>
-      </CelulaExpansivel>
-      <td className="vf-table__sticky-cell vf-ph-contexto" />
-      <td colSpan={colunas.length} />
-      <td className="vf-ph-folga" />
-    </tr>
   );
 }
 
@@ -693,6 +733,11 @@ function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
     />
   );
   const ultimoDado = ultimo && <span className="vf-ph-meta vf-ph-ultimo">último dado: {rotularCompetenciaCurta(ultimo)}</span>;
+  const dadosAte = !semDado && cliente.dadosAte && (
+    <span className="vf-ph-meta vf-ph-dados-ate" title={`Dados até ${formatarData(cliente.dadosAte)}`}>
+      dados até {dataCurta(cliente.dadosAte, competencia)}
+    </span>
+  );
 
   if (semDado) {
     return (
@@ -702,11 +747,12 @@ function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
       </span>
     );
   }
+  // Com dado: estado · dados até numa linha; o que FAZER (ou o progresso da
+  // atualização) ganha a linha de baixo — nunca é cortado nem quebra no meio.
   return (
-    <span className="vf-ph-cliente__meta">
-      {status}
-      {detalhe}
-      {ultimoDado}
+    <span className="vf-ph-cliente__meta vf-ph-cliente__meta--empilhado">
+      <span className="vf-ph-cliente__meta-linha">{status}{dadosAte}</span>
+      {detalhe && <span className="vf-ph-cliente__meta-linha">{detalhe}</span>}
     </span>
   );
 }
@@ -725,7 +771,7 @@ function LinhaCliente({
   const historicoAberto = mostrarHistoricoCliente && expansao.historicosAbertos.has(cliente.id);
   const estado = mesesPorCliente[cliente.id];
   const estadoSemanasContas = semanasContasPorCliente[`${cliente.id}:${competencia}`];
-  const colSpan = colunas.length + 3;
+  const colSpan = colunas.length + 2;
   const semDado = !cliente.resumo;
   const emCurso = atualizacaoEmCurso(atualizacao);
   const job = atualizacao?.job;
@@ -760,6 +806,7 @@ function LinhaCliente({
             {cliente.squad
               ? <span className={`vf-tag vf-ph-tag ${TOM_SQUAD}`} title={`Squad: ${cliente.squad.nome}`}>{cliente.squad.nome}</span>
               : <span className="vf-ph-meta is-vazio">sem squad</span>}
+            <Origem fonte={cliente.fonte} />
             {podeAtualizar && (
               <BotaoAtualizar
                 cliente={cliente}
@@ -773,8 +820,9 @@ function LinhaCliente({
           <FrescorCliente cliente={cliente} concluidaAgora={job?.estado === "concluida"} />
         </td>
 
-        {colunas.map((c) => <Celula key={c.chave} coluna={c} valor={cliente.resumo?.[c.chave] ?? null} custos={cliente.custos} />)}
-        <td className="vf-ph-folga" />
+        {colunas.map((c) => (
+          <Celula key={c.chave} coluna={c} valor={cliente.resumo?.[c.chave] ?? null} custos={cliente.custos} />
+        ))}
       </tr>
 
       {mostrarDesfecho && (
@@ -807,23 +855,28 @@ function LinhaCliente({
           Nenhuma conta/operação cadastrada — cadastre a operação em <a href="clientes.html">Clientes</a> para separar o número por conta.
         </LinhaEstado>
       )}
+      {aberto && (temComposicao(cliente) || mostrarHistoricoCliente) && (
+        <LinhaFerramentas
+          cliente={cliente}
+          colSpan={colSpan}
+          composicao={temComposicao(cliente) && {
+            aberto: expansao.composicoesAbertas.has(cliente.id),
+            onAlternar: () => expansao.alternarComposicao(cliente.id),
+          }}
+          historico={mostrarHistoricoCliente && {
+            aberto: historicoAberto,
+            onAlternar: () => expansao.alternarHistorico(cliente.id),
+          }}
+        />
+      )}
       {aberto && temComposicao(cliente) && (
         <LinhasComposicao
           cliente={cliente}
           competencia={competencia}
           aberto={expansao.composicoesAbertas.has(cliente.id)}
-          onAlternar={() => expansao.alternarComposicao(cliente.id)}
           estado={composicaoPorCliente[`${cliente.id}:${competencia}`]}
           carregar={carregarComposicao}
           colSpan={colSpan}
-        />
-      )}
-      {aberto && mostrarHistoricoCliente && (
-        <LinhaHistorico
-          cliente={cliente}
-          aberto={historicoAberto}
-          onAlternar={() => expansao.alternarHistorico(cliente.id)}
-          colunas={colunas}
         />
       )}
       {aberto && historicoAberto && estado?.carregando && (
@@ -993,31 +1046,53 @@ export function TabelaHierarquica({
     return () => observador.disconnect();
   }, [cabecalhoGrupos.length]);
 
-  // Altura do corpo rolável MEDIDA: o que vem depois da tabela é descontado.
+  // Altura do corpo rolável MEDIDA: tudo o que vem depois da tabela na
+  // página (borda do painel, rodapé, respiro) é descontado — a página não
+  // rola, só a tabela. Também publica a largura VISÍVEL do wrapper
+  // (--vf-ph-viewport): o detalhe da composição ocupa a área visível, não a
+  // largura inteira da tabela quando há scroll horizontal.
   const wrapRef = useRef(null);
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return undefined;
     const ajustar = () => {
       wrap.style.maxHeight = "";
+      wrap.style.setProperty("--vf-ph-viewport", `${wrap.clientWidth}px`);
       const caixa = wrap.getBoundingClientRect();
       const topoNoDocumento = caixa.top + window.scrollY;
-      const irmaos = Array.from(wrap.parentElement?.children || []);
-      const depoisDaTabela = irmaos
-        .slice(irmaos.indexOf(wrap) + 1)
-        .reduce((soma, el) => soma + el.getBoundingClientRect().height, 0);
-      const respiro = 28;
+      // Sobe do wrapper até a página somando o que vem DEPOIS em cada nível
+      // (irmãos seguintes + padding/borda de baixo do contêiner). Não depende
+      // de quem rola (janela ou o `main` do Shell).
+      let depoisDaTabela = 0;
+      for (let el = wrap; el && el.parentElement && !el.classList.contains("vf-ph-shell"); el = el.parentElement) {
+        const pai = window.getComputedStyle(el.parentElement);
+        const vao = parseFloat(pai.rowGap) || 0;
+        for (let irmao = el.nextElementSibling; irmao; irmao = irmao.nextElementSibling) {
+          const estilo = window.getComputedStyle(irmao);
+          if (estilo.display === "none" || estilo.position === "fixed" || estilo.position === "absolute") continue;
+          depoisDaTabela += irmao.getBoundingClientRect().height + (parseFloat(estilo.marginTop) || 0) + vao;
+        }
+        depoisDaTabela += (parseFloat(pai.paddingBottom) || 0) + (parseFloat(pai.borderBottomWidth) || 0);
+      }
+      const respiro = 8;
       const disponivel = window.innerHeight - topoNoDocumento - depoisDaTabela - respiro;
-      wrap.style.maxHeight = `${Math.max(220, Math.round(disponivel))}px`;
+      wrap.style.maxHeight = `${Math.max(260, Math.round(disponivel))}px`;
     };
     ajustar();
+    // As fontes web mudam a altura do que vem antes da tabela (a barra pode
+    // quebrar linha): mede de novo quando terminam de carregar.
+    let vivo = true;
+    document.fonts?.ready?.then(() => { if (vivo) ajustar(); });
     window.addEventListener("resize", ajustar);
-    return () => window.removeEventListener("resize", ajustar);
+    return () => {
+      vivo = false;
+      window.removeEventListener("resize", ajustar);
+    };
   });
 
   return (
     <div ref={wrapRef} className={`vf-table-wrap vf-ph-wrap${atualizando ? " is-atualizando" : ""}`}>
-      <table className="vf-table vf-table--compact vf-ph-table" style={{ "--vf-ph-head-2": `${alturaGrupo}px` }}>
+      <table className={`vf-table vf-table--compact vf-ph-table${podeAtualizar ? " tem-atualizar" : ""}`} style={{ "--vf-ph-head-2": `${alturaGrupo}px` }}>
         <caption className="vf-visually-hidden">
           Clientes da carteira na competência selecionada. Cada linha é o número consolidado do cliente; ao expandir,
           aparecem as contas/operações expansíveis por semana e o histórico do consolidado semanal do cliente.
@@ -1035,7 +1110,7 @@ export function TabelaHierarquica({
               </span>
             </th>
             <th scope="col" rowSpan={2} className="vf-table__sticky-cell vf-ph-th-contexto">
-              <BotaoOrdenar chave="squad" label="Contexto" titulo="Squad" ordem={ordem} onOrdenar={ordenar} />
+              <BotaoOrdenar chave="squad" label="Squad · Origem" titulo="Squad" ordem={ordem} onOrdenar={ordenar} />
             </th>
             {cabecalhoGrupos.map((g) => (
               <th key={g.chave} scope="colgroup" colSpan={g.colunas.length} className={`vf-ph-th-grupo${g.disponivel ? "" : " is-indisponivel"}`}>
@@ -1043,7 +1118,6 @@ export function TabelaHierarquica({
                 {!g.disponivel && <span className="vf-ph-th-grupo__nota" title={g.nota}>sem fonte</span>}
               </th>
             ))}
-            <th rowSpan={2} className="vf-ph-folga" aria-hidden="true" />
           </tr>
           <tr className="vf-ph-thead-metricas">
             {colunas.map((c, i) => (

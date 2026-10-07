@@ -1,213 +1,30 @@
 /* ============================================================
- * VenForce — Clientes · CSS da página (V2)
+ * VenForce — Clientes e Contas · CSS da página (V2)
  *
  * Ordem de carga (em clientes.html):
- *   style.css (layout/sidebar/topbar) →
  *   css/vf-tokens-v2.css → css/vf-components-v2.css →
- *   css/pages/clientes-v2.css (este arquivo, sempre por último)
+ *   css/pages/clientes-v2.css (este arquivo) → css/vf-shell.css
  *
- * Só o que é específico desta tela: grid do form "Adicionar cliente",
- * dots de marketplace, cartões de conta dentro do drawer e o mini-form
- * de "+ Conta Shopee". Componentes globais vêm de vf-components-v2.css.
- * Só tokens --vf-*. Todo seletor é escopado por .vf-page-clientes.
+ * Layout lista + painel (modelo B do canvas de design): a lista de clientes
+ * à esquerda, o cliente escolhido à direita com uma seção por marketplace e
+ * um card por conta ("o que está ok": Conexão / Base / Status).
+ * Só tokens --vf-*. Nenhuma cor, raio ou sombra nova. Todo seletor é
+ * escopado por .vf-page-clientes.
  * ============================================================ */
 
-.vf-page-clientes .vf-clientes-create-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  gap: var(--vf-sp-4);
-  align-items: end;
-}
-
-.vf-page-clientes .vf-clientes-create-submit {
-  display: flex;
-  justify-content: flex-end;
-}
-
-@media (max-width: 720px) {
-  .vf-page-clientes .vf-clientes-create-grid {
-    grid-template-columns: 1fr;
+@media (min-width: 769px) {
+  .vf-page-clientes .vf-clientes-header {
+    align-items: flex-end;
   }
 }
 
-/* Dots de marketplace — só identificam a SEÇÃO dentro da expansão (Mercado
-   Livre × Shopee), nunca usados como indicador de estado/saúde. */
-.vf-page-clientes .vf-clientes-mp-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--vf-radius-pill);
-  margin-right: var(--vf-sp-2);
-}
-.vf-page-clientes .vf-clientes-mp-dot--meli { background: var(--vf-warning); }
-.vf-page-clientes .vf-clientes-mp-dot--shopee { background: var(--vf-danger); }
-.vf-page-clientes .vf-clientes-mp-dot--tiktok { background: var(--vf-text); }
-
-/* Coluna "Contas" da tabela — duas linhas compactas (ML / Shopee). A cor
-   representa ESTADO (saudável/pendência/problema/inexistente), nunca o
-   marketplace — ver Portal/clientes-contas-resumo.js. */
-.vf-page-clientes .vf-clientes-resumo {
-  display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-1);
-}
-.vf-page-clientes .vf-clientes-resumo-linha {
-  display: inline-flex;
-  align-items: baseline;
-  gap: var(--vf-sp-2);
-  font-size: var(--vf-fs-xs);
-  white-space: nowrap;
-}
-.vf-page-clientes .vf-clientes-resumo-label {
-  width: 3.2em;
-  flex: none;
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text-secondary);
-}
-.vf-page-clientes .vf-clientes-resumo-dot { font-size: .9em; line-height: 1; }
-.vf-page-clientes .vf-clientes-resumo-texto { color: var(--vf-text-secondary); }
-
-.vf-page-clientes .vf-clientes-resumo-linha.is-ok .vf-clientes-resumo-dot { color: var(--vf-success); }
-.vf-page-clientes .vf-clientes-resumo-linha.is-ok .vf-clientes-resumo-texto { color: var(--vf-success-strong); }
-.vf-page-clientes .vf-clientes-resumo-linha.is-warn .vf-clientes-resumo-dot { color: var(--vf-warning); }
-.vf-page-clientes .vf-clientes-resumo-linha.is-warn .vf-clientes-resumo-texto { color: var(--vf-warning-strong); }
-.vf-page-clientes .vf-clientes-resumo-linha.is-danger .vf-clientes-resumo-dot { color: var(--vf-danger); }
-.vf-page-clientes .vf-clientes-resumo-linha.is-danger .vf-clientes-resumo-texto { color: var(--vf-danger-strong); }
-.vf-page-clientes .vf-clientes-resumo-linha.is-muted .vf-clientes-resumo-dot,
-.vf-page-clientes .vf-clientes-resumo-linha.is-muted .vf-clientes-resumo-texto { color: var(--vf-text-muted); }
-
-/* Linha do cliente é clicável (expande) — só a célula de ações escapa disso. */
-.vf-page-clientes .vf-clientes-row { cursor: pointer; }
-.vf-page-clientes .vf-clientes-row:hover { background: var(--vf-surface-2); }
-.vf-page-clientes .vf-clientes-row .vf-table__actions { cursor: default; }
-.vf-page-clientes .vf-clientes-toggle-btn {
-  font-family: var(--vf-font-mono);
-  min-width: 2.2em;
-}
-
-/* Expansão inline da linha (substitui o drawer lateral). */
-.vf-page-clientes .vf-clientes-expand-row > td {
-  padding: 0;
-  background: var(--vf-surface-2);
-  border-top: 1px solid var(--vf-border);
-  border-bottom: 1px solid var(--vf-border);
-}
-.vf-page-clientes .vf-clientes-expand {
-  padding: var(--vf-sp-5) var(--vf-sp-6);
-}
-.vf-page-clientes .vf-clientes-expand__state {
-  font-size: var(--vf-fs-sm);
-  color: var(--vf-text-secondary);
-  margin-bottom: var(--vf-sp-3);
-}
-.vf-page-clientes .vf-clientes-expand__state:empty { display: none; }
-
-.vf-page-clientes .vf-clientes-mp-section {
-  margin-bottom: var(--vf-sp-6);
-}
-.vf-page-clientes .vf-clientes-mp-section:last-child {
-  margin-bottom: 0;
-}
-.vf-page-clientes .vf-clientes-mp-section__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--vf-sp-3);
-  margin-bottom: var(--vf-sp-3);
-}
-.vf-page-clientes .vf-clientes-mp-section__header h4 {
-  margin: 0;
-  display: flex;
-  align-items: center;
-  font-family: var(--vf-font-display);
-  font-size: var(--vf-fs-sm);
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text);
-}
-
-.vf-page-clientes .vf-clientes-mp-empty {
-  margin: 0;
-  font-size: var(--vf-fs-sm);
-  color: var(--vf-text-muted);
-}
-
-.vf-page-clientes .vf-clientes-conta-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-3);
-}
-
-.vf-page-clientes .vf-clientes-conta-card {
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius);
-  padding: var(--vf-sp-3) var(--vf-sp-4);
-  background: var(--vf-surface-2);
-}
-
-.vf-page-clientes .vf-clientes-conta-card__top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--vf-sp-3);
-  flex-wrap: wrap;
-}
-
-.vf-page-clientes .vf-clientes-conta-card__nome {
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text);
-}
-
-.vf-page-clientes .vf-clientes-conta-card__tags {
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
-}
-
-.vf-page-clientes .vf-clientes-conta-card__status {
-  margin-top: var(--vf-sp-2);
-}
-.vf-page-clientes .vf-clientes-conta-card__status .vf-status {
-  font-size: var(--vf-fs-sm);
-  font-weight: var(--vf-fw-semibold);
-}
-
-.vf-page-clientes .vf-clientes-conta-card__meta {
-  margin-top: var(--vf-sp-2);
-  font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
-  font-family: var(--vf-font-mono);
-}
-
-.vf-page-clientes .vf-clientes-conta-card__base {
-  margin-top: var(--vf-sp-2);
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
-  font-size: var(--vf-fs-xs);
-}
-
-.vf-page-clientes .vf-clientes-conta-card__actions {
-  margin-top: var(--vf-sp-3);
-  display: flex;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
-}
-
-.vf-page-clientes .vf-clientes-new-conta-form {
-  border: 1px dashed var(--vf-border);
-  border-radius: var(--vf-radius);
-  padding: var(--vf-sp-3) var(--vf-sp-4);
-  margin-bottom: var(--vf-sp-3);
-  background: var(--vf-surface-2);
-}
-
-.vf-page-clientes .vf-clientes-new-conta-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--vf-sp-2);
-  margin-top: var(--vf-sp-2);
+/* Em coluna (≤768px, regra global de .vf-page-header), o flex-basis de
+   320px de __main vira ALTURA e abria um vão vazio acima do botão
+   "Novo cliente". Corrigido só nesta página. */
+@media (max-width: 768px) {
+  .vf-page-clientes .vf-clientes-header .vf-page-header__main {
+    flex: 0 0 auto;
+  }
 }
 
 .vf-page-clientes .vf-clientes-modal-sub {
@@ -216,33 +33,208 @@
   color: var(--vf-text-muted);
 }
 
-/* ── Tabela de clientes ──────────────────────────────────────────────
- * Migração Wave 1 UI/UX (B5): antes vinha de style.css (.vf-page-clientes
- * .vf-table …). Agora a tela não carrega style.css. */
-.vf-page-clientes .vf-table {
-  min-width: 1080px;
-}
-.vf-page-clientes .vf-table thead th:last-child,
-.vf-page-clientes .vf-table tbody td:last-child {
-  min-width: 200px;
-  text-align: right;
+.vf-page-clientes .vf-cli-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
 }
 
-/* Células técnicas / discretas da linha (slug, contagem) */
-.vf-page-clientes .vf-cli-cell-muted {
+/* ── Grade: lista | painel ─────────────────────────────────────────── */
+.vf-page-clientes .vf-cli-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: var(--vf-sp-5);
+  align-items: start;
+}
+
+@media (max-width: 899.98px) {
+  .vf-page-clientes .vf-cli-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Lista de clientes ─────────────────────────────────────────────── */
+.vf-page-clientes .vf-cli-lista-card {
+  position: sticky;
+  top: var(--vf-sp-4);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 2 * var(--vf-sp-8));
+  min-width: 0;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  overflow: hidden;
+}
+
+@media (max-width: 899.98px) {
+  .vf-page-clientes .vf-cli-lista-card {
+    position: static;
+    max-height: 420px;
+  }
+}
+
+.vf-page-clientes .vf-cli-lista-card__topo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-3);
+  background: var(--vf-surface-2);
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-clientes .vf-cli-filtros {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-clientes .vf-cli-chip-n {
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-clientes .vf-cli-lista {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.vf-page-clientes .vf-cli-lista-vazia {
+  margin: 0;
+  padding: var(--vf-sp-8) var(--vf-sp-4);
+  text-align: center;
+  font-size: var(--vf-fs-sm);
   color: var(--vf-text-muted);
-  font-size: var(--vf-fs-xs);
-}
-.vf-page-clientes .vf-cli-cell-slug {
-  color: var(--vf-text-secondary);
-  font-family: var(--vf-font-mono);
-  font-size: var(--vf-fs-xs);
 }
 
-/* Coluna "Squad" — texto secundário discreto, nunca badge colorido nem
-   card. "Sem Squad" (cliente histórico sem vínculo) fica com o mesmo peso
-   visual da coluna, só numa cor de atenção suave — não esconde o cliente,
-   não inventa um squad default. */
+.vf-page-clientes .vf-cli-lista-card__rodape {
+  padding: var(--vf-sp-2) var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-cli-item {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  width: 100%;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border: none;
+  border-bottom: 1px solid var(--vf-border);
+  background: var(--vf-surface);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--vf-duration-fast) var(--vf-ease);
+}
+
+.vf-page-clientes .vf-cli-item:hover {
+  background: var(--vf-surface-hover);
+}
+
+.vf-page-clientes .vf-cli-item:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
+}
+
+/* Selecionado: fundo soft + filete roxo (mesmo inset de 3px de Anúncios). */
+.vf-page-clientes .vf-cli-item.is-active {
+  background: var(--vf-primary-soft);
+  box-shadow: inset 3px 0 0 var(--vf-primary);
+}
+
+.vf-page-clientes .vf-cli-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-bg-2);
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-clientes .vf-cli-item.is-active .vf-cli-avatar {
+  background: var(--vf-surface);
+  color: var(--vf-primary-strong);
+}
+
+.vf-page-clientes .vf-cli-avatar--lg {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--vf-radius);
+  font-size: var(--vf-fs-md);
+}
+
+.vf-page-clientes .vf-cli-item__main {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vf-page-clientes .vf-cli-item__nome {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+/* O nome é que encolhe com reticências — a etiqueta "Inativo" nunca some. */
+.vf-page-clientes .vf-cli-item__nome-texto {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-clientes .vf-cli-item__tag {
+  flex: 0 0 auto;
+}
+
+.vf-page-clientes .vf-cli-item__meta {
+  overflow: hidden;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-clientes .vf-cli-item__meta .vf-cli-cell-squad {
+  font-size: inherit;
+}
+
+.vf-page-clientes .vf-cli-item__saude {
+  flex: 0 0 auto;
+  font-weight: var(--vf-fw-semibold);
+  white-space: nowrap;
+}
+
+.vf-page-clientes .vf-cli-item__saude--carregando {
+  width: 28px;
+  height: 8px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-bg-2);
+}
+
+/* Coluna/linha "Squad" — texto secundário discreto, nunca badge colorido.
+   "Sem Squad" (cliente histórico sem vínculo) só ganha cor de atenção
+   suave — não esconde o cliente, não inventa um squad default. */
 .vf-page-clientes .vf-cli-cell-squad {
   color: var(--vf-text-secondary);
   font-size: var(--vf-fs-sm);
@@ -251,6 +243,328 @@
 .vf-page-clientes .vf-cli-cell-squad.is-missing {
   color: var(--vf-warning-strong);
   font-style: italic;
+}
+
+/* ── Painel do cliente ─────────────────────────────────────────────── */
+.vf-page-clientes .vf-cli-detalhe {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-5);
+  min-width: 0;
+}
+
+.vf-page-clientes .vf-cli-cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-4);
+  padding: var(--vf-sp-5);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-clientes .vf-cli-cabecalho__main {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+  min-width: 0;
+}
+
+.vf-page-clientes .vf-cli-cabecalho__nome {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-xl);
+  font-weight: var(--vf-fw-bold);
+  letter-spacing: var(--vf-ls-tight);
+  line-height: 1.15;
+  color: var(--vf-text);
+}
+
+.vf-page-clientes .vf-cli-cabecalho__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-clientes .vf-cli-sep {
+  color: var(--vf-text-placeholder);
+}
+
+.vf-page-clientes .vf-cli-slug {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-cli-cabecalho__acoes {
+  display: flex;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-clientes .vf-cli-btn-perigo {
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-clientes .vf-cli-btn-perigo:hover {
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-clientes .vf-cli-situacao {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  background: var(--vf-surface-2);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-clientes .vf-cli-situacao .vf-status {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-clientes .vf-cli-situacao__texto {
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+}
+
+/* .vf-alert global é uma pílula de uma linha (feedback curto); aqui é uma
+   frase inteira, então vira bloco com respiro. */
+.vf-page-clientes .vf-cli-aviso-leitura {
+  display: block;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  font-size: var(--vf-fs-sm);
+  line-height: 1.5;
+}
+
+/* ── Seção por marketplace ─────────────────────────────────────────── */
+.vf-page-clientes .vf-cli-mp {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-clientes .vf-cli-mp__cabecalho {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+}
+
+/* Sigla neutra do marketplace — identifica a seção sem usar cor semântica
+   (verde/laranja/vermelho ficam reservados para estado). */
+.vf-page-clientes .vf-cli-mp__sigla {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--vf-radius-sm);
+  border: 1px solid var(--vf-border);
+  background: var(--vf-neutral-bg);
+  font-family: var(--vf-font-display);
+  font-size: 0.625rem;
+  font-weight: var(--vf-fw-extrabold);
+  letter-spacing: 0.02em;
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-clientes .vf-cli-mp__titulo {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-clientes .vf-cli-mp__contagem {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-cli-mp__espaco {
+  flex: 1 1 auto;
+}
+
+.vf-page-clientes .vf-cli-mp__vazio {
+  margin: 0;
+  padding: var(--vf-sp-4);
+  border: 1px dashed var(--vf-border-strong);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface);
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-cli-nova-conta {
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border: 1px dashed var(--vf-border-strong);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-clientes .vf-cli-nova-conta__acoes {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--vf-sp-2);
+  margin-top: var(--vf-sp-3);
+}
+
+/* ── Card de conta ─────────────────────────────────────────────────── */
+.vf-page-clientes .vf-cli-contas {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-clientes .vf-cli-conta {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+  padding: var(--vf-sp-4);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-clientes .vf-cli-conta.is-off {
+  background: var(--vf-surface-2);
+}
+
+.vf-page-clientes .vf-cli-conta.is-off .vf-cli-conta__nome {
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-cli-conta__topo {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-clientes .vf-cli-conta__titulo {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vf-page-clientes .vf-cli-conta__nome {
+  overflow: hidden;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-clientes .vf-cli-conta__id {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-cli-conta__tags {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--vf-sp-1);
+}
+
+.vf-page-clientes .vf-cli-conta__estado {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-clientes .vf-cli-checks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  margin: 0;
+  padding: var(--vf-sp-3) 0 0;
+  list-style: none;
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-clientes .vf-cli-check {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-clientes .vf-cli-check__ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-page-clientes .vf-cli-check.is-ok .vf-cli-check__ico { background: var(--vf-success-bg); color: var(--vf-success); }
+.vf-page-clientes .vf-cli-check.is-warn .vf-cli-check__ico { background: var(--vf-warning-bg); color: var(--vf-warning); }
+.vf-page-clientes .vf-cli-check.is-bad .vf-cli-check__ico { background: var(--vf-danger-bg); color: var(--vf-danger); }
+.vf-page-clientes .vf-cli-check.is-na .vf-cli-check__ico { background: var(--vf-neutral-bg); color: var(--vf-text-placeholder); }
+
+.vf-page-clientes .vf-cli-check__label {
+  flex: 0 0 64px;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-clientes .vf-cli-check__texto {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-clientes .vf-cli-conta__dica {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-clientes .vf-cli-conta__acoes {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  margin-top: auto;
+  padding-top: var(--vf-sp-1);
+}
+
+.vf-page-clientes .vf-cli-conta__mais {
+  margin-left: auto;
+}
+
+.vf-page-clientes .vf-cli-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + var(--vf-sp-1));
+  min-width: 230px;
+  width: max-content;
+  max-width: 280px;
+}
+
+.vf-page-clientes .vf-cli-menu a.vf-menu__item {
+  text-decoration: none;
+  color: var(--vf-text);
 }
 
 /* Modal de exclusão: a lista de dependências (uma por linha, "• label:

@@ -22,7 +22,11 @@ function ok(label, cond) {
 const html = fs.readFileSync(path.join(__dirname, "clientes.html"), "utf8");
 const js = fs.readFileSync(path.join(__dirname, "clientes.js"), "utf8");
 
-ok("thead da tabela tem uma coluna Squad", /<th[^>]*>\s*Squad\s*<\/th>/.test(html));
+// Layout lista + painel (out/2026): não há mais <table>; o Squad aparece
+// em cada item da lista e no cabeçalho do cliente aberto.
+ok("item da lista de clientes mostra o Squad (renderLista usa squadTexto)", /function renderLista[\s\S]*?squadTexto\(c\)/.test(js));
+ok("busca por texto encontra pelo nome do squad", /function textoBuscaCliente[\s\S]*?squadTexto\(c\)/.test(js));
+ok("HTML tem o campo de busca de clientes", /id="busca-cliente"/.test(html));
 ok("renderClientes usa c.squad ao montar a linha", /c\.squad/.test(js));
 ok("cliente sem squad mostra \"Sem Squad\" honesto (não inventa squad default)", /Sem Squad/.test(js));
 ok("reaproveita isLegado() já existente (não duplica a regra de slug 'legado')", /isLegado\(c\.squad\)/.test(js));

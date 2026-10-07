@@ -8,16 +8,20 @@ function getToken() {
 }
 const TOKEN = getToken();
 const user = JSON.parse(localStorage.getItem("vf-user") || "{}");
-// F5/Bloco F — sem permissão volta para a CARTEIRA, não para
-// dashboard.html. O dashboard é uma tela legada, fora da navegação V3 e
-// ainda no layout.js: mandar para lá quem esbarrou num 403 dentro do
-// Shell V3 troca a sidebar debaixo do usuário e o deixa num lugar de
-// onde ele não sabe voltar. A Carteira é a home operacional do V3 e
-// trata carteira vazia honestamente (NO_PORTFOLIO).
-if (user.role !== "admin") window.location.replace("carteira.html");
+// Clientes e Contas passou a ser tela de TODOS os usuários internos (antes
+// redirecionava não-admin para a Carteira). Sem mudar backend nenhum:
+//   - admin    → GET /clientes (todos) + todas as ações, como sempre;
+//   - os demais → a própria carteira (GET /me/portfolio, filtrada por
+//     Squad no servidor) e as contas via GET /clientes/:slug/contas, que já
+//     é liberado para admin/user/membro com gate de carteira. Toda mutação
+//     (criar/remover cliente, criar conta, base, grant, ativar…) continua
+//     requireAdmin no backend — então a UI simplesmente não as oferece a
+//     quem não é admin, em vez de deixar o clique cair num 403.
+// Persona seller continua sendo desviada pelo Shell V3 para seller.html.
+const IS_ADMIN = String(user.role || "").toLowerCase() === "admin";
 initLayout();
 
-const { classificarStatusConta, resumirContasMarketplace, criarExpansaoUnica } = window.VF_CLIENTES_CONTAS_RESUMO;
+const { diagnosticarConta, diagnosticarCliente } = window.VF_CLIENTES_CONTAS_RESUMO;
 
 function clearSession() {
   localStorage.removeItem(STORAGE_KEY);
@@ -39,25 +43,6 @@ function isLegado(squad) {
 
 let SQUADS_ATIVOS = [];
 
-function filtrarClientes() {
-  const termo = (document.getElementById("busca-cliente")?.value || "").toLowerCase().trim();
-  const linhas = document.querySelectorAll("#clientes-tbody > tr.vf-clientes-row");
-  let visiveis = 0;
-  linhas.forEach((tr) => {
-    const texto = tr.textContent.toLowerCase();
-    const bate = !termo || texto.includes(termo);
-    tr.style.display = bate ? "" : "none";
-    // A linha de expansão é a próxima irmã — acompanha a visibilidade do cliente dono.
-    const expandRow = tr.nextElementSibling;
-    if (expandRow && expandRow.classList.contains("vf-clientes-expand-row")) {
-      expandRow.style.display = bate ? "" : "none";
-    }
-    if (bate) visiveis++;
-  });
-  const badge = document.getElementById("clientes-count");
-  if (badge && badge.style.display !== "none") badge.textContent = String(visiveis);
-}
-
 // Link account-scoped (Fundação de Contas): identifica a cliente_conta
 // específica, nunca o cliente genérico — necessário para diferenciar
 // ML1/ML2/ML3 do mesmo cliente. O link legado /ml/conectar/:clienteSlug
@@ -68,36 +53,57 @@ function getMlConectarContaLink(contaId) {
 }
 
 async function copiarLinkConta(link, btn) {
-  const original = btn.textContent;
   try {
     await navigator.clipboard.writeText(link);
-    btn.textContent = "✓ Link copiado";
   } catch (err) {
     setClientesFeedback(`Não foi possível copiar automaticamente. Link: ${link}`, "danger");
     return;
   }
+  // Vindo do menu "⋯", o botão é só um ícone: o retorno vai para o banner.
+  if (!btn || btn.classList.contains("vf-btn--icon")) {
+    setClientesFeedback("Link de conexão copiado. Envie para o cliente autorizar a conta no Mercado Livre.", "success");
+    return;
+  }
+  const original = btn.textContent;
+  btn.textContent = "✓ Link copiado";
   setTimeout(() => { btn.textContent = original; }, 1800);
 }
 
+// Acentos viram a letra base ("Eletrônico" → "eletronico") em vez de sumir.
 function slugify(nome) {
-  return String(nome || "").toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+  return String(nome || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
 }
 
 const stateLoading = document.getElementById("state-loading");
-const stateTable = document.getElementById("state-table");
+const stateLayout = document.getElementById("clientes-layout");
 const stateEmpty = document.getElementById("state-empty");
 const stateError = document.getElementById("state-error");
 const clientesCount = document.getElementById("clientes-count");
-const clientesTbody = document.getElementById("clientes-tbody");
+const clientesLista = document.getElementById("clientes-lista");
+const clientesListaVazia = document.getElementById("clientes-lista-vazia");
+const clientesFiltros = document.getElementById("clientes-filtros");
+const clientesDetalhe = document.getElementById("clientes-detalhe");
 const clientesFeedback = document.getElementById("clientes-feedback");
 
 let CLIENTES_LISTA = [];
 let CLIENTES_CONFIRM_OPEN = false;
 let CLIENTES_CONFIRM_ACTION = null;
 let CLIENTES_CONFIRM_LABEL = "Confirmar";
-const EXPANSAO = criarExpansaoUnica(); // controla qual linha está aberta (só uma por vez)
-const EXPANDIDO_CONTAS = new Map(); // slug -> contas cruas da última carga (cache p/ sugestão de nome "+Conta")
 let BASE_PICKER_CONTA = null; // conta sendo editada no modal "Definir/Trocar base"
+
+// Estado da tela (lista + painel).
+const CONTAS_POR_CLIENTE = new Map(); // slug -> { estado: 'carregando'|'ok'|'erro', contas, erro }
+let SELECIONADO = null;               // slug do cliente aberto no painel
+let FILTRO = "todos";                 // 'todos' | 'atencao' | 'sem_contas'
+let RECARREGAR_AO_VOLTAR = null;      // slug cujo grant pode ter mudado numa aba de conexão ML
+
+const MARKETPLACES = [
+  { key: "meli", label: "Mercado Livre", sigla: "ML" },
+  { key: "shopee", label: "Shopee", sigla: "SH" },
+  { key: "tiktok", label: "TikTok Shop", sigla: "TT" },
+];
 
 function setClientesFeedback(message, type = "neutral") {
   if (!clientesFeedback) return;
@@ -129,8 +135,8 @@ function abrirModalConfirmacaoClientes({ title, subtitle = "", description, conf
   desc.textContent = description || "";
 
   ok.textContent = CLIENTES_CONFIRM_LABEL;
-  ok.classList.remove("vf-btn--secondary", "vf-btn--danger");
-  ok.classList.add(danger ? "vf-btn--danger" : "vf-btn--secondary");
+  ok.classList.remove("vf-btn--secondary", "vf-btn--danger", "vf-btn--primary");
+  ok.classList.add(danger ? "vf-btn--danger" : "vf-btn--primary");
 
   if (dangerBox) { dangerBox.style.display = "none"; dangerBox.textContent = ""; }
   modal.classList.add("is-open");
@@ -167,27 +173,30 @@ async function confirmarModalClientes() {
     } else {
       setClientesFeedback(msg, "danger");
     }
+  } finally {
     if (ok) { ok.disabled = false; ok.textContent = CLIENTES_CONFIRM_LABEL; }
   }
 }
 
-function showLoading() {
-  stateLoading.style.display = "flex";
-  stateTable.style.display = stateEmpty.style.display = stateError.style.display = "none";
+function mostrarEstado(qual) {
+  stateLoading.style.display = qual === "loading" ? "flex" : "none";
+  stateEmpty.style.display = qual === "empty" ? "block" : "none";
+  stateError.style.display = qual === "error" ? "block" : "none";
+  stateLayout.hidden = qual !== "layout";
 }
-function showTable() {
-  stateTable.style.display = "block";
-  stateLoading.style.display = stateEmpty.style.display = stateError.style.display = "none";
-}
+function showLoading() { mostrarEstado("loading"); }
 function showEmpty() {
-  stateEmpty.style.display = "block";
-  stateLoading.style.display = stateTable.style.display = stateError.style.display = "none";
-  clientesCount.style.display = "none";
+  const desc = document.getElementById("state-empty-desc");
+  if (desc) {
+    desc.textContent = IS_ADMIN
+      ? "Crie o primeiro cliente em “Novo cliente”."
+      : "Sua carteira ainda não tem clientes. Fale com o coordenador do seu squad.";
+  }
+  mostrarEstado("empty");
 }
 function showError(msg) {
-  stateError.style.display = "block";
-  stateLoading.style.display = stateTable.style.display = stateEmpty.style.display = "none";
   document.getElementById("error-message").textContent = msg;
+  mostrarEstado("error");
 }
 
 function setCreateLoading(on) {
@@ -215,6 +224,7 @@ async function apiFetch(path, options = {}) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data?.erro || data?.error || `HTTP ${res.status}`);
+    err.status = res.status;
     err.code = data?.code;
     err.dependencias = data?.dependencias;
     err.contas = data?.contas;
@@ -223,137 +233,95 @@ async function apiFetch(path, options = {}) {
   return data;
 }
 
-async function loadClientes() {
+// ── CARGA ────────────────────────────────────────────────────────────────
+
+// Admin: GET /clientes (todos, inclusive inativos, já com squad).
+// Demais: a carteira do usuário. GET /me/portfolio é a fonte autoritativa por
+// Squad; /operacao/cliente-360/clientes é a mesma carteira num payload mais
+// pobre (sem squad) e só entra se o servidor implantado ainda não conhece
+// /me (404) — mesma regra de queda de vf-shell.js.
+async function buscarClientes() {
+  if (IS_ADMIN) {
+    const data = await apiFetch("/clientes");
+    return Array.isArray(data.clientes) ? data.clientes : [];
+  }
+  let data;
+  try {
+    data = await apiFetch("/me/portfolio");
+  } catch (err) {
+    if (err.status !== 404) throw err;
+    data = await apiFetch("/operacao/cliente-360/clientes");
+  }
+  const lista = Array.isArray(data.clientes) ? data.clientes : [];
+  return lista.map((c) => ({
+    id: c.id,
+    nome: c.nome,
+    slug: c.slug,
+    ativo: c.ativo !== false,
+    squad: c.squad ? { id: c.squad.id, nome: c.squad.nome, slug: c.squad.slug } : null,
+  }));
+}
+
+async function loadClientes({ selecionar } = {}) {
   if (!TOKEN) return;
   showLoading();
-  EXPANSAO.fechar();
-  EXPANDIDO_CONTAS.clear();
+  fecharMenuConta();
+  CONTAS_POR_CLIENTE.clear();
   try {
-    const data = await apiFetch("/clientes");
-    const clientes = Array.isArray(data.clientes) ? data.clientes : [];
+    const clientes = await buscarClientes();
+    clientes.sort((a, b) => String(a.nome || "").localeCompare(String(b.nome || ""), "pt-BR", { sensitivity: "base" }));
     CLIENTES_LISTA = clientes;
-    renderClientes(clientes);
   } catch (err) {
     showError("Não foi possível carregar os clientes. Tente novamente.");
+    return;
   }
+  if (!CLIENTES_LISTA.length) { showEmpty(); return; }
+
+  const alvo = selecionar || SELECIONADO;
+  SELECIONADO = CLIENTES_LISTA.some((c) => c.slug === alvo) ? alvo : CLIENTES_LISTA[0].slug;
+  mostrarEstado("layout");
+  renderFiltros();
+  renderLista();
+  renderDetalhe();
+  carregarTodasAsContas();
 }
 
-function renderClientes(clientes) {
-  clientesTbody.innerHTML = "";
-  if (!clientes.length) { showEmpty(); return; }
-
-  setClientesFeedback("");
-  clientesCount.textContent = String(clientes.length);
-  clientesCount.style.display = "inline-block";
-
-  clientes.forEach((c, i) => {
-    const ativo = c.ativo !== false;
-    const slug = c.slug || "";
-
-    const tr = document.createElement("tr");
-    tr.className = "vf-clientes-row animate-fade-up";
-    tr.id = `cliente-row-${escapeHTML(slug)}`;
-    tr.style.animationDelay = `${i * 0.04}s`;
-    tr.dataset.slug = slug;
-
-    const squadTexto = c.squad
-      ? `${escapeHTML(c.squad.nome)}${isLegado(c.squad) ? " · Legado" : ""}`
-      : "Sem Squad";
-    const squadCls = c.squad ? "" : "is-missing";
-
-    tr.innerHTML = `
-      <td class="vf-cli-cell-slug">${String(i + 1).padStart(2, "0")}</td>
-      <td><strong>${escapeHTML(c.nome || "—")}</strong></td>
-      <td class="vf-cli-cell-squad ${squadCls}">${squadTexto}</td>
-      <td class="vf-cli-cell-slug">${escapeHTML(slug || "—")}</td>
-      <td>
-        <span class="vf-status ${ativo ? "is-success" : ""}">${ativo ? "Ativo" : "Inativo"}</span>
-      </td>
-      <td id="resumo-contas-${escapeHTML(slug)}"><span class="vf-cli-cell-muted">…</span></td>
-      <td>
-        <div class="vf-table__actions">
-          <button class="vf-btn vf-btn--sm vf-btn--secondary vf-clientes-toggle-btn" data-action="toggle-expand" data-slug="${escapeHTML(slug)}" aria-expanded="false" title="Detalhes">⌄</button>
-          <button class="vf-btn vf-btn--sm vf-btn--secondary" data-action="delete" data-slug="${escapeHTML(slug)}">Remover</button>
-        </div>
-      </td>
-    `;
-
-    // A linha inteira é clicável para expandir, exceto a célula de ações
-    // (Excluir e o próprio botão de expandir têm seus próprios handlers).
-    tr.addEventListener("click", (e) => {
-      if (e.target.closest(".vf-table__actions")) return;
-      toggleExpandCliente(slug);
-    });
-
-    clientesTbody.appendChild(tr);
-  });
-
-  clientesTbody.querySelectorAll('button[data-action="delete"]').forEach((btn) => {
-    btn.addEventListener("click", () => abrirModalRemoverCliente(btn));
-  });
-
-  clientesTbody.querySelectorAll('button[data-action="toggle-expand"]').forEach((btn) => {
-    btn.addEventListener("click", () => toggleExpandCliente(btn.getAttribute("data-slug") || ""));
-  });
-
-  showTable();
-  const buscaAtiva = document.getElementById("busca-cliente");
-  if (buscaAtiva) buscaAtiva.value = "";
-
-  clientes.forEach((c) => carregarResumoContas(c.slug || ""));
+// As contas de cada cliente alimentam a saúde na lista e os filtros. O
+// cliente aberto vai primeiro; o resto em lotes pequenos para não disparar
+// dezenas de requisições ao mesmo tempo.
+async function carregarTodasAsContas() {
+  const fila = CLIENTES_LISTA.map((c) => c.slug).filter((s) => s && s !== SELECIONADO);
+  if (SELECIONADO) await carregarContas(SELECIONADO);
+  const LOTE = 6;
+  const trabalhar = async () => {
+    while (fila.length) {
+      const slug = fila.shift();
+      if (!CONTAS_POR_CLIENTE.has(slug)) await carregarContas(slug);
+    }
+  };
+  await Promise.all(Array.from({ length: LOTE }, trabalhar));
 }
 
-async function carregarResumoContas(slug) {
-  const celContas = document.getElementById(`resumo-contas-${slug}`);
-  if (!celContas) return;
+async function carregarContas(slug) {
+  if (!slug) return;
+  const anterior = CONTAS_POR_CLIENTE.get(slug);
+  CONTAS_POR_CLIENTE.set(slug, { estado: "carregando", contas: anterior?.contas || [] });
   try {
     const data = await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`);
     const contas = Array.isArray(data.contas) ? data.contas : [];
-    renderResumoContasCelula(celContas, contas);
-  } catch {
-    celContas.innerHTML = `<span class="vf-cli-cell-muted">—</span>`;
+    CONTAS_POR_CLIENTE.set(slug, { estado: "ok", contas });
+  } catch (err) {
+    CONTAS_POR_CLIENTE.set(slug, { estado: "erro", contas: [], erro: err.message });
   }
+  renderFiltros();
+  renderLista();
+  if (slug === SELECIONADO) renderDetalhe();
 }
 
-// Coluna "Contas": duas linhas compactas (ML / Shopee), cor de ESTADO — não
-// de marketplace. verde=saudável · amarelo=pendência · vermelho=problema ·
-// cinza=inexistente. Ver Portal/clientes-contas-resumo.js.
-function linhaResumoHtml(marketplace, label, contas) {
-  const r = resumirContasMarketplace(marketplace, contas);
-  const clsPorEstado = { saudavel: "is-ok", pendencia: "is-warn", problema: "is-danger", vazio: "is-muted" };
-  return `
-    <div class="vf-clientes-resumo-linha ${clsPorEstado[r.state]}">
-      <span class="vf-clientes-resumo-label">${escapeHTML(label)}</span>
-      <span class="vf-clientes-resumo-dot">${r.symbol}</span>
-      <span class="vf-clientes-resumo-texto">${escapeHTML(r.texto)}</span>
-    </div>`;
-}
-
-// TikTok Shop não tem integração (nem grant nem base definem a saúde): a
-// linha só aparece quando o cliente TEM operação TikTok, e diz o que ela é —
-// lançamento manual no Painel de Contas.
-function linhaResumoTiktokHtml(contas) {
-  const ativas = contas.filter((c) => c.ativo !== false).length;
-  if (!contas.length) return "";
-  const texto = ativas ? `${ativas} manual${ativas > 1 ? "is" : ""}` : "inativa";
-  return `
-    <div class="vf-clientes-resumo-linha ${ativas ? "is-ok" : "is-muted"}">
-      <span class="vf-clientes-resumo-label">TikTok</span>
-      <span class="vf-clientes-resumo-dot">${ativas ? "●" : "○"}</span>
-      <span class="vf-clientes-resumo-texto">${escapeHTML(texto)}</span>
-    </div>`;
-}
-
-function renderResumoContasCelula(el, contas) {
-  const ml = contas.filter((c) => c.marketplace === "meli");
-  const shopee = contas.filter((c) => c.marketplace === "shopee");
-  const tiktok = contas.filter((c) => c.marketplace === "tiktok");
-  el.innerHTML = `
-    <div class="vf-clientes-resumo">
-      ${linhaResumoHtml("meli", "ML", ml)}
-      ${linhaResumoHtml("shopee", "Shopee", shopee)}
-      ${linhaResumoTiktokHtml(tiktok)}
-    </div>`;
+// Recarrega as contas do cliente aberto depois de qualquer ação (criar conta,
+// vincular base, conectar/testar/desconectar grant, ativar/desativar).
+async function atualizarAposAcao(slug) {
+  await carregarContas(slug);
 }
 
 const ROTULO_MARKETPLACE_CONTA = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
@@ -574,6 +542,7 @@ function atualizarEstadoBotaoCriar() {
   btn.disabled = !(nome && slug && squadSelecionadoValido());
 }
 
+
 async function createCliente() {
   const nomeEl = document.getElementById("cliente-nome");
   const slugEl = document.getElementById("cliente-slug");
@@ -595,12 +564,11 @@ async function createCliente() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ nome, slug, squadId }),
     });
-    nomeEl.value = "";
-    slugEl.value = "";
-    squadEl.value = "";
+    const slugCriado = data?.cliente?.slug || data?.slug || slug;
     const squadFinal = data?.squad?.nome || squadNome;
-    setFormStatus(`✓ Cliente "${nome}" criado no Squad ${squadFinal}.`, false);
-    loadClientes();
+    fecharModalNovoCliente();
+    setClientesFeedback(`✓ Cliente "${nome}" criado no Squad ${squadFinal}. Agora adicione as contas dele.`, "success");
+    await loadClientes({ selecionar: slugCriado });
   } catch (err) {
     setFormStatus("Erro ao criar: " + err.message, true);
   } finally {
@@ -609,362 +577,521 @@ async function createCliente() {
   }
 }
 
-// ── EXPANSÃO INLINE DA LINHA (substitui o drawer) ─────────────────────────
-// Só uma linha expandida por vez (EXPANSAO, Portal/clientes-contas-resumo.js).
-// Abrir/fechar não recarrega a tabela inteira nem perde a busca ativa.
+// ── MODAL "NOVO CLIENTE" ─────────────────────────────────────────────────
+let slugTouched = false;
+let CLIENTES_NOVO_OPEN = false;
 
-function expansaoTemplate(slug) {
-  return `
-    <div class="vf-clientes-expand__state" data-role="state">Carregando contas…</div>
-
-    <section class="vf-clientes-mp-section" data-mp="meli">
-      <div class="vf-clientes-mp-section__header">
-        <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--meli"></span>Mercado Livre</h4>
-        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="add-conta" data-mp="meli">+ Conta Mercado Livre</button>
-      </div>
-      <div class="vf-clientes-new-conta-form" data-form="meli" style="display:none;">
-        <div class="vf-field">
-          <label class="vf-field__label">Nome da conta</label>
-          <input type="text" class="vf-input" data-input="nome" placeholder="ex: Mercado Livre 1">
-        </div>
-        <div class="vf-clientes-new-conta-actions">
-          <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="cancelar-conta" data-mp="meli">Cancelar</button>
-          <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" data-action="salvar-conta" data-mp="meli">Criar conta</button>
-        </div>
-      </div>
-      <div class="vf-clientes-conta-list" data-list="meli"></div>
-      <p class="vf-clientes-mp-empty" data-empty="meli" style="display:none;">Nenhuma conta Mercado Livre cadastrada.</p>
-    </section>
-
-    <section class="vf-clientes-mp-section" data-mp="shopee">
-      <div class="vf-clientes-mp-section__header">
-        <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--shopee"></span>Shopee</h4>
-        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="add-conta" data-mp="shopee">+ Conta Shopee</button>
-      </div>
-      <div class="vf-clientes-new-conta-form" data-form="shopee" style="display:none;">
-        <div class="vf-field">
-          <label class="vf-field__label">Nome da conta</label>
-          <input type="text" class="vf-input" data-input="nome" placeholder="ex: Shopee 1">
-        </div>
-        <div class="vf-clientes-new-conta-actions">
-          <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="cancelar-conta" data-mp="shopee">Cancelar</button>
-          <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" data-action="salvar-conta" data-mp="shopee">Criar conta</button>
-        </div>
-      </div>
-      <div class="vf-clientes-conta-list" data-list="shopee"></div>
-      <p class="vf-clientes-mp-empty" data-empty="shopee" style="display:none;">Nenhuma conta Shopee cadastrada.</p>
-    </section>
-
-    <section class="vf-clientes-mp-section" data-mp="tiktok">
-      <div class="vf-clientes-mp-section__header">
-        <h4><span class="vf-clientes-mp-dot vf-clientes-mp-dot--tiktok"></span>TikTok Shop</h4>
-        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="add-conta" data-mp="tiktok">+ Conta TikTok Shop</button>
-      </div>
-      <div class="vf-clientes-new-conta-form" data-form="tiktok" style="display:none;">
-        <div class="vf-field">
-          <label class="vf-field__label">Nome da conta</label>
-          <input type="text" class="vf-input" data-input="nome" placeholder="ex: TikTok 1">
-        </div>
-        <div class="vf-clientes-new-conta-actions">
-          <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="cancelar-conta" data-mp="tiktok">Cancelar</button>
-          <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" data-action="salvar-conta" data-mp="tiktok">Criar conta</button>
-        </div>
-      </div>
-      <div class="vf-clientes-conta-list" data-list="tiktok"></div>
-      <p class="vf-clientes-mp-empty" data-empty="tiktok" style="display:none;">Nenhuma conta TikTok Shop cadastrada. Sem integração: os números entram como lançamento manual no Painel de Contas.</p>
-    </section>
-  `;
+function abrirModalNovoCliente() {
+  const nomeEl = document.getElementById("cliente-nome");
+  document.getElementById("cliente-slug").value = "";
+  nomeEl.value = "";
+  slugTouched = false;
+  setFormStatus("", false);
+  if (!SQUADS_ATIVOS.length) carregarSquadsAtivos();
+  else { renderOpcoesSquad(); atualizarEstadoBotaoCriar(); }
+  CLIENTES_NOVO_OPEN = true;
+  document.getElementById("vf-clientes-novo-modal").classList.add("is-open");
+  setTimeout(() => nomeEl.focus(), 50);
 }
 
-function atualizarChevron(slug, aberto) {
-  const btn = clientesTbody.querySelector(`button[data-action="toggle-expand"][data-slug="${CSS.escape(slug)}"]`);
-  if (!btn) return;
-  btn.textContent = aberto ? "︿" : "⌄";
-  btn.setAttribute("aria-expanded", aberto ? "true" : "false");
+function fecharModalNovoCliente() {
+  document.getElementById("vf-clientes-novo-modal")?.classList.remove("is-open");
+  CLIENTES_NOVO_OPEN = false;
 }
 
-function removerLinhaExpandida(slug) {
-  document.getElementById(`cliente-expand-row-${slug}`)?.remove();
-  EXPANDIDO_CONTAS.delete(slug);
+// ── LISTA (coluna esquerda) ──────────────────────────────────────────────
+
+function iniciais(nome) {
+  const partes = String(nome || "").trim().split(/\s+/).filter(Boolean);
+  return (partes.slice(0, 2).map((p) => p[0]).join("") || "?").toUpperCase();
 }
 
-function abrirLinhaExpandida(slug) {
-  const rowCliente = document.getElementById(`cliente-row-${slug}`);
-  if (!rowCliente) return;
-
-  const tr = document.createElement("tr");
-  tr.className = "vf-clientes-expand-row";
-  tr.id = `cliente-expand-row-${slug}`;
-  const colspan = rowCliente.children.length;
-  tr.innerHTML = `<td colspan="${colspan}"><div class="vf-clientes-expand" id="cliente-expand-${slug}" data-slug="${escapeHTML(slug)}">${expansaoTemplate(slug)}</div></td>`;
-  rowCliente.insertAdjacentElement("afterend", tr);
-
-  const container = document.getElementById(`cliente-expand-${slug}`);
-  wireExpansaoEstatica(container, slug);
-  carregarContasExpandidas(slug);
+function squadTexto(c) {
+  return c.squad ? `${c.squad.nome}${isLegado(c.squad) ? " · Legado" : ""}` : "Sem Squad";
 }
 
-function toggleExpandCliente(slug) {
-  if (!slug) return;
-  const anteriorAntes = EXPANSAO.atual();
-  const novoAtual = EXPANSAO.toggle(slug);
+function diagnosticoDoCliente(slug) {
+  const reg = CONTAS_POR_CLIENTE.get(slug);
+  if (!reg || (reg.estado === "carregando" && !reg.contas.length)) return null;
+  if (reg.estado === "erro") return { code: "erro", tom: "neutral", curto: "—", label: "Não foi possível carregar" };
+  return diagnosticarCliente(reg.contas);
+}
 
-  if (anteriorAntes && anteriorAntes !== novoAtual) {
-    removerLinhaExpandida(anteriorAntes);
-    atualizarChevron(anteriorAntes, false);
+function categoriaFiltro(diag) {
+  if (!diag) return null;
+  if (diag.code === "problema" || diag.code === "pendencia") return "atencao";
+  if (diag.code === "sem_contas") return "sem_contas";
+  return "ok";
+}
+
+function textoBuscaCliente(c) {
+  const contas = CONTAS_POR_CLIENTE.get(c.slug)?.contas || [];
+  return [c.nome, c.slug, squadTexto(c), ...contas.map((k) => `${k.nome || ""} ${k.grant?.ml_user_id || k.external_account_id || ""}`)]
+    .join(" ").toLowerCase();
+}
+
+function clientesVisiveis() {
+  const termo = (document.getElementById("busca-cliente")?.value || "").toLowerCase().trim();
+  return CLIENTES_LISTA.filter((c) => {
+    if (FILTRO !== "todos" && categoriaFiltro(diagnosticoDoCliente(c.slug)) !== FILTRO) return false;
+    return !termo || textoBuscaCliente(c).includes(termo);
+  });
+}
+
+function renderFiltros() {
+  const conta = { todos: CLIENTES_LISTA.length, atencao: 0, sem_contas: 0 };
+  CLIENTES_LISTA.forEach((c) => {
+    const cat = categoriaFiltro(diagnosticoDoCliente(c.slug));
+    if (cat === "atencao") conta.atencao += 1;
+    if (cat === "sem_contas") conta.sem_contas += 1;
+  });
+  const defs = [
+    { key: "todos", label: "Todos" },
+    { key: "atencao", label: "Precisam de atenção" },
+    { key: "sem_contas", label: "Sem contas" },
+  ];
+  clientesFiltros.innerHTML = defs.map((d) => `
+    <button type="button" class="vf-chip${FILTRO === d.key ? " is-active" : ""}" data-filtro="${d.key}" aria-pressed="${FILTRO === d.key}">
+      ${escapeHTML(d.label)} <span class="vf-cli-chip-n">${conta[d.key]}</span>
+    </button>`).join("");
+}
+
+function renderLista() {
+  const visiveis = clientesVisiveis();
+  clientesLista.innerHTML = visiveis.map((c) => {
+    const diag = diagnosticoDoCliente(c.slug);
+    const contas = CONTAS_POR_CLIENTE.get(c.slug)?.contas || [];
+    const ativas = contas.filter((k) => k.ativo !== false).length;
+    const metaContas = diag ? (ativas ? `${ativas} ${ativas === 1 ? "conta" : "contas"}` : "nenhuma conta") : "carregando…";
+    const saude = diag
+      ? `<span class="vf-status is-${diag.tom === "neutral" ? "empty" : diag.tom} vf-cli-item__saude">${escapeHTML(diag.curto)}</span>`
+      : `<span class="vf-cli-item__saude vf-cli-item__saude--carregando" aria-label="Carregando"></span>`;
+    const ativo = c.slug === SELECIONADO;
+    const inativo = c.ativo === false ? `<span class="vf-tag is-neutral vf-cli-item__tag">Inativo</span>` : "";
+    return `
+      <button type="button" class="vf-cli-item${ativo ? " is-active" : ""}" data-slug="${escapeHTML(c.slug)}"${ativo ? ' aria-current="true"' : ""}>
+        <span class="vf-cli-avatar" aria-hidden="true">${escapeHTML(iniciais(c.nome))}</span>
+        <span class="vf-cli-item__main">
+          <span class="vf-cli-item__nome"><span class="vf-cli-item__nome-texto">${escapeHTML(c.nome || c.slug)}</span>${inativo}</span>
+          <span class="vf-cli-item__meta"><span class="vf-cli-cell-squad${c.squad ? "" : " is-missing"}">${escapeHTML(squadTexto(c))}</span> · ${escapeHTML(metaContas)}</span>
+        </span>
+        ${saude}
+      </button>`;
+  }).join("");
+  clientesListaVazia.hidden = visiveis.length > 0;
+  clientesCount.textContent = visiveis.length === CLIENTES_LISTA.length
+    ? `${CLIENTES_LISTA.length} ${CLIENTES_LISTA.length === 1 ? "cliente" : "clientes"}`
+    : `${visiveis.length} de ${CLIENTES_LISTA.length} clientes`;
+}
+
+function selecionarCliente(slug) {
+  if (!slug || slug === SELECIONADO) return;
+  SELECIONADO = slug;
+  fecharMenuConta();
+  renderLista();
+  renderDetalhe();
+  const reg = CONTAS_POR_CLIENTE.get(slug);
+  if (!reg || reg.estado === "erro") carregarContas(slug);
+  // Em tela estreita o painel fica abaixo da lista: leva o usuário até ele.
+  if (window.matchMedia("(max-width: 899.98px)").matches) {
+    clientesDetalhe.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+}
 
-  if (novoAtual === slug) {
-    abrirLinhaExpandida(slug);
-    atualizarChevron(slug, true);
+// ── PAINEL DO CLIENTE (coluna direita) ───────────────────────────────────
+
+const ICONE_CHECK = {
+  ok: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>',
+  warn: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M12 7v6M12 17h.01"/></svg>',
+  bad: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M12 7v6M12 17h.01"/></svg>',
+  na: '<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" aria-hidden="true"><path d="M7 12h10"/></svg>',
+};
+const ROTULO_CHECK = { ok: "ok", warn: "pendente", bad: "com problema", na: "não se aplica" };
+const ICONE_MAIS = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
+const ICONE_MENU = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>';
+
+function textoVazioMarketplace(mp) {
+  if (mp === "tiktok") return "Nenhuma conta TikTok Shop. Sem integração: os números entram como lançamento manual no Painel de Contas.";
+  return `Nenhuma conta ${rotuloMarketplaceConta(mp)} cadastrada.`;
+}
+
+function identificadorConta(conta) {
+  if (conta.marketplace === "meli") {
+    if (conta.grant?.ml_user_id) return `Seller ${conta.grant.ml_user_id}`;
+    if (conta.external_account_id) return `Seller ${conta.external_account_id} · sem conexão`;
+    return "Seller ainda não identificado";
+  }
+  return "";
+}
+
+function renderDetalhe() {
+  fecharMenuConta();
+  const c = CLIENTES_LISTA.find((x) => x.slug === SELECIONADO);
+  if (!c) { clientesDetalhe.innerHTML = ""; return; }
+  const reg = CONTAS_POR_CLIENTE.get(c.slug);
+  const carregando = !reg || (reg.estado === "carregando" && !reg.contas.length);
+  const contas = reg?.contas || [];
+  const diag = carregando || reg?.estado === "erro" ? null : diagnosticarCliente(contas);
+
+  let situacao;
+  if (carregando) {
+    situacao = `<span class="vf-spinner vf-spinner--sm" aria-hidden="true"></span><span class="vf-cli-situacao__texto">Carregando contas…</span>`;
+  } else if (reg.estado === "erro") {
+    situacao = `<span class="vf-status is-danger">Não foi possível carregar as contas</span>
+      <span class="vf-cli-situacao__texto">${escapeHTML(reg.erro || "")}</span>
+      <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-acao="recarregar-contas">Tentar de novo</button>`;
   } else {
-    removerLinhaExpandida(slug);
-    atualizarChevron(slug, false);
+    situacao = `<span class="vf-status is-${diag.tom === "neutral" ? "empty" : diag.tom}">${escapeHTML(diag.label)}</span>
+      <span class="vf-cli-situacao__texto">${escapeHTML(diag.descricao)}</span>`;
+  }
+
+  const acoesCliente = IS_ADMIN
+    ? `<div class="vf-cli-cabecalho__acoes">
+         <button type="button" class="vf-btn vf-btn--sm vf-btn--ghost vf-cli-btn-perigo" data-action="delete" data-slug="${escapeHTML(c.slug)}">Remover cliente</button>
+       </div>`
+    : "";
+
+  const avisoLeitura = IS_ADMIN ? "" : `
+    <div class="vf-alert is-info vf-cli-aviso-leitura" role="note">
+      Você vê as contas da sua carteira. Conectar contas, definir bases e outras alterações são feitas por um administrador.
+    </div>`;
+
+  const secoes = carregando || reg.estado === "erro" ? "" : MARKETPLACES.map((mp) => {
+    const doMp = contas.filter((k) => k.marketplace === mp.key);
+    const contagem = doMp.length ? `${doMp.length} ${doMp.length === 1 ? "conta" : "contas"}` : "";
+    const botaoAdd = IS_ADMIN
+      ? `<button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="add-conta" data-mp="${mp.key}">${ICONE_MAIS} Adicionar conta</button>`
+      : "";
+    const formAdd = IS_ADMIN ? `
+      <form class="vf-cli-nova-conta" data-form="${mp.key}" hidden>
+        <div class="vf-field">
+          <label class="vf-field__label" for="nova-conta-${mp.key}">Nome da nova conta ${escapeHTML(mp.label)}</label>
+          <input type="text" id="nova-conta-${mp.key}" class="vf-input" data-input="nome" placeholder="ex: ${escapeHTML(mp.label)} 1" autocomplete="off">
+        </div>
+        <div class="vf-cli-nova-conta__acoes">
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" data-action="cancelar-conta" data-mp="${mp.key}">Cancelar</button>
+          <button type="submit" class="vf-btn vf-btn--sm vf-btn--primary" data-action="salvar-conta" data-mp="${mp.key}">Criar conta</button>
+        </div>
+      </form>` : "";
+    return `
+      <section class="vf-cli-mp" data-mp="${mp.key}" aria-labelledby="mp-titulo-${mp.key}">
+        <div class="vf-cli-mp__cabecalho">
+          <span class="vf-cli-mp__sigla" aria-hidden="true">${mp.sigla}</span>
+          <h3 class="vf-cli-mp__titulo" id="mp-titulo-${mp.key}">${escapeHTML(mp.label)}</h3>
+          <span class="vf-cli-mp__contagem">${escapeHTML(contagem)}</span>
+          <span class="vf-cli-mp__espaco"></span>
+          ${botaoAdd}
+        </div>
+        ${formAdd}
+        ${doMp.length ? `<div class="vf-cli-contas" data-list="${mp.key}"></div>` : `<p class="vf-cli-mp__vazio">${escapeHTML(textoVazioMarketplace(mp.key))}</p>`}
+      </section>`;
+  }).join("");
+
+  const inativo = c.ativo === false ? `<span class="vf-tag is-neutral">Cliente inativo</span>` : "";
+
+  clientesDetalhe.innerHTML = `
+    <div class="vf-cli-cabecalho">
+      <span class="vf-cli-avatar vf-cli-avatar--lg" aria-hidden="true">${escapeHTML(iniciais(c.nome))}</span>
+      <div class="vf-cli-cabecalho__main">
+        <h2 class="vf-cli-cabecalho__nome">${escapeHTML(c.nome || c.slug)}</h2>
+        <div class="vf-cli-cabecalho__meta">
+          <span class="vf-cli-cell-squad${c.squad ? "" : " is-missing"}">${escapeHTML(squadTexto(c))}</span>
+          <span class="vf-cli-sep" aria-hidden="true">·</span>
+          <span class="vf-mono vf-cli-slug">${escapeHTML(c.slug)}</span>
+          ${inativo}
+        </div>
+      </div>
+      ${acoesCliente}
+      <div class="vf-cli-situacao">${situacao}</div>
+    </div>
+    ${avisoLeitura}
+    ${secoes}
+  `;
+
+  if (!carregando && reg.estado !== "erro") {
+    MARKETPLACES.forEach((mp) => {
+      const list = clientesDetalhe.querySelector(`[data-list="${mp.key}"]`);
+      if (!list) return;
+      contas.filter((k) => k.marketplace === mp.key)
+        .forEach((conta) => list.appendChild(criarCardConta(c.slug, conta)));
+    });
   }
 }
 
-// Listeners do "esqueleto" da expansão (mini-form de + Conta) — ligados uma
-// única vez quando a linha abre; o conteúdo dinâmico (cards de conta) é
-// re-renderizado à parte por carregarContasExpandidas/renderContasMarketplace
-// sem recriar este esqueleto (senão os listeners duplicariam a cada refresh).
-function wireExpansaoEstatica(container, slug) {
-  container.querySelectorAll('[data-action="add-conta"]').forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const mp = btn.getAttribute("data-mp");
-      const form = container.querySelector(`[data-form="${mp}"]`);
-      const input = form.querySelector('[data-input="nome"]');
-      if (mp === "meli") {
-        const existentes = (EXPANDIDO_CONTAS.get(slug) || []).filter((c) => c.marketplace === "meli").length;
-        input.value = `Mercado Livre ${existentes + 1}`;
-      }
-      form.style.display = "block";
-      input.focus();
-      input.select();
+function criarCardConta(slug, conta) {
+  const diag = diagnosticarConta(conta);
+  const card = document.createElement("article");
+  card.className = `vf-cli-conta${conta.ativo === false ? " is-off" : ""}`;
+
+  const tags = [
+    conta.is_primary ? `<span class="vf-tag is-primary">Principal</span>` : "",
+    conta.ativo === false ? `<span class="vf-tag is-neutral">Desativada</span>` : "",
+  ].join("");
+  const ident = identificadorConta(conta);
+
+  card.innerHTML = `
+    <div class="vf-cli-conta__topo">
+      <div class="vf-cli-conta__titulo">
+        <span class="vf-cli-conta__nome">${escapeHTML(conta.nome)}</span>
+        ${ident ? `<span class="vf-mono vf-cli-conta__id">${escapeHTML(ident)}</span>` : ""}
+      </div>
+      <div class="vf-cli-conta__tags">${tags}</div>
+    </div>
+    <span class="vf-status is-${diag.tom === "neutral" ? "empty" : diag.tom} vf-cli-conta__estado">${escapeHTML(diag.label)}</span>
+    <ul class="vf-cli-checks">
+      ${diag.checks.map((ck) => `
+        <li class="vf-cli-check is-${ck.tom}">
+          <span class="vf-cli-check__ico" role="img" aria-label="${ROTULO_CHECK[ck.tom]}">${ICONE_CHECK[ck.tom]}</span>
+          <span class="vf-cli-check__label">${escapeHTML(ck.label)}</span>
+          <span class="vf-cli-check__texto" title="${escapeHTML(ck.texto)}">${escapeHTML(ck.texto)}</span>
+        </li>`).join("")}
+    </ul>
+    ${diag.dica ? `<p class="vf-cli-conta__dica">${escapeHTML(diag.dica)}</p>` : ""}
+  `;
+
+  if (IS_ADMIN) {
+    const acoes = montarAcoesConta(slug, conta, diag);
+    if (acoes.primaria || acoes.secundaria || acoes.menu.length) card.appendChild(renderAcoesConta(acoes));
+  }
+  return card;
+}
+
+// ── AÇÕES DA CONTA (só admin — toda mutação é requireAdmin no backend) ───
+// Uma ação principal pelo ESTADO da conta (o próximo passo dela), uma
+// secundária, e o resto num menu "⋯". Todas chamam exatamente as mesmas
+// rotas da tela anterior.
+function montarAcoesConta(slug, conta, diag) {
+  if (conta.ativo === false) {
+    return {
+      primaria: null,
+      secundaria: { label: "Reativar conta", run: () => alternarAtivoConta(slug, conta) },
+      menu: [],
+    };
+  }
+
+  const principal = !conta.is_primary
+    ? { label: "Tornar principal", run: () => acaoConta(slug, () => apiFetch(`/cliente-contas/${conta.id}/principal`, { method: "PATCH" })) }
+    : null;
+  const desativar = { label: "Desativar conta", run: () => confirmarDesativarConta(slug, conta) };
+  const base = conta.marketplace !== "tiktok"
+    ? { label: conta.base?.base_id ? "Trocar base" : "Definir base", run: () => abrirBasePicker(slug, conta) }
+    : null;
+
+  if (conta.marketplace === "tiktok") {
+    return {
+      primaria: null,
+      secundaria: { label: "Abrir Painel de Contas", href: "painel-contas.html" },
+      menu: [principal, desativar].filter(Boolean),
+    };
+  }
+
+  if (conta.marketplace !== "meli") {
+    const semBase = diag.code === "sem_base";
+    return {
+      primaria: semBase ? base : null,
+      secundaria: null,
+      menu: [semBase ? null : base, principal, desativar].filter(Boolean),
+    };
+  }
+
+  const temGrant = !!conta.grant;
+  const link = getMlConectarContaLink(conta.id);
+  const conectar = { label: temGrant ? "Reconectar" : "Conectar conta", href: link, externo: true, aoAbrir: () => { RECARREGAR_AO_VOLTAR = slug; } };
+  const copiar = { label: "Copiar link de conexão", run: (btn) => copiarLinkConta(link, btn) };
+  const testar = temGrant ? { label: "Testar conexão", run: (btn) => testarGrantConta(slug, conta, btn) } : null;
+  const desconectar = temGrant ? {
+    label: "Desconectar do Mercado Livre",
+    perigo: true,
+    run: () => abrirModalConfirmacaoClientes({
+      title: "Desconectar conta Mercado Livre",
+      subtitle: conta.nome,
+      description: `Remove só o grant desta conta (${conta.nome}). As demais contas Mercado Livre deste cliente não são afetadas.`,
+      confirmLabel: "Desconectar",
+      danger: true,
+      onConfirm: () => acaoConta(slug, () => apiFetch(`/cliente-contas/${conta.id}/ml-grant`, { method: "DELETE" })),
+    }),
+  } : null;
+
+  switch (diag.code) {
+    case "sem_grant":
+    case "desconectada":
+      return { primaria: conectar, secundaria: copiar, menu: [base, principal, desativar].filter(Boolean) };
+    case "grant_problema":
+      return { primaria: conectar, secundaria: copiar, menu: [testar, base, principal, desativar, desconectar].filter(Boolean) };
+    case "sem_base":
+      return { primaria: base, secundaria: testar, menu: [conectar, copiar, principal, desativar, desconectar].filter(Boolean) };
+    default:
+      return { primaria: null, secundaria: testar, menu: [conectar, copiar, base, principal, desativar, desconectar].filter(Boolean) };
+  }
+}
+
+function criarBotaoAcao(acao, variante) {
+  const el = document.createElement(acao.href ? "a" : "button");
+  el.className = `vf-btn vf-btn--sm vf-btn--${variante}`;
+  el.textContent = acao.label;
+  if (acao.href) {
+    el.href = acao.href;
+    if (acao.externo) { el.target = "_blank"; el.rel = "noopener"; }
+    if (acao.aoAbrir) el.addEventListener("click", acao.aoAbrir);
+  } else {
+    el.type = "button";
+    el.addEventListener("click", () => executarAcao(acao, el));
+  }
+  return el;
+}
+
+async function executarAcao(acao, el) {
+  try {
+    await acao.run(el);
+  } catch {
+    // acaoConta/testarGrantConta já mostraram o erro no banner da página.
+  }
+}
+
+function renderAcoesConta(acoes) {
+  const wrap = document.createElement("div");
+  wrap.className = "vf-cli-conta__acoes";
+  if (acoes.primaria) wrap.appendChild(criarBotaoAcao(acoes.primaria, "primary"));
+  if (acoes.secundaria) wrap.appendChild(criarBotaoAcao(acoes.secundaria, "secondary"));
+  if (acoes.menu.length) {
+    const btnMenu = document.createElement("button");
+    btnMenu.type = "button";
+    btnMenu.className = "vf-btn vf-btn--sm vf-btn--secondary vf-btn--icon vf-cli-conta__mais";
+    btnMenu.setAttribute("aria-label", "Mais ações da conta");
+    btnMenu.setAttribute("aria-haspopup", "menu");
+    btnMenu.setAttribute("aria-expanded", "false");
+    btnMenu.innerHTML = ICONE_MENU;
+    btnMenu.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (MENU_ABERTO && MENU_ABERTO.botao === btnMenu) { fecharMenuConta(); return; }
+      abrirMenuConta(btnMenu, acoes.menu);
     });
+    wrap.appendChild(btnMenu);
+  }
+  return wrap;
+}
+
+// Menu "⋯": um único popover por vez, ancorado no botão e anexado ao card
+// (posição absoluta — rola junto com a página, sem cálculo de viewport).
+let MENU_ABERTO = null; // { botao, el }
+
+function abrirMenuConta(botao, itens) {
+  fecharMenuConta();
+  const menu = document.createElement("div");
+  menu.className = "vf-menu vf-cli-menu";
+  menu.setAttribute("role", "menu");
+  itens.forEach((acao, i) => {
+    if (acao.perigo && i > 0) {
+      const sep = document.createElement("div");
+      sep.className = "vf-menu__separator";
+      sep.setAttribute("role", "separator");
+      menu.appendChild(sep);
+    }
+    const item = document.createElement(acao.href ? "a" : "button");
+    item.className = `vf-menu__item${acao.perigo ? " is-danger" : ""}`;
+    item.setAttribute("role", "menuitem");
+    item.textContent = acao.label;
+    if (acao.href) {
+      item.href = acao.href;
+      if (acao.externo) { item.target = "_blank"; item.rel = "noopener"; }
+      item.addEventListener("click", () => { if (acao.aoAbrir) acao.aoAbrir(); fecharMenuConta(); });
+    } else {
+      item.type = "button";
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        // "Copiar link" dá o retorno no próprio botão "⋯" (o menu fecha).
+        fecharMenuConta();
+        executarAcao(acao, botao);
+      });
+    }
+    menu.appendChild(item);
   });
-  container.querySelectorAll('[data-action="cancelar-conta"]').forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const mp = btn.getAttribute("data-mp");
-      container.querySelector(`[data-form="${mp}"]`).style.display = "none";
-    });
-  });
-  container.querySelectorAll('[data-action="salvar-conta"]').forEach((btn) => {
-    btn.addEventListener("click", () => criarContaNaExpansao(slug, btn.getAttribute("data-mp")));
+  botao.parentElement.appendChild(menu);
+  botao.setAttribute("aria-expanded", "true");
+  MENU_ABERTO = { botao, el: menu };
+  menu.querySelector(".vf-menu__item")?.focus();
+}
+
+function fecharMenuConta() {
+  if (!MENU_ABERTO) return;
+  MENU_ABERTO.el.remove();
+  MENU_ABERTO.botao.setAttribute("aria-expanded", "false");
+  MENU_ABERTO = null;
+}
+
+function confirmarDesativarConta(slug, conta) {
+  abrirModalConfirmacaoClientes({
+    title: "Desativar conta",
+    subtitle: `${conta.nome} · ${rotuloMarketplaceConta(conta.marketplace)}`,
+    description: "A conta sai da operação, mas nada é apagado: conexão, base e histórico ficam guardados. Você pode reativá-la quando quiser.",
+    confirmLabel: "Desativar conta",
+    onConfirm: () => alternarAtivoConta(slug, conta),
   });
 }
 
-async function criarContaNaExpansao(slug, marketplace) {
-  const container = document.getElementById(`cliente-expand-${slug}`);
-  if (!container) return;
-  const form = container.querySelector(`[data-form="${marketplace}"]`);
+function alternarAtivoConta(slug, conta) {
+  return acaoConta(slug, () =>
+    apiFetch(`/cliente-contas/${conta.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ativo: conta.ativo === false }),
+    })
+  );
+}
+
+// ── "+ Adicionar conta" (mini-form por marketplace) ──────────────────────
+function abrirFormNovaConta(mp) {
+  const form = clientesDetalhe.querySelector(`[data-form="${mp}"]`);
+  if (!form) return;
   const input = form.querySelector('[data-input="nome"]');
+  const existentes = (CONTAS_POR_CLIENTE.get(SELECIONADO)?.contas || []).filter((c) => c.marketplace === mp).length;
+  input.value = `${rotuloMarketplaceConta(mp)} ${existentes + 1}`;
+  form.hidden = false;
+  input.focus();
+  input.select();
+}
+
+async function criarContaNoCliente(slug, marketplace) {
+  const form = clientesDetalhe.querySelector(`[data-form="${marketplace}"]`);
+  if (!form) return;
+  const input = form.querySelector('[data-input="nome"]');
+  const btn = form.querySelector('[data-action="salvar-conta"]');
   const nome = input.value.trim();
   const label = rotuloMarketplaceConta(marketplace);
-  if (!nome) { setClientesFeedback(`Informe o nome da conta ${label}.`, "danger"); return; }
+  if (!nome) { setClientesFeedback(`Informe o nome da conta ${label}.`, "danger"); input.focus(); return; }
 
+  btn.disabled = true;
   try {
     await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ marketplace, nome }),
     });
-    input.value = "";
-    form.style.display = "none";
-    await carregarContasExpandidas(slug);
-    carregarResumoContas(slug);
     setClientesFeedback(`Conta ${label} "${nome}" criada.`, "success");
+    await carregarContas(slug);
   } catch (err) {
+    btn.disabled = false;
     setClientesFeedback(`Erro ao criar conta ${label}: ${err.message}`, "danger");
   }
-}
-
-async function carregarContasExpandidas(slug) {
-  const container = document.getElementById(`cliente-expand-${slug}`);
-  if (!container) return;
-  const stateEl = container.querySelector('[data-role="state"]');
-  try {
-    const data = await apiFetch(`/clientes/${encodeURIComponent(slug)}/contas`);
-    const contas = Array.isArray(data.contas) ? data.contas : [];
-    EXPANDIDO_CONTAS.set(slug, contas);
-    if (stateEl) stateEl.textContent = "";
-    renderContasMarketplace(container, "meli", contas.filter((c) => c.marketplace === "meli"));
-    renderContasMarketplace(container, "shopee", contas.filter((c) => c.marketplace === "shopee"));
-    renderContasMarketplace(container, "tiktok", contas.filter((c) => c.marketplace === "tiktok"));
-  } catch (err) {
-    if (stateEl) stateEl.textContent = `Não foi possível carregar as contas: ${err.message}`;
-  }
-}
-
-// Recarrega o conteúdo já aberto (sem fechar/reabrir a linha) e a célula de
-// resumo do cliente — usado depois de qualquer ação dentro da expansão
-// (criar conta, vincular base, conectar/testar/desconectar grant).
-async function atualizarAposAcao(slug) {
-  await carregarContasExpandidas(slug);
-  carregarResumoContas(slug);
-}
-
-function renderContasMarketplace(container, marketplace, contas) {
-  const list = container.querySelector(`[data-list="${marketplace}"]`);
-  const empty = container.querySelector(`[data-empty="${marketplace}"]`);
-  if (!list || !empty) return;
-  const slug = container.dataset.slug;
-  list.innerHTML = "";
-  if (!contas.length) { empty.style.display = "block"; return; }
-  empty.style.display = "none";
-
-  contas.forEach((conta) => {
-    const card = document.createElement("div");
-    card.className = "vf-clientes-conta-card";
-
-    const tagPrincipal = conta.is_primary ? `<span class="vf-tag is-primary">Principal</span>` : "";
-    const tagAtivo = conta.ativo === false ? `<span class="vf-tag is-danger">Inativa</span>` : "";
-
-    let statusHtml = "";
-    let metaHtml = "";
-    if (marketplace === "meli") {
-      const status = classificarStatusConta(conta);
-      statusHtml = `
-        <div class="vf-clientes-conta-card__status">
-          <span class="vf-status ${status.cls}">${status.symbol} ${escapeHTML(status.label.toUpperCase())}</span>
-        </div>`;
-
-      const linhasMeta = [];
-      if (conta.grant) {
-        linhasMeta.push(`seller ${escapeHTML(conta.grant.ml_user_id || "—")}`);
-        linhasMeta.push(`token_status: ${escapeHTML(conta.grant.token_status || "—")}`);
-      } else if (conta.external_account_id) {
-        // Conta já identificou um seller antes (ex: grant desconectado
-        // manualmente), mas hoje não tem grant ativo — o seller esperado
-        // continua valendo para a proteção de reconexão.
-        linhasMeta.push(`seller ${escapeHTML(conta.external_account_id)} (grant ausente)`);
-      }
-      if (linhasMeta.length) {
-        metaHtml = `<div class="vf-clientes-conta-card__meta">${linhasMeta.join(" · ")}</div>`;
-      }
-    } else if (marketplace === "tiktok") {
-      if (conta.ativo !== false) {
-        statusHtml = `
-        <div class="vf-clientes-conta-card__status">
-          <span class="vf-status">● LANÇAMENTO MANUAL</span>
-        </div>`;
-      }
-    } else if (conta.ativo !== false) {
-      const semBase = !conta.base?.base_id;
-      statusHtml = `
-        <div class="vf-clientes-conta-card__status">
-          <span class="vf-status ${semBase ? "is-warning" : "is-success"}">${semBase ? "⚠ BASE NÃO DEFINIDA" : "● CONFIGURADA"}</span>
-        </div>`;
-    }
-
-    const baseHtml = conta.base?.base_id
-      ? `<span class="vf-tag is-info">Base: ${escapeHTML(conta.base.nome || conta.base.slug || conta.base.base_id)}</span>`
-      : `<span class="vf-tag is-neutral">Base não definida</span>`;
-
-    card.innerHTML = `
-      <div class="vf-clientes-conta-card__top">
-        <span class="vf-clientes-conta-card__nome">${escapeHTML(conta.nome)}</span>
-        <div class="vf-clientes-conta-card__tags">${tagPrincipal}${tagAtivo}</div>
-      </div>
-      ${statusHtml}
-      ${metaHtml}
-      ${marketplace === "tiktok" ? "" : `<div class="vf-clientes-conta-card__base">${baseHtml}</div>`}
-      <div class="vf-clientes-conta-card__actions"></div>
-    `;
-
-    const actions = card.querySelector(".vf-clientes-conta-card__actions");
-
-    if (marketplace === "meli" && conta.ativo !== false) {
-      const temGrant = !!conta.grant;
-      const link = getMlConectarContaLink(conta.id);
-
-      const btnConectar = document.createElement("a");
-      btnConectar.className = "vf-btn vf-btn--sm vf-btn--secondary";
-      btnConectar.textContent = temGrant ? "Reconectar" : "Conectar";
-      btnConectar.href = link;
-      btnConectar.target = "_blank";
-      btnConectar.rel = "noopener";
-      actions.appendChild(btnConectar);
-
-      const btnCopiar = document.createElement("button");
-      btnCopiar.className = "vf-btn vf-btn--sm vf-btn--secondary";
-      btnCopiar.textContent = "Copiar link";
-      btnCopiar.addEventListener("click", () => copiarLinkConta(link, btnCopiar));
-      actions.appendChild(btnCopiar);
-
-      if (temGrant) {
-        const btnTestar = document.createElement("button");
-        btnTestar.className = "vf-btn vf-btn--sm vf-btn--secondary";
-        btnTestar.textContent = "Testar grant";
-        btnTestar.addEventListener("click", () => testarGrantConta(slug, conta, btnTestar));
-        actions.appendChild(btnTestar);
-      }
-    }
-
-    // Base por conta é contrato de meli/shopee (vincularBaseNaConta); TikTok
-    // segue no vínculo legado de base, fora deste card.
-    if (conta.ativo !== false && marketplace !== "tiktok") {
-      const btnBase = document.createElement("button");
-      btnBase.className = "vf-btn vf-btn--sm vf-btn--secondary";
-      btnBase.textContent = conta.base?.base_id ? "Trocar base" : "Definir base";
-      btnBase.addEventListener("click", () => abrirBasePicker(slug, conta));
-      actions.appendChild(btnBase);
-    }
-
-    if (!conta.is_primary && conta.ativo !== false) {
-      const btnPrincipal = document.createElement("button");
-      btnPrincipal.className = "vf-btn vf-btn--sm vf-btn--secondary";
-      btnPrincipal.textContent = "Tornar principal";
-      btnPrincipal.addEventListener("click", () => acaoConta(slug, () => apiFetch(`/cliente-contas/${conta.id}/principal`, { method: "PATCH" })));
-      actions.appendChild(btnPrincipal);
-    }
-
-    const btnToggle = document.createElement("button");
-    btnToggle.className = "vf-btn vf-btn--sm vf-btn--secondary";
-    btnToggle.textContent = conta.ativo === false ? "Ativar" : "Desativar";
-    btnToggle.addEventListener("click", () => acaoConta(slug, () =>
-      apiFetch(`/cliente-contas/${conta.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ativo: conta.ativo === false }),
-      })
-    ));
-    actions.appendChild(btnToggle);
-
-    if (marketplace === "meli" && conta.grant) {
-      const btnDesconectar = document.createElement("button");
-      btnDesconectar.className = "vf-btn vf-btn--sm vf-btn--danger";
-      btnDesconectar.textContent = "Desconectar";
-      btnDesconectar.addEventListener("click", () => {
-        abrirModalConfirmacaoClientes({
-          title: "Desconectar conta Mercado Livre",
-          subtitle: conta.nome,
-          description: `Remove só o grant desta conta (${conta.nome}). As demais contas Mercado Livre deste cliente não são afetadas.`,
-          confirmLabel: "Desconectar",
-          danger: true,
-          onConfirm: () => acaoConta(slug, () => apiFetch(`/cliente-contas/${conta.id}/ml-grant`, { method: "DELETE" })),
-        });
-      });
-      actions.appendChild(btnDesconectar);
-    }
-
-    list.appendChild(card);
-  });
 }
 
 async function testarGrantConta(slug, conta, btn) {
   if (!conta.grant) return;
   const original = btn.textContent;
+  const ehIcone = btn.classList.contains("vf-btn--icon");
   btn.disabled = true;
-  btn.textContent = "Testando…";
+  if (!ehIcone) btn.textContent = "Testando…";
   try {
     await apiFetch(`/admin/ml-tokens/${conta.grant.id}/testar`, { method: "POST" });
-    setClientesFeedback(`Grant de "${conta.nome}" testado com sucesso.`, "success");
+    setClientesFeedback(`Conexão de "${conta.nome}" testada com sucesso.`, "success");
   } catch (err) {
-    setClientesFeedback(`Falha ao testar grant de "${conta.nome}": ${err.message}`, "danger");
+    setClientesFeedback(`Falha ao testar a conexão de "${conta.nome}": ${err.message}`, "danger");
   } finally {
+    if (btn.isConnected) {
+      btn.disabled = false;
+      if (!ehIcone) btn.textContent = original;
+    }
     await atualizarAposAcao(slug);
-    btn.disabled = false;
-    btn.textContent = original;
   }
 }
 
@@ -1060,8 +1187,10 @@ async function confirmarBasePicker() {
   }
 }
 
+
+// ── LIGAÇÕES ─────────────────────────────────────────────────────────────
+
 // Slug auto (editável)
-let slugTouched = false;
 const nomeInput = document.getElementById("cliente-nome");
 const slugInput = document.getElementById("cliente-slug");
 slugInput.addEventListener("input", () => { slugTouched = slugInput.value.trim().length > 0; });
@@ -1073,10 +1202,79 @@ nomeInput.addEventListener("input", () => {
 nomeInput.addEventListener("input", atualizarEstadoBotaoCriar);
 slugInput.addEventListener("input", atualizarEstadoBotaoCriar);
 document.getElementById("cliente-squad").addEventListener("change", atualizarEstadoBotaoCriar);
-if (TOKEN) carregarSquadsAtivos();
 
+if (IS_ADMIN) {
+  document.getElementById("clientes-header-acoes").hidden = false;
+  if (TOKEN) carregarSquadsAtivos();
+}
+
+document.getElementById("btn-novo-cliente")?.addEventListener("click", abrirModalNovoCliente);
 document.getElementById("btn-criar-cliente").addEventListener("click", createCliente);
-document.getElementById("btn-retry").addEventListener("click", loadClientes);
+document.getElementById("vf-clientes-novo-close")?.addEventListener("click", fecharModalNovoCliente);
+document.getElementById("vf-clientes-novo-cancel")?.addEventListener("click", fecharModalNovoCliente);
+document.getElementById("vf-clientes-novo-modal")?.addEventListener("click", (e) => {
+  if (e.target?.id === "vf-clientes-novo-modal") fecharModalNovoCliente();
+});
+[nomeInput, slugInput].forEach((el) => el.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !document.getElementById("btn-criar-cliente").disabled) createCliente();
+}));
+
+document.getElementById("btn-retry").addEventListener("click", () => loadClientes());
+
+// Lista: seleção e filtros (delegação — a lista é re-renderizada a cada carga).
+clientesLista.addEventListener("click", (e) => {
+  const item = e.target.closest(".vf-cli-item");
+  if (item) selecionarCliente(item.getAttribute("data-slug") || "");
+});
+clientesFiltros.addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-filtro]");
+  if (!chip) return;
+  FILTRO = chip.getAttribute("data-filtro");
+  renderFiltros();
+  renderLista();
+});
+
+const buscaInput = document.getElementById("busca-cliente");
+if (buscaInput) {
+  let debounceTimer;
+  buscaInput.addEventListener("input", () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(renderLista, 200);
+  });
+}
+
+// Painel: ações por delegação (o painel é re-renderizado após cada ação).
+clientesDetalhe.addEventListener("click", (e) => {
+  const alvo = e.target.closest("[data-action], [data-acao]");
+  if (!alvo) return;
+  const acao = alvo.getAttribute("data-action") || alvo.getAttribute("data-acao");
+  const mp = alvo.getAttribute("data-mp");
+  if (acao === "delete") abrirModalRemoverCliente(alvo);
+  else if (acao === "add-conta") abrirFormNovaConta(mp);
+  else if (acao === "cancelar-conta") {
+    const form = clientesDetalhe.querySelector(`[data-form="${mp}"]`);
+    if (form) form.hidden = true;
+  } else if (acao === "recarregar-contas") carregarContas(SELECIONADO);
+});
+clientesDetalhe.addEventListener("submit", (e) => {
+  const form = e.target.closest("[data-form]");
+  if (!form) return;
+  e.preventDefault();
+  criarContaNoCliente(SELECIONADO, form.getAttribute("data-form"));
+});
+
+document.addEventListener("click", (e) => {
+  if (MENU_ABERTO && !MENU_ABERTO.el.contains(e.target) && e.target !== MENU_ABERTO.botao) fecharMenuConta();
+});
+
+// Conectar/Reconectar abre o OAuth do ML em outra aba. Ao voltar para esta,
+// as contas daquele cliente são relidas — o status atualiza sem F5.
+window.addEventListener("focus", () => {
+  if (!RECARREGAR_AO_VOLTAR) return;
+  const slug = RECARREGAR_AO_VOLTAR;
+  RECARREGAR_AO_VOLTAR = null;
+  carregarContas(slug);
+});
 
 document.getElementById("vf-clientes-confirm-close")?.addEventListener("click", fecharModalConfirmacaoClientes);
 document.getElementById("vf-clientes-confirm-cancel")?.addEventListener("click", fecharModalConfirmacaoClientes);
@@ -1105,18 +1303,11 @@ document.getElementById("vf-base-picker-modal")?.addEventListener("click", (e) =
 
 document.addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
-  if (CLIENTES_CONFIRM_OPEN) fecharModalConfirmacaoClientes();
+  if (MENU_ABERTO) { const b = MENU_ABERTO.botao; fecharMenuConta(); b.focus(); }
+  else if (CLIENTES_CONFIRM_OPEN) fecharModalConfirmacaoClientes();
   else if (CLIENTES_REMOVER_OPEN) fecharModalRemoverCliente();
   else if (BASE_PICKER_CONTA) fecharBasePicker();
+  else if (CLIENTES_NOVO_OPEN) fecharModalNovoCliente();
 });
-
-const buscaInput = document.getElementById("busca-cliente");
-if (buscaInput) {
-  let debounceTimer;
-  buscaInput.addEventListener("input", () => {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(filtrarClientes, 300);
-  });
-}
 
 if (TOKEN) loadClientes();

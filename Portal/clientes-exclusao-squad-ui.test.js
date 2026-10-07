@@ -28,7 +28,7 @@ function ok(label, cond) {
 const js = fs.readFileSync(path.join(__dirname, "clientes.js"), "utf8");
 const html = fs.readFileSync(path.join(__dirname, "clientes.html"), "utf8");
 
-ok("botão de remoção continua existindo na linha do cliente (data-action=\"delete\")", /data-action="delete"/.test(js));
+ok("botão de remoção continua existindo no painel do cliente (data-action=\"delete\")", /data-action="delete"/.test(js));
 
 // ── abrirModalRemoverCliente: decide o caminho ANTES de abrir modal ──────
 {

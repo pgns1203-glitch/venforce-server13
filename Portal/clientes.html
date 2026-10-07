@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Venforce — Clientes</title>
+  <title>Venforce — Clientes e Contas</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <!-- Fundação Global V2: Hanken Grotesk (corpo) · Manrope (display) · IBM Plex Mono (códigos) -->
@@ -25,83 +25,48 @@
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
 
-          <header class="vf-page-header">
+          <header class="vf-page-header vf-clientes-header">
             <div class="vf-page-header__main">
               <p class="vf-page-header__eyebrow">Operação</p>
-              <h1 class="vf-page-header__title">Clientes</h1>
+              <h1 class="vf-page-header__title">Clientes e contas</h1>
               <p class="vf-page-header__description">
-                Cada cliente é a loja principal. Mercado Livre e Shopee vivem como contas
-                dentro dele — um mesmo cliente pode ter várias contas do mesmo marketplace.
+                Escolha um cliente na lista para ver as contas dele no Mercado Livre, Shopee e
+                TikTok Shop — e o que falta para cada conta ficar pronta.
               </p>
+            </div>
+            <!-- Só admin cria cliente (POST /clientes é requireAdmin). -->
+            <div class="vf-page-header__actions" id="clientes-header-acoes" hidden>
+              <button type="button" id="btn-novo-cliente" class="vf-btn vf-btn--primary">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                Novo cliente
+              </button>
             </div>
           </header>
 
           <div id="clientes-feedback" class="vf-banner" role="status" style="display:none;" aria-live="polite"></div>
 
-          <!-- ── ADICIONAR CLIENTE ── -->
-          <section class="vf-section">
-            <div class="vf-card">
-              <div class="vf-card__header">
-                <h2 class="vf-section__title">Adicionar cliente</h2>
-              </div>
-              <div class="vf-card__body">
-                <div class="vf-clientes-create-grid">
-                  <div class="vf-field">
-                    <label class="vf-field__label" for="cliente-nome">Nome do cliente</label>
-                    <input type="text" id="cliente-nome" class="vf-input" placeholder="ex: Loja Eletrônico">
-                  </div>
-                  <div class="vf-field">
-                    <label class="vf-field__label" for="cliente-slug">Slug</label>
-                    <input type="text" id="cliente-slug" class="vf-input" placeholder="ex: loja_eletronico">
-                  </div>
-                  <div class="vf-field">
-                    <label class="vf-field__label" for="cliente-squad">Squad *</label>
-                    <select id="cliente-squad" class="vf-input">
-                      <option value="">Carregando squads…</option>
-                    </select>
-                  </div>
-                  <div class="vf-clientes-create-submit">
-                    <button id="btn-criar-cliente" class="vf-btn vf-btn--primary" disabled>
-                      <span id="btn-criar-cliente-text">Criar cliente</span>
-                      <span id="btn-criar-cliente-spinner" class="vf-spinner vf-spinner--sm" style="display:none;"></span>
-                    </button>
-                  </div>
-                </div>
-                <div id="cliente-status" class="vf-field__hint" style="display:none;margin-top:var(--vf-sp-2);"></div>
-              </div>
-            </div>
-          </section>
-
-          <!-- ── TOOLBAR ── -->
-          <section class="vf-toolbar">
-            <div class="vf-toolbar__filters">
-              <input type="text" id="busca-cliente" class="vf-input vf-search" placeholder="Buscar cliente por nome ou slug…" autocomplete="off">
-            </div>
-            <span id="clientes-count" class="vf-badge" style="display:none;">0</span>
-          </section>
-
-          <!-- ── CLIENTES CADASTRADOS ── -->
           <section id="clientes-content">
             <div id="state-loading" class="vf-loading-state" role="status" aria-live="polite">
               <span class="vf-spinner" aria-hidden="true"></span>
               <p>Carregando clientes…</p>
             </div>
 
-            <div id="state-table" class="vf-table-wrap" style="display:none;">
-              <table class="vf-table">
-                <thead>
-                  <tr>
-                    <th style="width:44px;">#</th>
-                    <th>Nome</th>
-                    <th>Squad</th>
-                    <th>Slug</th>
-                    <th>Status</th>
-                    <th>Contas</th>
-                    <th><span class="vf-visually-hidden">Ações</span></th>
-                  </tr>
-                </thead>
-                <tbody id="clientes-tbody"></tbody>
-              </table>
+            <!-- Layout lista + painel (modelo B aprovado no canvas de design). -->
+            <div id="clientes-layout" class="vf-cli-layout" hidden>
+              <aside class="vf-cli-lista-card" aria-label="Clientes">
+                <div class="vf-cli-lista-card__topo">
+                  <label class="vf-visually-hidden" for="busca-cliente">Buscar cliente</label>
+                  <input type="search" id="busca-cliente" class="vf-input vf-search" placeholder="Buscar cliente, squad ou conta…" autocomplete="off">
+                  <div class="vf-cli-filtros" id="clientes-filtros" role="group" aria-label="Filtrar clientes"></div>
+                </div>
+                <nav id="clientes-lista" class="vf-cli-lista" aria-label="Lista de clientes"></nav>
+                <p id="clientes-lista-vazia" class="vf-cli-lista-vazia" hidden>Nenhum cliente com esse filtro.</p>
+                <div class="vf-cli-lista-card__rodape">
+                  <span id="clientes-count">0 clientes</span>
+                </div>
+              </aside>
+
+              <section id="clientes-detalhe" class="vf-cli-detalhe" aria-live="polite"></section>
             </div>
 
             <div id="state-empty" class="vf-empty" style="display:none;">
@@ -111,8 +76,8 @@
                   <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                 </svg>
               </div>
-              <p class="vf-empty__title">Nenhum cliente encontrado</p>
-              <p class="vf-empty__description">Crie um cliente acima para começar.</p>
+              <p class="vf-empty__title">Nenhum cliente por aqui</p>
+              <p class="vf-empty__description" id="state-empty-desc">Crie o primeiro cliente em “Novo cliente”.</p>
             </div>
 
             <div id="state-error" class="vf-empty" style="display:none;">
@@ -129,6 +94,48 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- ── MODAL "NOVO CLIENTE" (só admin) ──
+       Mesmos campos e regras do antigo card "Adicionar cliente": slug gerado
+       do nome (editável), Squad obrigatório e nunca escolhido em silêncio. -->
+  <div id="vf-clientes-novo-modal" class="vf-overlay">
+    <div class="vf-modal vf-modal--sm" role="dialog" aria-modal="true" aria-labelledby="vf-clientes-novo-title">
+      <div class="vf-modal__header">
+        <div>
+          <h3 id="vf-clientes-novo-title" class="vf-modal__title">Novo cliente</h3>
+          <p class="vf-clientes-modal-sub">Depois de criar, adicione as contas de cada marketplace.</p>
+        </div>
+        <button type="button" id="vf-clientes-novo-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">✕</button>
+      </div>
+      <div class="vf-modal__body">
+        <div class="vf-cli-form">
+          <div class="vf-field">
+            <label class="vf-field__label" for="cliente-nome">Nome do cliente</label>
+            <input type="text" id="cliente-nome" class="vf-input" placeholder="ex: Loja Eletrônico" autocomplete="off">
+          </div>
+          <div class="vf-field">
+            <label class="vf-field__label" for="cliente-slug">Identificador (slug)</label>
+            <input type="text" id="cliente-slug" class="vf-input vf-mono" placeholder="ex: loja_eletronico" autocomplete="off" spellcheck="false">
+            <p class="vf-field__hint">Gerado a partir do nome. Só mude se precisar.</p>
+          </div>
+          <div class="vf-field">
+            <label class="vf-field__label" for="cliente-squad">Squad responsável *</label>
+            <select id="cliente-squad" class="vf-select">
+              <option value="">Carregando squads…</option>
+            </select>
+          </div>
+          <div id="cliente-status" class="vf-field__hint" style="display:none;"></div>
+        </div>
+      </div>
+      <div class="vf-modal__footer">
+        <button type="button" id="vf-clientes-novo-cancel" class="vf-btn vf-btn--secondary">Cancelar</button>
+        <button type="button" id="btn-criar-cliente" class="vf-btn vf-btn--primary" disabled>
+          <span id="btn-criar-cliente-text">Criar cliente</span>
+          <span id="btn-criar-cliente-spinner" class="vf-spinner vf-spinner--sm" style="display:none;"></span>
+        </button>
+      </div>
+    </div>
   </div>
 
   <!-- ── MODAL "DEFINIR BASE" / "TROCAR BASE" (item 5 do Fechamento da Fase 1) ── -->

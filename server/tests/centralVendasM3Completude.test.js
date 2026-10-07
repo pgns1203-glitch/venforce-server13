@@ -454,7 +454,11 @@ async function run() {
     };
 
     const syncService = carregarComHandlers([
-      ["/orders/search", () => ({ ok: true, status: 200, data: { results: [pedido("9020", "s20")], paging: { total: 1 } } })],
+      // Pack: 2 pedidos DO PERÍODO no mesmo shipment do claim e detalhe sem
+      // order_id — vínculo ambíguo de verdade, continua RETURNS_UNRESOLVED.
+      // (O fixture original — shipment que não é de nenhum pedido do período —
+      // agora é "fora do período": ver cenario5b.)
+      ["/orders/search", () => ({ ok: true, status: 200, data: { results: [pedido("9020", "SHIP-9020"), pedido("9021", "SHIP-9020")], paging: { total: 2 } } })],
       ["/shipments/", () => ({ ok: true, status: 200, data: { senders: [{ user_id: "111", cost: 9.9 }], receiver: { cost: 3 } } })],
       ["/post-purchase/v1/claims/search", () => ({ ok: true, status: 200, data: { data: [claimSemVinculo], paging: { total: 1 } } })],
       // Detalhe responde OK mas sem order_id — devolução sem vínculo
@@ -487,6 +491,67 @@ async function run() {
       diagnosticos[0].detalhe,
       { hasOrderId: false, resource: null, hasResourceId: false, itemsCount: 0, status: "opened", subtype: "dispute" });
     ok("cenario5: nenhum segredo persistido em metadata_json",
+      !JSON.stringify(porFonte.returns.metadata).match(/token|authorization|Bearer/i));
+  });
+
+  // Cenário 5b — fixture ORIGINAL da rodada real 21/08: o shipment do claim
+  // não pertence a nenhum pedido do período e os orders vieram completos. A
+  // janela de claims vai até hoje, então é devolução de pedido de OUTRO
+  // período: não é pendência deste run (antes rebaixava o mês para partial).
+  // ── CENÁRIO 5: RETURNS_UNRESOLVED com diagnóstico seguro fim-a-fim
+  // (rodada real 21/08 — syncRunId 6, cliente red_fish: Claims 39/39 completo,
+  // Returns 0/1 RETURNS_UNRESOLVED). Prova que o diagnóstico por claim chega
+  // até central_vendas_sync_sources.metadata_json, nunca só o console.log,
+  // e nunca carrega token/Authorization.
+  await capturandoLogs(async () => {
+    const db = makeDb({ contas, grants });
+    const { run: r, context } = await runService.criarSyncRun({
+      clienteSlug: cliente.slug, marketplace: "meli", dateFrom: "2026-08-01", dateTo: "2026-08-31", db,
+    });
+    const fakeRepo = await novoRunFakeRepo();
+
+    const claimSemVinculo = {
+      id: 700900, resource: "shipment", resource_id: "SHIP-9020",
+      status: "opened", type: "returns", related_entities: ["return"], resolution: null,
+    };
+
+    const syncService = carregarComHandlers([
+      ["/orders/search", () => ({ ok: true, status: 200, data: { results: [pedido("9020", "s20")], paging: { total: 1 } } })],
+      ["/shipments/", () => ({ ok: true, status: 200, data: { senders: [{ user_id: "111", cost: 9.9 }], receiver: { cost: 3 } } })],
+      ["/post-purchase/v1/claims/search", () => ({ ok: true, status: 200, data: { data: [claimSemVinculo], paging: { total: 1 } } })],
+      // Detalhe responde OK mas sem order_id — devolução sem vínculo
+      // confiável, exatamente o padrão observado na rodada real.
+      ["/post-purchase/v2/claims/700900/returns", () => ({ ok: true, status: 200, data: { status: "opened", subtype: "dispute", items: [] } })],
+    ]);
+
+    const sincronizarVendasMeli = syncService.createCentralVendasSyncService(fakeRepo, db).sincronizarVendasMeli;
+    await worker.executarSyncRun({
+      run: r, context, db, sincronizarVendasMeli,
+      params: { clienteSlug: cliente.slug, dateFrom: "2026-08-01", dateTo: "2026-08-31", marketplace: "meli" },
+    });
+
+    const runFinal = await runService.obterSyncRun({ runId: r.id, clienteSlug: cliente.slug, db });
+    eq("cenario5b: run tecnico completed", runFinal.status, "completed");
+    eq("cenario5b: completude complete (devolução de outro período não é pendência)", runFinal.completenessStatus, "complete");
+
+    const fontes = await sourceService.listarFontesDoRun(r.id, db);
+    const porFonte = Object.fromEntries(fontes.map((f) => [f.source, f]));
+    eq("cenario5b: claims complete (39/39 e' o padrao da rodada real)", porFonte.claims.status, "complete");
+    eq("cenario5b: returns complete", porFonte.returns.status, "complete");
+    eq("cenario5b: returns sem errorCode", porFonte.returns.errorCode ?? null, null);
+    eq("cenario5b: returns metadata.unresolved", porFonte.returns.metadata.unresolved, 0);
+    eq("cenario5b: returns metadata.foraDoPeriodo", porFonte.returns.metadata.foraDoPeriodo, 1);
+    eq("cenario5b: esperado exclui a devolução de outro período", porFonte.returns.expectedCount, 0);
+
+    const diagnosticos = porFonte.returns.metadata.unresolvedDiagnostics;
+    ok("cenario5b: diagnóstico continua registrado", Array.isArray(diagnosticos) && diagnosticos.length === 1);
+    eq("cenario5b: diagnóstico classifica como fora do período", diagnosticos[0].classificacao, "fora_do_periodo");
+    eq("cenario5b: claimId do único caso preservado", diagnosticos[0].claimId, "700900");
+    eq("cenario5b: httpStatus 200 (resposta OK sem order_id, nao erro HTTP)", diagnosticos[0].httpStatus, 200);
+    eq("cenario5b: estrutura do detalhe explica a causa (hasOrderId=false)",
+      diagnosticos[0].detalhe,
+      { hasOrderId: false, resource: null, hasResourceId: false, itemsCount: 0, status: "opened", subtype: "dispute" });
+    ok("cenario5b: nenhum segredo persistido em metadata_json",
       !JSON.stringify(porFonte.returns.metadata).match(/token|authorization|Bearer/i));
   });
 

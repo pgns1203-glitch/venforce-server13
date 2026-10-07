@@ -184,9 +184,52 @@ async function run() {
       clienteSlug: cliente.slug, marketplace: "meli", accountContext: ACCOUNT_CONTEXT, ...PERIODO,
     });
 
-    ok("e2e unresolved: sync concluiu sem lançar", !!resultado);
-    eq("e2e unresolved: RETURNS_UNRESOLVED = 1 (shipment não bate com nenhum order do período)",
-      repo.persistedCalls[0].resumo.claimsReturnsNaoResolvidos, 1);
+    ok("e2e fora do período: sync concluiu sem lançar", !!resultado);
+    // Bug de escopo corrigido: orders do período COMPLETOS e o shipment do
+    // claim não pertence a nenhum deles → a devolução é de pedido de OUTRO
+    // período (a janela de claims vai até hoje). Não é pendência deste mês.
+    eq("e2e fora do período: shipment alheio aos orders completos NÃO conta como RETURNS_UNRESOLVED",
+      repo.persistedCalls[0].resumo.claimsReturnsNaoResolvidos, 0);
+  });
+
+  // ── 3) Mesmo claim, mas orders do período INCOMPLETOS: o índice
+  // shipment→order pode não ter o pedido certo, então nada é afirmado — a
+  // devolução continua não resolvida (comportamento conservador anterior).
+  await capturandoLogs(async () => {
+    const repo = fakeRepo();
+    const syncService = carregarComHandlers([
+      ["/orders/search", (path) => ({
+        ok: true, status: 200,
+        data: {
+          results: /offset=0(&|$)/.test(String(path)) || !/offset=/.test(String(path)) ? [pedidoApi("PEDIDO_E2E_3", "SHIP-DIFERENTE")] : [],
+          paging: { total: 2 },
+        },
+      })],
+      ["/shipments/", () => ({ ok: true, status: 200, data: {} })],
+      ["/post-purchase/v1/claims/search", () => ({
+        ok: true, status: 200,
+        data: {
+          paging: { total: 1 },
+          data: [{
+            id: "5553953268", resource: "shipment", resource_id: "SHIP-NAO-BATE",
+            status: "closed", type: "returns", related_entities: ["return"],
+            resolution: { reason: "item_returned", benefited: ["complainant"] },
+          }],
+        },
+      })],
+      ["/post-purchase/v2/claims/", () => ({
+        ok: true, status: 200, data: { status: "delivered", resource: null, items: [] },
+      })],
+    ]);
+
+    const { sincronizarVendasMeli } = syncService.createCentralVendasSyncService(repo, {});
+    const resultado = await sincronizarVendasMeli({
+      clienteSlug: cliente.slug, marketplace: "meli", accountContext: ACCOUNT_CONTEXT, ...PERIODO,
+    });
+    const persistido = repo.persistedCalls[0];
+    ok("e2e orders incompletos: execução concluiu e persistiu", !!resultado && !!persistido);
+    eq("e2e orders incompletos: não afirma 'fora do período' — continua RETURNS_UNRESOLVED",
+      persistido.resumo.claimsReturnsNaoResolvidos, 1);
   });
 }
 

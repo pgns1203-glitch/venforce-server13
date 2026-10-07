@@ -72,6 +72,7 @@ function rodar(script, args = [], envExtra = {}) {
 }
 
 const NOTURNO = "jobs/syncCentralVendasNoturno.js";
+const ON = { CENTRAL_VENDAS_NOTURNO_ENABLED: "true" };
 const BACKFILL = "jobs/backfillCentralVendas.js";
 
 async function run() {
@@ -83,9 +84,11 @@ async function run() {
   eq("parseArgs: vazio", cli.parseArgs([]), { dryRun: false, clientes: null, dataReferencia: null, meses: null, concorrencia: null });
   assert.throws(() => cli.parseArgs(["--desconhecido"]), /Argumento desconhecido/); checks += 1;
 
-  eq("habilitado: ausente → ligado", cli.jobHabilitado({}), true);
+  // Opt-in explícito (igual ao scheduler): ausência NÃO liga mais o job.
+  eq("habilitado: ausente → desligado", cli.jobHabilitado({}), false);
   eq("habilitado: 'true' → ligado", cli.jobHabilitado({ CENTRAL_VENDAS_NOTURNO_ENABLED: "true" }), true);
-  for (const v of ["false", "FALSE", "0", "off", " false "]) {
+  eq("habilitado: ' TRUE ' → ligado", cli.jobHabilitado({ CENTRAL_VENDAS_NOTURNO_ENABLED: " TRUE " }), true);
+  for (const v of ["false", "FALSE", "0", "off", " false ", "", "1", "yes"]) {
     eq(`habilitado: '${v}' → desligado`, cli.jobHabilitado({ CENTRAL_VENDAS_NOTURNO_ENABLED: v }), false);
   }
 
@@ -122,9 +125,16 @@ async function run() {
   {
     const r = rodar(NOTURNO, [], { CENTRAL_VENDAS_NOTURNO_ENABLED: "false" });
     eq("desligado: exit 0", r.code, 0);
-    ok("desligado: log explica", r.saida.includes("[cron-central] desabilitado (CENTRAL_VENDAS_NOTURNO_ENABLED=false)"));
+    ok("desligado: log explica", r.saida.includes("[cron-central] desabilitado (CENTRAL_VENDAS_NOTURNO_ENABLED != true)"));
     eq("desligado: nem pg nem express carregados (banco nunca aberto)", r.carregados, []);
     ok("desligado: termina rápido", r.ms < 10000 && r.signal === null);
+  }
+  {
+    // Render Cron sem a variável: antes ligava; agora não faz nada.
+    const r = rodar(NOTURNO, []);
+    eq("sem a variável: exit 0", r.code, 0);
+    ok("sem a variável: desabilitado", r.saida.includes("[cron-central] desabilitado"));
+    eq("sem a variável: banco nunca aberto", r.carregados, []);
   }
 
   // =========================================================================
@@ -132,23 +142,26 @@ async function run() {
   //    termina sozinho, sem Express/index.js
   // =========================================================================
   {
-    const r = rodar(NOTURNO, ["--data-referencia=2026-09-24"]);
+    // Rodada real: a 1ª coisa que toca o banco é o lock global (mesmo do scheduler).
+    const r = rodar(NOTURNO, ["--data-referencia=2026-09-24"], ON);
     eq("sem banco: exit 1", r.code, 1);
     ok("sem banco: tentou a porta morta (nunca outro banco)", r.saida.includes("127.0.0.1:1"));
     ok("sem banco: erro estrutural logado", r.saida.includes("[cron-central] erro estrutural"));
-    ok("sem banco: log de início com o período do dia", r.saida.includes("períodos=2026-09-01..2026-09-23") && r.saida.includes("concorrência=3"));
+    ok("sem banco: falhou no lock, antes de qualquer rodada", !r.saida.includes("[cron-central] início"));
+    const dry = rodar(NOTURNO, ["--data-referencia=2026-09-24", "--dry-run"], ON);
+    ok("dry-run sem lock: log de início com o período do dia", dry.saida.includes("períodos=2026-09-01..2026-09-23") && dry.saida.includes("concorrência=3"));
     ok("sem banco: processo terminou sozinho (sem sinal/timeout)", r.signal === null && r.ms < 20000);
     ok("sem banco: carregou pg", r.carregados && r.carregados.includes("pg"));
     ok("sem banco: NÃO carregou express", r.carregados && !r.carregados.includes("express"));
     ok("sem banco: NÃO carregou index.js do servidor", r.carregados && !r.carregados.includes("index.js"));
   }
   {
-    const r = rodar(NOTURNO, ["--data-referencia=2026-10-03"], { SYNC_CENTRAL_CONCURRENCY: "4" });
+    const r = rodar(NOTURNO, ["--data-referencia=2026-10-03", "--dry-run"], { ...ON, SYNC_CENTRAL_CONCURRENCY: "4" });
     ok("env: SYNC_CENTRAL_CONCURRENCY=4 respeitada", r.saida.includes("concorrência=4"));
     ok("dias 2–5: dois períodos no log", r.saida.includes("períodos=2026-09-01..2026-09-30,2026-10-01..2026-10-02"));
   }
   {
-    const r = rodar(NOTURNO, ["--data-referencia=2027-01-01"], { SYNC_CENTRAL_CONCURRENCY: "99" });
+    const r = rodar(NOTURNO, ["--data-referencia=2027-01-01", "--dry-run"], { ...ON, SYNC_CENTRAL_CONCURRENCY: "99" });
     ok("env: concorrência capada em 10", r.saida.includes("concorrência=10"));
     ok("virada de ano: dezembro completo", r.saida.includes("períodos=2026-12-01..2026-12-31"));
   }
@@ -161,7 +174,7 @@ async function run() {
     ["data inválida", ["--data-referencia=2026-02-30"], "Data de referencia invalida: 2026-02-30"],
     ["data fora do calendário", ["--data-referencia=2026-13-40"], "Data de referencia invalida: 2026-13-40"],
   ]) {
-    const r = rodar(NOTURNO, args);
+    const r = rodar(NOTURNO, args, ON);
     eq(`${label}: exit 1`, r.code, 1);
     ok(`${label}: mensagem`, r.saida.includes(trecho));
     ok(`${label}: nenhuma tentativa de conexão`, !r.saida.includes("ECONNREFUSED"));

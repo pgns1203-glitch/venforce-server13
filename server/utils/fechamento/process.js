@@ -428,23 +428,32 @@ function processarFechamento(buffer) {
   }
 }
 
-function compilarFechamentos(buffers) {
+function compilarFechamentos(buffers, nomes = []) {
   if (!Array.isArray(buffers)) {
     throw new Error("Lista de arquivos inválida.");
   }
 
   const combinedBaseMetrics = [];
 
+  // Cada planilha é lida UMA vez e só o baseMetrics sobrevive à iteração.
+  // Qualquer falha derruba a compilação inteira: uma curva anual com 11 dos
+  // 12 meses, sem aviso, seria um resultado errado apresentado como certo.
   for (let i = 0; i < buffers.length; i++) {
-    const buffer = buffers[i];
+    let baseMetricsResult;
+    try {
+      baseMetricsResult = getBaseMetrics(buffers[i]);
+    } catch (error) {
+      baseMetricsResult = {
+        error: error instanceof Error ? error.message : "Erro ao processar a planilha.",
+      };
+    }
 
-    const resultado = processarFechamento(buffer);
-    if (resultado && resultado.error) continue;
+    if (baseMetricsResult.error) {
+      const nomeArquivo = nomes[i] || `arquivo ${i + 1}`;
+      return { error: `Não foi possível processar ${nomeArquivo}: ${baseMetricsResult.error}` };
+    }
 
-    const baseMetricsResult = getBaseMetrics(buffer);
-    if (baseMetricsResult.error) continue;
-
-    combinedBaseMetrics.push(...baseMetricsResult.baseMetrics);
+    for (const row of baseMetricsResult.baseMetrics) combinedBaseMetrics.push(row);
   }
 
   if (!combinedBaseMetrics.length) {

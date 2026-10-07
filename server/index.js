@@ -10,8 +10,12 @@ const fs = require("fs");
 const archiver = require("archiver");
 const crypto = require("crypto");
 const pool = require("./config/database");
-const { processarFechamento, compilarFechamentos } = require("./utils/fechamento/process");
-const { processarFechamentoMeli, compilarFechamentosMeli } = require("./utils/fechamento/meliConversaoService");
+const { processarFechamento } = require("./utils/fechamento/process");
+const { processarFechamentoMeli } = require("./utils/fechamento/meliConversaoService");
+const {
+  criarMiddlewareUploadCurvaAbc,
+  criarHandlerCompilarCurvaAbc,
+} = require("./utils/fechamento/curvaAbcEntrada");
 const { mlFetch } = require("./utils/mlClient");
 const { startTokenRefreshWorker } = require("./utils/tokenRefreshWorker");
 const { authMiddleware, requireAdmin } = require("./middlewares/authMiddleware");
@@ -1954,26 +1958,17 @@ app.post("/fechamentos/upload", authMiddleware, upload.single("file"), (req, res
   return res.json({ data: resultado, excelBase64: excelBase64 || null });
 });
 
-app.post("/fechamentos/compilar", authMiddleware, upload.array("files", 20), (req, res) => {
-  const marketplace = String(req.body.marketplace || "shopee").trim().toLowerCase();
-  const buffers = (req.files || []).map((f) => f.buffer);
+// Curva ABC anual: 1 a 12 planilhas do MESMO marketplace, consolidadas por ID
+// antes de classificar. O limite é aplicado aqui (multer + validação), sem
+// depender do frontend.
+const uploadCurvaAbc = criarMiddlewareUploadCurvaAbc(upload, multer.MulterError);
 
-  if (!buffers.length) {
-    return res.status(400).json({ erro: "Nenhum arquivo enviado." });
-  }
-
-  const resultado = marketplace === "meli"
-    ? compilarFechamentosMeli(buffers)
-    : compilarFechamentos(buffers);
-
-  if (resultado.error || resultado.erro) {
-    return res.status(400).json({ erro: resultado.error || resultado.erro });
-  }
-
-  const excelBase64 = gerarExcelBase64Conversao(resultado);
-
-  return res.json({ data: resultado, excelBase64: excelBase64 || null });
-});
+app.post(
+  "/fechamentos/compilar",
+  authMiddleware,
+  uploadCurvaAbc,
+  criarHandlerCompilarCurvaAbc({ gerarExcelBase64: gerarExcelBase64Conversao })
+);
 /* ========================= SHOPEE ========================= */
 // Lê uma planilha Order.all e retorna apenas pedidos cancelados
 // ou não pagos, com chaves SKU e valor (Subtotal do produto).

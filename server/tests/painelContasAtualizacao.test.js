@@ -16,6 +16,9 @@
 //   8  job concluído fica consultável pela retenção, depois some
 
 process.env.DATABASE_URL = "postgres://nobody@127.0.0.1:1/teste-sem-banco";
+// Contrato do modo AUTOMÁTICO (o de antes do modo manual): import > manual e
+// "Atualizar dados" ligado. O modo manual (padrão) está em painelContasModoManual.test.js.
+process.env.PAINEL_CONTAS_AUTO_UPDATE_ENABLED = "true";
 
 const assert = require("assert");
 const atualizacao = require("../services/painelContas/painelContasAtualizacao");

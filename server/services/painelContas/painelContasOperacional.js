@@ -14,9 +14,12 @@
 //               e ainda carrega a precedência de MC do fechamento oficial.
 //
 // ── Precedência por conta ──────────────────────────────────────────────────
-// import publicado (API) > lançamento manual > nada. Manual existente sob um
-// automático continua visível e auditável (substituidoPorAutomatico), nunca
-// apagado nem somado.
+// Modo automático: import publicado (API) > lançamento manual > nada. Manual
+// existente sob um automático continua visível e auditável
+// (substituidoPorAutomatico), nunca apagado nem somado.
+// Modo manual (painelContasModo, padrão): lançamento manual > import
+// publicado > nada. O import continua visível como referência (referenciaApi),
+// nunca somado junto com o manual.
 //
 // ── Status ─────────────────────────────────────────────────────────────────
 // Só afirma causa com evidência: cadastro da conta (ativa, marketplace,
@@ -196,7 +199,23 @@ function resolverContas(rows, fontes = {}) {
   }));
 }
 
-function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorConta = new Map(), runPorConta = new Map() } = {}) {
+function referenciaApi(imp) {
+  if (!imp) return null;
+  const mcPct = asFiniteOrNull(imp.margem_contribuicao_percentual);
+  return {
+    importId: Number(imp.id),
+    fat: asFiniteOrNull(imp.faturamento),
+    lc: asFiniteOrNull(imp.lucro_contribuicao),
+    mc: mcPct === null ? null : mcPct / 100,
+    dadosAte: dia(imp.coverage_date_to),
+    atualizadoEm: iso(imp.published_at || imp.created_at),
+    rotulo: imp.publication_status === "legacy" ? "Planilha (Central)" : "API",
+  };
+}
+
+function resolverContasSemAcao(rows, {
+  importPorConta = new Map(), manualPorConta = new Map(), runPorConta = new Map(), manualPrevalece = false,
+} = {}) {
   const ordinais = new Map();
   return ordenarContas(rows || []).map((row) => {
     const id = Number(row.id);
@@ -233,6 +252,28 @@ function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorCont
     const imp = importPorConta.get(id) || null;
     const run = runPorConta.get(id) || null;
 
+    // Modo manual: o lançamento da equipe é o número exibido, mesmo com
+    // import publicado. O automático fica só como referência.
+    if (man && manualPrevalece) {
+      const view = manualView(man);
+      const ref = referenciaApi(imp);
+      return {
+        ...base,
+        status: status("manual", "Lançado manualmente"),
+        avisos: ref ? [`Há dado da ${ref.rotulo} nesta competência; o lançamento manual prevalece (modo manual)`] : [],
+        resumo: view.valores,
+        baseMc: view.valores.fat,
+        custos: coberturaCustos({ fat: view.valores.fat, lc: view.valores.lc, baseLc: view.valores.fat }),
+        fonte: { tipo: "manual", rotulo: "Manual" },
+        atualizadoEm: view.atualizadoEm,
+        dadosAte: view.dataReferencia,
+        manual: view,
+        gmvAds: view.gmvAds,
+        referenciaApi: ref,
+        podeLancarManual: true,
+      };
+    }
+
     if (imp) {
       const fat = asFiniteOrNull(imp.faturamento);
       const mcPct = asFiniteOrNull(imp.margem_contribuicao_percentual);
@@ -260,6 +301,8 @@ function resolverContasSemAcao(rows, { importPorConta = new Map(), manualPorCont
         dadosAte: dia(imp.coverage_date_to),
         importId: Number(imp.id),
         manual: manualView(man, { substituidoPorAutomatico: true }),
+        // Modo manual: a equipe pode lançar por cima do automático.
+        podeLancarManual: manualPrevalece,
       };
     }
 
@@ -314,7 +357,7 @@ function motivoSemDados(operacionais) {
  *   o snapshot é do CLIENTE e só pode valer quando prova ter sido gerado com
  *   os mesmos imports das contas da seção — nunca como "sem detalhamento".
  */
-function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, snapshotSemDetalhamento = true }) {
+function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, snapshotSemDetalhamento = true, manualPrevalece = false }) {
   const operacionais = contas.filter((c) => c.ativa);
   const comDado = operacionais.filter((c) => c.resumo && c.resumo.fat !== null);
   const n = operacionais.length;
@@ -398,14 +441,16 @@ function consolidarCliente({ contas = [], snapshot = null, adsCliente = null, sn
   const mc = lc !== null && base > 0 ? round2((lc / base) * 100) / 100 : null;
 
   // Ads: o resumo mensal de Ads do cliente (automático) vence; sem ele, a soma
-  // dos lançamentos manuais das contas. Nunca misturar os dois.
+  // dos lançamentos manuais das contas. Nunca misturar os dois. No modo manual
+  // inverte: se alguma conta teve Ads lançado à mão, a soma manual vence.
   let ads = null;
   let gmvAds = null;
-  if (adsCliente) {
+  const manuais = comDado.filter((c) => c.fonte?.tipo === "manual");
+  const adsManualInformado = manualPrevalece && manuais.some((c) => c.resumo.ads !== null);
+  if (adsCliente && !adsManualInformado) {
     ads = asFiniteOrNull(adsCliente.investimentoAds);
     gmvAds = asFiniteOrNull(adsCliente.gmvAds);
   } else {
-    const manuais = comDado.filter((c) => c.fonte?.tipo === "manual");
     ads = somar(manuais.map((c) => c.resumo.ads));
     gmvAds = somar(manuais.map((c) => c.gmvAds ?? null));
   }

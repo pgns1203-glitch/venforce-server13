@@ -25,6 +25,9 @@
 //      no mesmo escopo é aceito e cria run manual novo
 
 process.env.DATABASE_URL = "postgres://nobody@127.0.0.1:1/teste-sem-banco";
+// Contrato do modo AUTOMÁTICO (o de antes do modo manual): import > manual e
+// "Atualizar dados" ligado. O modo manual (padrão) está em painelContasModoManual.test.js.
+process.env.PAINEL_CONTAS_AUTO_UPDATE_ENABLED = "true";
 delete process.env.PG_POOL_CONNECTION_TIMEOUT_MS;
 delete process.env.PAINEL_ATUALIZAR_MAX_SIMULTANEAS;
 

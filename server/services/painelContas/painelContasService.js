@@ -35,6 +35,7 @@ const {
 } = require("./painelContasOperacional");
 const { validarLancamento, competenciaValida } = require("./painelContasManual");
 const atualizacao = require("./painelContasAtualizacao");
+const { descreverModo, modoManual, autoUpdateHabilitado } = require("./painelContasModo");
 const { montarComposicaoConta, somarComposicoes } = require("./painelContasComposicao");
 
 const TIMEZONE = "America/Sao_Paulo";
@@ -166,7 +167,9 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
   const marketplace = filtros.marketplace ? String(filtros.marketplace).trim().toLowerCase() : null;
   if (marketplace && !/^[a-z0-9_-]{1,40}$/.test(marketplace)) throw erro(400, "MARKETPLACE_INVALIDO", "Marketplace inválido.");
   const permitido = podeLancar(user);
-  const podeAtualizar = atualizacao.ehAdmin(user);
+  // Modo manual (padrão): manual prevalece e o "Atualizar dados" some.
+  const modo = descreverModo();
+  const podeAtualizar = atualizacao.ehAdmin(user) && autoUpdateHabilitado();
 
   await squadsRepo.ensureSquadsTables();
   const acesso = await resolverEscopoPainel(user, pool);
@@ -225,6 +228,7 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     importPorConta: escolherImportPorConta(importRows, competencia),
     manualPorConta: new Map(manualRows.map((m) => [Number(m.cliente_conta_id), m])),
     runPorConta: new Map(runRows.map((r) => [Number(r.cliente_conta_id), r])),
+    manualPrevalece: modo.manualPrevalece,
   };
 
   const marketplacesDisponiveis = [...new Set(contasRows.filter((r) => r.ativo !== false).map((r) => String(r.marketplace).toLowerCase()))]
@@ -244,6 +248,7 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
       snapshot: usaFontesMl ? snapshotPorCliente.get(c.id) || null : null,
       adsCliente: usaFontesMl ? adsPorSlug.get(c.slug) || null : null,
       snapshotSemDetalhamento: !marketplace,
+      manualPrevalece: modo.manualPrevalece,
     });
     const squad = squadDoCliente.get(c.id) || null;
     return {
@@ -272,6 +277,7 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     ok: true,
     competencia,
     competenciaAtual: atual,
+    modo,
     squadsDoUsuario: squadsUsuario.map((s) => ({
       id: s.squad_id, nome: s.squad_nome, slug: s.squad_slug, principal: s.is_primary === true,
     })),
@@ -453,11 +459,14 @@ async function salvarLancamentoManual(user, clienteRef, contaIdRaw, competencia,
   const validacao = validarLancamento(body, { competencia, hoje: hojeNoFuso(agora) });
   if (!validacao.ok) throw erro(422, validacao.codigo, validacao.mensagem);
 
-  // Automático disponível vence: gravar um manual que nunca seria exibido só
-  // esconderia a divergência. Mesma seleção de import da lista.
-  const imports = await repo.listarImportsDaCompetencia([Number(conta.id)], competencia);
-  if (escolherImportPorConta(imports, competencia).size > 0) {
-    throw erro(409, "AUTOMATICO_DISPONIVEL", "Esta conta já tem dado automático publicado nesta competência.");
+  // Modo automático: automático disponível vence — gravar um manual que
+  // nunca seria exibido só esconderia a divergência. Mesma seleção de import
+  // da lista. No modo manual (padrão) o manual prevalece e é sempre aceito.
+  if (!modoManual()) {
+    const imports = await repo.listarImportsDaCompetencia([Number(conta.id)], competencia);
+    if (escolherImportPorConta(imports, competencia).size > 0) {
+      throw erro(409, "AUTOMATICO_DISPONIVEL", "Esta conta já tem dado automático publicado nesta competência.");
+    }
   }
 
   await repo.ensurePainelContasTables();

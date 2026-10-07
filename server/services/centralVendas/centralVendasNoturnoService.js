@@ -29,6 +29,16 @@ const MARKETPLACE = "meli";
 // §11: nos primeiros dias do mês o mês anterior ainda muda (status/ajustes de
 // virada) — reprocessa-o completo até este dia (inclusive).
 const DIAS_REPROCESSO_MES_ANTERIOR = 5;
+// Depois do dia 5 o mês anterior só volta a ser sincronizado para as contas
+// cujo import publicado NÃO cobre o mês inteiro (rodadas dos dias 1..5
+// perdidas — scheduler desligado/preso, restart, conta que falhou). Até este
+// dia (inclusive); CENTRAL_VENDAS_NOTURNO_COMPLETAR_MES_ANTERIOR_ATE_DIA
+// ajusta (0..28; <= 5 desliga).
+const COMPLETAR_MES_ANTERIOR_ATE_DIA_PADRAO = 15;
+// Janela da retomada no boot: só pendências noturnas criadas nas últimas N
+// horas são retomadas; as mais antigas viram SYNC_RUN_ORPHAN_EXPIRED.
+// CENTRAL_VENDAS_NOTURNO_RECUPERACAO_HORAS ajusta (1..168).
+const RECUPERACAO_HORAS_PADRAO = 24;
 const CONCORRENCIA_PADRAO = 3; // §12: "3 a 5, começar conservador"
 const CONCORRENCIA_MAXIMA = 10;
 // Run equivalente já em execução por OUTRO processo (clique manual no
@@ -41,6 +51,20 @@ const LOG = "[cron-central]";
 // ---------------------------------------------------------------------------
 // Configuração
 // ---------------------------------------------------------------------------
+
+function resolverInteiro(valor, padrao, min, max) {
+  const n = Number.parseInt(valor, 10);
+  if (!Number.isFinite(n) || n < min) return padrao;
+  return Math.min(n, max);
+}
+
+function resolverCompletarAteDia(valor) {
+  return resolverInteiro(valor, COMPLETAR_MES_ANTERIOR_ATE_DIA_PADRAO, 0, 28);
+}
+
+function resolverRecuperacaoHoras(valor) {
+  return resolverInteiro(valor, RECUPERACAO_HORAS_PADRAO, 1, 168);
+}
 
 function resolverConcorrencia(valor, padrao = CONCORRENCIA_PADRAO) {
   const n = Number.parseInt(valor, 10);
@@ -98,6 +122,16 @@ function calcularPeriodosNoturnos(hoje) {
   const competencia = `${ano}-${pad2(mes)}`;
   const correnteAteOntem = { competencia, dateFrom: `${competencia}-01`, dateTo: `${competencia}-${pad2(dia - 1)}` };
   return dia <= DIAS_REPROCESSO_MES_ANTERIOR ? [periodoAnterior, correnteAteOntem] : [correnteAteOntem];
+}
+
+// Mês anterior COMPLETO a completar nesta data (dias 6..ateDia), ou null.
+// Dias 1..5 já o incluem para todas as contas (calcularPeriodosNoturnos).
+function periodoMesAnteriorACompletar(hoje, ateDia = COMPLETAR_MES_ANTERIOR_ATE_DIA_PADRAO) {
+  if (!isIsoDate(hoje)) throw new Error(`Data de referencia invalida: ${hoje}`);
+  const [ano, mes, dia] = hoje.split("-").map(Number);
+  if (dia <= DIAS_REPROCESSO_MES_ANTERIOR || dia > ateDia) return null;
+  const anterior = mesAnterior(ano, mes);
+  return periodoDoMes(anterior.ano, anterior.mes);
 }
 
 // §23 — backfill: N meses COMPLETOS anteriores ao mês corrente (o mês
@@ -169,6 +203,27 @@ async function listarContas(db = pool) {
   return rows;
 }
 
+// Contas cujo import PUBLICADO da competência não cobre o mês inteiro (ou que
+// não têm import publicado). Só leitura. A elegibilidade (ML, ativa, conectada)
+// continua sendo decidida por classificarContas.
+async function listarContasComMesIncompleto({ competencia, dateFrom, dateTo }, db = pool) {
+  const { rows } = await db.query(
+    `/* cv:noturno-mes-incompleto */
+     SELECT cc.id AS cliente_conta_id
+       FROM cliente_contas cc
+      WHERE NOT EXISTS (
+              SELECT 1 FROM central_vendas_imports i
+               WHERE i.cliente_conta_id = cc.id
+                 AND i.competencia = $1
+                 AND i.publication_status = 'published'
+                 AND i.coverage_date_from <= $2::date
+                 AND i.coverage_date_to >= $3::date
+            )`,
+    [competencia, dateFrom, dateTo]
+  );
+  return new Set(rows.map((r) => Number(r.cliente_conta_id)));
+}
+
 // ---------------------------------------------------------------------------
 // Pool de concorrência simples (sem dependência externa): no máximo
 // `limite` tarefas em voo; uma rejeição nunca derruba as demais.
@@ -214,6 +269,8 @@ function defaultDeps() {
     reconstruirSnapshotMensal: adapter.reconstruirSnapshotMensal,
     listarPeriodosNoturnosPendentes: runService.listarPeriodosNoturnosPendentes,
     reconciliarRunsNoturnosInterrompidos: runService.reconciliarRunsNoturnosInterrompidos,
+    expirarRunsNoturnosOrfaos: runService.expirarRunsNoturnosOrfaos,
+    listarContasComMesIncompleto: (p, db) => listarContasComMesIncompleto(p, db),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     random: Math.random,
     agora: () => Date.now(),
@@ -428,6 +485,9 @@ async function executarRodada(opts, depsOverride = {}) {
   const {
     periodos, concorrencia, clientes = null, dryRun = false,
     origem = "cron-central", onProgresso = null,
+    // (conta, periodo) => boolean — recorte por UNIDADE (ex.: mês anterior só
+    // para as contas sem cobertura completa). Ausente = todas as unidades.
+    filtroUnidade = null,
   } = opts;
 
   deps.logger.log(
@@ -455,6 +515,7 @@ async function executarRodada(opts, depsOverride = {}) {
   }
   for (const periodo of periodos) {
     for (const conta of elegiveis) {
+      if (typeof filtroUnidade === "function" && !filtroUnidade(conta, periodo)) continue;
       const chave = chaveGrupo(conta.clienteId, periodo.competencia);
       if (!grupos.has(chave)) {
         grupos.set(chave, {
@@ -622,15 +683,57 @@ async function executarRodadaNoturna(
   } = {},
   depsOverride = {}
 ) {
+  const deps = { ...defaultDeps(), ...depsOverride };
   const hoje = dataReferencia || hojeNoFuso();
+  const periodos = calcularPeriodosNoturnos(hoje);
+
+  // Órfãos noturnos antigos (fora da janela de retomada) são fechados antes
+  // de criar a rodada — nunca bloqueiam nem são retomados depois. Falha aqui
+  // só é registrada: a rodada segue.
+  if (!dryRun) await expirarOrfaosForaDaJanela(env, deps);
+
+  // Mês anterior incompleto (dias 6..N): entra SÓ para as contas sem import
+  // publicado cobrindo o mês inteiro. Falha na consulta não derruba a rodada
+  // do mês corrente.
+  let filtroUnidade = null;
+  const anterior = periodoMesAnteriorACompletar(hoje, resolverCompletarAteDia(env.CENTRAL_VENDAS_NOTURNO_COMPLETAR_MES_ANTERIOR_ATE_DIA));
+  if (anterior) {
+    try {
+      const incompletas = await deps.listarContasComMesIncompleto(anterior, deps.db);
+      if (incompletas.size > 0) {
+        periodos.unshift(anterior);
+        filtroUnidade = (conta, periodo) => periodo !== anterior || incompletas.has(Number(conta.clienteContaId));
+        deps.logger.log(`${LOG} mês anterior ${anterior.competencia} incompleto em ${incompletas.size} conta(s): completando ${anterior.dateFrom}..${anterior.dateTo}`);
+      }
+    } catch (err) {
+      deps.logger.warn(`${LOG} não foi possível verificar o mês anterior ${anterior.competencia}: ${resumirErro(err).message}`);
+    }
+  }
+
   return executarRodada({
-    periodos: calcularPeriodosNoturnos(hoje),
+    periodos,
     concorrencia: resolverConcorrencia(env.SYNC_CENTRAL_CONCURRENCY),
     clientes,
     dryRun,
     origem,
     onProgresso,
-  }, depsOverride);
+    filtroUnidade,
+  }, deps);
+}
+
+async function expirarOrfaosForaDaJanela(env, deps, agoraMs = deps.agora()) {
+  const horas = resolverRecuperacaoHoras(env.CENTRAL_VENDAS_NOTURNO_RECUPERACAO_HORAS);
+  const desde = new Date(agoraMs - horas * 3600 * 1000).toISOString();
+  try {
+    const expirados = await deps.expirarRunsNoturnosOrfaos({ antesDe: new Date(agoraMs).toISOString(), desde, db: deps.db });
+    if (expirados.length) {
+      deps.logger.warn(`${LOG} ${expirados.length} run(s) noturno(s) órfão(s) com mais de ${horas}h fechado(s) como SYNC_RUN_ORPHAN_EXPIRED`);
+    }
+    return { desde, expirados: expirados.length };
+  } catch (err) {
+    deps.logger.warn(`${LOG} não foi possível fechar órfãos antigos: ${resumirErro(err).message}`);
+    return { desde, expirados: 0, erro: true };
+  }
 }
 
 // Retoma no boot periodos que possuam runs noturnos ativos. O proprio periodo
@@ -641,9 +744,19 @@ async function recuperarRodadasPendentes(
   depsOverride = {}
 ) {
   const deps = { ...defaultDeps(), ...depsOverride };
-  const antesDe = iniciadoEm instanceof Date ? iniciadoEm.toISOString() : new Date(iniciadoEm).toISOString();
-  const periodos = await deps.listarPeriodosNoturnosPendentes({ antesDe, db: deps.db });
-  if (!periodos.length) return { recuperada: false, motivo: "SEM_PENDENCIAS" };
+  const inicioMs = iniciadoEm instanceof Date ? iniciadoEm.getTime() : new Date(iniciadoEm).getTime();
+  const antesDe = new Date(inicioMs).toISOString();
+  // Só pendências recentes são retomadas; as antigas são fechadas (nunca uma
+  // retomada em massa de períodos velhos × carteira inteira).
+  const { desde, expirados } = await expirarOrfaosForaDaJanela(env, deps, inicioMs);
+  const periodos = await deps.listarPeriodosNoturnosPendentes({ antesDe, desde, db: deps.db });
+  if (!periodos.length) return { recuperada: false, motivo: "SEM_PENDENCIAS", orfaosExpirados: expirados };
+  // Clientes com pendência em CADA período (quando o banco informa): a retomada
+  // não reprocessa a carteira inteira. Sem a informação, mantém a rodada
+  // completa (comportamento anterior).
+  const clientes = periodos.every((p) => Array.isArray(p.clientes))
+    ? [...new Set(periodos.flatMap((p) => p.clientes))]
+    : null;
 
   const interrompidos = await deps.reconciliarRunsNoturnosInterrompidos({ antesDe, db: deps.db });
   deps.logger.warn(
@@ -651,12 +764,13 @@ async function recuperarRodadasPendentes(
       + ` runningInterrompidos=${interrompidos.length}`
   );
   const resumo = await executarRodada({
-    periodos,
+    periodos: periodos.map(({ competencia, dateFrom, dateTo }) => ({ competencia, dateFrom, dateTo })),
     concorrencia: resolverConcorrencia(env.SYNC_CENTRAL_CONCURRENCY),
     origem: "restart-central",
     onProgresso,
+    ...(clientes && clientes.length ? { clientes } : {}),
   }, deps);
-  return { recuperada: true, resumo, runningInterrompidos: interrompidos.length };
+  return { recuperada: true, resumo, runningInterrompidos: interrompidos.length, orfaosExpirados: expirados };
 }
 
 function contarPor(lista, campo) {
@@ -724,6 +838,10 @@ module.exports = {
   listarContas,
   calcularPeriodosNoturnos,
   calcularPeriodosBackfill,
+  periodoMesAnteriorACompletar,
+  listarContasComMesIncompleto,
+  resolverCompletarAteDia,
+  resolverRecuperacaoHoras,
   hojeNoFuso,
   resolverConcorrencia,
   exitCodeDoResumo,
@@ -731,5 +849,7 @@ module.exports = {
   CONCORRENCIA_PADRAO,
   CONCORRENCIA_MAXIMA,
   DIAS_REPROCESSO_MES_ANTERIOR,
+  COMPLETAR_MES_ANTERIOR_ATE_DIA_PADRAO,
+  RECUPERACAO_HORAS_PADRAO,
   TIMEZONE,
 };

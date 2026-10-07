@@ -177,6 +177,9 @@ function statusSemDado(row, run) {
   const mp = String(row.marketplace || "").toLowerCase();
   if (!MARKETPLACES_COM_SYNC.has(mp)) return status("sem_integracao", "Marketplace sem integração automática");
   if (!String(row.external_account_id || "").trim()) return status("sem_conexao", `${rotuloMarketplace(mp)} não conectado`);
+  if ((run?.status === "queued" || run?.status === "running") && run.travado === true) {
+    return status("erro_sync", "Sincronização interrompida (run parado além do limite)", { erroCodigo: "SYNC_RUN_TRAVADO", em: iso(run.created_at) });
+  }
   if (run?.status === "queued" || run?.status === "running") return status("sincronizando", "Sincronização em andamento");
   if (run?.status === "failed") {
     const codigo = run.error_code || null;
@@ -284,6 +287,9 @@ function resolverContasSemAcao(rows, {
       const publicadoEm = imp.published_at ? new Date(imp.published_at).getTime() : 0;
       if (run?.status === "failed" && new Date(run.created_at).getTime() > publicadoEm) {
         avisos.push(`Última sincronização falhou${run.error_code ? ` (${run.error_code})` : ""}; exibindo a última publicação`);
+      }
+      if (run?.travado === true && new Date(run.created_at).getTime() > publicadoEm) {
+        avisos.push("Última sincronização ficou parada (interrompida); exibindo a última publicação");
       }
       const lc = asFiniteOrNull(imp.lucro_contribuicao);
       const baseMc = asFiniteOrNull(imp.faturamento_com_custo);

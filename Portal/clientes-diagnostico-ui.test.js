@@ -122,6 +122,31 @@ ok("clientes.js com versão (?v=)", /src="clientes\.js\?v=[^"]+"/.test(html));
   ok("os 3 arquivos usam a MESMA versão (trocar junto)", v.length === 3 && new Set(v).size === 1);
 }
 ok("resumo.js antigo em cache → pede recarregar em vez de travar", /if \(!RESUMO_COMPLETO\) \{\s*showError\(/.test(js));
+// ── Logos dos marketplaces (substituem as siglas ML/SH/TT) ───────────────
+for (const arq of ["mercado-livre.svg", "shopee.svg", "tiktok-shop.svg"]) {
+  const caminho = path.join(__dirname, "assets", "marketplaces", arq);
+  ok(`logo ${arq} existe no Portal (sem depender de CDN)`, fs.existsSync(caminho));
+  const svg = fs.existsSync(caminho) ? fs.readFileSync(caminho, "utf8") : "";
+  ok(`logo ${arq} é SVG estático (sem script/link externo)`, /^<svg/.test(svg.trim()) && !/<script|on\w+=|href="http/i.test(svg));
+  ok(`clientes.js usa assets/marketplaces/${arq}`, js.includes(`assets/marketplaces/${arq}`));
+}
+ok("siglas ML/SH/TT saíram", !/sigla:/.test(js) && !/vf-cli-mp__sigla/.test(js));
+
+// ── Imagem do cliente ────────────────────────────────────────────────────
+ok("HTML tem o input de arquivo da imagem (png/jpg/webp)", /id="cliente-imagem-input"[^>]*accept="image\/png,image\/jpeg,image\/webp"/.test(html));
+ok("lê as imagens em GET /cliente-imagens", /apiFetch\("\/cliente-imagens"\)/.test(js));
+ok("salva em PUT /cliente-imagens/:slug", /\/cliente-imagens\/\$\{encodeURIComponent\(c\.slug\)\}`, \{\s*method: "PUT"/.test(js));
+ok("remove em DELETE /cliente-imagens/:slug", /\/cliente-imagens\/\$\{encodeURIComponent\(c\.slug\)\}`, \{ method: "DELETE" \}/.test(js));
+ok("reduz para miniatura antes de enviar (canvas 256px)", /function gerarMiniatura\(img, lado = 256\)/.test(js));
+ok("backend sem a rota (404) → tela segue com iniciais, sem upload", /IMAGENS_DISPONIVEL = false;\s*if \(err\.status !== 404\)/.test(js) && /if \(!IMAGENS_DISPONIVEL\) return avatarHtml/.test(js));
+ok("upload é para todos (não depende de IS_ADMIN)", !/IS_ADMIN[^\n]*avatarEditavelHtml|avatarEditavelHtml[^\n]*IS_ADMIN/.test(js) && !/function acoesImagemHtml[\s\S]{0,200}IS_ADMIN/.test(js));
+{
+  const inicio = js.indexOf("function squadTexto");
+  const fn = new Function("isLegado", `${js.slice(inicio, js.indexOf("\n}\n", inicio) + 3)}; return squadTexto;`)((s) => String(s.slug || "").includes("legado"));
+  ok("squad legado cujo nome já diz Legado não duplica", fn({ squad: { nome: "Squad 8 · Legado", slug: "squad-8-legado" } }) === "Squad 8 · Legado");
+  ok("squad legado sem 'Legado' no nome ganha o sufixo", fn({ squad: { nome: "Squad 8", slug: "squad-8-legado" } }) === "Squad 8 · Legado");
+}
+
 ok("falha num cliente não para a fila dos outros", /try \{\s*if \(!CONTAS_POR_CLIENTE\.has\(slug\)\) await carregarContas\(slug\);\s*\} catch/.test(js));
 
 console.log(`\nclientes-diagnostico-ui.test.js: ${checks} verificações passaram.`);

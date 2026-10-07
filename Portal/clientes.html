@@ -14,7 +14,7 @@
   <!-- ?v= nos arquivos PRÓPRIOS desta página: sem ele, o navegador pode
        servir o CSS/JS antigo do cache junto com o HTML novo (aconteceu no
        deploy do layout lista+painel). Trocar o valor a cada mudança. -->
-  <link rel="stylesheet" href="css/pages/clientes-v2.css?v=20261007-2">
+  <link rel="stylesheet" href="css/pages/clientes-v2.css?v=20261007-3">
   <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
@@ -70,6 +70,9 @@
               </aside>
 
               <section id="clientes-detalhe" class="vf-cli-detalhe" aria-live="polite"></section>
+              <!-- Upload da imagem do cliente (avatar). Fica fora do painel, que é
+                   redesenhado a cada ação; o painel só dispara o click(). -->
+              <input type="file" id="cliente-imagem-input" accept="image/png,image/jpeg,image/webp" hidden>
             </div>
 
             <div id="state-empty" class="vf-empty" style="display:none;">
@@ -229,7 +232,7 @@
        (deferido) e não corre a tempo de defini-lo antes de um script
        clássico. No-op, sem tocar no JS da página. -->
   <script>window.initLayout = window.initLayout || function () {};</script>
-  <script src="clientes-contas-resumo.js?v=20261007-2"></script>
-  <script src="clientes.js?v=20261007-2"></script>
+  <script src="clientes-contas-resumo.js?v=20261007-3"></script>
+  <script src="clientes.js?v=20261007-3"></script>
 </body>
 </html>

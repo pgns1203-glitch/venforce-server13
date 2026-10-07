@@ -75,6 +75,7 @@ const meRoutes = require("./routes/meRoutes");
 const squadsRoutes = require("./routes/squadsRoutes");
 const painelContasRoutes = require("./routes/painelContasRoutes");
 const clienteResponsaveisRoutes = require("./routes/clienteResponsaveisRoutes");
+const clienteImagemRoutes = require("./routes/clienteImagemRoutes");
 const visaoRoutes = require("./routes/visaoRoutes");
 const financeiroVisaoRoutes = require("./routes/financeiroVisaoRoutes");
 const { verificarDependenciasCliente } = require("./services/clientes/clienteDependenciasService");
@@ -816,6 +817,8 @@ app.use("/me", meRoutes);
 app.use("/squads", squadsRoutes);
 app.use("/painel-contas", painelContasRoutes);
 app.use("/clientes", clienteResponsaveisRoutes);
+// Imagem (avatar) do Cliente — tela Clientes e Contas. Rotas aditivas.
+app.use("/cliente-imagens", clienteImagemRoutes);
 app.use("/", tiktokShopRoutes);
 app.use("/shopee", shopeeRoutes);
 app.use("/", automacoesRoutes);

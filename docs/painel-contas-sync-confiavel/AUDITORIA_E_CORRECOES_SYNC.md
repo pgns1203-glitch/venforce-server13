@@ -41,7 +41,7 @@ Precedência: modo manual (padrão) manual > API; modo automático API > manual.
 
 1. **Escopo das devoluções** (`centralVendasClaimsService`, `centralVendasSyncService`):
    - um claim `resource=shipment` cujo shipment não pertence a nenhum pedido do período vira `fora_do_periodo` e sai do esperado da fonte `returns`;
-   - vale só com a fonte `orders` completa e com o índice confiável (há shipments, ou o período não tem pedidos);
+   - vale só com a fonte `orders` completa e com **todo** pedido do período no índice (id + `shipping.id`), ou com o período sem pedidos. Basta um pedido sem `shipping.id` para nada ser afirmado;
    - continuam pendência:
      - pack ambíguo;
      - orders incompletos;
@@ -49,7 +49,7 @@ Precedência: modo manual (padrão) manual > API; modo automático API > manual.
      - resource desconhecido;
    - o diagnóstico ganha `classificacao` e a fonte ganha `metadata.foraDoPeriodo`.
 2. **Retomada com janela** (`centralVendasSyncRunService`, `centralVendasNoturnoService`):
-   - só pendências noturnas das últimas `CENTRAL_VENDAS_NOTURNO_RECUPERACAO_HORAS` (padrão 24 h) são retomadas, e só para os **clientes pendentes**;
+   - só pendências noturnas das últimas `CENTRAL_VENDAS_NOTURNO_RECUPERACAO_HORAS` (padrão 24 h) são retomadas, e cada período só para os **seus** clientes pendentes (nunca o produto cruzado períodos × clientes);
    - órfãos noturnos mais antigos viram `failed SYNC_RUN_ORPHAN_EXPIRED`, antes da retomada e antes de cada rodada;
    - runs manuais nunca são tocados.
 3. **Completar o mês anterior:**
@@ -81,10 +81,9 @@ Validação de SQL em PostgreSQL real (PGlite em memória, fora do repo), com
 
 ## 4. Riscos residuais
 
-- **Devolução de pedido do período sem `shipping.id` nos Orders:** é rara, mas
-  seria classificada como "fora do período". Por isso a regra exige que o
-  índice tenha shipments. O diagnóstico registra `classificacao` para
-  auditoria.
+- **Período com pedido sem `shipping.id`:** a devolução sem vínculo continua
+  "não resolvida", mesmo que seja de outro mês. É conservador de propósito; o
+  diagnóstico registra `classificacao` para auditoria.
 - **Legacy-only conta como "mês incompleto":** nos dias 6..15, uma conta só com
   planilha (legacy) do mês anterior é sincronizada. O import publicado passa a
   ser o exibido pela regra M4.

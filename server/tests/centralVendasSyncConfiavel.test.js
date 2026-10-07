@@ -105,6 +105,18 @@ async function blocoA() {
   r = await buscar(outroMes(), { orders: [{ id: 2001 }, { id: 2002 }] });
   eq("A6: pedidos sem shipping.id (índice vazio) → nada afirmado", [r.returnsNaoResolvidos, r.returnsForaDoPeriodo], [1, 0]);
 
+  // Regressão (revisão do PR #229): índice PARCIAL. Pedido A tem shipping.id,
+  // pedido B não — o claim pode ser do B. "O índice tem algum shipment" não
+  // prova completude: continua não resolvido.
+  r = await buscar(outroMes(), { orders: [{ id: 3001, shipping: { id: 801 } }, { id: 3002 }] });
+  eq("A11: pedido do período sem shipping.id → NÃO afirma fora do período",
+    [r.returnsNaoResolvidos, r.returnsForaDoPeriodo], [1, 0]);
+  eq("A11: diagnóstico fica nao_resolvido", r.returnsDiagnosticos.map((d) => d.classificacao), ["nao_resolvido"]);
+  r = await buscar(outroMes(), { orders: [{ id: 3001, shipping: { id: 801 } }, { id: 3002, shipping: {} }] });
+  eq("A12: shipping sem id também conta como fora do índice", [r.returnsNaoResolvidos, r.returnsForaDoPeriodo], [1, 0]);
+  r = await buscar(outroMes(), { orders: [{ id: 3001, shipping: { id: 801 } }, { shipping: { id: 802 } }] });
+  eq("A13: pedido sem id também impede a afirmação", [r.returnsNaoResolvidos, r.returnsForaDoPeriodo], [1, 0]);
+
   r = await buscar(outroMes(), { orders: [] });
   eq("A7: período sem nenhum pedido (completo) → devolução é de outro período", [r.returnsNaoResolvidos, r.returnsForaDoPeriodo], [0, 1]);
 
@@ -227,6 +239,37 @@ async function blocoBC() {
     eq("B: retomada só do cliente pendente (não a carteira inteira)", chamadas.criar, ["2:2026-10-01..2026-10-09"]);
     eq("B: órfãos fora da janela fechados ANTES de listar", [chamadas.expirar.length, rec.orfaosExpirados], [1, 1]);
     eq("B: listagem recebe a janela configurada (12h)", chamadas.listarPendentes[0].desde, new Date(inicio.getTime() - 12 * 3600e3).toISOString());
+  }
+  {
+    // Regressão (revisão do PR #229): clientes POR PERÍODO, nunca o produto
+    // cruzado. Setembro pendente só para A; outubro só para B.
+    const { deps, chamadas } = depsRodada({
+      pendentes: [
+        { competencia: "2026-09", dateFrom: "2026-09-01", dateTo: "2026-09-30", clientes: ["cliente-1"] },
+        { competencia: "2026-10", dateFrom: "2026-10-01", dateTo: "2026-10-09", clientes: ["cliente-2"] },
+      ],
+    });
+    await noturno.recuperarRodadasPendentes({ env: {}, iniciadoEm: new Date("2026-10-10T10:00:00Z") }, deps);
+    eq("B: setembro só × A e outubro só × B (sem setembro×B nem outubro×A)", chamadas.criar.sort(),
+      ["1:2026-09-01..2026-09-30", "2:2026-10-01..2026-10-09"]);
+  }
+  {
+    // Mesmo cliente pendente em dois períodos: os dois, e nada mais.
+    const { deps, chamadas } = depsRodada({
+      pendentes: [
+        { competencia: "2026-09", dateFrom: "2026-09-01", dateTo: "2026-09-30", clientes: ["cliente-3"] },
+        { competencia: "2026-10", dateFrom: "2026-10-01", dateTo: "2026-10-09", clientes: ["cliente-3", "cliente-1"] },
+      ],
+    });
+    await noturno.recuperarRodadasPendentes({ env: {}, iniciadoEm: new Date("2026-10-10T10:00:00Z") }, deps);
+    eq("B: cliente em dois períodos + outro só em outubro", chamadas.criar.sort(),
+      ["1:2026-10-01..2026-10-09", "3:2026-09-01..2026-09-30", "3:2026-10-01..2026-10-09"]);
+  }
+  {
+    // Sem a lista de clientes (banco antigo/mock): rodada completa, como antes.
+    const { deps, chamadas } = depsRodada({ pendentes: [{ competencia: "2026-10", dateFrom: "2026-10-01", dateTo: "2026-10-09" }] });
+    await noturno.recuperarRodadasPendentes({ env: {}, iniciadoEm: new Date("2026-10-10T10:00:00Z") }, deps);
+    eq("B: sem clientes informados → carteira inteira (comportamento anterior)", chamadas.criar.length, 3);
   }
   {
     const { deps, chamadas } = depsRodada({ pendentes: [] });

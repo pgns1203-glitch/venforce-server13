@@ -983,13 +983,18 @@ function createCentralVendasClaimsService({ mlFetchFn = mlFetchCentral, sleepFn 
 
     const shipmentToOrderIds = buildShipmentOrderIndex(orders);
     // Índice confiável para afirmar "shipment de outro período": orders
-    // completos E (nenhum pedido no período OU o índice tem shipments) — um
-    // período com pedidos mas índice vazio indica `shipping.id` ausente, e aí
-    // nada é afirmado.
+    // completos E TODO pedido do período entrou no índice (id + shipping.id).
+    // Basta UM pedido sem shipping.id para o claim poder ser dele — aí nada é
+    // afirmado (continua não resolvido). "O índice tem algum shipment" NÃO é
+    // prova de completude. Período completo sem nenhum pedido: nenhum shipment
+    // pode ser dele, então a prova é inequívoca.
     const listaOrders = Array.isArray(orders) ? orders : [];
+    const pedidosForaDoIndice = listaOrders.filter(
+      (o) => !normalizeCrossId(o?.id) || !normalizeCrossId(o?.shipping?.id)
+    ).length;
     const indiceCompleto = ordersCompletos === true
       && Array.isArray(orders)
-      && (listaOrders.length === 0 || shipmentToOrderIds.size > 0);
+      && pedidosForaDoIndice === 0;
     const returns = await resolverReturnsSemVinculo({
       clienteId, claims, mlUserId: sellerId, maxAttempts, shipmentToOrderIds, indiceCompleto,
     });

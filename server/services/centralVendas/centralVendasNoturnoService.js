@@ -751,11 +751,17 @@ async function recuperarRodadasPendentes(
   const { desde, expirados } = await expirarOrfaosForaDaJanela(env, deps, inicioMs);
   const periodos = await deps.listarPeriodosNoturnosPendentes({ antesDe, desde, db: deps.db });
   if (!periodos.length) return { recuperada: false, motivo: "SEM_PENDENCIAS", orfaosExpirados: expirados };
-  // Clientes com pendência em CADA período (quando o banco informa): a retomada
-  // não reprocessa a carteira inteira. Sem a informação, mantém a rodada
-  // completa (comportamento anterior).
-  const clientes = periodos.every((p) => Array.isArray(p.clientes))
-    ? [...new Set(periodos.flatMap((p) => p.clientes))]
+  // Clientes com pendência POR PERÍODO (quando o banco informa): cada período
+  // é retomado só para os SEUS clientes — setembro pendente só para A e
+  // outubro só para B rodam setembro×A e outubro×B, nunca o produto cruzado.
+  // Sem a informação, mantém a rodada completa (comportamento anterior).
+  const chavePeriodo = (p) => `${p.dateFrom}..${p.dateTo}`;
+  const porPeriodo = periodos.every((p) => Array.isArray(p.clientes))
+    ? new Map(periodos.map((p) => [chavePeriodo(p), new Set(p.clientes.map((c) => String(c).toLowerCase()))]))
+    : null;
+  const clientes = porPeriodo ? [...new Set([...porPeriodo.values()].flatMap((set) => [...set]))] : null;
+  const filtroUnidade = porPeriodo
+    ? (conta, periodo) => porPeriodo.get(chavePeriodo(periodo))?.has(String(conta.clienteSlug).toLowerCase()) === true
     : null;
 
   const interrompidos = await deps.reconciliarRunsNoturnosInterrompidos({ antesDe, db: deps.db });
@@ -768,7 +774,7 @@ async function recuperarRodadasPendentes(
     concorrencia: resolverConcorrencia(env.SYNC_CENTRAL_CONCURRENCY),
     origem: "restart-central",
     onProgresso,
-    ...(clientes && clientes.length ? { clientes } : {}),
+    ...(clientes && clientes.length ? { clientes, filtroUnidade } : {}),
   }, deps);
   return { recuperada: true, resumo, runningInterrompidos: interrompidos.length, orfaosExpirados: expirados };
 }

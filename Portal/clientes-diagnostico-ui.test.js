@@ -111,4 +111,17 @@ ok("não-admin vê aviso de modo leitura", /const avisoLeitura = IS_ADMIN \? ""/
 ok("link de conexão continua account-scoped (/ml/conectar-conta/:id)", /\/ml\/conectar-conta\/\$\{contaId\}/.test(js));
 ok("Desconectar continua pedindo confirmação", /Desconectar conta Mercado Livre[\s\S]*?danger: true/.test(js));
 
+// ── Deploy: cache misturado não pode travar a tela ───────────────────────
+// Incidente pós-merge do #228: HTML/JS novos com CSS e resumo.js antigos do
+// cache → lista sem estilo e "carregando…" eterno.
+ok("CSS da página com versão (?v=) no link", /href="css\/pages\/clientes-v2\.css\?v=[^"]+"/.test(html));
+ok("clientes-contas-resumo.js com versão (?v=)", /src="clientes-contas-resumo\.js\?v=[^"]+"/.test(html));
+ok("clientes.js com versão (?v=)", /src="clientes\.js\?v=[^"]+"/.test(html));
+{
+  const v = [...html.matchAll(/(?:clientes-v2\.css|clientes-contas-resumo\.js|clientes\.js)\?v=([^"]+)"/g)].map((m) => m[1]);
+  ok("os 3 arquivos usam a MESMA versão (trocar junto)", v.length === 3 && new Set(v).size === 1);
+}
+ok("resumo.js antigo em cache → pede recarregar em vez de travar", /if \(!RESUMO_COMPLETO\) \{\s*showError\(/.test(js));
+ok("falha num cliente não para a fila dos outros", /try \{\s*if \(!CONTAS_POR_CLIENTE\.has\(slug\)\) await carregarContas\(slug\);\s*\} catch/.test(js));
+
 console.log(`\nclientes-diagnostico-ui.test.js: ${checks} verificações passaram.`);

@@ -11,7 +11,10 @@
   <!-- Fundação Global V2 (tokens → componentes → página) + Shell V3 -->
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
-  <link rel="stylesheet" href="css/pages/clientes-v2.css">
+  <!-- ?v= nos arquivos PRÓPRIOS desta página: sem ele, o navegador pode
+       servir o CSS/JS antigo do cache junto com o HTML novo (aconteceu no
+       deploy do layout lista+painel). Trocar o valor a cada mudança. -->
+  <link rel="stylesheet" href="css/pages/clientes-v2.css?v=20261007-2">
   <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
@@ -226,7 +229,7 @@
        (deferido) e não corre a tempo de defini-lo antes de um script
        clássico. No-op, sem tocar no JS da página. -->
   <script>window.initLayout = window.initLayout || function () {};</script>
-  <script src="clientes-contas-resumo.js"></script>
-  <script src="clientes.js"></script>
+  <script src="clientes-contas-resumo.js?v=20261007-2"></script>
+  <script src="clientes.js?v=20261007-2"></script>
 </body>
 </html>

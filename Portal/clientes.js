@@ -23,7 +23,12 @@ const user = JSON.parse(localStorage.getItem("vf-user") || "{}");
 const IS_ADMIN = String(user.role || "").toLowerCase() === "admin";
 initLayout();
 
-const { diagnosticarConta, diagnosticarCliente } = window.VF_CLIENTES_CONTAS_RESUMO;
+// Se o navegador servir um clientes-contas-resumo.js antigo do cache (sem as
+// funções de diagnóstico), a tela NÃO pode ficar em "carregando…" para
+// sempre: loadClientes() checa isto e pede para recarregar.
+const RESUMO = window.VF_CLIENTES_CONTAS_RESUMO || {};
+const { diagnosticarConta, diagnosticarCliente } = RESUMO;
+const RESUMO_COMPLETO = typeof diagnosticarConta === "function" && typeof diagnosticarCliente === "function";
 
 function clearSession() {
   localStorage.removeItem(STORAGE_KEY);
@@ -266,6 +271,10 @@ async function buscarClientes() {
 
 async function loadClientes({ selecionar } = {}) {
   if (!TOKEN) return;
+  if (!RESUMO_COMPLETO) {
+    showError("Esta tela foi atualizada e o navegador ainda está com uma versão antiga em cache. Recarregue com Ctrl+Shift+R.");
+    return;
+  }
   showLoading();
   fecharMenuConta();
   CONTAS_POR_CLIENTE.clear();
@@ -298,7 +307,12 @@ async function carregarTodasAsContas() {
   const trabalhar = async () => {
     while (fila.length) {
       const slug = fila.shift();
-      if (!CONTAS_POR_CLIENTE.has(slug)) await carregarContas(slug);
+      // Uma falha num cliente nunca pode parar a fila dos outros.
+      try {
+        if (!CONTAS_POR_CLIENTE.has(slug)) await carregarContas(slug);
+      } catch (err) {
+        console.error("[clientes] falha ao carregar contas de", slug, err);
+      }
     }
   };
   await Promise.all(Array.from({ length: LOTE }, trabalhar));
@@ -315,9 +329,27 @@ async function carregarContas(slug) {
   } catch (err) {
     CONTAS_POR_CLIENTE.set(slug, { estado: "erro", contas: [], erro: err.message });
   }
-  renderFiltros();
-  renderLista();
-  if (slug === SELECIONADO) renderDetalhe();
+  if (slug === SELECIONADO) {
+    try { renderDetalhe(); } catch (err) { console.error("[clientes] falha ao desenhar o painel", err); }
+  }
+  agendarRenderLista();
+}
+
+// Com ~100 clientes, cada carga de contas redesenhando a lista inteira na
+// hora vira 100 redesenhos seguidos. Agrupa num por quadro de animação.
+let RENDER_LISTA_AGENDADO = false;
+function agendarRenderLista() {
+  if (RENDER_LISTA_AGENDADO) return;
+  RENDER_LISTA_AGENDADO = true;
+  requestAnimationFrame(() => {
+    RENDER_LISTA_AGENDADO = false;
+    try {
+      renderFiltros();
+      renderLista();
+    } catch (err) {
+      console.error("[clientes] falha ao desenhar a lista", err);
+    }
+  });
 }
 
 // Recarrega as contas do cliente aberto depois de qualquer ação (criar conta,

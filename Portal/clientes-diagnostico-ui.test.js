@@ -92,7 +92,19 @@ ok("não-admin lê a própria carteira (GET /me/portfolio)", /apiFetch\("\/me\/p
 ok("queda para /operacao/cliente-360/clientes só em 404 (mesma regra do Shell)", /err\.status !== 404\) throw err;\s*data = await apiFetch\("\/operacao\/cliente-360\/clientes"\)/.test(js));
 ok("botão Novo cliente nasce escondido no HTML", /id="clientes-header-acoes"[^>]*hidden/.test(html));
 ok("Novo cliente só aparece para admin", /if \(IS_ADMIN\) \{\s*document\.getElementById\("clientes-header-acoes"\)\.hidden = false;/.test(js));
-ok("ações da conta só são montadas para admin", /if \(IS_ADMIN\) \{\s*const acoes = montarAcoesConta/.test(js));
+ok("admin recebe todas as ações; os demais só as de leitura/conexão", /const acoes = IS_ADMIN \? montarAcoesConta\(slug, conta, diag\) : montarAcoesContaLeitura\(slug, conta, diag\)/.test(js));
+{
+  const inicio = js.indexOf("function montarAcoesContaLeitura");
+  const fim = js.indexOf("\nfunction montarAcoesConta(", inicio);
+  const trecho = js.slice(inicio, fim);
+  ok("não-admin: Conectar/Copiar link aparecem (via acoesConexaoMl)", /acoesConexaoMl\(slug, conta\)/.test(trecho));
+  ok("não-admin: só Mercado Livre ativo tem ações", /conta\.marketplace !== "meli" \|\| conta\.ativo === false\) return vazio/.test(trecho));
+  ok(
+    "não-admin: nenhuma ação requireAdmin (base, principal, ativar, testar, desconectar)",
+    !/abrirBasePicker|\/principal|alternarAtivoConta|confirmarDesativarConta|testarGrantConta|ml-grant/.test(trecho)
+  );
+}
+ok("admin e não-admin usam o mesmo link de conexão (uma fonte só)", /const \{ conectar, copiar \} = acoesConexaoMl\(slug, conta\);/.test(js));
 ok("Remover cliente só para admin", /const acoesCliente = IS_ADMIN/.test(js));
 ok("+ Adicionar conta só para admin", /const botaoAdd = IS_ADMIN/.test(js));
 ok("não-admin vê aviso de modo leitura", /const avisoLeitura = IS_ADMIN \? ""/.test(js));

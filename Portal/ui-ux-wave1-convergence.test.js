@@ -387,7 +387,7 @@ async function run() {
       { page: "atividade.html", pronto: "document.querySelectorAll('#callbacks-tbody tr').length >= 3", nome: "Atividade" },
       { page: "usuarios.html", pronto: "document.querySelectorAll('#vu-body-admin tr, #vu-body-membro tr, #vu-body-seller tr, #vu-body-shopee tr').length >= 3", nome: "Pessoas" },
       { page: "callbacks.html", pronto: "document.querySelectorAll('#callbacks-tbody tr').length >= 3", nome: "Callbacks" },
-      { page: "clientes.html", pronto: "document.querySelectorAll('#clientes-tbody tr').length >= 3", nome: "Clientes" },
+      { page: "clientes.html", pronto: "document.querySelectorAll('#clientes-lista .vf-cli-item').length >= 3", nome: "Clientes" },
     ];
 
     for (const tela of TELAS) {
@@ -490,10 +490,10 @@ async function run() {
       if (r.sucesso < 1 || r.erro < 1) throw new Error(`esperado ao menos 1 de cada; veio ${JSON.stringify(r)}`);
     });
 
-    await goto("clientes.html", "document.querySelectorAll('#clientes-tbody tr').length >= 3");
+    await goto("clientes.html", "document.querySelectorAll('#clientes-lista .vf-cli-item').length >= 3");
 
-    await check("Clientes — linhas sem inline style de layout (a folha assumiu o trabalho)", async () => {
-      const n = await cdp.evaluate(`[...document.querySelectorAll("#clientes-tbody [style]")]
+    await check("Clientes — lista e painel sem inline style de layout (a folha assumiu o trabalho)", async () => {
+      const n = await cdp.evaluate(`[...document.querySelectorAll("#clientes-lista [style], #clientes-detalhe [style]")]
         .filter((el) => /font-size|color|padding|margin|width/i.test(el.getAttribute("style") || "")).length`);
       if (n > 0) throw new Error(`${n} elemento(s) com inline style de layout`);
     });

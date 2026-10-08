@@ -45,6 +45,7 @@
 //   PATCH  /anuncios-meli/:itemId/estoque       (edição real no Mercado Livre)
 //   PATCH  /anuncios-meli/:itemId/preco         (edição real no Mercado Livre)
 //   POST   /anuncios-meli/:itemId/simular-margem (simulação local, sem escrita)
+//   GET    /anuncios-meli/custos               (custo atual da Base por MLB da página)
 //   POST   /anuncios-meli/custos/lote          (custo na Base de Custos, pela lista)
 // -----------------------------------------------------------------------------
 
@@ -110,6 +111,7 @@ router.use(requireClienteNaCarteira({ query: "clienteSlug", body: "clienteSlug" 
 // Custo do produto editado na lista (pontual e "Editar custos" em massa) —
 // grava na Base de Custos resolvida pelo contexto do Motor (nunca por slug do
 // front). Mesmo acesso das demais escritas do módulo + carteira do cliente.
+router.get("/custos", ctrl.lerCustos);
 router.post("/custos/lote", ctrl.salvarCustosLote);
 router.get("/clientes", ctrl.listarClientes);
 router.post("/sync", ctrl.sincronizar);

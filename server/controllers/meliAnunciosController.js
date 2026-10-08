@@ -2710,6 +2710,40 @@ async function simularMargem(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// GET /anuncios-meli/custos?clienteSlug=&clienteContaId=&itemIds=MLB1,MLB2
+//
+// Custo atual da Base por MLB da página (célula "Margem" da lista: "✎ R$ x"
+// ou "+ Custo"). Somente leitura. Base ausente/ambígua NÃO é erro aqui:
+// volta `base: null` + motivo/mensagem do contexto do Motor.
+// ----------------------------------------------------------------------------
+async function lerCustos(req, res) {
+  try {
+    const { clienteSlug } = req.query || {};
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+    const itemIds = String((req.query && req.query.itemIds) || "").split(",").map((s) => s.trim()).filter(Boolean);
+    const r = await custosLoteService.lerCustosDosItens({
+      clienteSlug,
+      clienteContaId: extrairClienteContaId(req.query && req.query.clienteContaId),
+      itemIds,
+    });
+    return res.json({ ok: true, ...r });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    if (err.statusCode && err.payload) {
+      return res.status(err.statusCode).json({
+        ok: false,
+        codigo: err.payload.codigo || null,
+        motivo: err.payload.motivo || err.payload.erro || "Não foi possível ler os custos.",
+      });
+    }
+    console.error("[anuncios-meli] lerCustos:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro interno ao ler os custos." });
+  }
+}
+
+// ----------------------------------------------------------------------------
 // POST /anuncios-meli/custos/lote
 //   body: { clienteSlug, clienteContaId?, itens: [{ itemId, custo } | { itemId, remover: true }] }
 //
@@ -3489,6 +3523,7 @@ async function retryPrecosAtacado(req, res) {
 }
 
 module.exports = {
+  lerCustos,
   salvarCustosLote,
   listarClientes,
   sincronizar,

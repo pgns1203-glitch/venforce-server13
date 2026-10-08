@@ -239,6 +239,41 @@ caso("pedido malformado é 400 no pedido inteiro", async () => {
   }
 });
 
+caso("leitura: custos da página pela Base do contexto, ausente = null", async () => {
+  const ctx = [];
+  const db = criarDb({ custos: [{ produto_id: "MLB1", custo_produto: "12.5" }, { produto_id: "3", custo_produto: "8" }] });
+  const r = await servico.lerCustosDosItens(
+    { clienteSlug: "cliente-a", clienteContaId: 5, itemIds: ["MLB1", "mlb2", "MLB3", "lixo"] },
+    {
+      db,
+      resolverContextoPrecificacao: async (args) => {
+        ctx.push(args);
+        return { pronto: true, motivo: "OK", base: BASE };
+      },
+    }
+  );
+  assert.deepStrictEqual(ctx, [{ clienteSlugRaw: "cliente-a", clienteContaId: 5 }]);
+  assert.deepStrictEqual(r.custos, { MLB1: 12.5, MLB2: null, MLB3: 8 });
+  assert.deepStrictEqual(r.base, { slug: "base-cliente-a", nome: "Base A" });
+});
+
+caso("leitura: Base não vinculada não é erro — base null + mensagem do contexto", async () => {
+  const db = criarDb();
+  const r = await servico.lerCustosDosItens(
+    { clienteSlug: "cliente-a", itemIds: ["MLB1"] },
+    {
+      db,
+      resolverContextoPrecificacao: async () => ({
+        pronto: false, base: null, motivo: "BASE_MELI_NAO_VINCULADA", mensagem: "Cliente sem base MELI vinculada.",
+      }),
+    }
+  );
+  assert.strictEqual(r.base, null);
+  assert.strictEqual(r.motivo, "BASE_MELI_NAO_VINCULADA");
+  assert.deepStrictEqual(r.custos, {});
+  assert.strictEqual(db.queries.length, 0);
+});
+
 caso("controller: sem clienteSlug é 400", async () => {
   const res = resFake();
   await ctrl.salvarCustosLote({ body: { itens: [] } }, res);

@@ -213,9 +213,41 @@ async function salvarCustosEmLote({ clienteSlug, clienteContaId = null, body }, 
   };
 }
 
+/**
+ * Custos atuais da Base para os MLB de uma página da lista. Usa o MESMO
+ * contexto do Motor sem lançar erro de negócio: Base ausente/ambígua vira
+ * `base: null` + motivo, e a lista mostra "Vincular base" em vez de "+ Custo".
+ *
+ * @returns {Promise<{ base, motivo, mensagem, custos: Object<string, number|null> }>}
+ */
+async function lerCustosDosItens({ clienteSlug, clienteContaId = null, itemIds }, deps = {}) {
+  const db = deps.db || pool;
+  const resolverContexto = deps.resolverContextoPrecificacao || contextoPrecificacao.resolverContextoPrecificacao;
+
+  const ids = Array.from(new Set((itemIds || []).map(normalizarItemId).filter(Boolean))).slice(0, MAX_ITENS_LOTE);
+  const contexto = await resolverContexto({ clienteSlugRaw: clienteSlug, clienteContaId });
+  if (!contexto.pronto || !contexto.base) {
+    return { base: null, motivo: contexto.motivo, mensagem: contexto.mensagem, custos: {} };
+  }
+
+  const atuais = await carregarCustosAtuais(db, contexto.base.id, ids);
+  const custos = {};
+  for (const id of ids) {
+    const atual = atuais.get(id);
+    custos[id] = atual && atual.custo != null ? atual.custo : null;
+  }
+  return {
+    base: { slug: contexto.base.slug, nome: contexto.base.nome },
+    motivo: contexto.motivo,
+    mensagem: null,
+    custos,
+  };
+}
+
 module.exports = {
   MAX_ITENS_LOTE,
   salvarCustosEmLote,
+  lerCustosDosItens,
   // exportados para teste
   validarPedido,
   normalizarItemId,

@@ -199,11 +199,12 @@ async function run() {
       const r1 = await chamar("participar", "MLB-X", "P-Z", { tipo });
       const r2 = await chamar("sair", "MLB-X", "P-Z", { tipo });
       assert.strictEqual(r1.corpo.codigo, "TIPO_SEM_ACEITE", tipo);
-      assert.strictEqual(r2.corpo.codigo, "TIPO_SEM_ACEITE", tipo);
+      // DEAL aceita sair (preço do vendedor) — aqui recusa só porque é candidate.
+      assert.strictEqual(r2.corpo.codigo, tipo === "DEAL" ? "PROMOCAO_NAO_PARTICIPA" : "TIPO_SEM_ACEITE", tipo);
       assert.strictEqual(escritas().length, 0);
     });
   }
-  ok("DEAL (preço do vendedor) e PRICE_DISCOUNT (fora do escopo): recusados antes de escrever");
+  ok("participar sem preço recusa DEAL e PRICE_DISCOUNT; sair recusa PRICE_DISCOUNT e DEAL candidate");
 
   // 6. Sair de SMART started → DELETE com os três parâmetros.
   await withMockDb({ anuncios: anunciosFixture() }, async () => {
@@ -289,7 +290,32 @@ async function run() {
   });
 }
 
+async function runPreco() {
+  // 11. Sair de DEAL/SELLER_CAMPAIGN em que participa (mesmo não aplicada):
+  //     DELETE só com promotion_type + promotion_id — sem offer_id.
+  for (const tipo of ["DEAL", "SELLER_CAMPAIGN"]) {
+    await withMockDb({ anuncios: anunciosFixture() }, async () => {
+      mlChamadas = [];
+      mlHandler = listagem(
+        [
+          { id: "P-A", type: tipo, status: "started", price: 85, original_price: 100 },
+          { id: "P-B", type: tipo, status: "started", price: 90, original_price: 100 },
+        ],
+        { saleData: { metadata: { promotion_id: "P-A" } }, escrita: () => ({ ok: true, status: 200, data: null }) }
+      );
+      const res = await chamar("sair", "MLB-X", "P-B", { tipo });
+      assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+      const e = escritas();
+      assert.strictEqual(e.length, 1);
+      assert.strictEqual(e[0].metodo, "DELETE");
+      assert.strictEqual(e[0].path, `/seller-promotions/items/MLB-X?promotion_type=${tipo}&promotion_id=P-B&app_version=v2`);
+    });
+  }
+  ok("sair de DEAL/SELLER_CAMPAIGN (mesmo NÃO APLICADA): DELETE sem offer_id, como na doc");
+}
+
 run()
+  .then(runPreco)
   .then(() => {
     console.log(`\n✓ ${checks} verificações de participar/sair de promoção (preço do ML)`);
     process.exit(0);

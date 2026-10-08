@@ -553,6 +553,12 @@ function botaoAcaoSimulacao(cdp) {
     return b ? { texto: b.textContent.trim(), acao: b.getAttribute('data-acao'), desabilitado: b.disabled } : null; })()`);
 }
 
+// Todos os botões de ação (participação: "Alterar…" + "Deixar de participar").
+function botoesAcaoSimulacao(cdp) {
+  return cdp.evaluate(`Array.from(document.querySelectorAll('#am-det-margem-acoes .am-margem-acoes__principal')).map(function(b){
+    return { texto: b.textContent.trim(), acao: b.getAttribute('data-acao'), desabilitado: b.disabled }; })`);
+}
+
 function textoAcoesSimulacao(cdp) {
   return cdp.evaluate("(document.getElementById('am-det-margem-acoes') || {}).textContent || ''");
 }
@@ -605,7 +611,7 @@ function lerLinhaPromo(cdp, promoChave) {
     var t = function (s) { var e = l.querySelector(s); return e ? e.textContent.replace(/\\s+/g, ' ').trim() : null; };
     var g = l.closest('.am-promo__grupo');
     return { nome: t('.am-promo__nome'), status: t('.vf-status'), preco: t('.am-promo__preco'), desconto: t('.am-promo__preco-desc'),
-             subsidio: t('.am-promo__subsidio'), recebe: t('.am-promo__recebe'), vs: t('.am-promo__col-vs'),
+             subsidio: t('.am-promo__subsidio'), recebe: t('.am-promo__recebe'), margem: t('.am-promo__margem'), vs: t('.am-promo__col-vs'),
              grupo: g ? g.getAttribute('data-grupo') : null, selecionada: l.classList.contains('is-selecionada') }; })()`);
 }
 
@@ -2924,7 +2930,7 @@ async function run() {
         ], JSON.stringify(grupos));
 
         const cab = await cdp.evaluate("Array.from(document.querySelector('#am-det-promo-body .am-promo__cab').children).map(function(c){ return c.textContent.trim(); }).filter(Boolean).join(' ')");
-        assert.strictEqual(cab, "Promoção Preço final Subsídio ML Você recebe vs. hoje");
+        assert.strictEqual(cab, "Promoção Preço final Subsídio ML Você recebe Margem vs. hoje");
         assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#am-det-promo-body .am-promo__linha button, #am-det-promo-body [data-acao=\"promo-acao\"]').length"), 0,
           "nenhum botão por linha — a linha inteira é o controle");
 
@@ -2935,11 +2941,15 @@ async function run() {
         assert.strictEqual(ativa.desconto, "−20,0%");
         assert.strictEqual(ativa.subsidio, "R$ 2,50", "Subsídio ML em R$, nunca em percentual");
         assert.strictEqual(ativa.vs, "= hoje", "a promoção que forma o preço de hoje dá a margem de hoje");
+        assert.strictEqual(ativa.recebe, "R$ 70,00");
+        assert.strictEqual(ativa.margem, "35,0%", "a margem de cada promoção fica à vista, numa coluna própria");
 
         const cand = await lerLinhaPromo(cdp, "PD-1::PRICE_DISCOUNT");
         assert.strictEqual(cand.nome, "Desconto individual", "sem nome próprio, cai para o rótulo do tipo");
         assert.strictEqual(cand.subsidio, "—", "sem meli_percentage do ML, a coluna mostra — (nunca um valor inventado)");
         assert.strictEqual(cand.vs, "−R$ 20,00", "vs. hoje = você recebe (50) − margem de hoje (70)");
+        assert.strictEqual(cand.margem, "22,2%");
+        assert.strictEqual((await lerLinhaPromo(cdp, "P-2::DEAL")).margem, "—", "sem 'Você recebe', a margem é —, nunca inventada");
         assert.strictEqual(await cdp.evaluate("document.querySelector('.am-promo__linha[data-promo-key=\"PD-1::PRICE_DISCOUNT\"] .am-delta').className"),
           "am-delta is-neg");
 
@@ -3118,6 +3128,8 @@ async function run() {
         const antes = await botaoAcaoSimulacao(cdp);
         assert.strictEqual(antes.desabilitado, true, "com o mesmo preço da promoção, não há o que alterar");
         assert.strictEqual(antes.texto, "Mude o preço para alterar a promoção");
+        assert.deepStrictEqual((await botoesAcaoSimulacao(cdp)).map((b) => b.texto),
+          ["Mude o preço para alterar a promoção", "Deixar de participar"], "já participa: sempre dá para sair");
 
         await confirmarEdicaoMargem(cdp, "preco", "180");
         await waitFor(cdp, "document.querySelector('#am-det-margem-acoes [data-acao=\"promo-aplicar\"]')", "o botão de alterar não liberou");
@@ -3131,6 +3143,7 @@ async function run() {
         assert.strictEqual(aplicarPromocaoChamadas.length, 1);
         assert.strictEqual(aplicarPromocaoChamadas[0].promotionId, "P-1");
         assert.strictEqual(aplicarPromocaoChamadas[0].body.precoNovo, 180);
+        assert.strictEqual(aplicarPromocaoChamadas[0].body.alterarParticipacao, true, "alterar uma participação é pedido explícito ao backend");
       } finally {
         promocoesRespostaPadrao = [];
       }
@@ -3185,7 +3198,7 @@ async function run() {
       }
     });
 
-    await check("40e — DEAL ATIVA COM rebate: simula normalmente, mas a área de ação só avisa — nenhum botão, nenhum diálogo, nenhuma escrita", async () => {
+    await check("40e — DEAL ATIVA COM rebate: simula normalmente; não oferece 'Alterar' (avisa o rebate), só 'Deixar de participar'", async () => {
       promocoesRespostaPadrao = [PROMO_ATIVA];
       try {
         pedidos.length = 0;
@@ -3197,7 +3210,8 @@ async function run() {
         await confirmarEdicaoMargem(cdp, "preco", "180");
         await waitFor(cdp, "/participação do Mercado Livre \\(rebate\\)/.test(document.getElementById('am-det-margem-acoes').textContent)",
           "o aviso de rebate não apareceu");
-        assert.strictEqual(await botaoAcaoSimulacao(cdp), null, "promoção com rebate não oferece botão de alteração");
+        assert.deepStrictEqual((await botoesAcaoSimulacao(cdp)).map((b) => b.acao), ["promo-sair"],
+          "com rebate: nenhum botão de alteração, mas sair continua disponível");
         assert.strictEqual(await cdp.evaluate("!!document.querySelector('.am-confirm-overlay')"), false);
         assert.strictEqual(aplicarPromocaoChamadas.length, 0);
       } finally {
@@ -3205,12 +3219,13 @@ async function run() {
       }
     });
 
-    await check("41 — DEAL inscrita mas que não forma o preço (PROGRAMADA ou NÃO APLICADA): grupo 'Você já participa', simula, e só explica — nunca escreve", async () => {
+    await check("41 — DEAL inscrita que não forma o preço (PROGRAMADA ou NÃO APLICADA): 'Você já participa', simula, oferece 'Alterar' e 'Deixar de participar'", async () => {
       promocoesRespostaPadrao = [PROMO_PROGRAMADA, PROMO_NAO_APLICADA];
       try {
         pedidos.length = 0;
         simularMargemChamadas.length = 0;
         aplicarPromocaoChamadas.length = 0;
+        aceitePromocaoChamadas.length = 0;
         await recarregarEAbrir();
         await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2", "as linhas não apareceram");
         await esperarLadder();
@@ -3219,19 +3234,46 @@ async function run() {
           assert.strictEqual((await lerLinhaPromo(cdp, chave(p))).grupo, "participa", `${p.statusExibicao} fica em 'Você já participa'`);
           await selecionarPromo(cdp, chave(p));
           await waitFor(cdp, "/não está formando o preço agora/.test(document.getElementById('am-det-margem-acoes').textContent)",
-            `${p.statusExibicao}: a área de ação não explicou por que não dá para alterar por aqui`);
-          assert.strictEqual(await botaoAcaoSimulacao(cdp), null, `${p.statusExibicao} não oferece botão de escrita`);
+            `${p.statusExibicao}: a área de ação não explicou que ela não forma o preço agora`);
+          assert.deepStrictEqual((await botoesAcaoSimulacao(cdp)).map((b) => b.texto),
+            ["Mude o preço para alterar a promoção", "Deixar de participar"], p.statusExibicao);
         }
-        assert.ok(simularMargemChamadas.length >= 2, "escolher ainda simula localmente");
-        assert.strictEqual(aplicarPromocaoChamadas.length, 0, "nenhuma escrita");
+        assert.ok(simularMargemChamadas.length >= 2, "escolher simula");
+
+        // Alterar a NÃO APLICADA: PUT pedido explicitamente ao backend.
+        await confirmarEdicaoMargem(cdp, "preco", "205");
+        await waitFor(cdp, "document.querySelector('#am-det-margem-acoes [data-acao=\"promo-aplicar\"]')", "o botão de alterar não liberou");
+        assert.strictEqual((await botaoAcaoSimulacao(cdp)).texto, "Alterar preço da promoção para R$ 205,00");
+        await clicar(cdp, '#am-det-margem-acoes [data-acao="promo-aplicar"]');
+        const linhasDialogo = await lerLinhasDialogoEscrita(cdp);
+        assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Preço na promoção").valor, "R$ 219,90");
+        assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Novo preço").valor, "R$ 205,00");
+        await confirmarDialogoEscrita(cdp);
+        for (let i = 0; i < 100 && aplicarPromocaoChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(aplicarPromocaoChamadas.length, 1);
+        assert.strictEqual(aplicarPromocaoChamadas[0].promotionId, "P-3");
+        assert.strictEqual(aplicarPromocaoChamadas[0].body.precoNovo, 205);
+        assert.strictEqual(aplicarPromocaoChamadas[0].body.alterarParticipacao, true);
+        await waitFor(cdp, "!document.querySelector('.am-confirm-overlay')", "o diálogo deveria fechar depois do sucesso");
+
+        // Sair da PROGRAMADA: mesmo endpoint /sair das ACEITE, com o tipo.
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2", "a lista não voltou");
+        await selecionarPromo(cdp, chave(PROMO_PROGRAMADA));
+        await waitFor(cdp, "document.querySelector('#am-det-margem-acoes [data-acao=\"promo-sair\"]')", "o botão de sair não apareceu");
+        await clicar(cdp, '#am-det-margem-acoes [data-acao="promo-sair"]');
+        const dialogoSair = await lerLinhasDialogoEscrita(cdp);
+        assert.match(dialogoSair.find((l) => l.rotulo === "Preço depois de sair").valor, /não muda/);
+        await confirmarDialogoEscrita(cdp);
+        for (let i = 0; i < 100 && aceitePromocaoChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(aceitePromocaoChamadas.length, 1);
+        assert.strictEqual(aceitePromocaoChamadas[0].acao, "sair");
+        assert.strictEqual(aceitePromocaoChamadas[0].promotionId, "P-4");
+        assert.strictEqual(aceitePromocaoChamadas[0].body.tipo, "DEAL");
+        assert.ok(!("precoNovo" in aceitePromocaoChamadas[0].body), "sair nunca envia preço");
       } finally {
         promocoesRespostaPadrao = [];
       }
     });
-
-    /* ── 42: preço definido pelo Mercado Livre (ACEITE — SMART,
-       PRICE_MATCHING, PRE_NEGOTIATED…) — só Participar / Deixar de
-       participar, preço sempre travado ──────────────────────────────────── */
 
     await check("42 — ACEITE candidata: preço travado no do ML, rebate dela na simulação, botão 'Participar da promoção' → POST /participar com o tipo (sem preço)", async () => {
       promocoesRespostaPadrao = [PROMO_ACEITE_CANDIDATA];
@@ -3290,7 +3332,7 @@ async function run() {
       }
     });
 
-    await check("42b — ACEITE que forma o preço hoje: cenário de SAIR (preço cheio, sem rebate), botão 'Deixar de participar' → POST /sair", async () => {
+    await check("42b — ACEITE que forma o preço hoje: escolher simula ela mesma (= hoje); botão único 'Deixar de participar' → POST /sair", async () => {
       promocoesRespostaPadrao = [PROMO_ACEITE_ATIVA];
       try {
         pedidos.length = 0;
@@ -3303,18 +3345,18 @@ async function run() {
 
         await selecionarPromo(cdp, "S-2::SMART");
         for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
-        assert.strictEqual(simularMargemChamadas[0].body.preco, 249.9, "sair volta ao preço cheio (precoOriginal)");
-        assert.strictEqual(simularMargemChamadas[0].body.subsidioMl, undefined, "sem a promoção, sem o rebate dela");
+        assert.strictEqual(simularMargemChamadas[0].body.preco, 230, "simula no preço da própria promoção");
+        assert.strictEqual(simularMargemChamadas[0].body.subsidioMl, 5, "com o subsídio dela");
 
         await waitFor(cdp, "document.querySelector('#am-det-margem-acoes [data-acao=\"promo-sair\"]')", "o botão de sair não apareceu");
-        assert.strictEqual((await botaoAcaoSimulacao(cdp)).texto, "Deixar de participar");
+        assert.deepStrictEqual((await botoesAcaoSimulacao(cdp)).map((b) => b.texto), ["Deixar de participar"],
+          "preço do ML: nunca 'Alterar'");
         assert.match(await textoAcoesSimulacao(cdp), /volta ao preço cheio/);
-        assert.strictEqual((await lerLinhaPromo(cdp, "S-2::SMART")).preco, "R$ 230,00", "a linha continua mostrando o preço da promoção, não o de sair");
 
         await clicar(cdp, '#am-det-margem-acoes [data-acao="promo-sair"]');
         const linhasDialogo = await lerLinhasDialogoEscrita(cdp);
         assert.strictEqual(await cdp.evaluate("document.getElementById('am-confirm-titulo').textContent"), "Deixar de participar da promoção?");
-        assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Preço depois de sair").valor, "R$ 249,90");
+        assert.strictEqual(linhasDialogo.find((l) => l.rotulo === "Preço depois de sair").valor, "R$ 249,90 (preço cheio)");
         await confirmarDialogoEscrita(cdp);
         for (let i = 0; i < 100 && aceitePromocaoChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(aceitePromocaoChamadas.length, 1);
@@ -3326,21 +3368,29 @@ async function run() {
       }
     });
 
-    await check("42c — ACEITE inscrita que NÃO forma o preço: sair não muda a margem de hoje (nenhuma simulação), mas o botão continua disponível", async () => {
-      promocoesRespostaPadrao = [PROMO_ACEITE_NAO_APLICADA];
+    await check("42c — ACEITE inscrita que NÃO forma o preço: simula ELA (preço e rebate dela, não os da ativa) e oferece 'Deixar de participar'", async () => {
+      promocoesRespostaPadrao = [PROMO_ATIVA, PROMO_ACEITE_NAO_APLICADA];
       try {
         pedidos.length = 0;
         simularMargemChamadas.length = 0;
         aceitePromocaoChamadas.length = 0;
         await recarregarEAbrir();
-        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1", "a linha não apareceu");
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 2", "as linhas não apareceram");
         await esperarLadder();
         await selecionarPromo(cdp, "S-3::SMART");
+        for (let i = 0; i < 100 && simularMargemChamadas.length === 0; i++) await sleep(50);
+        assert.strictEqual(simularMargemChamadas.length, 1, "escolher simula o cenário dela");
+        assert.strictEqual(simularMargemChamadas[0].body.preco, 230);
+        assert.strictEqual(simularMargemChamadas[0].body.subsidioMl, 5, "o rebate DELA (5), nunca o da promoção ativa (2,50)");
         await waitFor(cdp, "document.querySelector('#am-det-margem-acoes [data-acao=\"promo-sair\"]')", "o botão de sair não apareceu");
-        assert.match(await textoAcoesSimulacao(cdp), /não muda a margem de hoje/);
-        await sleep(150);
-        assert.strictEqual(simularMargemChamadas.length, 0, "sem nada a mudar, nenhuma chamada de simulação");
-        assert.match(await margemSimuladaNaTela(cdp), /R\$\s*70,00/, "a coluna Simulação repete a margem de hoje");
+        assert.deepStrictEqual((await botoesAcaoSimulacao(cdp)).map((b) => b.texto), ["Deixar de participar"]);
+        assert.match(await textoAcoesSimulacao(cdp), /não está formando o preço agora/);
+
+        await clicar(cdp, '#am-det-margem-acoes [data-acao="promo-sair"]');
+        const linhasDialogo = await lerLinhasDialogoEscrita(cdp);
+        assert.match(linhasDialogo.find((l) => l.rotulo === "Margem por venda").valor, /R\$\s*70,00.*não muda/);
+        await cancelarDialogoEscrita(cdp);
+        assert.strictEqual(aceitePromocaoChamadas.length, 0);
       } finally {
         promocoesRespostaPadrao = [];
       }
@@ -3447,6 +3497,37 @@ async function run() {
         for (let i = 0; i < 100 && aplicarPromocaoChamadas.length === 0; i++) await sleep(50);
         assert.strictEqual(aplicarPromocaoChamadas[0].promotionId, "X-1");
         assert.strictEqual(aplicarPromocaoChamadas[0].body.precoNovo, 190);
+      } finally {
+        promocoesRespostaPadrao = [];
+      }
+    });
+
+    await check("43b — 'Atualizar' no cabeçalho relê promoções e composição do Mercado Livre sem fechar o modal", async () => {
+      promocoesRespostaPadrao = [PROMO_CANDIDATE_DEAL];
+      try {
+        pedidos.length = 0;
+        promocoesChamadas.length = 0;
+        chamadasPerformance.length = 0;
+        await recarregarEAbrir();
+        await waitFor(cdp, "document.querySelectorAll('#am-det-promo-body .am-promo__linha').length === 1", "a lista não apareceu");
+        await esperarLadder();
+        await selecionarPromo(cdp, "P-2::DEAL");
+        await waitFor(cdp, "document.querySelector('#am-det-promo-body .am-promo__linha.is-selecionada')", "não escolheu");
+        const antesPromo = promocoesChamadas.length;
+        const antesPerf = chamadasPerformance.length;
+
+        // O ML agora diz que o anúncio participa — e é ela que forma o preço.
+        promocoesRespostaPadrao = [Object.assign({}, PROMO_CANDIDATE_DEAL, { status: "started", statusLabel: "ATIVA", statusExibicao: "ATIVA" })];
+        await clicar(cdp, '#am-det-atualizar', "o botão 'Atualizar' não existe no cabeçalho");
+        for (let i = 0; i < 100 && (promocoesChamadas.length === antesPromo || chamadasPerformance.length === antesPerf); i++) await sleep(50);
+        assert.ok(promocoesChamadas.length > antesPromo, "Atualizar relê as promoções");
+        assert.ok(chamadasPerformance.length > antesPerf, "Atualizar relê a composição/margem");
+        await waitFor(cdp, "document.querySelector('#am-det-promo-body .am-promo__grupo[data-grupo=\"ativa\"] [data-promo-key=\"P-2::DEAL\"]')",
+          "a promoção não apareceu como ativa depois de atualizar");
+        await waitFor(cdp, "!document.querySelector('#am-det-promo-body .am-promo__linha.is-selecionada')", "a escolha anterior deveria sumir");
+        await waitFor(cdp, "document.getElementById('am-det-atualizar') && !document.getElementById('am-det-atualizar').disabled",
+          "o botão deveria voltar ao normal");
+        assert.ok(await cdp.evaluate("!!document.getElementById('am-det-modal')"), "o modal continua aberto");
       } finally {
         promocoesRespostaPadrao = [];
       }

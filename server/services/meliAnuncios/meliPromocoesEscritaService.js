@@ -52,6 +52,9 @@ const TIPOS_COM_ESCRITA = new Set(["DEAL", "SELLER_CAMPAIGN"]);
 // depende só de statusExibicao.
 const STATUS_ALTERAVEL = new Set(["started", "active"]);
 
+// Participações (inscrito, mesmo que ainda não comece ou não forme o preço).
+const STATUS_PODE_SAIR = new Set(["started", "active", "pending"]);
+
 function falha(codigo, motivo) {
   return { ok: false, codigo, motivo };
 }
@@ -98,9 +101,15 @@ function ehTimeout(err) {
  *                     exige que a promoção e a intenção sejam as do preview e
  *                     confirma que ainda é dona do claim (fencing) — nunca
  *                     transforma Participar em Alterar em silêncio.
+ *  - alterarParticipacao  pedido EXPLÍCITO do operador (modal de Anúncios ML)
+ *                     para alterar o preço de uma participação que NÃO é a que
+ *                     forma o preço agora (NÃO APLICADA) ou que ainda não
+ *                     começou (PROGRAMADA). A doc do ML aceita PUT em qualquer
+ *                     item participante (inclusive pending). Sem a flag, a
+ *                     regra antiga vale: só a ATIVA vira PUT.
  * Timeout no POST/PUT volta como falha com `incerto:true`.
  */
-async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, precoNovo, timeoutMs = null, antesDeEscrever = null }) {
+async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, precoNovo, timeoutMs = null, antesDeEscrever = null, alterarParticipacao = false }) {
   const v = normalizarPrecoPromocao(precoNovo);
   if (!v.ok) return falha(v.codigo, v.motivo);
 
@@ -143,7 +152,8 @@ async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, preco
   // normalizador nem uma reclassificação de status bruto sozinhos consigam
   // liberar um PUT indevido. Defesa em profundidade: o frontend já bloqueia
   // isso na UI, mas este endpoint pode ser chamado por qualquer cliente HTTP.
-  const podeAlterar = STATUS_ALTERAVEL.has(promo.status) && promo.statusExibicao === "ATIVA";
+  const podeAlterar = (STATUS_ALTERAVEL.has(promo.status) && promo.statusExibicao === "ATIVA") ||
+    (alterarParticipacao === true && STATUS_PODE_SAIR.has(promo.status));
   const podeParticipar = promo.status === "candidate";
 
   if (!podeAlterar && !podeParticipar) {
@@ -235,11 +245,13 @@ async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, preco
 //   sair        → só status started/active/pending; DELETE com
 //                 promotion_type + promotion_id + offer_id (os três
 //                 obrigatórios na doc — sem offer_id, nada é enviado).
+//                 Vale também para DEAL/SELLER_CAMPAIGN (preço do vendedor):
+//                 a doc deles (campanhas-tradicionais, campanhas-do-vendedor)
+//                 faz o DELETE só com promotion_type + promotion_id.
 // ---------------------------------------------------------------------------
 const TIPOS_ACEITE_SEM_OFFER_NO_POST = new Set(["MARKETPLACE_CAMPAIGN"]);
-const STATUS_PODE_SAIR = new Set(["started", "active", "pending"]);
 
-async function relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo }) {
+async function relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo, tiposAceitos = TIPOS_ESCRITA_ACEITE }) {
   const id = String(itemId || "").trim();
   if (!id) return { falha: falha("ITEM_ID_AUSENTE", "Item sem identificador do Mercado Livre.") };
 
@@ -254,7 +266,7 @@ async function relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, t
       ),
     };
   }
-  if (!TIPOS_ESCRITA_ACEITE.has(promo.tipo)) {
+  if (!tiposAceitos.has(promo.tipo)) {
     return {
       falha: falha(
         "TIPO_SEM_ACEITE",
@@ -301,22 +313,26 @@ async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotion
   };
 }
 
+// Lido na hora (não no load do módulo): testes trocam meliPromocoesService por fakes.
+const TIPOS_PODE_SAIR = { has: (t) => TIPOS_COM_ESCRITA.has(t) || TIPOS_ESCRITA_ACEITE.has(t) };
+
 async function sairPromocao({ clienteId, itemId, mlUserId, promotionId, tipo }) {
-  const lido = await relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo });
+  const lido = await relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo, tiposAceitos: TIPOS_PODE_SAIR });
   if (lido.falha) return lido.falha;
   const { id, promo } = lido;
 
   if (!STATUS_PODE_SAIR.has(promo.status)) {
     return falha("PROMOCAO_NAO_PARTICIPA", "O anúncio não participa desta promoção. Atualize a tela.");
   }
-  if (!promo.refId) {
+  const comOffer = TIPOS_ESCRITA_ACEITE.has(promo.tipo);
+  if (comOffer && !promo.refId) {
     return falha("OFFER_ID_AUSENTE", "O Mercado Livre não informou a oferta desta promoção — saia pelo painel do Mercado Livre.");
   }
 
   const qs =
     "promotion_type=" + encodeURIComponent(promo.tipo) +
     "&promotion_id=" + encodeURIComponent(promo.id) +
-    "&offer_id=" + encodeURIComponent(promo.refId) +
+    (comOffer ? "&offer_id=" + encodeURIComponent(promo.refId) : "") +
     "&app_version=v2";
   const resp = await mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(id)}?${qs}`, {
     method: "DELETE",

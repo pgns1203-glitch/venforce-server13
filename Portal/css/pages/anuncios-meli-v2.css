@@ -1519,13 +1519,13 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-width: 600px;
+  min-width: 640px;
 }
 
 .vf-page-anuncios-meli .am-promo__cab,
 .vf-page-anuncios-meli .am-promo__linha {
   display: grid;
-  grid-template-columns: 16px minmax(140px, 1fr) 92px 80px 124px 104px;
+  grid-template-columns: 16px minmax(140px, 1fr) 88px 76px 92px 62px 100px;
   gap: 12px;
   align-items: center;
 }
@@ -1666,8 +1666,24 @@
   font-weight: var(--vf-fw-semibold);
 }
 
-.vf-page-anuncios-meli .am-promo__preco-desc,
-.vf-page-anuncios-meli .am-promo__recebe-pct {
+/* Coluna "Margem" (ver promocaoMargemHtml). */
+.vf-page-anuncios-meli .am-promo__margem {
+  font-weight: var(--vf-fw-bold);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text);
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-promo__margem.is-neg {
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-anuncios-meli .am-promo__margem--vazio {
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-promo__preco-desc {
   font-size: var(--vf-fs-2xs);
   font-variant-numeric: tabular-nums;
   color: var(--vf-text-muted);

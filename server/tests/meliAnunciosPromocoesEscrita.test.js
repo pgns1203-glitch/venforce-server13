@@ -361,6 +361,36 @@ async function run() {
     ok("started + NÃO APLICADA: bloqueado com PROMOCAO_NAO_APLICADA, zero POST/PUT");
   });
 
+  // 11b. Mesmo cenário de 11, com o pedido EXPLÍCITO alterarParticipacao
+  //      (modal de Anúncios ML, botão "Alterar" de uma promoção em que já
+  //      participa): PUT liberado na D-2. pending com a flag também (a doc
+  //      do ML aceita modificar oferta pendente).
+  await withMockDb({ anuncios: anunciosFixture() }, async () => {
+    mlChamadas = [];
+    mlHandler = (chamada) => {
+      if (/\/sale_price/.test(chamada.path)) return { ok: true, status: 200, data: { metadata: { promotion_id: "D-3" } } };
+      if (chamada.metodo === "GET") {
+        return {
+          ok: true, status: 200,
+          data: [
+            { id: "D-2", type: "DEAL", status: "started", price: 90, original_price: 100 },
+            { id: "D-3", type: "DEAL", status: "started", price: 88, original_price: 100 },
+            { id: "D-5", type: "DEAL", status: "pending", price: 92, original_price: 100 },
+          ],
+        };
+      }
+      return { ok: true, status: 200, data: { price: 85, original_price: 100 } };
+    };
+
+    const res = await chamar("MLB-X", "D-2", { precoNovo: 85, alterarParticipacao: true });
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.strictEqual(res.corpo.metodo, "PUT");
+    const pend = await chamar("MLB-X", "D-5", { precoNovo: 87, alterarParticipacao: true });
+    assert.strictEqual(pend.corpo.metodo, "PUT");
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "POST").length, 0, "participação nunca vira POST");
+    ok("alterarParticipacao: PUT liberado em NÃO APLICADA e PROGRAMADA, nunca POST");
+  });
+
   // 12. candidate + ELEGÍVEL: POST permitido — `podeParticipar` é decidido
   //     só por `promo.status === "candidate"`, independente de
   //     STATUS_ALTERAVEL/statusExibicao, então participar numa promoção

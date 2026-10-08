@@ -1797,7 +1797,9 @@ async function promocoes(req, res) {
 
 // ----------------------------------------------------------------------------
 // POST /anuncios-meli/:itemId/promocoes/:promotionId/aplicar
-//   body: { clienteSlug, clienteContaId?, precoNovo }
+//   body: { clienteSlug, clienteContaId?, precoNovo, alterarParticipacao? }
+//   alterarParticipacao: true libera o PUT numa participação que não forma o
+//   preço agora (NÃO APLICADA/PROGRAMADA) — ver aplicarPromocao no service.
 //
 // ESCRITA REAL de participação (candidate -> POST) ou alteração
 // (started/pending -> PUT) numa promoção — ver meliPromocoesEscritaService
@@ -1851,6 +1853,7 @@ async function aplicarPromocao(req, res) {
       mlUserId,
       promotionId,
       precoNovo: body.precoNovo,
+      alterarParticipacao: body.alterarParticipacao === true,
     });
 
     if (!r.ok) {

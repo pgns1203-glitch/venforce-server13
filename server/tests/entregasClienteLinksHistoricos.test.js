@@ -29,6 +29,7 @@ const CLIENTES = [{ id: 1, slug: "n97", nome: "N97" }];
 const CONTAS = [
   { id: 10, cliente_id: 1, nome: "Shopee 1", ativo: true },
   { id: 11, cliente_id: 1, nome: "Shopee 2", ativo: true },
+  { id: 12, cliente_id: 1, nome: "MELI 1", ativo: true },
 ];
 
 function criarBanco() {
@@ -337,6 +338,61 @@ async function run() {
     await rejeita("PATCH que troca o cliente em entrega com link (sem slug congelado) -> ENTREGA_PUBLICADA_IMUTAVEL",
       servico.atualizarEntrega({ idRaw: A.id, body: { cliente_slug: "outro-cliente" } }), "ENTREGA_PUBLICADA_IMUTAVEL");
     ok("o cliente de A nao mudou", db.linhas.find((e) => e.id === A.id).cliente_slug === "n97");
+  });
+
+  // ------------------------------------------------------------------
+  // Multi-conta: mesmo cliente + mesma competencia + contas diferentes sao
+  // fechamentos independentes. A chave de duplicidade e (tipo, cliente,
+  // cliente_conta_id, competencia) — entregasClienteService.js
+  // encontrarEntregaDaCompetencia.
+  // ------------------------------------------------------------------
+  await comBanco(async (db) => {
+    const A = await criarEPublicar({
+      ...corpo({ periodo: "2026-10", marca: "x", conta: 10 }),
+      payload_json: { versao: 1, cliente: { slug: "n97" }, marketplace: "shopee", marca: "SHOPEE_1" },
+    });
+    let erro = null;
+    let B = null;
+    try {
+      B = await criarEPublicar({
+        ...corpo({ periodo: "2026-10", marca: "x", conta: 11 }),
+        payload_json: { versao: 1, cliente: { slug: "n97" }, marketplace: "shopee", marca: "SHOPEE_2" },
+      });
+    } catch (e) { erro = e; }
+    ok("duas contas Shopee, mesma competencia: nenhum 409", erro === null);
+    const lA = db.linhas.find((e) => e.id === A.id);
+    const lB = db.linhas.find((e) => e.id === B.id);
+    ok("A.id != B.id", A.id !== B.id);
+    ok("A.cliente_conta_id = conta 1", lA.cliente_conta_id === 10);
+    ok("B.cliente_conta_id = conta 2", lB.cliente_conta_id === 11);
+    ok("A.token_publico != B.token_publico", A.token !== B.token);
+    const abertoA = await abrirLink(A.token);
+    const abertoB = await abrirLink(B.token);
+    ok("token A abre A (conta 1)", abertoA.id === A.id && abertoA.payload_json.marca === "SHOPEE_1");
+    ok("token B abre B (conta 2)", abertoB.id === B.id && abertoB.payload_json.marca === "SHOPEE_2");
+    ok("nenhuma substituicao: A seguiu intacto", lA.payload_json.marca === "SHOPEE_1" && lA.cliente_conta_id === 10);
+  });
+
+  // Marketplaces: Shopee conta 10 x MELI conta 12, mesma competencia.
+  await comBanco(async (db) => {
+    const S = await criarEPublicar({ ...corpo({ periodo: "2026-10", marca: "x", conta: 10 }), payload_json: { versao: 1, marketplace: "shopee", marca: "S" } });
+    const M = await criarEPublicar({ ...corpo({ periodo: "2026-10", marca: "x", conta: 12 }), payload_json: { versao: 1, marketplace: "meli", marca: "M" } });
+    ok("Shopee x MELI (contas diferentes): registros e links independentes",
+      S.id !== M.id && S.token !== M.token && db.linhas.length === 2);
+    ok("Shopee x MELI: cada link abre o seu", (await abrirLink(S.token)).payload_json.marca === "S" && (await abrirLink(M.token)).payload_json.marca === "M");
+  });
+
+  // Registros legados SEM conta (cliente_conta_id null): regra anterior
+  // preservada e documentada — entre si continuam deduplicados por
+  // (tipo, cliente, competencia); nunca colidem com uma entrega que tem conta.
+  await comBanco(async (db) => {
+    await servico.criarEntrega({ userId: 7, body: corpo({ periodo: "2026-10", marca: "LEGADO", conta: null }) });
+    let erro = null;
+    try { await servico.criarEntrega({ userId: 7, body: corpo({ periodo: "2026-10", marca: "LEGADO2", conta: null }) }); } catch (e) { erro = e; }
+    ok("legado: duas entregas SEM conta na mesma competencia continuam 409 (regra anterior)",
+      !!erro && erro.code === "ENTREGA_JA_EXISTE");
+    await servico.criarEntrega({ userId: 7, body: corpo({ periodo: "2026-10", marca: "CONTA", conta: 10 }) });
+    ok("entrega COM conta nao colide com a legada sem conta", db.linhas.length === 2 && db.linhas[0].cliente_conta_id === null);
   });
 
   // Entrega despublicada mas que JA teve link continua historica.

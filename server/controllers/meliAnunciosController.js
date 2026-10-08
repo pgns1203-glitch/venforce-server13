@@ -29,6 +29,8 @@ const precoService = require("../services/meliAnuncios/meliPrecoService");
 const promocoesService = require("../services/meliAnuncios/meliPromocoesService");
 const promocoesEscritaService = require("../services/meliAnuncios/meliPromocoesEscritaService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
+const custosLoteService = require("../services/meliAnuncios/meliCustosLoteService");
+const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/activityLogService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
 const cliente360ProdutosEngine = require("../services/cliente360/cliente360ProdutosEngine");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
@@ -1237,6 +1239,10 @@ function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
       // `preco_original` sincronizado (snapshot) como fallback nesse caso —
       // ver Portal/anuncios-meli.js celulaPrecoHtml/precoDetalheHtml.
       precoOriginal: valorEvidencia(item.pricing && item.pricing.list),
+      // Custo do produto que o Motor leu da Base (mesma evidência de
+      // `cost.projected` da composição). `null` = sem linha na Base — a lista
+      // mostra "+ Custo" (edição direto na lista, ver POST /custos/lote).
+      custo: valorEvidencia(item.costs && item.costs.cost && item.costs.cost.projected),
       // Preço CALCULADO pelo Motor para bater a margem alvo da Central
       // (`item.margin.target`, mesma fórmula de `computeTargetPrice`). Só
       // vem preenchido quando o próprio Motor considera o cálculo possível
@@ -2703,6 +2709,82 @@ async function simularMargem(req, res) {
   }
 }
 
+// ----------------------------------------------------------------------------
+// POST /anuncios-meli/custos/lote
+//   body: { clienteSlug, clienteContaId?, itens: [{ itemId, custo } | { itemId, remover: true }] }
+//
+// Custo do produto editado na LISTA (edição pontual e modo "Editar custos").
+// Grava na Base de Custos do cliente — a Base é resolvida no servidor pelo
+// contexto do Motor, nunca por slug vindo do front (ver
+// meliCustosLoteService). Resposta por item: falha de um não derruba os
+// outros, e o front pinta só a linha que falhou.
+// ----------------------------------------------------------------------------
+async function salvarCustosLote(req, res) {
+  try {
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const r = await custosLoteService.salvarCustosEmLote({
+      clienteSlug,
+      clienteContaId: extrairClienteContaId(body.clienteContaId),
+      body,
+    });
+
+    const gravados = r.resultados.filter((x) => x.ok && x.acao !== "inalterado");
+    if (gravados.length) {
+      try {
+        registrarLog({
+          ...dadosUsuarioDeReq(req),
+          acao: "base.custo.lote_anuncios",
+          detalhes: {
+            base_slug: r.base.slug,
+            cliente_slug: clienteSlug,
+            // A Base não guarda histórico de custo: o valor anterior fica
+            // registrado aqui para auditoria/volta manual.
+            itens: gravados.map((x) => ({
+              produto_id: x.itemId, acao: x.acao, custo_anterior: x.custoAnterior, custo_produto: x.custo,
+            })),
+            falhas: r.falhas,
+          },
+          ip: extrairIp(req),
+          status: "sucesso",
+        });
+      } catch (_) {
+        // falha de log não derruba a rota
+      }
+
+      // Mesmo gatilho do upsert unitário (basesController): só enfileira o
+      // refresh do Margin Snapshot das contas que usam esta Base.
+      const marginTriggers = require("../services/motorMargem/marginSnapshotTriggers");
+      marginTriggers.dispararSemBloquear(() =>
+        marginTriggers.enfileirarPorMudancaDeBase({ baseId: r.base.id, requestedBy: req.user?.id ?? null })
+      );
+    }
+
+    return res.json({
+      ok: true,
+      base: { slug: r.base.slug, nome: r.base.nome },
+      salvos: r.salvos,
+      falhas: r.falhas,
+      resultados: r.resultados,
+    });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    if (err.statusCode && err.payload) {
+      return res.status(err.statusCode).json({
+        ok: false,
+        codigo: err.payload.codigo || null,
+        motivo: err.payload.motivo || err.payload.erro || "Não foi possível salvar os custos.",
+      });
+    }
+    console.error("[anuncios-meli] salvarCustosLote:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro interno ao salvar os custos." });
+  }
+}
+
 // Reflete o MODEL confirmado dentro do attributes_json do snapshot — a ficha
 // técnica da tela lê o modelo de lá, não da coluna.
 function comAtributoModelo(attributesJson, modelo) {
@@ -3407,6 +3489,7 @@ async function retryPrecosAtacado(req, res) {
 }
 
 module.exports = {
+  salvarCustosLote,
   listarClientes,
   sincronizar,
   resumo,

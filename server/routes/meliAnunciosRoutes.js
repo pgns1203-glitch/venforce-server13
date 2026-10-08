@@ -45,6 +45,7 @@
 //   PATCH  /anuncios-meli/:itemId/estoque       (edição real no Mercado Livre)
 //   PATCH  /anuncios-meli/:itemId/preco         (edição real no Mercado Livre)
 //   POST   /anuncios-meli/:itemId/simular-margem (simulação local, sem escrita)
+//   POST   /anuncios-meli/custos/lote          (custo na Base de Custos, pela lista)
 // -----------------------------------------------------------------------------
 
 const express = require("express");
@@ -105,6 +106,11 @@ router.use(authMiddleware, requireAutomacoesAccess);
 router.use(requireClienteNaCarteira({ query: "clienteSlug", body: "clienteSlug" }));
 
 // Rotas estáticas declaradas ANTES de "/:itemId" para evitar conflito.
+
+// Custo do produto editado na lista (pontual e "Editar custos" em massa) —
+// grava na Base de Custos resolvida pelo contexto do Motor (nunca por slug do
+// front). Mesmo acesso das demais escritas do módulo + carteira do cliente.
+router.post("/custos/lote", ctrl.salvarCustosLote);
 router.get("/clientes", ctrl.listarClientes);
 router.post("/sync", ctrl.sincronizar);
 router.get("/resumo", ctrl.resumo);

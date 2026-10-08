@@ -170,6 +170,10 @@ const epilogo = `
     contaMercadoState: contaMercadoState,
     _setUltimo: (v) => { ultimoFechamentoFinanceiro = v; },
     _setEntregaId: (v) => { _entregaIdSalvo = v; },
+    _getEntregaId: () => _entregaIdSalvo,
+    _setPublicada: (v) => { _entregaPublicada = v; },
+    _getPublicada: () => _entregaPublicada,
+    gerarLink: gerarLinkClienteFinanceiro,
   };
 })();`;
 
@@ -318,6 +322,92 @@ async function main() {
   await T.salvar();
   ok("7. entrega publicada → o aviso avisa que já está publicada",
     /public/i.test(confirmacoes[0] || ""));
+
+  console.log("\n▸ Entrega que já teve link é histórica — o legado nunca a sobrescreve\n");
+
+  /* `_entregaIdSalvo` sobrevive a "Salvar"/"Gerar link". Se o operador troca só
+     a conta (ou o período) e salva de novo, o PATCH iria alterar a entrega que
+     já tem link divulgado. O backend agora recusa com 409
+     ENTREGA_PUBLICADA_IMUTAVEL; o legado tem que transformar a intenção em uma
+     NOVA entrega (POST), nunca insistir no PATCH nem reaproveitar o id. */
+  const imutavel = () => ({
+    status: 409,
+    corpo: { ok: false, code: "ENTREGA_PUBLICADA_IMUTAVEL", entregaId: 4242, campos: ["cliente_conta_id"],
+      erro: "Esta entrega ja teve link publico e nao pode ter seu conteudo alterado." },
+  });
+  const patchesDeEntrega = () => chamadas.filter((c) => c.metodo === "PATCH");
+
+  // ── 13. Salvar: conta trocada, entrega A (com link) → vira POST novo ──
+  prepararTela({ clienteSlug: "n97", periodo: "2026-07", marketplace: "shopee" });
+  T.contaMercadoState.contaId = "44";          // Shopee 2
+  T._setEntregaId(4242);                       // A (Shopee 1), ja publicada
+  T._setPublicada(true);
+  respostas.push(imutavel());
+  respostas.push({ status: 201, corpo: { ok: true, entrega: { id: 9001, token_publico: null } } });
+  await T.salvar();
+  eq("13. houve 1 PATCH (recusado) em A e nenhum outro PATCH", patchesDeEntrega().length, 1);
+  eq("13b. o PATCH foi no id de A", /\/entregas-cliente\/4242$/.test(patchesDeEntrega()[0].url), true);
+  eq("13c. depois do 409 sai UM POST de entrega nova", postsDeEntrega().length, 1);
+  const novo13 = JSON.parse(postsDeEntrega()[0].corpo);
+  eq("13d. o POST carrega a conta nova (Shopee 2)", novo13.cliente_conta_id, 44);
+  ok("13e. o POST NAO usa substituir (nao reescreve A)", novo13.substituir === undefined);
+  eq("13f. o estado passa a apontar para a entrega NOVA", T._getEntregaId(), 9001);
+  eq("13g. e a nova nasce nao-publicada", T._getPublicada(), false);
+  ok("13h. nenhuma outra chamada alcancou o id de A depois do 409",
+    chamadas.slice(1).every((c) => !/\/4242/.test(c.url)));
+
+  // ── 14. Mesma competencia já com link: a saida e o aviso existente, e o
+  //        que sai e um POST (nunca PATCH em A) ──
+  prepararTela({ clienteSlug: "n97", periodo: "2026-07", marketplace: "shopee" });
+  T.contaMercadoState.contaId = "44";
+  T._setEntregaId(4242);
+  T._setPublicada(true);
+  respostas.push(imutavel());
+  respostas.push(resposta409({ entregaId: 4242, publicado: true }));
+  respostas.push({ status: 201, corpo: { ok: true, entrega: { id: 9002, token_publico: null } } });
+  confirmRespondeSim = true;
+  await T.salvar();
+  eq("14. so 1 PATCH em A (o recusado)", patchesDeEntrega().length, 1);
+  eq("14b. dois POSTs: o recusado e a substituicao confirmada", postsDeEntrega().length, 2);
+  eq("14c. o segundo POST tem substituir:true (o servidor cria registro novo)", JSON.parse(postsDeEntrega()[1].corpo).substituir, true);
+  eq("14d. estado termina na entrega nova", T._getEntregaId(), 9002);
+
+  // ── 15. Gerar link: periodo mudou depois de publicar → nova entrega + novo link ──
+  prepararTela({ clienteSlug: "n97", periodo: "2026-08", marketplace: "shopee" });
+  T.contaMercadoState.contaId = "44";
+  T._setEntregaId(4242);
+  T._setPublicada(true);
+  respostas.push({ status: 409, corpo: { ok: false, code: "ENTREGA_PUBLICADA_IMUTAVEL", entregaId: 4242, campos: ["periodo"] } });
+  respostas.push({ status: 201, corpo: { ok: true, entrega: { id: 9003, token_publico: null } } });
+  respostas.push({ status: 200, corpo: { ok: true, entrega: { id: 9003, token_publico: "TOKEN_NOVO" } } });
+  await T.gerarLink();
+  eq("15. 1 PATCH recusado em A", patchesDeEntrega().length, 1);
+  const post15 = JSON.parse(postsDeEntrega()[0].corpo);
+  eq("15b. nova entrega nasce com a conta da tela", post15.cliente_conta_id, 44);
+  eq("15c. e com o periodo novo", post15.periodo, "2026-08");
+  const publicacoes = chamadas.filter((c) => /\/publicar$/.test(c.url));
+  eq("15d. publica a entrega NOVA (nao A)", publicacoes.length === 1 && /\/9003\/publicar$/.test(publicacoes[0].url), true);
+  ok("15e. nenhuma publicacao/alteracao tocou o id de A depois do 409",
+    chamadas.slice(1).every((c) => !/\/4242/.test(c.url)));
+
+  // ── 16. Segundo clique sem mudar nada: PATCH aceito, nada e criado ──
+  prepararTela({ clienteSlug: "n97", periodo: "2026-07", marketplace: "shopee" });
+  T.contaMercadoState.contaId = "43";
+  T._setEntregaId(4242);
+  respostas.push({ status: 200, corpo: { ok: true, entrega: { id: 4242 } } });
+  await T.salvar();
+  eq("16. PATCH aceito → nenhum POST", postsDeEntrega().length, 0);
+  eq("16b. o estado continua em A", T._getEntregaId(), 4242);
+
+  // ── 17. Entrega removida (404) no Gerar link: comportamento anterior (recria) ──
+  prepararTela({ clienteSlug: "n97", periodo: "2026-07", marketplace: "shopee" });
+  T.contaMercadoState.contaId = "43";
+  T._setEntregaId(4242);
+  respostas.push({ status: 404, corpo: { ok: false, erro: "Entrega não encontrada." } });
+  respostas.push({ status: 201, corpo: { ok: true, entrega: { id: 9004, token_publico: null } } });
+  respostas.push({ status: 200, corpo: { ok: true, entrega: { id: 9004, token_publico: "T" } } });
+  await T.gerarLink();
+  eq("17. 404 no PATCH → recria por POST", postsDeEntrega().length, 1);
 
   console.log("\n▸ D2 — a competência processada é declarada, e a tela não promete o mês errado\n");
 

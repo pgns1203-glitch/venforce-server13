@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { isDeepStrictEqual } = require("util");
 const pool = require("../config/database");
 const { normalizarCompetencia } = require("../utils/competenciaCanonica");
 const { CODIGOS_CANONICOS } = require("../utils/erroContextoCanonico");
@@ -277,13 +278,23 @@ async function criarEntrega({ userId, body }) {
         publicado: !!existente.publicado,
       });
     }
-    // Substituicao explicita: ATUALIZA a entrega existente. O token publico e
-    // preservado por atualizarEntrega (ela nao toca em token_publico), entao o
-    // link ja divulgado nao morre numa substituicao.
-    return atualizarEntrega({
-      idRaw: existente.id,
-      body: { ...body, substituir: undefined },
-    });
+    // Substituicao explicita de uma entrega que NUNCA teve link publico
+    // (rascunho): ATUALIZA no lugar — nao ha link historico a proteger e nao
+    // se acumulam rascunhos da mesma competencia.
+    //
+    // Entrega que JA teve link (token_publico existe, publicada ou depois
+    // despublicada) e historico: o link divulgado identifica ESTA linha, e
+    // reescrever o payload_json dela fazia o link antigo passar a abrir os
+    // numeros do fechamento novo. Nesse caso nao se atualiza: segue para o
+    // INSERT abaixo e o fechamento novo nasce como registro independente
+    // (rascunho, sem token), ganhando o proprio link so quando for publicado.
+    // O link antigo continua valido ate ser despublicado explicitamente.
+    if (!existente.token_publico) {
+      return atualizarEntrega({
+        idRaw: existente.id,
+        body: { ...body, substituir: undefined },
+      });
+    }
   }
 
   const payloadInput = body?.payload_json;
@@ -463,20 +474,37 @@ async function atualizarEntrega({ idRaw, body }) {
   const patches = [];
   const params = [];
 
+  // Entrega que JA teve link publico (token_publico existe, publicada ou
+  // depois despublicada) e historica: o link divulgado identifica ESTA linha.
+  // Os campos que definem o que ela representa (tipo, titulo, periodo,
+  // payload_json, cliente, operacao) nao podem mudar; PATCH que nao muda nada
+  // de fato (ex.: segundo "Gerar link" do legado reenviando os mesmos dados) e
+  // aceito. status e expires_at sao operacionais e seguem editaveis.
+  const comLink = !!atual.rows[0].token_publico;
+  const camposHistoricosAlterados = [];
+
   if (Object.prototype.hasOwnProperty.call(body || {}, "tipo")) {
     const tipo = validarTipo(body.tipo);
+    if (comLink && tipo !== atual.rows[0].tipo) camposHistoricosAlterados.push("tipo");
     params.push(tipo);
     patches.push(`tipo = $${params.length}`);
   }
 
   if (Object.prototype.hasOwnProperty.call(body || {}, "titulo")) {
     const titulo = validarTitulo(body.titulo);
+    if (comLink && titulo !== atual.rows[0].titulo) camposHistoricosAlterados.push("titulo");
     params.push(titulo);
     patches.push(`titulo = $${params.length}`);
   }
 
   if (Object.prototype.hasOwnProperty.call(body || {}, "periodo")) {
-    params.push(normalizarPeriodoParaEscrita(body?.periodo));
+    const periodoNovo = normalizarPeriodoParaEscrita(body?.periodo);
+    // Linhas anteriores ao P2.6 guardam texto livre ("Maio 2026"); compara
+    // pela mesma normalizacao para nao acusar mudanca onde nao ha.
+    if (comLink && periodoNovo !== normalizarPeriodoParaEscrita(atual.rows[0].periodo)) {
+      camposHistoricosAlterados.push("periodo");
+    }
+    params.push(periodoNovo);
     patches.push(`periodo = $${params.length}`);
   }
 
@@ -484,6 +512,10 @@ async function atualizarEntrega({ idRaw, body }) {
     const payload = body?.payload_json;
     if (payload === null || payload === undefined || typeof payload !== "object" || Array.isArray(payload)) {
       throw criarErroHttp(400, { ok: false, erro: "payload_json inválido." });
+    }
+    // JSON round-trip: o que o cliente mandou, como o banco (jsonb) devolveria.
+    if (comLink && !isDeepStrictEqual(JSON.parse(JSON.stringify(payload)), atual.rows[0].payload_json)) {
+      camposHistoricosAlterados.push("payload_json");
     }
     params.push(payload);
     patches.push(`payload_json = $${params.length}`);
@@ -520,6 +552,16 @@ async function atualizarEntrega({ idRaw, body }) {
 
     clienteIdFinal = cliente_id;
 
+    // id e slug identificam o cliente; o nome so conta quando veio do body
+    // (cliente nao resolvido), para renomear o cliente nao acusar mudanca.
+    if (comLink && (
+      (cliente_id ?? null) !== (atual.rows[0].cliente_id ?? null)
+      || (cliente_slug ?? null) !== (atual.rows[0].cliente_slug ?? null)
+      || (!cliente && (cliente_nome ?? null) !== (atual.rows[0].cliente_nome ?? null))
+    )) {
+      camposHistoricosAlterados.push("cliente");
+    }
+
     params.push(cliente_id);
     patches.push(`cliente_id = $${params.length}`);
     params.push(cliente_slug);
@@ -545,6 +587,9 @@ async function atualizarEntrega({ idRaw, body }) {
       clienteContaIdRaw: bruto,
       clienteId: clienteIdFinal,
     });
+    if (comLink && (contaId ?? null) !== (atual.rows[0].cliente_conta_id ?? null)) {
+      camposHistoricosAlterados.push("cliente_conta_id");
+    }
     params.push(contaId);
     patches.push(`cliente_conta_id = $${params.length}`);
   } else if (Object.prototype.hasOwnProperty.call(body || {}, "cliente_id")
@@ -556,6 +601,16 @@ async function atualizarEntrega({ idRaw, body }) {
       params.push(null);
       patches.push(`cliente_conta_id = $${params.length}`);
     }
+  }
+
+  if (camposHistoricosAlterados.length) {
+    throw criarErroHttp(409, {
+      ok: false,
+      code: "ENTREGA_PUBLICADA_IMUTAVEL",
+      erro: "Esta entrega ja teve link publico e nao pode ter seu conteudo alterado. Crie uma nova entrega para o novo fechamento.",
+      entregaId: id,
+      campos: camposHistoricosAlterados,
+    });
   }
 
   if (!patches.length) {

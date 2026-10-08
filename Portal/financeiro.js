@@ -1027,9 +1027,13 @@ async function criarOuAtualizarEntregaFechamento(payload, periodo) {
       body: JSON.stringify({ periodo: periodo || "", payload_json: payload }),
     });
     if (patchResp.status === 401) { window.location.replace("index.html"); throw new Error("401"); }
-    // Se o PATCH falhar (ex.: entrega removida), recria abaixo.
     if (patchResp.ok) return _entregaIdSalvo;
+    // Se o PATCH falhar recria abaixo como entrega NOVA. Caso tipico: 409
+    // ENTREGA_PUBLICADA_IMUTAVEL — a entrega salva já teve link público (é
+    // histórica) e o operador mudou período/conta; ela fica como está e o novo
+    // fechamento ganha registro e link próprios. Outro caso: entrega removida.
     _entregaIdSalvo = null;
+    _entregaPublicada = false;
   }
 
   const criarResp = await fetch(`${API_BASE}/entregas-cliente`, {
@@ -1040,6 +1044,10 @@ async function criarOuAtualizarEntregaFechamento(payload, periodo) {
       titulo: payload.titulo || "Relatório de Fechamento Financeiro",
       periodo: periodo || "",
       cliente_slug: clienteSlug,
+      // Mesma operação que o cálculo usou (ver salvarFechamentoFinanceiro); sem
+      // ela a entrega nasceria client-level e um "Salvar" posterior com conta
+      // pareceria uma mudança de operação numa entrega já publicada.
+      cliente_conta_id: contaMercadoState.contaId ? Number(contaMercadoState.contaId) : null,
       status: "rascunho",
       payload_json: payload,
       origem_tipo: "fechamento_financeiro",
@@ -2552,21 +2560,40 @@ async function salvarFechamentoFinanceiro() {
     if (resp.status === 401) { window.location.replace("index.html"); return; }
     let json = await resp.json();
 
+    /* A entrega salva já teve link público, então é histórica: o servidor recusa
+       alterar período/conta/conteúdo dela (409 ENTREGA_PUBLICADA_IMUTAVEL). A
+       intenção do operador passa a ser a criação de uma NOVA entrega — a
+       anterior e o link dela ficam intactos. Cai no tratamento de D4 abaixo se
+       a competência já tiver dono. */
+    if (resp.status === 409 && json?.code === "ENTREGA_PUBLICADA_IMUTAVEL") {
+      _entregaIdSalvo = null;
+      _entregaPublicada = false;
+      resp = await fetch(`${API_BASE}/entregas-cliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
+        body: corpoEntrega(),
+      });
+      if (resp.status === 401) { window.location.replace("index.html"); return; }
+      json = await resp.json();
+    }
+
     /* D4 (P2.6) — a competência agora tem dono. Antes, um segundo "Salvar" do
        mesmo mês criava outra linha em silêncio; se as duas fossem publicadas,
        eram dois links públicos com números diferentes para o mesmo mês. O
        backend passou a recusar com 409 e a devolver o id do que já existe,
        justamente para a tela poder oferecer a saída em vez de repassar um
        "use substituir=true" que ninguém consegue acionar por aqui.
-       Substituir preserva o `token_publico` — o link já divulgado não morre —,
-       e é por isso que o aviso precisa dizer quando o mês JÁ ESTÁ PUBLICADO:
-       aí a troca muda o número por trás de um link que o cliente pode ter
-       aberto, que é um risco diferente do de um rascunho. */
+       Substituir NÃO reescreve uma entrega que já teve link: o fechamento novo
+       nasce como registro independente e o link já divulgado continua abrindo
+       o fechamento antigo (servidor: criarEntrega). Só rascunho sem link é
+       atualizado no lugar. O aviso diz quando o mês JÁ ESTÁ PUBLICADO porque
+       aí passam a existir dois fechamentos da competência até despublicar o
+       antigo. */
     if (resp.status === 409 && json?.code === "ENTREGA_JA_EXISTE") {
       const jaPublicada = json?.publicado === true;
       const aviso = jaPublicada
         ? `A competência ${periodo} já tem um fechamento PUBLICADO para este cliente/operação.\n\n`
-          + "Substituir troca os números por trás do link que já está com o cliente (o link continua o mesmo).\n\nSubstituir mesmo assim?"
+          + "Substituir grava um novo fechamento. O link que já está com o cliente continua abrindo o fechamento antigo; o novo terá link próprio quando for publicado.\n\nSubstituir mesmo assim?"
         : `A competência ${periodo} já tem um fechamento salvo para este cliente/operação.\n\nSubstituir pelo que acabou de ser processado?`;
       if (!window.confirm(aviso)) {
         setStatus(`Fechamento de ${periodo} mantido como estava.`, "info");

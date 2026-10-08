@@ -326,11 +326,29 @@ async function carregarContasMercado(clienteSlug, marketplace) {
   }
 }
 
+// Trocar a conta depois de processar invalida o resultado, como trocar
+// cliente/marketplace (onClienteOuMarketplaceChange): o cálculo foi feito com
+// a conta anterior (clienteContaId e base de custos dela). Sem isso o
+// resultado da conta 1 podia ser salvo/publicado como entrega da conta 2, e
+// `_entregaIdSalvo` seguia apontando para a entrega da conta 1.
+function onContaMercadoChange(e) {
+  const novaConta = e?.target?.value || "";
+  const mudou = novaConta !== contaMercadoState.contaId;
+  contaMercadoState.contaId = novaConta;
+  if (mudou && ultimoFechamentoFinanceiro) {
+    ultimoFechamentoFinanceiro = null;
+    _entregaIdSalvo = null;
+    _entregaPublicada = false;
+    document.querySelector(".vf-fin-dashboard")?.removeAttribute("data-processed");
+    setChipProcessamento("aguardando novo processamento", "warn");
+    setChipSalvo("conta alterada — reprocesse antes de salvar", "warn");
+    setStatus("Conta alterada. Processe novamente antes de salvar.", "warn");
+  }
+  return detectarBaseVinculada();
+}
+
 const contaMercadoSelect = document.getElementById("fin-conta");
-if (contaMercadoSelect) contaMercadoSelect.addEventListener("change", (e) => {
-  contaMercadoState.contaId = e.target.value || "";
-  detectarBaseVinculada();
-});
+if (contaMercadoSelect) contaMercadoSelect.addEventListener("change", onContaMercadoChange);
 
 // ── Base vinculada (cliente + marketplace) ─────────────────────────────────
 async function detectarBaseVinculada() {
@@ -2282,6 +2300,23 @@ async function processarFechamentoFinanceiro() {
   const clienteSlug = document.getElementById("fin-cliente")?.value || "";
 
   const isTikTok = marketplace === "tiktok";
+
+  // Cliente com 2+ contas ativas deste marketplace: a conta é obrigatória. Sem
+  // ela o fechamento nascia client-level (cliente_conta_id null) e as contas
+  // colidiam entre si como "mesma competência" ao salvar (409
+  // ENTREGA_JA_EXISTE). Shopee nunca passava pela trava de ambiguidade da base
+  // vinculada (sempre sobe planilha de custos), então isso não era barrado.
+  // Com 1 conta só nada muda: não se escolhe conta por inferência.
+  if (
+    !isTikTok &&
+    contaMercadoState.clienteSlugCarregado === clienteSlug &&
+    contaMercadoState.marketplaceCarregado === marketplace &&
+    contaMercadoState.contas.length > 1 &&
+    !contaMercadoState.contaId
+  ) {
+    setStatus("Este cliente tem mais de uma conta neste marketplace. Selecione a conta antes de processar.", "danger");
+    return;
+  }
 
   const sales = document.getElementById("fin-sales")?.files?.[0];
   if (!sales) {

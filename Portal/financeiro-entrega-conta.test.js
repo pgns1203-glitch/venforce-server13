@@ -174,6 +174,8 @@ const epilogo = `
     _setPublicada: (v) => { _entregaPublicada = v; },
     _getPublicada: () => _entregaPublicada,
     gerarLink: gerarLinkClienteFinanceiro,
+    _getUltimo: () => ultimoFechamentoFinanceiro,
+    onContaMercadoChange: typeof onContaMercadoChange === "function" ? onContaMercadoChange : null,
   };
 })();`;
 
@@ -408,6 +410,90 @@ async function main() {
   respostas.push({ status: 200, corpo: { ok: true, entrega: { id: 9004, token_publico: "T" } } });
   await T.gerarLink();
   eq("17. 404 no PATCH → recria por POST", postsDeEntrega().length, 1);
+
+  console.log("\n▸ Multi-conta — duas contas Shopee do mesmo cliente, mesma competência\n");
+
+  /* Caso real (cliente com Shopee conta 1 e conta 2): o seletor de conta
+     aparecia mas era opcional — Shopee sempre sobe planilha de custos, então o
+     processamento nunca passava pela trava de ambiguidade de conta. Sem conta
+     escolhida a entrega saía com cliente_conta_id null nas DUAS contas, e a
+     segunda batia na primeira como "mesma competência" (409 ENTREGA_JA_EXISTE). */
+  function prepararMultiConta() {
+    fakeEl("fin-cliente").value = "influencia";
+    fakeEl("fin-periodo").value = "2026-10";
+    fakeEl("fin-marketplace").value = "shopee";
+    fakeEl("fin-sales").files = [{ name: "vendas.xlsx" }];
+    fakeEl("fin-costs").files = [{ name: "custos.xlsx" }];
+    for (const id of ["fin-ads", "fin-venforce", "fin-affiliates", "fin-full-cost", "fin-additional-costs"]) fakeEl(id).value = "0";
+    T.contaMercadoState.contas = [{ id: 101, nome: "Shopee 1", ativo: true }, { id: 202, nome: "Shopee 2", ativo: true }];
+    T.contaMercadoState.clienteSlugCarregado = "influencia";
+    T.contaMercadoState.marketplaceCarregado = "shopee";
+    T.contaMercadoState.contaId = "";
+    T._setUltimo(null); T._setEntregaId(null); T._setPublicada(false);
+    chamadas.length = 0; respostas.length = 0; formDatasCriadas.length = 0; statusRegistrados.length = 0;
+  }
+  const processamentoOk = () => ({ status: 200, corpo: { ok: true, summary: { grossRevenueTotal: 10 }, rows: [] } });
+  async function escolherConta(id) {
+    assert.ok(T.onContaMercadoChange, "onContaMercadoChange não exposto pelo financeiro.js");
+    await T.onContaMercadoChange({ target: { value: String(id) } });
+    chamadas.length = 0; respostas.length = 0; statusRegistrados.length = 0;
+  }
+  const processamentos = () => chamadas.filter((c) => /\/fechamentos\/financeiro/.test(c.url));
+
+  // ── 18. 2+ contas e nenhuma escolhida: não processa (a entrega nasceria sem conta) ──
+  prepararMultiConta();
+  respostas.push(processamentoOk());
+  await T.processar();
+  eq("18. 2+ contas sem conta escolhida → nenhum processamento enviado", processamentos().length, 0);
+  ok("18b. e a tela pede a conta", statusRegistrados.some((st) => /conta/i.test(st.msg)));
+
+  // ── 19. Fluxo real: conta 1 → processar → gerar link; conta 2 → processar → gerar link ──
+  prepararMultiConta();
+  await escolherConta(101);
+  respostas.push(processamentoOk());
+  await T.processar();
+  eq("19. conta 1: processamento leva clienteContaId=101", formDatasCriadas.pop()?.get("clienteContaId"), "101");
+  chamadas.length = 0;
+  respostas.push({ status: 201, corpo: { ok: true, entrega: { id: 501, token_publico: null } } });
+  respostas.push({ status: 200, corpo: { ok: true, entrega: { id: 501, token_publico: "TOK_A" } } });
+  await T.gerarLink();
+  eq("19b. conta 1: POST da entrega com cliente_conta_id=101", JSON.parse(postsDeEntrega()[0].corpo).cliente_conta_id, 101);
+
+  await escolherConta(202);
+  eq("19c. trocar a conta invalida o resultado processado da conta 1", T._getUltimo(), null);
+  eq("19d. e esquece a entrega da conta 1", T._getEntregaId(), null);
+  respostas.push(processamentoOk());
+  await T.processar();
+  eq("19e. conta 2: processamento leva clienteContaId=202", formDatasCriadas.pop()?.get("clienteContaId"), "202");
+  chamadas.length = 0;
+  respostas.push({ status: 201, corpo: { ok: true, entrega: { id: 502, token_publico: null } } });
+  respostas.push({ status: 200, corpo: { ok: true, entrega: { id: 502, token_publico: "TOK_B" } } });
+  await T.gerarLink();
+  eq("19f. conta 2: POST da entrega com cliente_conta_id=202", JSON.parse(postsDeEntrega()[0].corpo).cliente_conta_id, 202);
+  eq("19g. conta 2: nenhum PATCH na entrega da conta 1", patchesDeEntrega().length, 0);
+  ok("19h. conta 2: publica a entrega 502, nunca a 501",
+    chamadas.some((c) => /\/502\/publicar$/.test(c.url)) && !chamadas.some((c) => /\/501/.test(c.url)));
+  ok("19i. conta 2: POST sem substituir", JSON.parse(postsDeEntrega()[0].corpo).substituir === undefined);
+
+  // ── 20. Trocar a conta depois de salvar, sem reprocessar: nada sai ──
+  prepararMultiConta();
+  await escolherConta(101);
+  respostas.push(processamentoOk());
+  await T.processar();
+  chamadas.length = 0;
+  respostas.push({ status: 201, corpo: { ok: true, entrega: { id: 601, token_publico: null } } });
+  await T.salvar();
+  eq("20. conta 1 salva", T._getEntregaId(), 601);
+  await escolherConta(202);
+  await T.salvar();
+  eq("20b. salvar depois de trocar a conta sem reprocessar não envia nada", chamadas.length, 0);
+
+  // ── 21. Conta única (seletor oculto): continua processando sem conta (comportamento anterior) ──
+  prepararMultiConta();
+  T.contaMercadoState.contas = [{ id: 101, nome: "Shopee 1", ativo: true }];
+  respostas.push(processamentoOk());
+  await T.processar();
+  eq("21. 1 conta só: processamento segue como antes", processamentos().length, 1);
 
   console.log("\n▸ D2 — a competência processada é declarada, e a tela não promete o mês errado\n");
 

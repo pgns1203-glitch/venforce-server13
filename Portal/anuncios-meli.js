@@ -17,6 +17,8 @@
      GET   /anuncios-meli/:itemId?clienteSlug=
      PATCH /anuncios-meli/:itemId/conteudo         (escreve no Mercado Livre)
      PATCH /anuncios-meli/:itemId/revisao
+     GET   /anuncios-meli/custos                   (custo da Base por MLB da página)
+     POST  /anuncios-meli/custos/lote              (grava custo na Base — pontual e em massa)
      POST  /anuncios-meli/:itemId/otimizar         (admin)
      GET   /anuncios-meli/:itemId/otimizacoes      (admin)
      PATCH /anuncios-meli/otimizacoes/:id/aprovar  (admin)
@@ -482,6 +484,7 @@
     // reapareceria para o cliente novo. A época sobe junto para descartar toda
     // expansão que ainda esteja em voo.
     resetarExpansoes();
+    resetarCustos();
 
     if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; return; }
 
@@ -519,6 +522,8 @@
 
   function bindEventosFixos() {
     document.addEventListener("vf:context", aplicarContextoDoShell);
+    bindCustos(el("am-catalogo-container"));
+    bindBarrasCustos();
     el("am-busca").addEventListener("input", function (e) {
       AM.filtros.q = e.target.value;
       atualizarIndicadorFiltros();
@@ -802,9 +807,17 @@
     });
 
     bindPaginacao("am-pag", AM.paginacao, function (pagina) {
-      AM.paginacao.page = pagina;
-      carregarAnuncios();
+      irParaPaginaComCustos(pagina, function (p) {
+        AM.paginacao.page = p;
+        carregarAnuncios();
+      });
     });
+
+    // Custo do produto por MLB (célula Margem) — leitura leve da Base, depois
+    // do paint, nunca atrasando a lista.
+    garantirCustos(AM.anuncios.filter(function (l) { return l.tipo === "item"; }).map(function (l) { return l.item_id; }));
+    if (CUSTOS.modo) aplicarModoNaLista();
+    renderBarraCustos();
 
     // Métricas últ. 7 dias + margem + % faturamento chegam DEPOIS que a lista
     // já está na tela — nunca atrasam este render. A CÉLULA de margem
@@ -1161,6 +1174,10 @@
     painel.innerHTML = html;
     bindLinhasMlb(painel);
     bindEstoqueEditavel(painel);
+    var idsFilhos = [];
+    painel.querySelectorAll(".am-margem[data-margem-item]").forEach(function (c) { idsFilhos.push(c.getAttribute("data-margem-item")); });
+    garantirCustos(idsFilhos);
+    if (CUSTOS.modo) aplicarModoNaLista();
     // Expandir não mexe na capa: ela já veio decidida na listagem.
   }
 
@@ -1745,9 +1762,13 @@
       escapeHtml(MARGEM_LABEL[a.margemProjetadaStatus] || "Indisponível") + "</span>";
   }
 
+  // A célula também carrega o custo do produto (ver bloco "CUSTO DO PRODUTO
+  // NA LISTA"): "+ Custo"/"✎ R$ x" e, no modo massa, o campo. Depois de um
+  // custo gravado, a margem AO VIVO do Motor substitui o snapshot.
   function margemCelulaHtml(a) {
-    return '<span class="am-margem" data-margem-item="' + escapeAttr(a.item_id) + '">' +
-      margemProjetadaConteudoHtml(a) + "</span>";
+    var sobre = margemSobrepostaHtml(a.item_id);
+    return '<span class="am-margem' + (CUSTOS.modo ? " is-modo-custos" : "") + '" data-margem-item="' + escapeAttr(a.item_id) + '">' +
+      (sobre != null ? sobre : margemProjetadaConteudoHtml(a)) + custoControleHtml(a.item_id) + "</span>";
   }
 
   // Célula de Margem do AGRUPADOR (linha da família na listagem, `rowGrupoHtml`)
@@ -3224,6 +3245,809 @@
       '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="' + prefixo + '-prev"' + (p.page <= 1 ? " disabled" : "") + ">← Anterior</button>" +
       '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="' + prefixo + '-next"' + (p.page >= p.totalPaginas ? " disabled" : "") + ">Próxima →</button></div>" +
       "</nav>";
+  }
+
+  // ===========================================================================
+  // CUSTO DO PRODUTO NA LISTA — edição pontual e modo "Editar custos"
+  //
+  // Duas portas, de propósito separadas (protótipo aprovado):
+  //  - PONTUAL: "+ Custo" (sem custo) ou "✎ R$ x" (com custo) dentro da
+  //    célula Margem. Enter grava NA HORA, Esc/clique fora cancela (mesma
+  //    regra do estoque: nunca grava por distração). Não pula para o próximo.
+  //    Toast com "Desfazer" — a Base não guarda histórico, essa é a volta.
+  //  - MASSA: botão "Editar custos" liga o modo. Cada MLB ganha um campo;
+  //    nada é gravado até "Salvar N custos" (barra no rodapé). Enter desce
+  //    para o campo de baixo. A margem mostrada é PRÉVIA, calculada pelo
+  //    MESMO núcleo do Motor da Simulação do modal (POST .../simular-margem),
+  //    nunca por uma conta feita aqui.
+  //
+  // Onde grava: Base de Custos do cliente, resolvida NO SERVIDOR pelo
+  // contexto do Motor (POST /anuncios-meli/custos/lote) — a mesma Base de
+  // Bases/Precificação/Financeiro. Custo é sempre por MLB, nunca por
+  // variação. Depois de gravar, a margem do MLB é recalculada pelo Motor ao
+  // vivo (GET /performance) — o snapshot da lista só se atualiza no job.
+  // ===========================================================================
+  var CUSTO_LOTE_MAX = 100;
+
+  var CUSTOS = novoEstadoCustos();
+
+  function novoEstadoCustos() {
+    return {
+      epoca: (CUSTOS && CUSTOS.epoca + 1) || 1,
+      // itemId -> number | null (null = sem linha na Base). Ausente = não lido.
+      cache: {},
+      emVoo: {},
+      // undefined = ainda não sei; null = sem Base pronta (motivo/mensagem);
+      // objeto = Base resolvida pelo contexto do Motor.
+      base: undefined,
+      baseMensagem: null,
+      editando: null,
+      salvandoUm: {},
+      modo: false,
+      rascunhos: {},
+      sel: {},
+      erros: {},
+      salvando: false,
+      pergunta: null,
+      soSemCusto: false,
+      previa: {},
+      previaTimer: {},
+      margemAoVivo: {},
+      desfazer: null,
+    };
+  }
+
+  // Troca de cliente/conta: tudo que foi lido/digitado era da conta anterior.
+  function resetarCustos() {
+    CUSTOS = novoEstadoCustos();
+    renderBarraCustos();
+    renderSavebarCustos();
+  }
+
+  function parseCusto(texto) {
+    var s = String(texto == null ? "" : texto).trim().replace(/[R$\s]/g, "");
+    if (!s) return { vazio: true };
+    if (s.indexOf(",") >= 0) s = s.replace(/\./g, "").replace(",", ".");
+    var n = Number(s);
+    if (!isFinite(n) || n <= 0) return { invalido: true };
+    return { n: Math.round(n * 100) / 100 };
+  }
+
+  function custoParaCampo(n) {
+    return n == null ? "" : Number(n).toFixed(2).replace(".", ",");
+  }
+
+  function custoEditavel() {
+    return !!(AM.clienteAtual && CUSTOS.base);
+  }
+
+  // --- Leitura -----------------------------------------------------------------
+  function garantirCustos(itemIds) {
+    if (!AM.clienteAtual) return;
+    var faltam = [];
+    (itemIds || []).forEach(function (id) {
+      if (!id || CUSTOS.cache[id] !== undefined || CUSTOS.emVoo[id]) return;
+      if (faltam.indexOf(id) < 0) faltam.push(id);
+    });
+    if (!faltam.length) return;
+    for (var i = 0; i < faltam.length; i += CUSTO_LOTE_MAX) {
+      lerLoteCustos(faltam.slice(i, i + CUSTO_LOTE_MAX));
+    }
+  }
+
+  function lerLoteCustos(ids) {
+    var epoca = CUSTOS.epoca;
+    ids.forEach(function (id) { CUSTOS.emVoo[id] = true; });
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+      "&itemIds=" + encodeURIComponent(ids.join(","));
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    api("/anuncios-meli/custos?" + qs).then(function (r) {
+      if (epoca !== CUSTOS.epoca) return;
+      ids.forEach(function (id) { delete CUSTOS.emVoo[id]; });
+      var d = r.data || {};
+      // Falha de leitura: a célula simplesmente não oferece edição — nunca
+      // um "+ Custo" que sugeriria "não tem custo" sem saber.
+      if (!d.ok) return;
+      CUSTOS.base = d.base || null;
+      CUSTOS.baseMensagem = d.base ? null : (d.mensagem || "Esta conta não tem Base de custos vinculada.");
+      var custos = d.custos || {};
+      ids.forEach(function (id) {
+        if (d.base) CUSTOS.cache[id] = custos[id] != null ? Number(custos[id]) : null;
+        repintarCustoDoItem(id);
+      });
+      renderBarraCustos();
+      aplicarFiltroSemCusto();
+    });
+  }
+
+  // --- Célula --------------------------------------------------------------------
+  function custoControleHtml(itemId) {
+    var inner = "";
+    if (CUSTOS.modo && custoEditavel() && CUSTOS.cache[itemId] !== undefined) {
+      inner = campoCustoMassaHtml(itemId);
+    } else if (CUSTOS.salvandoUm[itemId]) {
+      inner = '<span class="am-custo__salvando" aria-live="polite">Salvando…</span>';
+    } else if (CUSTOS.editando === itemId) {
+      inner = '<span class="am-custo__campo">' +
+        '<span class="am-custo__prefixo" aria-hidden="true">R$</span>' +
+        '<input type="text" class="am-custo__input" data-custo-inline="' + escapeAttr(itemId) + '" ' +
+          'inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeAttr(custoParaCampo(CUSTOS.cache[itemId])) + '" ' +
+          'title="Enter salva na Base de custos, Esc cancela" ' +
+          'aria-label="Custo do produto. Enter salva na Base de custos, Esc cancela." />' +
+        "</span>";
+    } else if (custoEditavel() && CUSTOS.cache[itemId] !== undefined) {
+      var c = CUSTOS.cache[itemId];
+      inner = c == null
+        ? '<button type="button" class="am-custo__add" data-custo-editar="' + escapeAttr(itemId) + '" ' +
+            'title="Cadastrar o custo deste anúncio na Base de custos">+ Custo</button>'
+        : '<button type="button" class="am-custo__btn" data-custo-editar="' + escapeAttr(itemId) + '" ' +
+            'aria-label="Alterar custo (' + escapeAttr(formatMoeda(c)) + ')" title="Custo na Base: ' + escapeAttr(formatMoeda(c)) + '">' +
+            icLapis(11) + "<span>" + escapeHtml(formatMoeda(c)) + "</span></button>";
+    }
+    return '<span class="am-custo" data-custo-item="' + escapeAttr(itemId) + '">' + inner + "</span>";
+  }
+
+  function campoCustoMassaHtml(itemId) {
+    var val = CUSTOS.rascunhos[itemId] != null ? CUSTOS.rascunhos[itemId] : "";
+    var r = val !== "" ? parseCusto(val) : null;
+    var atual = CUSTOS.cache[itemId];
+    var cls = r && r.invalido ? " is-invalid" : (r && r.n != null && r.n !== atual ? " is-dirty" : "");
+    var html = '<span class="am-custo__campo' + cls + '">' +
+      '<span class="am-custo__prefixo" aria-hidden="true">R$</span>' +
+      '<input type="text" class="am-custo__input" data-custo-massa="' + escapeAttr(itemId) + '" ' +
+        'inputmode="decimal" autocomplete="off" placeholder="' + escapeAttr(atual != null ? custoParaCampo(atual) : "0,00") + '" ' +
+        'value="' + escapeAttr(val) + '"' + (CUSTOS.salvando ? " disabled" : "") +
+        ' aria-label="Novo custo' + (atual != null ? " (atual " + escapeAttr(formatMoeda(atual)) + ")" : " (sem custo)") + '" />' +
+      "</span>";
+    html += '<span class="am-custo__atual">' + (atual != null ? "atual " + escapeHtml(formatMoeda(atual)) : "sem custo") + "</span>";
+    if (r && r.invalido) html += '<span class="am-custo__erro">Use um valor maior que zero, ex.: 42,90</span>';
+    if (CUSTOS.erros[itemId]) {
+      html += '<span class="am-custo__erro">' + escapeHtml(CUSTOS.erros[itemId]) +
+        ' <button type="button" class="am-custo__retry" data-custo-retry="' + escapeAttr(itemId) + '">Tentar de novo</button></span>';
+    }
+    return html;
+  }
+
+  // Margem exibida na célula: depois de gravar um custo, o valor AO VIVO do
+  // Motor (o snapshot só se atualiza no job); no modo massa, com rascunho
+  // válido, a PRÉVIA da simulação. Nos dois casos com rótulo explícito.
+  function margemSobrepostaHtml(itemId) {
+    var r = CUSTOS.modo && CUSTOS.rascunhos[itemId] != null ? parseCusto(CUSTOS.rascunhos[itemId]) : null;
+    if (r && r.n != null && r.n !== CUSTOS.cache[itemId]) {
+      var p = CUSTOS.previa[itemId];
+      if (!p || p.valor !== r.n || p.carregando) {
+        return '<span class="am-margem__vazio am-custo__previa-carregando">calculando…</span>';
+      }
+      if (p.pct == null) return '<span class="am-margem__estado is-neutral" title="' + escapeAttr(p.motivo || "") + '">Sem prévia</span>';
+      return '<span class="am-margem__valor ' + classeMargemPct(p.pct) + '">' + formatarPercentualCompacto(p.pct) + "</span>" +
+        '<span class="am-custo__tag" title="Margem simulada com o novo custo — ainda não gravada">prévia</span>';
+    }
+    var v = CUSTOS.margemAoVivo[itemId];
+    if (v) {
+      if (v.pct == null) {
+        return '<span class="am-margem__estado ' + (MARGEM_CLASSE[v.status] || "is-neutral") + '">' +
+          escapeHtml(MARGEM_LABEL[v.status] || "Indisponível") + "</span>";
+      }
+      return '<span class="am-margem__valor ' + (MARGEM_CLASSE[v.status] || classeMargemPct(v.pct)) + '">' + formatarPercentualCompacto(v.pct) + "</span>" +
+        infoDotHtml("Margem recalculada agora pelo Motor com o custo novo. A lista volta a usar o snapshot no próximo cálculo.");
+    }
+    return null;
+  }
+
+  // A simulação não devolve o status do Motor (que depende da margem alvo
+  // configurada) — então a prévia só marca prejuízo, sem inventar faixa.
+  function classeMargemPct(pct) {
+    return pct < 0 ? "is-danger" : "is-neutral";
+  }
+
+  function encontrarCelulaMargem(itemId) {
+    return document.querySelectorAll('.am-margem[data-margem-item="' + cssEscape(itemId) + '"]');
+  }
+
+  function cssEscape(v) {
+    return window.CSS && CSS.escape ? CSS.escape(v) : String(v).replace(/["\\]/g, "\\$&");
+  }
+
+  function repintarCustoDoItem(itemId) {
+    var anuncio = encontrarAnuncioNaTela(itemId);
+    encontrarCelulaMargem(itemId).forEach(function (cel) {
+      var sobre = margemSobrepostaHtml(itemId);
+      cel.innerHTML = (sobre != null ? sobre : (anuncio ? margemProjetadaConteudoHtml(anuncio) : "")) +
+        custoControleHtml(itemId);
+      cel.classList.toggle("is-modo-custos", CUSTOS.modo);
+      var linha = cel.closest("[data-item]");
+      if (linha) linha.classList.toggle("is-custo-erro", !!CUSTOS.erros[itemId]);
+    });
+  }
+
+  function encontrarAnuncioNaTela(itemId) {
+    for (var i = 0; i < AM.anuncios.length; i++) {
+      if (AM.anuncios[i].tipo === "item" && AM.anuncios[i].item_id === itemId) return AM.anuncios[i];
+    }
+    for (var fid in AM.state.familyCache) {
+      var fam = AM.state.familyCache[fid];
+      var ups = (fam && fam.user_products) || [];
+      for (var u = 0; u < ups.length; u++) {
+        var itens = ups[u].itens || [];
+        for (var k = 0; k < itens.length; k++) if (itens[k].item_id === itemId) return itens[k];
+      }
+    }
+    return null;
+  }
+
+  function itensDeCustoNaTela() {
+    var ids = [];
+    document.querySelectorAll("#am-catalogo-container .am-margem[data-margem-item]").forEach(function (cel) {
+      var id = cel.getAttribute("data-margem-item");
+      if (ids.indexOf(id) < 0) ids.push(id);
+    });
+    return ids;
+  }
+
+  function repintarTodosOsCustos() {
+    itensDeCustoNaTela().forEach(repintarCustoDoItem);
+    aplicarFiltroSemCusto();
+  }
+
+  // Cliques/teclas dentro da célula de custo nunca chegam à linha (que abre
+  // o modal) — mesmo motivo do estoque (ver bindEstoqueEditavel).
+  function bindCustos(raiz) {
+    if (!raiz || raiz.getAttribute("data-custos-bind") === "1") return;
+    raiz.setAttribute("data-custos-bind", "1");
+    raiz.addEventListener("click", function (e) {
+      var alvo = e.target.closest(".am-custo, .am-custo-sel");
+      if (!alvo) return;
+      e.stopPropagation();
+      var editar = e.target.closest("[data-custo-editar]");
+      if (editar) { abrirCustoInline(editar.getAttribute("data-custo-editar")); return; }
+      var retry = e.target.closest("[data-custo-retry]");
+      if (retry) { delete CUSTOS.erros[retry.getAttribute("data-custo-retry")]; salvarCustosEmMassa(); }
+    }, true);
+    raiz.addEventListener("keydown", function (e) {
+      var t = e.target;
+      if (!t.closest || !t.closest(".am-custo, .am-custo-sel")) return;
+      // stopPropagation ANTES de mexer no DOM: a linha trata Enter como
+      // "abrir o modal" e o Esc global fecha o modal (ver salvarEstoque).
+      e.stopPropagation();
+      if (t.hasAttribute("data-custo-inline")) {
+        if (e.key === "Enter") { e.preventDefault(); salvarCustoInline(t.getAttribute("data-custo-inline"), t.value); }
+        else if (e.key === "Escape") { e.preventDefault(); fecharCustoInline(); }
+        return;
+      }
+      if (t.hasAttribute("data-custo-massa") && e.key === "Enter") {
+        e.preventDefault();
+        var campos = Array.prototype.slice.call(document.querySelectorAll("#am-catalogo-container [data-custo-massa]"))
+          .filter(function (c) { return c.offsetParent !== null; });
+        var prox = campos[campos.indexOf(t) + 1];
+        if (prox) prox.focus();
+      }
+    }, true);
+    raiz.addEventListener("input", function (e) {
+      var t = e.target;
+      if (!t.hasAttribute || !t.hasAttribute("data-custo-massa")) return;
+      var id = t.getAttribute("data-custo-massa");
+      if (t.value.trim() === "") delete CUSTOS.rascunhos[id];
+      else CUSTOS.rascunhos[id] = t.value;
+      delete CUSTOS.erros[id];
+      if (CUSTOS.pergunta) CUSTOS.pergunta = null;
+      var r = t.value.trim() ? parseCusto(t.value) : null;
+      var campo = t.closest(".am-custo__campo");
+      if (campo) {
+        campo.classList.toggle("is-invalid", !!(r && r.invalido));
+        campo.classList.toggle("is-dirty", !!(r && r.n != null && r.n !== CUSTOS.cache[id]));
+      }
+      atualizarMargemDaLinhaSemPerderFoco(id);
+      agendarPrevia(id);
+      renderSavebarCustos();
+    });
+    raiz.addEventListener("change", function (e) {
+      var t = e.target;
+      if (!t.hasAttribute || !t.hasAttribute("data-custo-sel")) return;
+      var id = t.getAttribute("data-custo-sel");
+      CUSTOS.sel[id] = t.checked;
+      var linha = t.closest("[data-item]");
+      if (linha) linha.classList.toggle("is-custo-sel", t.checked);
+      renderBarraCustos();
+    });
+    raiz.addEventListener("focusout", function (e) {
+      var t = e.target;
+      if (!t.hasAttribute || !t.hasAttribute("data-custo-inline")) return;
+      // Sair do campo CANCELA, nunca salva — gravar por distração seria
+      // efeito colateral numa lista de centenas de anúncios.
+      var id = t.getAttribute("data-custo-inline");
+      setTimeout(function () {
+        if (CUSTOS.editando === id && !CUSTOS.salvandoUm[id]) fecharCustoInline();
+      }, 120);
+    });
+  }
+
+  // Repinta só o valor de margem da célula, mantendo o campo em foco.
+  function atualizarMargemDaLinhaSemPerderFoco(itemId) {
+    encontrarCelulaMargem(itemId).forEach(function (cel) {
+      var custo = cel.querySelector(".am-custo");
+      var anuncio = encontrarAnuncioNaTela(itemId);
+      var sobre = margemSobrepostaHtml(itemId);
+      Array.prototype.slice.call(cel.childNodes).forEach(function (n) { if (n !== custo) cel.removeChild(n); });
+      var tmp = document.createElement("span");
+      tmp.innerHTML = sobre != null ? sobre : (anuncio ? margemProjetadaConteudoHtml(anuncio) : "");
+      while (tmp.firstChild) cel.insertBefore(tmp.firstChild, custo);
+      var erroCampo = custo && custo.querySelector(".am-custo__erro");
+      var r = CUSTOS.rascunhos[itemId] != null ? parseCusto(CUSTOS.rascunhos[itemId]) : null;
+      if (custo) {
+        if (r && r.invalido && !erroCampo) {
+          custo.insertAdjacentHTML("beforeend", '<span class="am-custo__erro">Use um valor maior que zero, ex.: 42,90</span>');
+        } else if (!(r && r.invalido) && erroCampo && !CUSTOS.erros[itemId]) {
+          erroCampo.parentNode.removeChild(erroCampo);
+        }
+      }
+      var linha = cel.closest("[data-item]");
+      if (linha) linha.classList.remove("is-custo-erro");
+    });
+  }
+
+  // --- Edição pontual ------------------------------------------------------------
+  function abrirCustoInline(itemId) {
+    if (!custoEditavel() || CUSTOS.modo) return;
+    var anterior = CUSTOS.editando;
+    CUSTOS.editando = itemId;
+    if (anterior && anterior !== itemId) repintarCustoDoItem(anterior);
+    repintarCustoDoItem(itemId);
+    var input = document.querySelector('[data-custo-inline="' + cssEscape(itemId) + '"]');
+    if (input) { input.focus(); input.select(); }
+  }
+
+  function fecharCustoInline() {
+    var id = CUSTOS.editando;
+    CUSTOS.editando = null;
+    if (id) repintarCustoDoItem(id);
+  }
+
+  function salvarCustoInline(itemId, bruto) {
+    var r = parseCusto(bruto);
+    var atual = CUSTOS.cache[itemId];
+    if (r.vazio || r.n === atual) { fecharCustoInline(); return; }
+    if (r.invalido) {
+      toast("Use um custo maior que zero, ex.: 42,90.", "is-danger");
+      return;
+    }
+    CUSTOS.editando = null;
+    CUSTOS.salvandoUm[itemId] = true;
+    repintarCustoDoItem(itemId);
+    enviarCustos([{ itemId: itemId, custo: r.n }]).then(function (res) {
+      delete CUSTOS.salvandoUm[itemId];
+      var item = res.porItem[itemId];
+      if (!item || !item.ok) {
+        repintarCustoDoItem(itemId);
+        toast((item && item.motivo) || res.motivo || "Não foi possível salvar o custo.", "is-danger");
+        return;
+      }
+      aplicarCustoGravado(itemId, item.custo);
+      var anuncio = encontrarAnuncioNaTela(itemId);
+      var nome = anuncio && anuncio.titulo ? anuncio.titulo : itemId;
+      toastComAcao("Custo salvo na Base · " + (nome.length > 34 ? nome.slice(0, 34) + "…" : nome), "Desfazer", function () {
+        desfazerCusto(itemId, item.custoAnterior);
+      });
+    });
+  }
+
+  function desfazerCusto(itemId, custoAnterior) {
+    CUSTOS.salvandoUm[itemId] = true;
+    repintarCustoDoItem(itemId);
+    var pedido = custoAnterior == null ? { itemId: itemId, remover: true } : { itemId: itemId, custo: custoAnterior };
+    enviarCustos([pedido]).then(function (res) {
+      delete CUSTOS.salvandoUm[itemId];
+      var item = res.porItem[itemId];
+      if (!item || !item.ok) {
+        repintarCustoDoItem(itemId);
+        toast((item && item.motivo) || res.motivo || "Não foi possível desfazer.", "is-danger");
+        return;
+      }
+      aplicarCustoGravado(itemId, custoAnterior == null ? null : item.custo);
+      toast("Custo anterior restaurado.", "is-info");
+    });
+  }
+
+  // --- Gravação (pontual e massa usam o MESMO endpoint) ----------------------------
+  function enviarCustos(itens) {
+    var corpo = { clienteSlug: AM.clienteAtual.slug, itens: itens };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    var epoca = CUSTOS.epoca;
+    return api("/anuncios-meli/custos/lote", { method: "POST", body: corpo }).then(function (r) {
+      var d = r.data || {};
+      var porItem = {};
+      (d.resultados || []).forEach(function (x) { if (!porItem[x.itemId]) porItem[x.itemId] = x; });
+      return { ok: !!d.ok, motivo: d.motivo, porItem: porItem, valido: epoca === CUSTOS.epoca };
+    });
+  }
+
+  function aplicarCustoGravado(itemId, custo) {
+    CUSTOS.cache[itemId] = custo == null ? null : Number(custo);
+    delete CUSTOS.previa[itemId];
+    repintarCustoDoItem(itemId);
+    recalcularMargemAoVivo([itemId]);
+  }
+
+  // A célula da lista lê o SNAPSHOT de margem, que só se atualiza no job.
+  // Depois de gravar, pede ao Motor a margem AO VIVO só destes MLB.
+  function recalcularMargemAoVivo(ids) {
+    var epoca = CUSTOS.epoca;
+    for (var i = 0; i < ids.length; i += PERFORMANCE_LOTE_MAX) {
+      (function (lote) {
+        var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+          "&itemIds=" + encodeURIComponent(lote.join(",")) + "&incluirMetricas=0&incluirMargem=1";
+        if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+        api("/anuncios-meli/performance?" + qs).then(function (r) {
+          if (epoca !== CUSTOS.epoca) return;
+          var margem = (r.data && r.data.ok && r.data.margem) || {};
+          lote.forEach(function (id) {
+            var m = margem[id];
+            if (!m) return;
+            CUSTOS.margemAoVivo[id] = { pct: m.marginPercent, status: m.status };
+            // O modal e o preço ao vivo leem este mesmo cache.
+            var pc = AM.state.performanceCache[id] || (AM.state.performanceCache[id] = {});
+            pc.margem = m;
+            pc.temMargem = true;
+            repintarCustoDoItem(id);
+          });
+        });
+      })(ids.slice(i, i + PERFORMANCE_LOTE_MAX));
+    }
+  }
+
+  function toastComAcao(msg, rotulo, acao) {
+    var stack = el("am-toast-stack");
+    if (!stack) return;
+    var t = document.createElement("div");
+    t.className = "vf-toast is-success am-toast-acao";
+    t.setAttribute("role", "status");
+    t.innerHTML = '<div class="vf-toast__content"><p class="vf-toast__description">' + escapeHtml(msg) + "</p></div>" +
+      '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm am-toast-acao__btn">' + icDesfazer(12) + " " + escapeHtml(rotulo) + "</button>";
+    var usado = false;
+    t.querySelector("button").addEventListener("click", function () {
+      if (usado) return;
+      usado = true;
+      if (t.parentNode) t.parentNode.removeChild(t);
+      acao();
+    });
+    stack.appendChild(t);
+    setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 6000);
+  }
+
+  // --- Modo massa ----------------------------------------------------------------
+  function pendentesCustos() {
+    return Object.keys(CUSTOS.rascunhos).filter(function (id) {
+      var r = parseCusto(CUSTOS.rascunhos[id]);
+      return r.n != null && r.n !== CUSTOS.cache[id];
+    });
+  }
+
+  function temRascunhoInvalido() {
+    return Object.keys(CUSTOS.rascunhos).some(function (id) { return parseCusto(CUSTOS.rascunhos[id]).invalido; });
+  }
+
+  function selecionadosCustos() {
+    return Object.keys(CUSTOS.sel).filter(function (id) { return CUSTOS.sel[id]; });
+  }
+
+  function entrarModoCustos() {
+    if (!custoEditavel()) return;
+    CUSTOS.editando = null;
+    CUSTOS.modo = true;
+    aplicarModoNaLista();
+    renderBarraCustos();
+    renderSavebarCustos();
+    var primeiro = document.querySelector("#am-catalogo-container [data-custo-massa]");
+    if (primeiro) primeiro.focus();
+  }
+
+  function sairModoCustos(forcar) {
+    if (!forcar && pendentesCustos().length) {
+      CUSTOS.pergunta = { tipo: "sair" };
+      renderSavebarCustos();
+      return;
+    }
+    CUSTOS.modo = false;
+    CUSTOS.rascunhos = {};
+    CUSTOS.sel = {};
+    CUSTOS.erros = {};
+    CUSTOS.previa = {};
+    CUSTOS.pergunta = null;
+    CUSTOS.soSemCusto = false;
+    aplicarModoNaLista();
+    renderBarraCustos();
+    renderSavebarCustos();
+  }
+
+  function aplicarModoNaLista() {
+    var lista = document.querySelector("#am-catalogo-container .am-listagem");
+    if (lista) lista.classList.toggle("is-modo-custos", CUSTOS.modo);
+    document.querySelectorAll("#am-catalogo-container [data-item]").forEach(function (linha) {
+      var id = linha.getAttribute("data-item");
+      var acao = linha.querySelector(".am-row__acao, .am-mlb__acao");
+      var sel = linha.querySelector(".am-custo-sel");
+      if (!linha.querySelector('.am-margem[data-margem-item]')) return;
+      if (CUSTOS.modo && !sel && acao) {
+        acao.insertAdjacentHTML("afterbegin",
+          '<label class="am-custo-sel"><input type="checkbox" data-custo-sel="' + escapeAttr(id) + '"' +
+          (CUSTOS.sel[id] ? " checked" : "") + ' aria-label="Selecionar este anúncio" /></label>');
+      } else if (!CUSTOS.modo && sel) {
+        sel.parentNode.removeChild(sel);
+      }
+      linha.classList.toggle("is-custo-sel", CUSTOS.modo && !!CUSTOS.sel[id]);
+    });
+    repintarTodosOsCustos();
+  }
+
+  // "Só sem custo": filtro LOCAL da página carregada (e das famílias
+  // abertas) — esconde MLB que já têm custo na Base e nada pendente.
+  function aplicarFiltroSemCusto() {
+    document.querySelectorAll("#am-catalogo-container [data-item]").forEach(function (linha) {
+      var id = linha.getAttribute("data-item");
+      if (!linha.querySelector(".am-margem[data-margem-item]")) return;
+      var esconder = CUSTOS.modo && CUSTOS.soSemCusto && CUSTOS.cache[id] != null &&
+        CUSTOS.rascunhos[id] == null && !CUSTOS.erros[id];
+      linha.classList.toggle("am-custo-oculta", esconder);
+    });
+  }
+
+  function agendarPrevia(itemId) {
+    clearTimeout(CUSTOS.previaTimer[itemId]);
+    var r = CUSTOS.rascunhos[itemId] != null ? parseCusto(CUSTOS.rascunhos[itemId]) : null;
+    if (!r || r.n == null || r.n === CUSTOS.cache[itemId]) return;
+    CUSTOS.previaTimer[itemId] = setTimeout(function () { pedirPrevia(itemId, r.n); }, 450);
+  }
+
+  // Prévia pelo MESMO núcleo do Motor da Simulação do modal — nunca uma
+  // fórmula local. Só preço/custo podem ser simulados; comissão, frete e
+  // imposto são sempre os do Motor.
+  function pedirPrevia(itemId, valor) {
+    var epoca = CUSTOS.epoca;
+    CUSTOS.previa[itemId] = { valor: valor, carregando: true };
+    var corpo = { clienteSlug: AM.clienteAtual.slug, custoProduto: valor };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    api("/anuncios-meli/" + encodeURIComponent(itemId) + "/simular-margem", { method: "POST", body: corpo }).then(function (r) {
+      if (epoca !== CUSTOS.epoca) return;
+      var atual = CUSTOS.previa[itemId];
+      if (!atual || atual.valor !== valor) return; // digitou outro valor no meio
+      var d = r.data || {};
+      var res = d.resultado || {};
+      CUSTOS.previa[itemId] = {
+        valor: valor,
+        pct: d.ok && res.computable && res.marginPercent != null ? res.marginPercent : null,
+        motivo: d.ok ? (res.missing && res.missing.length ? "Faltam dados do Motor: " + res.missing.join(", ") : "") : (d.motivo || ""),
+      };
+      atualizarMargemDaLinhaSemPerderFoco(itemId);
+    });
+  }
+
+  function aplicarAosSelecionados() {
+    var campo = el("am-custos-lote");
+    var r = parseCusto(campo ? campo.value : "");
+    if (r.n == null) {
+      if (campo) { campo.focus(); campo.closest(".am-custo__campo").classList.add("is-invalid"); }
+      return;
+    }
+    var valor = custoParaCampo(r.n);
+    selecionadosCustos().forEach(function (id) {
+      CUSTOS.rascunhos[id] = valor;
+      delete CUSTOS.erros[id];
+      agendarPrevia(id);
+    });
+    CUSTOS.sel = {};
+    aplicarModoNaLista();
+    renderBarraCustos();
+    renderSavebarCustos();
+  }
+
+  function salvarCustosEmMassa(depois) {
+    var ids = pendentesCustos();
+    if (!ids.length) { if (depois) depois(); return; }
+    if (temRascunhoInvalido()) return;
+    CUSTOS.salvando = true;
+    CUSTOS.pergunta = null;
+    renderSavebarCustos();
+    repintarTodosOsCustos();
+    var itens = ids.map(function (id) { return { itemId: id, custo: parseCusto(CUSTOS.rascunhos[id]).n }; });
+    var lotes = [];
+    for (var i = 0; i < itens.length; i += CUSTO_LOTE_MAX) lotes.push(itens.slice(i, i + CUSTO_LOTE_MAX));
+    Promise.all(lotes.map(enviarCustos)).then(function (resps) {
+      if (resps.some(function (x) { return !x.valido; })) return;
+      var porItem = {};
+      var motivoGeral = null;
+      resps.forEach(function (x) {
+        for (var k in x.porItem) porItem[k] = x.porItem[k];
+        if (!x.ok) motivoGeral = x.motivo || "Não foi possível salvar os custos.";
+      });
+      var ok = [];
+      ids.forEach(function (id) {
+        var item = porItem[id];
+        if (item && item.ok) {
+          CUSTOS.cache[id] = Number(item.custo);
+          delete CUSTOS.rascunhos[id];
+          delete CUSTOS.erros[id];
+          delete CUSTOS.previa[id];
+          ok.push(id);
+        } else {
+          CUSTOS.erros[id] = (item && item.motivo) || motivoGeral || "Não foi salvo.";
+        }
+      });
+      CUSTOS.salvando = false;
+      var falhas = ids.length - ok.length;
+      repintarTodosOsCustos();
+      renderBarraCustos();
+      renderSavebarCustos();
+      if (ok.length) recalcularMargemAoVivo(ok);
+      if (ok.length || !falhas) {
+        toast(ok.length + (ok.length === 1 ? " custo salvo na Base" : " custos salvos na Base") +
+          (falhas ? " · " + falhas + (falhas === 1 ? " falhou" : " falharam") : "") + ".", falhas ? "is-warning" : "is-success");
+      } else {
+        toast(motivoGeral || "Nenhum custo foi salvo. Veja as linhas em vermelho.", "is-danger");
+      }
+      if (depois && !falhas) depois();
+    });
+  }
+
+  // Paginação com rascunho pendente: pergunta na própria barra de salvar.
+  function irParaPaginaComCustos(pagina, irPara) {
+    if (CUSTOS.modo && pendentesCustos().length) {
+      CUSTOS.pergunta = { tipo: "pagina", destino: function () { irPara(pagina); } };
+      renderSavebarCustos();
+      return;
+    }
+    irPara(pagina);
+  }
+
+  function concluirPerguntaCustos() {
+    var p = CUSTOS.pergunta;
+    CUSTOS.pergunta = null;
+    if (!p) return;
+    if (p.tipo === "pagina") { renderSavebarCustos(); p.destino(); }
+    else sairModoCustos(true);
+  }
+
+  function descartarRascunhosCustos() {
+    CUSTOS.rascunhos = {};
+    CUSTOS.erros = {};
+    CUSTOS.previa = {};
+  }
+
+  // --- Barras ----------------------------------------------------------------------
+  function renderBarraCustos() {
+    var box = el("am-custos-barra");
+    if (!box) return;
+    if (!AM.clienteAtual || CUSTOS.base === undefined) { box.innerHTML = ""; return; }
+
+    if (CUSTOS.base === null) {
+      box.innerHTML = '<div class="vf-alert is-info am-custos-aviso" role="status">' +
+        "<span>" + escapeHtml(CUSTOS.baseMensagem || "Esta conta não tem Base de custos vinculada.") +
+        " Sem Base, a margem não é calculada e o custo não pode ser editado aqui.</span>" +
+        '<a class="vf-btn vf-btn--secondary vf-btn--sm" href="bases.html">Vincular base</a></div>';
+      return;
+    }
+
+    if (!CUSTOS.modo) {
+      var semCusto = itensDeCustoNaTela().filter(function (id) { return CUSTOS.cache[id] === null; }).length;
+      box.innerHTML = '<div class="am-custos-acoes">' +
+        (semCusto ? '<span class="vf-tag is-warning" title="Anúncios desta página sem custo na Base">' +
+          semCusto + " sem custo nesta página</span>" : "") +
+        '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-custos-acao="entrar">' +
+          icLapis(12) + " Editar custos</button>" +
+        "</div>";
+      return;
+    }
+
+    var sel = selecionadosCustos();
+    var html = '<div class="am-custos-modo" role="region" aria-label="Edição de custos">' +
+      '<span class="am-custos-modo__titulo">' + icLapis(13) + " Editando custos</span>" +
+      '<span class="am-custos-modo__dica">Digite o novo custo de cada anúncio. Nada é gravado na Base até você clicar em Salvar.</span>' +
+      '<label class="am-custos-modo__check"><input type="checkbox" id="am-custos-so-sem"' + (CUSTOS.soSemCusto ? " checked" : "") +
+        "> Só sem custo (nesta página)</label>" +
+      '<button type="button" class="vf-btn vf-btn--sm am-custos-modo__btn" data-custos-acao="selecionar-pagina">Selecionar página</button>' +
+      '<button type="button" class="vf-btn vf-btn--sm am-custos-modo__btn" data-custos-acao="sair">Sair</button>' +
+    "</div>";
+    if (sel.length) {
+      var sobrescreve = sel.filter(function (id) {
+        var r = CUSTOS.rascunhos[id] != null ? parseCusto(CUSTOS.rascunhos[id]) : null;
+        return CUSTOS.cache[id] != null || (r && r.n != null);
+      }).length;
+      var anterior = el("am-custos-lote") ? el("am-custos-lote").value : "";
+      html += '<div class="am-custos-sel">' +
+        '<span class="am-custos-sel__total">' + sel.length + (sel.length > 1 ? " selecionados" : " selecionado") + "</span>" +
+        '<span class="am-custo__campo"><span class="am-custo__prefixo" aria-hidden="true">R$</span>' +
+          '<input type="text" class="am-custo__input" id="am-custos-lote" inputmode="decimal" autocomplete="off" placeholder="0,00" ' +
+          'aria-label="Custo para os selecionados" value="' + escapeAttr(anterior) + '"></span>' +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-custos-acao="aplicar">Aplicar aos selecionados</button>' +
+        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-custos-acao="limpar-sel">Limpar seleção</button>' +
+        (sobrescreve ? '<span class="am-custos-sel__aviso">' + sobrescreve +
+          (sobrescreve > 1 ? " deles já têm custo e serão sobrescritos." : " deles já tem custo e será sobrescrito.") + "</span>" : "") +
+      "</div>";
+    }
+    box.innerHTML = html;
+  }
+
+  function renderSavebarCustos() {
+    var bar = el("am-custos-savebar");
+    if (!bar) return;
+    var n = pendentesCustos().length;
+    var nErr = Object.keys(CUSTOS.erros).length;
+    var on = CUSTOS.modo && (n > 0 || nErr > 0 || CUSTOS.salvando || !!CUSTOS.pergunta);
+    bar.classList.toggle("is-on", on);
+    bar.classList.toggle("is-ask", !!CUSTOS.pergunta);
+    document.body.classList.toggle("am-custos-savebar-on", on);
+    if (!on) { bar.innerHTML = ""; return; }
+    var inn;
+    var rotuloN = n + (n === 1 ? " custo" : " custos");
+    if (CUSTOS.salvando) {
+      inn = '<div class="am-custos-savebar__msg"><span class="vf-spinner" aria-hidden="true"></span> Salvando ' + rotuloN + " na Base…</div>";
+    } else if (CUSTOS.pergunta) {
+      var destino = CUSTOS.pergunta.tipo === "pagina" ? "mudar de página" : "sair da edição";
+      inn = '<div class="am-custos-savebar__msg">Salvar ' + rotuloN + " antes de " + destino + "?" +
+          "<small>Se descartar, os valores digitados se perdem.</small></div>" +
+        '<button type="button" class="vf-btn vf-btn--ghost" data-custos-acao="cancelar-pergunta">Continuar editando</button>' +
+        '<button type="button" class="vf-btn vf-btn--secondary" data-custos-acao="descartar-continuar">Descartar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary" data-custos-acao="salvar-continuar"' + (temRascunhoInvalido() ? " disabled" : "") + ">Salvar e continuar</button>";
+    } else {
+      var msg = n ? n + (n === 1 ? " custo alterado" : " custos alterados") : "Nenhuma alteração pendente";
+      var sub = nErr
+        ? '<small class="is-erro">' + nErr + (nErr > 1 ? " não foram salvos" : " não foi salvo") + " — veja as linhas em vermelho.</small>"
+        : temRascunhoInvalido()
+          ? '<small class="is-erro">Corrija os valores inválidos para salvar.</small>'
+          : "<small>A margem mostrada é prévia até você salvar. O custo vale para Bases, Precificação, Financeiro e Simulação.</small>";
+      inn = '<div class="am-custos-savebar__msg">' + msg + sub + "</div>" +
+        '<button type="button" class="vf-btn vf-btn--ghost" data-custos-acao="descartar"' + (n || nErr ? "" : " disabled") + ">Descartar</button>" +
+        '<button type="button" class="vf-btn vf-btn--primary" data-custos-acao="salvar"' + (n && !temRascunhoInvalido() ? "" : " disabled") + ">Salvar " + rotuloN + "</button>";
+    }
+    bar.innerHTML = '<div class="am-custos-savebar__in">' + inn + "</div>";
+  }
+
+  function bindBarrasCustos() {
+    function onClick(e) {
+      var b = e.target.closest("[data-custos-acao]");
+      if (!b || b.disabled) return;
+      switch (b.getAttribute("data-custos-acao")) {
+        case "entrar": entrarModoCustos(); break;
+        case "sair": sairModoCustos(false); break;
+        case "selecionar-pagina":
+          document.querySelectorAll("#am-catalogo-container [data-custo-sel]").forEach(function (c) {
+            var linha = c.closest("[data-item]");
+            if (linha && linha.classList.contains("am-custo-oculta")) return;
+            CUSTOS.sel[c.getAttribute("data-custo-sel")] = true;
+          });
+          aplicarModoNaLista();
+          renderBarraCustos();
+          if (el("am-custos-lote")) el("am-custos-lote").focus();
+          break;
+        case "aplicar": aplicarAosSelecionados(); break;
+        case "limpar-sel": CUSTOS.sel = {}; aplicarModoNaLista(); renderBarraCustos(); break;
+        case "salvar": salvarCustosEmMassa(); break;
+        case "descartar": descartarRascunhosCustos(); repintarTodosOsCustos(); renderSavebarCustos(); break;
+        case "cancelar-pergunta": CUSTOS.pergunta = null; renderSavebarCustos(); break;
+        case "descartar-continuar": descartarRascunhosCustos(); repintarTodosOsCustos(); concluirPerguntaCustos(); break;
+        case "salvar-continuar": {
+          var p = CUSTOS.pergunta;
+          salvarCustosEmMassa(function () { CUSTOS.pergunta = p; concluirPerguntaCustos(); });
+          break;
+        }
+      }
+    }
+    var barra = el("am-custos-barra");
+    var savebar = el("am-custos-savebar");
+    if (barra) {
+      barra.addEventListener("click", onClick);
+      barra.addEventListener("change", function (e) {
+        if (e.target.id === "am-custos-so-sem") { CUSTOS.soSemCusto = e.target.checked; aplicarFiltroSemCusto(); }
+      });
+      barra.addEventListener("keydown", function (e) {
+        if (e.target.id === "am-custos-lote" && e.key === "Enter") { e.preventDefault(); aplicarAosSelecionados(); }
+      });
+      barra.addEventListener("input", function (e) {
+        if (e.target.id === "am-custos-lote") {
+          var campo = e.target.closest(".am-custo__campo");
+          if (campo) campo.classList.remove("is-invalid");
+        }
+      });
+    }
+    if (savebar) savebar.addEventListener("click", onClick);
   }
 
   function bindPaginacao(prefixo, pag, irPara) {

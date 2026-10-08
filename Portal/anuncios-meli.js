@@ -46,11 +46,12 @@
     // reseta a cada carregarAnuncios porque só faz sentido pra página que
     // acabou de sair de cena). null = nenhum critério global ativo.
     ordenarPor: null,
-    // Card de KPI atualmente selecionado como filtro rápido (V3 — os cards
-    // do resumo substituem os antigos <select> de Status/Qualidade). Guarda
-    // só a CHAVE do KPI; o valor real que vai para AM.filtros.status/filtro
-    // continua vindo do mesmo mapa usado para montar os cards (KPI_DEFS).
-    kpiAtivo: null,
+    // Cards de KPI selecionados como filtros rápidos (V3 — os cards do
+    // resumo substituem os antigos <select> de Status/Qualidade). São
+    // COMBINÁVEIS (ex.: Ativos + Sem custo + Sem SKU). Guarda só as CHAVES;
+    // AM.filtros.status/filtro saem delas pelo mesmo mapa que monta os cards
+    // (KPI_DEFS), como listas separadas por vírgula.
+    kpisAtivos: [],
     buscaTimer: null,
     carregandoCatalogo: false,
     // Guarda de corrida (mesma classe de bug corrigida em automacoes.js/
@@ -304,31 +305,54 @@
     { key: "score_baixo", label: "Score baixo", campo: "scoreBaixo", meta: "Abaixo de 60 pontos", estado: "danger", accent: "danger", tipo: "filtro", valor: "score_baixo" },
     { key: "mercado_full", label: "Mercado Full", campo: "full", meta: "Com logística Full", estado: "neutral", accent: "info", tipo: "filtro", valor: "mercado_full" },
     { key: "sem_sku", label: "Sem SKU", campo: "semSku", meta: "Sem identificação interna", estado: "danger", accent: "neutral", tipo: "filtro", valor: "sem_sku" },
+    // Lê a Base de Custos do contexto do Motor (a mesma da coluna Custo).
+    // Sem Base resolvida o número não existe: `semCusto` vem null e o card
+    // fica fora, com o motivo no rodapé — nunca um zero enganoso.
+    {
+      key: "sem_custo", label: "Sem custo", campo: "semCusto", estado: "warning", accent: "warning", tipo: "filtro", valor: "sem_custo",
+      meta: function (r) { return typeof r.semCusto === "number" ? "Sem custo na Base" : "Vincule uma Base de Custos"; },
+      indisponivel: function (r) { return typeof r.semCusto !== "number"; },
+    },
   ];
 
-  // Todo card de KPI vale para a lista inteira. Enquanto a tela tinha duas
-  // abas, metade dos cards ficava desabilitada em cada uma — a aba "Sem
-  // agrupamento" monopolizava o parâmetro `filtro`, e a aba "Famílias" lia um
-  // endpoint que só aceitava `q`. Com uma lista só, o recorte deixou de
-  // disputar o slot do filtro e nenhum card fica indisponível.
-  function alternarFiltroKpi(key) {
-    var def = null;
-    for (var i = 0; i < KPI_DEFS.length; i++) if (KPI_DEFS[i].key === key) def = KPI_DEFS[i];
+  function kpiDef(key) {
+    for (var i = 0; i < KPI_DEFS.length; i++) if (KPI_DEFS[i].key === key) return KPI_DEFS[i];
+    return null;
+  }
 
-    if (AM.kpiAtivo === key || key === "total" || !def || !def.tipo) {
-      // clicar de novo no mesmo card (ou em "Total") limpa o filtro
-      AM.kpiAtivo = null;
-      AM.filtros.status = "";
-      AM.filtros.filtro = "";
+  // Cards COMBINÁVEIS. Cada card liga/desliga o próprio recorte; o backend
+  // combina por E entre eixos diferentes (Ativos E Sem custo E Sem SKU) e
+  // por OU dentro do mesmo eixo (Ativos + Pausados = os dois status; Score
+  // baixo + Score médio = as duas faixas) — ver meliFamiliaService.
+  // predicadosDosFiltros. "Total" limpa tudo.
+  function alternarFiltroKpi(key) {
+    var def = kpiDef(key);
+
+    if (key === "total" || !def || !def.tipo) {
+      AM.kpisAtivos = [];
+    } else if (AM.kpisAtivos.indexOf(key) >= 0) {
+      AM.kpisAtivos = AM.kpisAtivos.filter(function (k) { return k !== key; });
     } else {
-      AM.kpiAtivo = key;
-      AM.filtros.status = def.tipo === "status" ? def.valor : "";
-      AM.filtros.filtro = def.tipo === "filtro" ? def.valor : "";
+      AM.kpisAtivos = AM.kpisAtivos.concat([key]);
     }
+    sincronizarFiltrosDosKpis();
     AM.paginacao.page = 1;
     atualizarIndicadorFiltros();
     renderResumo();
     carregarAnuncios();
+  }
+
+  function sincronizarFiltrosDosKpis() {
+    var status = [];
+    var filtros = [];
+    AM.kpisAtivos.forEach(function (key) {
+      var def = kpiDef(key);
+      if (!def) return;
+      if (def.tipo === "status") status.push(def.valor);
+      else if (def.tipo === "filtro") filtros.push(def.valor);
+    });
+    AM.filtros.status = status.join(",");
+    AM.filtros.filtro = filtros.join(",");
   }
 
   function tryParseJSON(v, fallback) {
@@ -393,7 +417,7 @@
   function atualizarIndicadorFiltros() {
     var indicador = el("am-filtros-ativos");
     if (!indicador) return;
-    var total = [AM.filtros.q, AM.filtros.status, AM.filtros.filtro].filter(Boolean).length;
+    var total = (AM.filtros.q ? 1 : 0) + AM.kpisAtivos.length;
     indicador.textContent = total === 1 ? "1 filtro ativo" : total + " filtros ativos";
     indicador.classList.toggle("am-hidden", total === 0);
   }
@@ -494,7 +518,7 @@
     AM.anuncios = [];
     AM.paginacao.page = 1;
     AM.filtros = { q: "", status: "", filtro: "" };
-    AM.kpiAtivo = null;
+    AM.kpisAtivos = [];
     if (el("am-busca")) el("am-busca").value = "";
     atualizarIndicadorFiltros();
     renderHudHeader();
@@ -674,14 +698,18 @@
     var r = AM.resumo || {};
     var html = "";
     KPI_DEFS.forEach(function (k) {
-      var ativo = AM.kpiAtivo === k.key;
+      var ativo = AM.kpisAtivos.indexOf(k.key) >= 0;
       var meta = typeof k.meta === "function" ? k.meta(r) : k.meta;
+      var indisponivel = !!(AM.resumo && k.indisponivel && k.indisponivel(r));
+      var motivo = indisponivel && r.semCustoMotivo ? r.semCustoMotivo : "";
       html += '<button type="button" class="vf-metric am-kpi' +
         (k.accent ? " is-" + k.accent : "") +
         (ativo ? " is-active" : "") + '" data-kpi="' + k.key + '"' +
+        (indisponivel ? " disabled" : "") +
+        (motivo ? ' title="' + escapeAttr(motivo) + '"' : "") +
         (ativo ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>' +
         '<span class="vf-metric__label">' + k.label + "</span>" +
-        '<strong class="vf-metric__value">' + (r[k.campo] || 0) + "</strong>" +
+        '<strong class="vf-metric__value">' + (indisponivel ? "—" : (r[k.campo] || 0)) + "</strong>" +
         '<span class="vf-metric__foot is-' + k.estado + '">' + meta + "</span></button>";
     });
     var box = el("am-resumo");
@@ -721,6 +749,12 @@
       }
       AM.anuncios = r.data.anuncios || [];
       AM.paginacao = r.data.paginacao || AM.paginacao;
+      // Recorte que o backend não conseguiu aplicar (ex.: "Sem custo" sem
+      // Base de Custos) — avisa em vez de deixar o card parecer que filtrou.
+      (r.data.filtrosIgnorados || []).forEach(function (f) {
+        var def = KPI_DEFS.filter(function (k) { return k.valor === f.filtro; })[0];
+        toast("Filtro \"" + (def ? def.label : f.filtro) + "\" não aplicado: " + (f.motivo || "indisponível."), "is-warning");
+      });
 
       // Ordenação GLOBAL: o backend já manda o valor que decidiu a posição
       // (faturamentoPercentual/curvaAbc) — escreve nos MESMOS caches que as
@@ -3656,6 +3690,10 @@
       var d = r.data || {};
       var porItem = {};
       (d.resultados || []).forEach(function (x) { if (!porItem[x.itemId]) porItem[x.itemId] = x; });
+      // O card "Sem custo" conta pela Base: recarrega só o resumo (a lista
+      // fica como está, para não tirar da tela a linha que acabou de mudar).
+      var mudou = (d.resultados || []).some(function (x) { return x.ok && x.acao !== "inalterado"; });
+      if (mudou && epoca === CUSTOS.epoca) carregarResumo();
       return { ok: !!d.ok, motivo: d.motivo, porItem: porItem, valido: epoca === CUSTOS.epoca };
     });
   }

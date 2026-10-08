@@ -244,7 +244,7 @@ function wireInterception(cdp) {
     if (pathname.includes("/operacao/cliente-360/clientes")) return respond({ ok: true, clientes: [N97] });
     if (/\/clientes\/[^/?]+\/contas/.test(pathname)) return respond({ ok: true, cliente: N97, contas: N97_CONTAS });
     if (pathname === "/anuncios-meli/clientes") return respond({ ok: true, clientes: [{ id: 87, nome: N97.nome, slug: "n97", mlConectado: true, totalAnuncios: 5 }] });
-    if (pathname === "/anuncios-meli/resumo") return respond({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, full: 2, ultimaSync: new Date().toISOString() } });
+    if (pathname === "/anuncios-meli/resumo") return respond({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, semCusto: 2, full: 2, ultimaSync: new Date().toISOString() } });
     const family = pathname.match(/^\/anuncios-meli\/familias\/([^/]+)/);
     if (family) return respond({ ok: true, cliente: N97, familia: DETALHE_CONTA_42[decodeURIComponent(family[1])] });
     if (pathname === "/anuncios-meli/familias") return respond({ ok: true, cliente: N97, anuncios: LINHAS_CONTA_42, paginacao: { page: 1, limit: 20, total: LINHAS_CONTA_42.length, totalPaginas: 1 } });
@@ -341,7 +341,7 @@ async function run() {
     await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: SEMENTE });
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/anuncios-meli.html?cliente=n97&conta=42` });
-    await waitFor(cdp, "document.querySelector('.am-row--grupo[data-familia=\"FAM-1\"]') && document.querySelector('.am-row[data-item]') && document.querySelectorAll('.am-resumo .am-kpi').length === 8", "Lista e oito KPIs nao renderizaram");
+    await waitFor(cdp, "document.querySelector('.am-row--grupo[data-familia=\"FAM-1\"]') && document.querySelector('.am-row[data-item]') && document.querySelectorAll('.am-resumo .am-kpi').length === 9", "Lista e nove KPIs nao renderizaram");
     await cdp.evaluate("document.querySelector('.am-row--grupo[data-familia=\"FAM-1\"] .am-row__acao').click()");
     await waitFor(cdp, "document.querySelectorAll('.am-mlb').length === 4 && document.querySelector('.am-mlb .am-margem__valor') && document.querySelector('.am-mlb .am-metricas7d__linha')", "FAM-1 ou performance nao renderizou");
     await cdp.evaluate("document.fonts.ready.then(() => true)");
@@ -367,7 +367,7 @@ async function run() {
         assert.deepStrictEqual(m.headings.bad, [], JSON.stringify(m.headings.bad));
       });
       await check(`A5 / ${width}px - KPIs sem fileira orfa`, async () => {
-        assert.strictEqual(m.kpiRows.reduce((a, b) => a + b, 0), 8);
+        assert.strictEqual(m.kpiRows.reduce((a, b) => a + b, 0), 9);
         assert.ok(!m.kpiRows.includes(1), JSON.stringify(m.kpiRows));
       });
       await check(`A6 / ${width}px - mesma grade no head, grupo, item e MLB`, async () => {

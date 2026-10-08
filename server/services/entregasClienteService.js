@@ -277,13 +277,23 @@ async function criarEntrega({ userId, body }) {
         publicado: !!existente.publicado,
       });
     }
-    // Substituicao explicita: ATUALIZA a entrega existente. O token publico e
-    // preservado por atualizarEntrega (ela nao toca em token_publico), entao o
-    // link ja divulgado nao morre numa substituicao.
-    return atualizarEntrega({
-      idRaw: existente.id,
-      body: { ...body, substituir: undefined },
-    });
+    // Substituicao explicita de uma entrega que NUNCA teve link publico
+    // (rascunho): ATUALIZA no lugar — nao ha link historico a proteger e nao
+    // se acumulam rascunhos da mesma competencia.
+    //
+    // Entrega que JA teve link (token_publico existe, publicada ou depois
+    // despublicada) e historico: o link divulgado identifica ESTA linha, e
+    // reescrever o payload_json dela fazia o link antigo passar a abrir os
+    // numeros do fechamento novo. Nesse caso nao se atualiza: segue para o
+    // INSERT abaixo e o fechamento novo nasce como registro independente
+    // (rascunho, sem token), ganhando o proprio link so quando for publicado.
+    // O link antigo continua valido ate ser despublicado explicitamente.
+    if (!existente.token_publico) {
+      return atualizarEntrega({
+        idRaw: existente.id,
+        body: { ...body, substituir: undefined },
+      });
+    }
   }
 
   const payloadInput = body?.payload_json;

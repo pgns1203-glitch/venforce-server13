@@ -2558,15 +2558,17 @@ async function salvarFechamentoFinanceiro() {
        backend passou a recusar com 409 e a devolver o id do que já existe,
        justamente para a tela poder oferecer a saída em vez de repassar um
        "use substituir=true" que ninguém consegue acionar por aqui.
-       Substituir preserva o `token_publico` — o link já divulgado não morre —,
-       e é por isso que o aviso precisa dizer quando o mês JÁ ESTÁ PUBLICADO:
-       aí a troca muda o número por trás de um link que o cliente pode ter
-       aberto, que é um risco diferente do de um rascunho. */
+       Substituir NÃO reescreve uma entrega que já teve link: o fechamento novo
+       nasce como registro independente e o link já divulgado continua abrindo
+       o fechamento antigo (servidor: criarEntrega). Só rascunho sem link é
+       atualizado no lugar. O aviso diz quando o mês JÁ ESTÁ PUBLICADO porque
+       aí passam a existir dois fechamentos da competência até despublicar o
+       antigo. */
     if (resp.status === 409 && json?.code === "ENTREGA_JA_EXISTE") {
       const jaPublicada = json?.publicado === true;
       const aviso = jaPublicada
         ? `A competência ${periodo} já tem um fechamento PUBLICADO para este cliente/operação.\n\n`
-          + "Substituir troca os números por trás do link que já está com o cliente (o link continua o mesmo).\n\nSubstituir mesmo assim?"
+          + "Substituir grava um novo fechamento. O link que já está com o cliente continua abrindo o fechamento antigo; o novo terá link próprio quando for publicado.\n\nSubstituir mesmo assim?"
         : `A competência ${periodo} já tem um fechamento salvo para este cliente/operação.\n\nSubstituir pelo que acabou de ser processado?`;
       if (!window.confirm(aviso)) {
         setStatus(`Fechamento de ${periodo} mantido como estava.`, "info");

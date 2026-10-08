@@ -240,7 +240,7 @@ function PreviewFechamento({ f, periodoLabel, legado }) {
             </p>
             <p className="vf-banner__description">
               {f.duplicidade.publicado
-                ? "Substituir troca os números por trás do link que já está com o cliente — o link continua o mesmo (o token público é preservado)."
+                ? "Substituir grava um novo fechamento desta competência. O link que já está com o cliente continua abrindo o fechamento antigo; o novo ganha um link próprio quando for publicado."
                 : "Substituir atualiza a entrega existente com o que acabou de ser processado."}
             </p>
             <div className="vf-cluster">

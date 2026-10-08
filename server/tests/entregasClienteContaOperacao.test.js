@@ -281,14 +281,29 @@ async function run() {
     ok("o 409 diz se a existente ja esta publicada", erro.payload.publicado === true);
   });
 
+  // Existente PUBLICADA (tem link divulgado): substituir NAO reescreve a linha —
+  // o link antigo continuaria abrindo numeros novos. O fechamento novo e um
+  // registro independente (cenario completo em entregasClienteLinksHistoricos).
   await comDb({ duplicatas: JA_EXISTE }, async (db) => {
-    const r = await servico.criarEntrega({
+    await servico.criarEntrega({
       userId: 5,
       body: { tipo: "fechamento_mensal", titulo: "F2", cliente_id: 1, cliente_conta_id: 10, periodo: "2026-08", substituir: true },
     });
-    ok("substituir=true ATUALIZA a existente em vez de criar outra", r.entrega.substituida === true);
-    ok("substituir NAO faz INSERT novo", !db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
-    ok("substituir NAO toca em token_publico (o link ja divulgado nao morre)",
+    ok("substituir=true sobre entrega JA PUBLICADA cria registro novo (INSERT)", db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
+    ok("substituir=true sobre entrega JA PUBLICADA NAO faz UPDATE da linha com link",
+      !db.capturas.some((c) => c.q.startsWith("UPDATE entregas_cliente SET")));
+  });
+
+  // Existente em rascunho (nunca teve link): substituir atualiza no lugar e
+  // nao toca em token_publico.
+  await comDb({ duplicatas: JA_EXISTE }, async (db) => {
+    const r = await servico.criarEntrega({
+      userId: 5,
+      body: { tipo: "fechamento_mensal", titulo: "F2", cliente_id: 1, periodo: "2026-07", substituir: true },
+    });
+    ok("substituir=true sobre rascunho ATUALIZA a existente em vez de criar outra", r.entrega.substituida === true);
+    ok("substituir sobre rascunho NAO faz INSERT novo", !db.capturas.some((c) => c.q.startsWith("INSERT INTO entregas_cliente")));
+    ok("substituir NAO toca em token_publico",
       !db.capturas.some((c) => c.q.startsWith("UPDATE entregas_cliente SET") && /token_publico/.test(c.q)));
   });
 

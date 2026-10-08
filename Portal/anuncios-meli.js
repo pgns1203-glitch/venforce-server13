@@ -3363,16 +3363,16 @@
       // trava contra clique duplo/Enter duplo e contra o campo virar
       // editável de novo durante a chamada.
       precoMargem: { salvando: false },
-      // Custo do produto / Custos adicionais / Preço (só para item legado com
-      // variations[] reais no ML — ver margemComposicaoLadderHtml): overrides
-      // de SIMULAÇÃO — nunca persistidos, nunca enviados ao Mercado Livre.
-      // `resultado` é a última resposta de POST .../simular-margem; null
-      // enquanto nenhum dos três campos estiver com override ativo (a
-      // composição usa a margem REAL).
-      simulacaoMargem: { custoProduto: null, custosAdicionais: null, preco: null, resultado: null },
-      // Qual linha da tabela "Promoções disponíveis" está com o preço final
-      // alimentando a simulação acima agora (id da promoção, ou null). Só
-      // controla QUAL linha mostra "Você recebe" — nunca decide o valor em
+      // Custo do produto / Custos adicionais / Preço — a coluna "Simulação"
+      // da composição (ver margemComposicaoLadderHtml): overrides nunca
+      // persistidos, nunca enviados ao Mercado Livre. `resultado`/`entradas`
+      // são a última resposta de POST .../simular-margem; null enquanto
+      // nenhum dos três campos estiver com override ativo (a composição usa
+      // a margem REAL).
+      simulacaoMargem: novaSimulacaoMargem(),
+      // Qual promoção (chave id::tipo, ver promocaoChave) está escolhida na
+      // lista "Promoções disponíveis" e alimentando a simulação acima, ou null.
+      // Decide o cenário e a ação oferecida — nunca o valor da margem em
       // si, que continua vindo inteiro de simulacaoMargem.resultado.
       promoLinhaSelecionada: null,
       // Adicionar imagem (seção Fotos): arquivo escolhido, preview local e
@@ -3543,11 +3543,8 @@
     bindCamposEditaveis();
     bindFotos();
     aplicarEstadosEdicao(); // já redesenha a barra de alterações
-    bindMargemEditavel(el("am-det-margem-body"));
-    bindAplicarPreco(el("am-det-margem-body"), a.item_id);
-    bindRestaurarSimulacaoMargem(el("am-det-margem-body"), a.item_id);
-    bindMargemEditavel(el("am-det-promo-body"));
-    bindPromocoesAcoes(el("am-det-promo-body"), a.item_id);
+    bindComposicaoMargem(el("am-det-margem"), a.item_id);
+    bindPromocoes(el("am-det-promo"), a.item_id);
   }
 
   // ----- Cabeçalho: identidade + título editável (representação única) -------
@@ -5521,174 +5518,191 @@
     return '<p class="am-margem-comp__dica">Carregando composição…</p>';
   }
 
-  // Uma linha SOMENTE LEITURA da "escada" — omitida por completo quando o
-  // valor não existe (nunca um "—" no lugar dela): é a régua pedida
-  // ("mostrar apenas o que existe"). Usada por Comissão/Frete/Imposto —
-  // valores calculados/determinados pelo Motor ou pelo Mercado Livre, nunca
-  // editáveis nesta tela.
-  function margemComposicaoLinhaHtml(rotulo, valor, moeda, tooltip) {
-    if (valor == null) return "";
-    return '<div class="am-margem-comp__linha">' +
-      '<span class="am-margem-comp__rotulo">' + escapeHtml(rotulo) +
-        (tooltip ? infoDotHtml(tooltip) : "") + "</span>" +
-      '<span class="am-margem-comp__valor">' + formatMoeda(valor, moeda) + "</span>" +
+  // ===========================================================================
+  // Composição da margem — HOJE × SIMULAÇÃO. Uma tabela de três colunas: o
+  // número real do Motor ("Hoje") ao lado da simulação. Preço de venda, Custo
+  // do produto e Custos adicionais são campos de verdade na coluna
+  // "Simulação" — mudar um deles (Enter ou sair do campo) chama POST
+  // .../simular-margem e nada mais. Clicar numa promoção ao lado (ver
+  // selecionarPromocao) preenche a coluna com o cenário dela. Escrita real só
+  // pela ação única de #am-det-margem-acoes + diálogo de confirmação.
+  // ===========================================================================
+
+  function novaSimulacaoMargem() {
+    return { custoProduto: null, custosAdicionais: null, preco: null, resultado: null, entradas: null };
+  }
+
+  function promocaoSelecionadaDoItem(itemId) {
+    if (!DET || DET.itemId !== itemId || DET.promoLinhaSelecionada == null) return null;
+    return promocaoPorChave(itemId, DET.promoLinhaSelecionada);
+  }
+
+  function simulacaoTemOverride(sim) {
+    return !!(sim && (sim.custoProduto != null || sim.custosAdicionais != null || sim.preco != null));
+  }
+
+  // "Mudou alguma coisa": uma promoção escolhida OU um valor digitado.
+  function simulacaoAtiva(itemId) {
+    if (!DET || DET.itemId !== itemId) return false;
+    return DET.promoLinhaSelecionada != null || simulacaoTemOverride(DET.simulacaoMargem);
+  }
+
+  // started/active/pending — o vendedor já está inscrito (pending = programada).
+  function promocaoParticipa(p) {
+    return p.status === "started" || p.status === "active" || p.status === "pending";
+  }
+
+  // Promoção em que o Mercado Livre define o preço e o anúncio já participa:
+  // o cenário simulado é SAIR dela.
+  function promocaoCenarioSaida(p) {
+    return !!(p && p.modoEscrita === "ACEITE" && promocaoParticipa(p));
+  }
+
+  // Preço na coluna Simulação: campo editável, ou travado com o motivo.
+  //  · promoção ACEITE escolhida — o preço é do Mercado Livre;
+  //  · nenhuma promoção escolhida e o anúncio está numa promoção ativa — o
+  //    preço vem dela (mesma regra de antes: sem simulação de preço solta).
+  function precoSimulacaoEstado(itemId, comp) {
+    var sel = promocaoSelecionadaDoItem(itemId);
+    if (sel && sel.modoEscrita === "ACEITE") {
+      return { editavel: false, motivo: "Nesta promoção o preço é definido pelo Mercado Livre — você só escolhe participar ou não." };
+    }
+    if (!sel && comp.precoPromocionalAtivo) {
+      return {
+        editavel: false,
+        motivo: "O anúncio está numa promoção ativa e o preço vem dela. Escolha uma promoção ao lado para simular outro cenário.",
+      };
+    }
+    return { editavel: true, motivo: null };
+  }
+
+  function margemSimInputHtml(campo, valor, itemId, rotulo) {
+    var v = valor == null || !isFinite(Number(valor)) ? "" : Number(valor).toFixed(2);
+    return '<span class="am-margem-sim__campo">' +
+      '<span class="am-margem-sim__moeda" aria-hidden="true">R$</span>' +
+      '<input type="number" step="0.01" min="0" inputmode="decimal" class="am-margem-sim__input" ' +
+        'data-margem-item="' + escapeAttr(itemId) + '" data-margem-campo="' + escapeAttr(campo) + '" ' +
+        'value="' + escapeAttr(v) + '" placeholder="0,00" ' +
+        'aria-label="' + escapeAttr(rotulo + " (simulação — Enter para calcular)") + '" />' +
+    "</span>";
+  }
+
+  function margemSimValorHtml(valor, hoje, moeda) {
+    var alterado = valor != null && hoje != null && Math.abs(Number(valor) - Number(hoje)) > 0.004;
+    return '<span class="am-margem-sim__valor' + (alterado ? " is-alterado" : "") + '">' + formatMoeda(valor, moeda) + "</span>";
+  }
+
+  function margemSimPctHtml(pct) {
+    return pct == null ? "" : '<span class="am-margem-sim__pct">' + escapeHtml(formatarPercentualCompacto(pct)) + "</span>";
+  }
+
+  function margemSimLinhaHtml(rotuloHtml, hojeHtml, simHtml, classe) {
+    return '<div class="am-margem-sim__linha' + (classe ? " " + classe : "") + '">' +
+      '<span class="am-margem-sim__rotulo">' + rotuloHtml + "</span>" +
+      '<span class="am-margem-sim__hoje">' + hojeHtml + "</span>" +
+      '<span class="am-margem-sim__sim">' + simHtml + "</span>" +
     "</div>";
   }
 
-  function botaoMargemEditHtml(rotulo, tituloBotao) {
-    // Lápis sempre visível: o campo se anuncia editável sem depender do hover.
-    return '<button type="button" class="am-margem-edit__btn" title="' + escapeAttr(tituloBotao) + '">' +
-      escapeHtml(rotulo) + '<span class="am-margem-edit__lapis" aria-hidden="true">' + icLapis(11) + "</span></button>";
-  }
-
-  // Uma linha de SIMULAÇÃO (Custo do produto/Custos adicionais) — ao
-  // contrário das somente-leitura, NUNCA some por valor ausente: é assim que
-  // o operador simula um custo que a Base não tem. `campo` é o nome usado
-  // pelo clique/teclado (bindMargemEditavel) e pelo contrato de POST
-  // .../simular-margem ("custoProduto" | "custosAdicionais"). Nunca chama o
-  // Mercado Livre — Preço tem seu próprio HTML/fluxo, ver
-  // margemComposicaoLinhaPrecoHtml.
-  function margemComposicaoLinhaEditavelHtml(rotulo, campo, valor, moeda, itemId, tituloBotao) {
-    return '<div class="am-margem-comp__linha am-margem-comp__linha--editavel">' +
-      '<span class="am-margem-comp__rotulo">' + escapeHtml(rotulo) + "</span>" +
-      '<span class="am-margem-comp__valor am-margem-edit" data-margem-item="' + escapeAttr(itemId) +
-        '" data-margem-campo="' + escapeAttr(campo) + '" data-margem-valor="' + escapeAttr(valor == null ? "" : valor) + '">' +
-        botaoMargemEditHtml(formatMoeda(valor, moeda), tituloBotao) +
-      "</span>" +
-    "</div>";
-  }
-
-  // Linha de PREÇO quando está BLOQUEADA (promoção ativa no Mercado Livre —
-  // o valor exibido é o promocional, e não existe hoje endpoint de escrita
-  // pra ele, ver meliPrecoService): texto puro, sem botão nenhum (nem de
-  // simulação) — o motivo aparece num ⓘ ao lado do rótulo, mesmo padrão do
-  // título travado por catálogo. Fora deste caso, a linha de preço é só mais
-  // uma célula de simulação (ver margemComposicaoLinhaEditavelHtml) — a
-  // escrita real só acontece pela ação "Aplicar preço" + diálogo de
-  // confirmação (ver abrirConfirmacaoAplicarPreco), nunca direto no clique.
-  function margemComposicaoLinhaPrecoBloqueadoHtml(valor, moeda, motivoBloqueio) {
-    var rotulo = '<span class="am-margem-comp__rotulo">Preço' + infoDotHtml(motivoBloqueio) + "</span>";
-    var valorHtml = '<span class="am-margem-comp__valor am-margem-comp__valor--bloqueado" title="' +
-      escapeAttr(motivoBloqueio) + '">' + formatMoeda(valor, moeda) + "</span>";
-    return '<div class="am-margem-comp__linha am-margem-comp__linha--editavel">' + rotulo + valorHtml + "</div>";
-  }
-
-  // Prioridade de bloqueio da linha "Preço", do mais forte para o mais fraco
-  // (decisão de produto — ver auditoria):
-  //   1. promoção ativa (comp.precoPromocionalAtivo) — sem edição nenhuma,
-  //      nem real nem simulada (ver margemComposicaoLinhaPrecoHtml);
-  //   2. item legado com variations[] reais no ML (variations_count > 0) —
-  //      PUT real NUNCA é tentado aqui (o backend recusaria com
-  //      PRECO_ITEM_COM_VARIACAO, ver meliPrecoService.MOTIVO_VARIACAO,
-  //      inalterado). A linha vira SIMULAÇÃO, reaproveitando o MESMO
-  //      mecanismo de Custo do produto/Custos adicionais (POST
-  //      .../simular-margem já aceita `preco` como override);
-  //   3. caso normal — PUT real de verdade, ver margemComposicaoLinhaPrecoHtml.
-  function precoBloqueadoPorVariacoesLegado(comp) {
-    if (comp.precoPromocionalAtivo) return false;
-    return !!(DET && DET.anuncio && (DET.anuncio.variations_count || 0) > 0);
+  // Selo "+R$ 2,44" / "−R$ 13,69" / "= hoje" — mesma régua na composição
+  // (diferença da simulação) e na coluna "vs. hoje" das promoções.
+  function margemDeltaHtml(d, moeda, dpp) {
+    if (d == null || !isFinite(d)) return '<span class="am-delta is-vazio">—</span>';
+    if (Math.abs(d) < 0.005) return '<span class="am-delta is-igual">= hoje</span>';
+    var txt = (d > 0 ? "+" : "−") + formatMoeda(Math.abs(d), moeda);
+    if (dpp != null && isFinite(dpp)) {
+      txt += " · " + (dpp >= 0 ? "+" : "−") + Math.abs(dpp).toFixed(1).replace(".", ",") + " p.p.";
+    }
+    return '<span class="am-delta ' + (d > 0 ? "is-pos" : "is-neg") + '">' + escapeHtml(txt) + "</span>";
   }
 
   function margemComposicaoLadderHtml(comp, cacheMargem, moeda, itemId) {
     var sim = (DET && DET.itemId === itemId) ? DET.simulacaoMargem : null;
-    var simulando = !!(sim && (sim.custoProduto != null || sim.custosAdicionais != null || sim.preco != null));
+    var ativa = simulacaoAtiva(itemId);
+    var calculada = !!(ativa && simulacaoTemOverride(sim) && sim.resultado);
+    // Entradas que o Motor efetivamente usou (POST .../simular-margem devolve
+    // `entradas`) — nunca recalculadas aqui. Sem simulação calculada, a
+    // coluna repete o número de hoje.
+    var ent = calculada && sim.entradas ? sim.entradas : null;
 
-    // Custo do produto e Custos adicionais mostram o OVERRIDE de simulação
-    // quando ativo — nunca o valor real por baixo dele, para não sugerir que
-    // o número simulado foi gravado em algum lugar.
-    var custoExibido = sim && sim.custoProduto != null ? sim.custoProduto : comp.custoProduto;
-    var custosAdicionaisExibido = sim && sim.custosAdicionais != null ? sim.custosAdicionais : comp.taxaFixa;
+    var precoHoje = comp.venda;
+    var precoSim = sim && sim.preco != null ? sim.preco : precoHoje;
+    var custoSim = sim && sim.custoProduto != null ? sim.custoProduto : comp.custoProduto;
+    var adicSim = sim && sim.custosAdicionais != null ? sim.custosAdicionais : comp.taxaFixa;
 
-    // Escrita real de preço só é possível fora dos dois bloqueios abaixo —
-    // usado tanto para escolher o HTML da linha quanto para decidir se a
-    // ação "Aplicar preço" pode aparecer.
-    var podeAplicarPrecoReal = !comp.precoPromocionalAtivo && !precoBloqueadoPorVariacoesLegado(comp);
-
-    var linhaPreco;
-    if (comp.precoPromocionalAtivo) {
-      linhaPreco = margemComposicaoLinhaPrecoBloqueadoHtml(comp.venda, moeda,
-        "Este anúncio está com uma promoção ativa no Mercado Livre — o valor mostrado é o preço promocional vigente, " +
-        "que esta tela ainda não edita. Ajuste a promoção diretamente no Mercado Livre.");
-    } else {
-      var precoExibido = sim && sim.preco != null ? sim.preco : comp.venda;
-      var dicaPreco = podeAplicarPrecoReal
-        ? 'Simular outro preço — clique em "Aplicar preço" abaixo para gravar no Mercado Livre'
-        : "Simular outro preço — não grava no Mercado Livre; este anúncio possui variações e o preço deve ser " +
-          "alterado no nível do anúncio.";
-      linhaPreco = margemComposicaoLinhaEditavelHtml("Preço de venda", "preco", precoExibido, moeda, itemId, dicaPreco);
-    }
-
-    // "Aplicar preço": só aparece quando há uma simulação de preço PENDENTE
-    // (diferente do preço real) E a escrita real é possível — nunca para
-    // promoção ativa nem item com variações legado, nos dois casos porque o
-    // PUT real seria recusado (ou já está sendo mostrado outro preço).
-    var precoSimuladoPendente = podeAplicarPrecoReal && sim && sim.preco != null &&
-      Number(sim.preco) !== Number(comp.venda);
-    var aplicarPrecoHtml = precoSimuladoPendente
-      ? '<div class="am-margem-comp__linha am-margem-comp__linha--acao">' +
-          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="aplicar-preco" ' +
-            'data-margem-item="' + escapeAttr(itemId) + '">Aplicar preço no Mercado Livre</button>' +
-        "</div>"
-      : "";
+    var estPreco = precoSimulacaoEstado(itemId, comp);
+    var precoSimHtml = estPreco.editavel
+      ? margemSimInputHtml("preco", precoSim, itemId, "Preço de venda")
+      : '<span class="am-margem-sim__valor am-margem-comp__valor--bloqueado' +
+          (precoSim != null && precoHoje != null && Math.abs(precoSim - precoHoje) > 0.004 ? " is-alterado" : "") +
+          '" title="' + escapeAttr(estPreco.motivo) + '">' + formatMoeda(precoSim, moeda) + "</span>";
 
     var linhas =
-      linhaPreco +
-      aplicarPrecoHtml +
-      margemComposicaoLinhaEditavelHtml("Custo do produto", "custoProduto", custoExibido, moeda, itemId,
-        "Simular outro custo — não altera a Base de Custos") +
-      margemComposicaoLinhaHtml("Comissão Mercado Livre", comp.comissaoMl, moeda) +
-      margemComposicaoLinhaHtml("Frete", comp.frete, moeda) +
-      margemComposicaoLinhaEditavelHtml("Custos adicionais", "custosAdicionais", custosAdicionaisExibido, moeda, itemId,
-        "Simular embalagem, operação ou outro custo extra — não é cobrado pelo Mercado Livre");
+      margemSimLinhaHtml(
+        "Preço de venda" + (estPreco.editavel ? "" : infoDotHtml(estPreco.motivo, "Por que o preço está travado")),
+        formatMoeda(precoHoje, moeda), precoSimHtml, "am-margem-sim__linha--campo") +
+      margemSimLinhaHtml(
+        "Custo do produto" + infoDotHtml("Simulação — não altera a Base de Custos.", "Sobre o custo do produto"),
+        formatMoeda(comp.custoProduto, moeda),
+        margemSimInputHtml("custoProduto", custoSim, itemId, "Custo do produto"), "am-margem-sim__linha--campo");
 
-    // "Taxa de rebate": só aparece quando o anúncio tem uma promoção ATIVA
-    // com retorno ML conhecido (subsidioMl, ver promocaoAtivaComSubsidioDoItem
-    // / meliPromocoesService.normalizarPromocao) — some sozinha nos demais
-    // casos, mesmo padrão de Imposto/taxaFixa. É SOMADA ao lucro (nunca
-    // deduzida) — a "Margem" abaixo já vem do backend com esse valor
-    // incluído (ver marginEngine.computeMargin`rebate`), esta linha só
-    // explica de onde vem a diferença.
-    if (comp.rebate != null) {
-      linhas += margemComposicaoLinhaHtml("Taxa de rebate", comp.rebate, moeda,
-        "Retorno ML da promoção ativa — somado ao lucro, não é um custo.");
+    if (comp.comissaoMl != null) {
+      linhas += margemSimLinhaHtml("Comissão Mercado Livre", formatMoeda(comp.comissaoMl, moeda),
+        margemSimValorHtml(ent && ent.commission != null ? ent.commission : comp.comissaoMl, comp.comissaoMl, moeda));
+    }
+    if (comp.frete != null) {
+      linhas += margemSimLinhaHtml("Frete", formatMoeda(comp.frete, moeda),
+        margemSimValorHtml(ent && ent.freight != null ? ent.freight : comp.frete, comp.frete, moeda));
+    }
+    linhas += margemSimLinhaHtml(
+      "Custos adicionais" + infoDotHtml("Embalagem, operação ou outro custo extra — simulação, não é cobrado pelo Mercado Livre.", "Sobre custos adicionais"),
+      formatMoeda(comp.taxaFixa, moeda),
+      margemSimInputHtml("custosAdicionais", adicSim, itemId, "Custos adicionais"), "am-margem-sim__linha--campo");
+
+    // "Taxa de rebate": retorno ML da promoção — SOMADO ao lucro, nunca um
+    // custo. Aparece quando hoje há rebate (promoção ATIVA com subsidioMl) ou
+    // quando a simulação traz um (promoção escolhida com subsídio).
+    var rebateHoje = comp.rebate != null ? comp.rebate : 0;
+    var rebateSim = ent ? (ent.rebate || 0) : rebateHoje;
+    if (comp.rebate != null || rebateSim > 0) {
+      linhas += margemSimLinhaHtml(
+        "Taxa de rebate" + infoDotHtml("Retorno ML da promoção — somado ao lucro, não é um custo.", "Sobre a taxa de rebate"),
+        formatMoeda(rebateHoje, moeda), margemSimValorHtml(rebateSim, rebateHoje, moeda));
     }
 
     if (comp.impostoValor != null) {
       var rotuloImposto = "Imposto" +
         (comp.impostoPercentual != null ? " (" + formatarPercentualCompacto(comp.impostoPercentual * 100) + ")" : "");
-      linhas += margemComposicaoLinhaHtml(rotuloImposto, comp.impostoValor, moeda,
-        "Guardado como percentual pelo Motor de Margem — este valor em R$ é só para exibição.");
+      var impostoSim = ent && ent.taxRate != null && ent.price != null ? ent.price * ent.taxRate : comp.impostoValor;
+      linhas += margemSimLinhaHtml(
+        rotuloImposto + infoDotHtml("Guardado como percentual pelo Motor de Margem — o valor em R$ é só para exibição.", "Sobre o imposto"),
+        formatMoeda(comp.impostoValor, moeda), margemSimValorHtml(impostoSim, comp.impostoValor, moeda));
     }
 
-    // "= Margem": o valor REAL do Motor por padrão — nunca a soma das linhas
-    // acima. Só vira "Margem simulada" enquanto Custo do produto ou Custos
-    // adicionais tiverem um override ativo — e aí o número é sempre o que
-    // veio de POST .../simular-margem, nunca recalculado aqui no front.
-    var totalHtml = "";
-    if (simulando && sim.resultado) {
-      var r = sim.resultado;
-      totalHtml = '<div class="am-margem-comp__linha am-margem-comp__total am-margem-comp__total--simulada">' +
-        '<span class="am-margem-comp__rotulo">Margem simulada' + infoDotHtml(
-          "Projeção com os valores digitados acima — nada foi gravado no Mercado Livre nem na Base de Custos."
-        ) + "</span>" +
-        '<span class="am-margem-comp__valor">' +
-          (r.computable
-            ? formatMoeda(r.profit, moeda) + (r.marginPercent != null ? " (" + formatarPercentualCompacto(r.marginPercent) + ")" : "")
-            : "Sem dados suficientes para simular") +
-          ' <button type="button" class="am-margem-comp__restaurar" data-acao="restaurar-simulacao-margem" ' +
-            'title="Descartar a simulação e voltar para a margem real">↺ real</button>' +
-        "</span>" +
-      "</div>";
-    } else if (cacheMargem && cacheMargem.profit != null) {
-      totalHtml = '<div class="am-margem-comp__linha am-margem-comp__total">' +
-        '<span class="am-margem-comp__rotulo">Margem</span>' +
-        '<span class="am-margem-comp__valor">' + formatMoeda(cacheMargem.profit, moeda) +
-          (cacheMargem.marginPercent != null ? " (" + formatarPercentualCompacto(cacheMargem.marginPercent) + ")" : "") +
-        "</span>" +
-      "</div>";
+    // "Margem": o valor REAL do Motor em "Hoje" — nunca a soma das linhas.
+    // Em "Simulação", sempre o que veio de POST .../simular-margem.
+    var temHoje = cacheMargem && cacheMargem.profit != null;
+    var hojeTotal = temHoje ? formatMoeda(cacheMargem.profit, moeda) + margemSimPctHtml(cacheMargem.marginPercent) : "—";
+    var simTotal = hojeTotal;
+    if (ativa && simulacaoTemOverride(sim)) {
+      if (!sim.resultado) simTotal = '<span class="am-margem-sim__calculando">Calculando…</span>';
+      else if (!sim.resultado.computable) simTotal = '<span class="am-margem-sim__calculando">Sem dados suficientes</span>';
+      else simTotal = formatMoeda(sim.resultado.profit, moeda) + margemSimPctHtml(sim.resultado.marginPercent);
+    }
+    linhas += margemSimLinhaHtml("Margem", hojeTotal, simTotal, "am-margem-sim__linha--total");
+
+    var difHtml = "";
+    if (calculada && sim.resultado.computable && temHoje) {
+      var dpp = sim.resultado.marginPercent != null && cacheMargem.marginPercent != null
+        ? sim.resultado.marginPercent - cacheMargem.marginPercent : null;
+      difHtml = '<div class="am-margem-sim__dif"><span>Diferença por venda</span>' +
+        margemDeltaHtml(sim.resultado.profit - cacheMargem.profit, moeda, dpp) + "</div>";
     }
 
-    return '<div class="am-margem-comp__ladder">' + linhas + totalHtml + "</div>";
+    var cab = '<div class="am-margem-sim__linha am-margem-sim__cab" aria-hidden="true">' +
+      "<span></span><span>Hoje</span><span>Simulação</span></div>";
+    return '<div class="am-margem-comp__ladder am-margem-sim' + (ativa ? " is-simulando" : "") + '">' +
+      cab + linhas + difHtml + "</div>";
   }
 
   // Conteúdo pronto da seção — usado tanto no primeiro paint (quando o item
@@ -5713,9 +5727,18 @@
     return badge + margemComposicaoLadderHtml(cache.composicao, cache.margem, moeda, itemId);
   }
 
-  // Resumo compacto à direita do título — só aparece quando a composição
-  // já chegou.
+  // À direita do título: com uma promoção escolhida, o selo "Simulando:
+  // <promoção>" (com ✕ para descartar); senão o resumo compacto da margem,
+  // que só aparece quando a composição já chegou.
   function margemComposicaoResumoHtml(itemId) {
+    var sel = promocaoSelecionadaDoItem(itemId);
+    if (sel) {
+      return '<span class="am-margem-sim__chip">' +
+        '<span class="am-margem-sim__chip-nome">Simulando: ' + escapeHtml(sel.nome || sel.tipoLabel) + "</span>" +
+        '<button type="button" class="am-margem-sim__chip-x" data-acao="restaurar-simulacao-margem" ' +
+          'aria-label="Descartar a simulação" title="Descartar a simulação">×</button>' +
+      "</span>";
+    }
     var cache = AM.state.performanceCache[itemId];
     if (!cache || !cache.temComposicao || !cache.margem || cache.margem.marginPercent == null) return "";
     // Margem = Margem Projetada, SOMENTE, nesta tela — sem alternância de
@@ -5739,6 +5762,7 @@
         '<span class="am-det-section__meta" id="am-det-margem-resumo">' + margemComposicaoResumoHtml(itemId) + "</span>" +
       "</div>" +
       '<div class="am-margem-comp__body" id="am-det-margem-body">' + corpo + "</div>" +
+      '<div class="am-margem-acoes" id="am-det-margem-acoes">' + margemAcoesHtml(itemId) + "</div>" +
     "</div>";
   }
 
@@ -5757,184 +5781,163 @@
       garantirComposicaoDoItem(itemId).then(function () {
         if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB aberto no meio do caminho
         repintarComposicaoDoItem(itemId);
+        repintarPromocoesDoItem(itemId); // "vs. hoje" depende da margem que acabou de chegar
       });
     });
   }
 
   function repintarComposicaoDoItem(itemId) {
+    if (!DET || DET.itemId !== itemId || !DET.anuncio) return;
     var corpo = el("am-det-margem-body");
-    if (corpo) corpo.innerHTML = margemComposicaoConteudoHtml(itemId, DET.anuncio.moeda);
+    if (corpo) {
+      // O repaint troca os campos da coluna Simulação: devolve o foco ao
+      // mesmo campo (ex.: Tab de Preço para Custo dispara a simulação do
+      // Preço, e o operador continua no Custo) e, se ele estava no meio da
+      // digitação quando a resposta de uma simulação anterior chegou, o que
+      // já foi digitado não se perde.
+      var ativo = document.activeElement;
+      var focado = ativo && corpo.contains(ativo) && ativo.classList.contains("am-margem-sim__input") ? ativo : null;
+      var campoFocado = focado ? focado.getAttribute("data-margem-campo") : null;
+      var digitando = focado && focado.value !== focado.defaultValue ? focado.value : null;
+      DET.repintandoComposicao = true;
+      try {
+        corpo.innerHTML = margemComposicaoConteudoHtml(itemId, DET.anuncio.moeda);
+      } finally {
+        DET.repintandoComposicao = false;
+      }
+      if (campoFocado) {
+        var novo = corpo.querySelector('.am-margem-sim__input[data-margem-campo="' + campoFocado + '"]');
+        if (novo) {
+          if (digitando != null && Number(digitando) !== Number(novo.defaultValue)) novo.value = digitando;
+          novo.focus();
+        }
+      }
+    }
     var resumo = el("am-det-margem-resumo");
     if (resumo) resumo.innerHTML = margemComposicaoResumoHtml(itemId);
+    var acoes = el("am-det-margem-acoes");
+    if (acoes) acoes.innerHTML = margemAcoesHtml(itemId);
     // O preço do CABEÇALHO usa a mesma fonte que acabou de chegar — sem isso
     // ele ficaria preso ao snapshot (a.preco/a.preco_original) mesmo depois
     // da composição já mostrar o valor ao vivo do Motor logo abaixo.
     var precoWrap = el("am-det-price");
-    if (precoWrap && DET.anuncio) precoWrap.outerHTML = precoDetalheHtml(DET.anuncio);
-    bindMargemEditavel(corpo);
-    bindAplicarPreco(corpo, itemId);
-    bindRestaurarSimulacaoMargem(corpo, itemId);
+    if (precoWrap) precoWrap.outerHTML = precoDetalheHtml(DET.anuncio);
   }
 
   // ===========================================================================
-  // Composição da margem — EDIÇÃO. Preço de venda, Custo do produto e Custos
-  // adicionais são TODOS simulação local primeiro (POST .../simular-margem,
-  // via bindMargemEditavel/confirmarSimulacaoMargem — Enter confirma, Esc
-  // cancela). A escrita REAL de preço no Mercado Livre (PATCH .../preco)
-  // nunca acontece nesse clique: só quando existe uma simulação de preço
-  // pendente aparece a ação "Aplicar preço no Mercado Livre" (ver
-  // margemComposicaoLadderHtml), que abre um diálogo de confirmação
-  // (Preço atual/Novo preço/Margem atual/Margem simulada — ver
-  // abrirConfirmacaoEscrita) e só grava no clique explícito em "Confirmar"
-  // dentro dele. Ver bindAplicarPreco/abrirConfirmacaoAplicarPreco/
-  // aplicarPrecoReal.
+  // Composição da margem — SIMULAÇÃO e AÇÃO. Tudo nasce como simulação local
+  // (POST .../simular-margem). A escrita real só acontece pelo botão único de
+  // #am-det-margem-acoes, cujo rótulo diz exatamente o que vai acontecer
+  // ("Participar por R$ X", "Deixar de participar", "Aplicar R$ X no
+  // anúncio"…), e sempre passa pelo diálogo de confirmação
+  // (abrirConfirmacaoEscrita).
   // ===========================================================================
 
-  var CAMPOS_MARGEM_ROTULO = {
-    custoProduto: "Custo do produto", custosAdicionais: "Custos adicionais", preco: "Preço de venda",
-  };
+  // Item legado com variations[] reais no ML (variations_count > 0): o PUT de
+  // preço seria recusado (PRECO_ITEM_COM_VARIACAO, ver meliPrecoService) —
+  // o preço vira só simulação. Promoção ativa tem prioridade (o preço já
+  // vem travado por ela, ver precoSimulacaoEstado).
+  function precoBloqueadoPorVariacoesLegado(comp) {
+    if (comp.precoPromocionalAtivo) return false;
+    return !!(DET && DET.anuncio && (DET.anuncio.variations_count || 0) > 0);
+  }
 
-  function bindMargemEditavel(raiz) {
-    (raiz || document).querySelectorAll(".am-margem-edit").forEach(function (cel) {
-      cel.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (e.target.closest(".am-margem-edit__btn")) abrirEditorMargemCampo(cel);
-      });
+  // Delegação: um listener por seção, ligado em renderDetalhe — os repaints
+  // trocam só o miolo e nunca precisam religar nada.
+  function bindComposicaoMargem(secao, itemId) {
+    if (!secao) return;
+    // Sair do campo (Tab, clique fora) com um valor diferente do exibido
+    // calcula. Ignorado durante um repaint (o campo antigo some do DOM).
+    secao.addEventListener("focusout", function (e) {
+      var input = e.target.closest(".am-margem-sim__input");
+      if (!input || (DET && DET.repintandoComposicao)) return;
+      if (input.value === input.defaultValue) return;
+      confirmarSimulacaoMargem(itemId, input.getAttribute("data-margem-campo"), input.value);
     });
-  }
-
-  function bindRestaurarSimulacaoMargem(raiz, itemId) {
-    var botao = (raiz || document).querySelector('[data-acao="restaurar-simulacao-margem"]');
-    if (!botao) return;
-    botao.addEventListener("click", function (e) {
-      e.stopPropagation();
-      if (!DET || DET.itemId !== itemId) return;
-      DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
-      DET.promoLinhaSelecionada = null;
-      repintarComposicaoDoItem(itemId);
-      repintarPromocoesDoItem(itemId);
-    });
-  }
-
-  // Valor de LEITURA de uma célula de simulação: o override quando existe,
-  // senão o valor REAL do cache.
-  function valorLeituraMargemCampo(campo, itemId) {
-    var cache = AM.state.performanceCache[itemId];
-    var comp = cache && cache.composicao;
-    var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
-    if (campo === "custoProduto") {
-      if (sim && sim.custoProduto != null) return sim.custoProduto;
-      return comp ? comp.custoProduto : null;
-    }
-    if (campo === "custosAdicionais") {
-      if (sim && sim.custosAdicionais != null) return sim.custosAdicionais;
-      return comp ? comp.taxaFixa : null;
-    }
-    if (campo === "preco") {
-      if (sim && sim.preco != null) return sim.preco;
-      return comp ? comp.venda : null;
-    }
-    return null;
-  }
-
-  function pintarMargemCampoLeitura(cel) {
-    var campo = cel.getAttribute("data-margem-campo");
-    var itemId = cel.getAttribute("data-margem-item");
-    var valor = valorLeituraMargemCampo(campo, itemId);
-    cel.setAttribute("data-margem-valor", valor == null ? "" : valor);
-    cel.classList.remove("is-editando", "is-salvando");
-    cel.innerHTML = botaoMargemEditHtml(
-      formatMoeda(valor, DET.anuncio.moeda),
-      "Simular — não altera a Base de Custos nem o Mercado Livre"
-    );
-  }
-
-  function abrirEditorMargemCampo(cel) {
-    if (!DET) return;
-    if (cel.classList.contains("is-editando") || cel.classList.contains("is-salvando")) return;
-
-    var campo = cel.getAttribute("data-margem-campo");
-    var atual = cel.getAttribute("data-margem-valor") || "";
-    cel.classList.add("is-editando");
-    var dica = "Enter simula a margem, Esc cancela";
-    cel.innerHTML = '<input type="number" step="0.01" min="0" class="am-margem-edit__input" ' +
-      'value="' + escapeAttr(atual) + '" title="' + escapeAttr(dica) + '" aria-label="' +
-      escapeAttr((CAMPOS_MARGEM_ROTULO[campo] || campo) + ". " + dica) + '" />';
-    var input = cel.querySelector(".am-margem-edit__input");
-    if (!input) return;
-    input.focus();
-    input.select();
-
-    // Mesma regra dos outros campos de simulação desta tela: Enter confirma,
-    // Esc cancela, sair do campo CANCELA — nunca confirma por acidente (um
-    // clique fora, um Tab).
-    input.addEventListener("keydown", function (e) {
+    secao.addEventListener("keydown", function (e) {
+      var input = e.target.closest(".am-margem-sim__input");
+      if (!input) return;
+      // Enter calcula (o foco continua no campo); Esc desfaz o que foi
+      // digitado sem calcular — e nunca fecha o modal por baixo.
       e.stopPropagation();
       if (e.key === "Enter") {
         e.preventDefault();
-        confirmarSimulacaoMargem(cel, campo, input.value);
-        return;
-      }
-      if (e.key === "Escape") {
+        confirmarSimulacaoMargem(itemId, input.getAttribute("data-margem-campo"), input.value);
+      } else if (e.key === "Escape") {
         e.preventDefault();
-        pintarMargemCampoLeitura(cel);
+        input.value = input.defaultValue;
+        input.blur();
       }
     });
-    input.addEventListener("blur", function () {
-      if (cel.classList.contains("is-salvando")) return;
-      pintarMargemCampoLeitura(cel);
+    secao.addEventListener("click", function (e) {
+      var alvo = e.target.closest("[data-acao]");
+      if (!alvo || !secao.contains(alvo) || alvo.disabled) return;
+      var acao = alvo.getAttribute("data-acao");
+      if (acao === "restaurar-simulacao-margem") {
+        e.stopPropagation();
+        descartarSimulacaoMargem(itemId);
+      } else if (acao === "aplicar-preco") {
+        e.stopPropagation();
+        abrirConfirmacaoAplicarPreco(itemId);
+      } else if (acao === "promo-aplicar") {
+        e.stopPropagation();
+        abrirConfirmacaoPromocao(itemId, promocaoSelecionadaDoItem(itemId));
+      } else if (acao === "promo-participar" || acao === "promo-sair") {
+        e.stopPropagation();
+        abrirConfirmacaoAceite(itemId, promocaoSelecionadaDoItem(itemId), acao === "promo-sair");
+      }
     });
   }
 
-  // Custo do produto / Custos adicionais: só SIMULA. Nunca chama o Mercado
-  // Livre, nunca grava na Base de Custos — só alimenta POST .../simular-margem
-  // com o núcleo do Motor (marginEngine.computeMargin), o mesmo de sempre.
-  function confirmarSimulacaoMargem(cel, campo, bruto) {
-    var itemId = cel.getAttribute("data-margem-item");
-    // Só existe em células da tabela "Promoções disponíveis" (ver
-    // promocaoLinhaHtml) — null em todas as outras (composição). Marca QUAL
-    // linha passa a mostrar "Você recebe" quando o campo é "preco". Chave
-    // composta id::tipo (ver promocaoChave) — nunca só o id.
-    var promoChave = cel.getAttribute("data-promo-key");
-    var anterior = cel.getAttribute("data-margem-valor") || "";
+  // Valor digitado num campo da coluna Simulação. Vazio, ou igual ao número
+  // real (sem promoção escolhida), desliga o override daquele campo.
+  function confirmarSimulacaoMargem(itemId, campo, bruto) {
+    if (!DET || DET.itemId !== itemId) return;
+    var cache = AM.state.performanceCache[itemId];
+    var comp = cache && cache.composicao;
+    var real = !comp ? null
+      : campo === "preco" ? comp.venda
+      : campo === "custoProduto" ? comp.custoProduto
+      : comp.taxaFixa;
     var texto = String(bruto == null ? "" : bruto).trim();
 
-    if (texto === anterior) { pintarMargemCampoLeitura(cel); return; }
-
     if (texto === "") {
-      // Campo esvaziado: o override some — volta a valer o número real do Motor.
       DET.simulacaoMargem[campo] = null;
-      if (promoChave != null && campo === "preco") DET.promoLinhaSelecionada = null;
-      pintarMargemCampoLeitura(cel);
-      dispararSimulacaoMargem(itemId);
-      return;
+    } else {
+      var n = Number(texto);
+      if (!isFinite(n) || n < 0 || (campo === "preco" && n <= 0)) {
+        toast(campo === "preco" ? "Informe um preço maior que zero." : "Informe um número maior ou igual a zero.", "is-danger");
+        repintarComposicaoDoItem(itemId);
+        return;
+      }
+      n = Math.round((n + Number.EPSILON) * 100) / 100;
+      var voltouAoReal = real != null && Math.abs(n - real) < 0.005 &&
+        !(campo === "preco" && DET.promoLinhaSelecionada != null);
+      DET.simulacaoMargem[campo] = voltouAoReal ? null : n;
     }
-
-    var n = Number(texto);
-    if (!isFinite(n) || n < 0) {
-      toast("Informe um número maior ou igual a zero.", "is-danger");
-      pintarMargemCampoLeitura(cel);
-      return;
-    }
-
-    DET.simulacaoMargem[campo] = Math.round((n + Number.EPSILON) * 100) / 100;
-    if (promoChave != null && campo === "preco") DET.promoLinhaSelecionada = promoChave;
-    pintarMargemCampoLeitura(cel);
     dispararSimulacaoMargem(itemId);
+  }
+
+  function descartarSimulacaoMargem(itemId) {
+    if (!DET || DET.itemId !== itemId) return;
+    DET.simulacaoMargem = novaSimulacaoMargem();
+    DET.promoLinhaSelecionada = null;
+    DET.simulacaoSeq = (DET.simulacaoSeq || 0) + 1; // resposta em voo vira lixo
+    repintarComposicaoDoItem(itemId);
+    repintarPromocoesDoItem(itemId);
   }
 
   function dispararSimulacaoMargem(itemId) {
     if (!DET || DET.itemId !== itemId) return;
     var sim = DET.simulacaoMargem;
-    if (sim.custoProduto == null && sim.custosAdicionais == null && sim.preco == null) {
-      // Nenhum override ativo: some a projeção e volta para a margem real,
-      // sem gastar chamada nenhuma.
-      sim.resultado = null;
-      DET.promoLinhaSelecionada = null;
-      repintarComposicaoDoItem(itemId);
-      repintarPromocoesDoItem(itemId);
-      return;
-    }
+    sim.resultado = null;
+    sim.entradas = null;
+    var seq = DET.simulacaoSeq = (DET.simulacaoSeq || 0) + 1;
+    repintarComposicaoDoItem(itemId);
+    repintarPromocoesDoItem(itemId);
+    // Só promoção escolhida, sem nenhum valor a mudar (ex.: promoção sem
+    // preço sugerido): a coluna Simulação repete hoje — nenhuma chamada.
+    if (!simulacaoTemOverride(sim)) return;
 
     var cache = AM.state.performanceCache[itemId];
     var origem = cache && cache.margem ? cache.margem.origem : "projected";
@@ -5943,30 +5946,127 @@
     if (sim.custoProduto != null) corpo.custoProduto = sim.custoProduto;
     if (sim.custosAdicionais != null) corpo.custosAdicionais = sim.custosAdicionais;
     if (sim.preco != null) corpo.preco = sim.preco;
-    // Simulação manual nascida de uma linha de promoção: soma o mesmo
-    // retorno ML (subsidioMl) já mostrado na coluna "Subsídio ML" dessa
-    // linha, pelo mesmo campo `rebate` do Motor — nunca uma conta à parte.
-    // promocaoPorChave (id+tipo) — nunca só o id, pra nunca somar o
-    // subsidioMl de uma promoção DIFERENTE que coincida de id (ver
-    // promocaoChave).
-    if (DET.promoLinhaSelecionada != null) {
-      var promoAtual = promocaoPorChave(itemId, DET.promoLinhaSelecionada);
-      if (promoAtual && promoAtual.subsidioMl != null) corpo.subsidioMl = promoAtual.subsidioMl;
+
+    // Retorno ML (rebate) — mesmo campo `rebate` do Motor, nunca uma conta à
+    // parte. promocaoPorChave (id+tipo) — nunca só o id.
+    //  · promoção escolhida: o subsidioMl DELA;
+    //  · sair de uma promoção que forma o preço hoje: nenhum (volta ao preço
+    //    cheio, sem retorno);
+    //  · nenhuma escolhida, ou sair de uma que não forma o preço: o da
+    //    promoção ATIVA, que continua valendo — senão simular só o custo
+    //    perderia o rebate que a margem de hoje já tem.
+    var sel = promocaoSelecionadaDoItem(itemId);
+    var subsidio = null;
+    if (sel && !promocaoCenarioSaida(sel)) {
+      subsidio = sel.subsidioMl;
+    } else if (!(sel && sel.statusExibicao === "ATIVA")) {
+      var ativa = promocaoAtivaComSubsidioDoItem(itemId);
+      if (ativa) subsidio = ativa.subsidioMl;
     }
+    if (subsidio != null) corpo.subsidioMl = subsidio;
 
     var meuToken = DET.token;
     api("/anuncios-meli/" + encodeURIComponent(itemId) + "/simular-margem", { method: "POST", body: corpo })
       .then(function (r) {
-        if (!DET || DET.token !== meuToken) return; // modal fechado, ou outro MLB no meio do caminho
+        // Modal fechado, outro MLB, ou uma simulação mais nova já saiu.
+        if (!DET || DET.token !== meuToken || DET.simulacaoSeq !== seq) return;
         var d = r.data || {};
         if (!d.ok) {
           toast(d.motivo || "Não foi possível simular a margem.", "is-danger");
-          return;
+          DET.simulacaoMargem.resultado = { computable: false };
+        } else {
+          DET.simulacaoMargem.resultado = d.resultado;
+          DET.simulacaoMargem.entradas = d.entradas || null;
         }
-        DET.simulacaoMargem.resultado = d.resultado;
         repintarComposicaoDoItem(itemId);
         repintarPromocoesDoItem(itemId);
       });
+  }
+
+  // O que dá para FAZER com a simulação atual — sempre UMA ação (ou uma
+  // explicação de por que não há), nunca um botão por linha.
+  function margemAcaoAtual(itemId) {
+    var sim = DET.simulacaoMargem;
+    var moeda = DET.anuncio.moeda;
+    var sel = promocaoSelecionadaDoItem(itemId);
+    var cache = AM.state.performanceCache[itemId];
+    var comp = cache && cache.composicao;
+
+    if (sel) {
+      if (sel.modoEscrita === "ACEITE") {
+        if (promocaoCenarioSaida(sel)) {
+          return {
+            nota: sel.statusExibicao === "ATIVA"
+              ? "Saindo, o anúncio volta ao preço cheio e deixa de receber o subsídio do Mercado Livre."
+              : "Esta promoção não está formando o preço agora — sair dela não muda a margem de hoje.",
+            tom: "texto",
+            botao: { acao: "promo-sair", rotulo: "Deixar de participar", classe: "vf-btn--secondary am-margem-acoes__btn--sair" },
+          };
+        }
+        if (sel.status === "candidate") {
+          return {
+            nota: "O preço é definido pelo Mercado Livre — você só escolhe participar ou não.",
+            tom: "texto",
+            botao: { acao: "promo-participar", rotulo: "Participar da promoção", classe: "vf-btn--primary" },
+          };
+        }
+        return { nota: "Esta promoção não aceita inscrição agora.", tom: "info" };
+      }
+      if (sel.modoEscrita === "PRECO") {
+        if (sel.status === "candidate") {
+          return sim.preco != null
+            ? { botao: { acao: "promo-aplicar", rotulo: "Participar por " + formatMoeda(sim.preco, moeda), classe: "vf-btn--primary" } }
+            : { botao: { rotulo: "Informe um preço para participar", classe: "vf-btn--primary", desabilitado: true } };
+        }
+        if ((sel.status === "started" || sel.status === "active") && sel.statusExibicao === "ATIVA") {
+          if (sel.subsidioMl != null) {
+            return {
+              nota: "Esta promoção tem participação do Mercado Livre (rebate) — a alteração de valores ainda não está disponível para ela.",
+              tom: "warning",
+            };
+          }
+          if (sim.preco == null || (sel.precoFinal != null && Math.abs(sim.preco - sel.precoFinal) < 0.005)) {
+            return { botao: { rotulo: "Mude o preço para alterar a promoção", classe: "vf-btn--primary", desabilitado: true } };
+          }
+          return { botao: { acao: "promo-aplicar", rotulo: "Alterar preço da promoção para " + formatMoeda(sim.preco, moeda), classe: "vf-btn--primary" } };
+        }
+        return { nota: "Esta promoção não está formando o preço agora — ajuste-a pelo painel do Mercado Livre.", tom: "info" };
+      }
+      return {
+        nota: "Este tipo de promoção é ativado no painel do Mercado Livre. A simulação serve para você decidir antes.",
+        tom: "info",
+      };
+    }
+
+    if (sim.preco != null && comp) {
+      if (!comp.precoPromocionalAtivo && !precoBloqueadoPorVariacoesLegado(comp)) {
+        return { botao: { acao: "aplicar-preco", rotulo: "Aplicar " + formatMoeda(sim.preco, moeda) + " no anúncio", classe: "vf-btn--primary" } };
+      }
+      return { nota: "Simulação apenas — este anúncio tem variações e o preço é alterado no nível do anúncio.", tom: "info" };
+    }
+    return { nota: "Custo simulado — não altera a Base de Custos.", tom: "texto" };
+  }
+
+  function margemAcoesHtml(itemId) {
+    if (!DET || DET.itemId !== itemId || !DET.anuncio) return "";
+    if (!simulacaoAtiva(itemId)) {
+      return '<p class="am-margem-acoes__dica">Clique numa promoção ao lado ou mude um valor da coluna Simulação. ' +
+        "Nada vai para o Mercado Livre sem você confirmar.</p>";
+    }
+    var a = margemAcaoAtual(itemId);
+    var html = "";
+    if (a.nota) html += '<p class="am-margem-acoes__nota is-' + a.tom + '">' + escapeHtml(a.nota) + "</p>";
+    if (a.botao) {
+      html += '<button type="button" class="vf-btn ' + a.botao.classe + ' am-margem-acoes__principal"' +
+        (a.botao.acao ? ' data-acao="' + a.botao.acao + '"' : "") + (a.botao.desabilitado ? " disabled" : "") + ">" +
+        escapeHtml(a.botao.rotulo) + "</button>";
+    }
+    html += '<button type="button" class="vf-btn vf-btn--ghost am-margem-acoes__descartar" data-acao="restaurar-simulacao-margem">' +
+      "Descartar simulação</button>";
+    if (a.botao && !a.botao.desabilitado) {
+      html += '<p class="am-margem-acoes__rodape">Você revisa e confirma antes de enviar ao Mercado Livre.</p>';
+    }
+    return html;
   }
 
   // ===========================================================================
@@ -6050,15 +6150,6 @@
   // meliPrecoService no backend).
   // ===========================================================================
 
-  function bindAplicarPreco(raiz, itemId) {
-    var botao = (raiz || document).querySelector('[data-acao="aplicar-preco"]');
-    if (!botao) return;
-    botao.addEventListener("click", function (e) {
-      e.stopPropagation();
-      abrirConfirmacaoAplicarPreco(itemId);
-    });
-  }
-
   function abrirConfirmacaoAplicarPreco(itemId) {
     if (!DET || DET.itemId !== itemId) return;
     var cache = AM.state.performanceCache[itemId];
@@ -6107,7 +6198,7 @@
         // Preço real mudou: qualquer simulação de custo/custos adicionais em
         // cima do preço antigo deixa de fazer sentido — some, e a composição
         // é reconsultada do zero (nunca assume o valor enviado).
-        DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
+        DET.simulacaoMargem = novaSimulacaoMargem();
         DET.promoLinhaSelecionada = null;
         var cache = AM.state.performanceCache[itemId];
         if (cache) { cache.temComposicao = false; cache.temMargem = false; }
@@ -6132,14 +6223,13 @@
   // termina de carregar (ver abrirDetalhe), NUNCA atrasando a abertura do
   // modal; cacheado por item_id (mesmo padrão de AM.state.performanceCache).
   //
-  // A célula "Preço final" é SEMPRE simulação — reaproveita 100% do mecanismo
-  // de Custo do produto/Custos adicionais da composição (mesma classe
-  // .am-margem-edit, mesmo bindMargemEditavel/abrirEditorMargemCampo/
-  // confirmarSimulacaoMargem, mesmo override DET.simulacaoMargem.preco e
-  // mesmo POST .../simular-margem) — nunca grava nada no Mercado Livre, nunca
-  // inscreve o anúncio em promoção nenhuma. `DET.promoLinhaSelecionada`
-  // guarda só qual LINHA está com uma simulação MANUAL ativa — enquanto
-  // nenhuma está selecionada, cada linha já chega com "Você recebe"
+  // Cada linha é um controle de ESCOLHA: clicar seleciona a promoção
+  // (`DET.promoLinhaSelecionada`) e preenche a coluna Simulação da
+  // composição com o cenário dela (mesmo override DET.simulacaoMargem.preco
+  // e mesmo POST .../simular-margem) — nunca grava nada no Mercado Livre.
+  // A ação real (participar/alterar/deixar de participar) fica num botão
+  // único em #am-det-margem-acoes. Enquanto nenhuma linha está escolhida,
+  // cada uma já chega com "Você recebe"
   // auto-preenchido em `p.voceRecebe` (calculado no backend, mesmo Motor,
   // ver ctrl.anexarVoceRecebe); ao selecionar uma linha, o valor manual de
   // DET.simulacaoMargem.resultado.profit passa a ter prioridade sobre o
@@ -6253,138 +6343,123 @@
     return '<span class="am-promo__subsidio">' + formatMoeda(p.subsidioMl, moeda) + "</span>";
   }
 
-  function promocaoDescontoHtml(p, moeda) {
-    if (p.descontoReais == null || p.descontoPercentual == null) {
-      return '<span class="am-promo__desconto am-promo__desconto--vazio">Sem sugestão do Mercado Livre</span>';
-    }
-    return '<span class="am-promo__desconto">' + formatMoeda(p.descontoReais, moeda) +
-      ' <span class="am-promo__desconto-pct">(' + formatarPercentualCompacto(p.descontoPercentual) + ")</span></span>";
-  }
-
   // "Preço final": mostra o override de simulação quando ESTA linha é a
   // selecionada; senão o valor que o próprio ML devolveu (real quando
   // ativa/agendada, sugerido quando candidata — pode ser null, nunca
-  // inventado, ver meliPromocoesService).
+  // inventado, ver meliPromocoesService). Linha ACEITE nunca troca: o preço
+  // é do ML, e o preço simulado dela é o de SAIR (ver selecionarPromocao).
   function precoFinalExibidoDaLinha(p, itemId) {
     var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
-    if (sim && DET.promoLinhaSelecionada === promocaoChave(p) && sim.preco != null) return sim.preco;
+    if (sim && p.modoEscrita !== "ACEITE" && DET.promoLinhaSelecionada === promocaoChave(p) && sim.preco != null) return sim.preco;
     return p.precoFinal;
   }
 
-  // Auto-preenchida ao abrir o modal (backend: ctrl.anexarVoceRecebe, mesmo
-  // Motor de .../simular-margem, price=precoFinal + rebate=subsidioMl) —
-  // "Simular" só existe pra alterações manuais; quando a linha está com uma
-  // simulação ativa, ela sempre tem prioridade sobre o valor auto-preenchido.
-  function promocaoVoceRecebeHtml(p) {
-    var sim = DET && DET.simulacaoMargem;
-    var selecionada = !!(sim && DET.promoLinhaSelecionada === promocaoChave(p) && sim.preco != null);
-    if (selecionada) {
-      if (!sim.resultado) return '<span class="am-promo__recebe am-promo__recebe--vazio">Simulando…</span>';
-      var r = sim.resultado;
-      if (!r.computable) return '<span class="am-promo__recebe am-promo__recebe--vazio">Sem dados suficientes</span>';
-      return '<span class="am-promo__recebe">' + formatMoeda(r.profit, DET.anuncio.moeda) +
-        (r.marginPercent != null
-          ? ' <span class="am-promo__recebe-pct">(' + formatarPercentualCompacto(r.marginPercent) + ")</span>"
-          : "") +
-      "</span>";
-    }
-    if (!p.voceRecebe) return '<span class="am-promo__recebe am-promo__recebe--vazio">—</span>';
-    if (!p.voceRecebe.computable) return '<span class="am-promo__recebe am-promo__recebe--vazio">Sem dados suficientes</span>';
-    return '<span class="am-promo__recebe">' + formatMoeda(p.voceRecebe.profit, DET.anuncio.moeda) +
-      (p.voceRecebe.marginPercent != null
-        ? ' <span class="am-promo__recebe-pct">(' + formatarPercentualCompacto(p.voceRecebe.marginPercent) + ")</span>"
-        : "") +
-    "</span>";
-  }
-
-  // Escopo desta v1 (decisão de produto, ver auditoria de
-  // documentacao_api_meli/*, mesmo escopo do backend — meliPromocoesEscritaService.
-  // TIPOS_COM_ESCRITA): só DEAL e SELLER_CAMPAIGN têm um contrato de escrita
-  // simétrico (POST participa/PUT altera) com preço escolhido pelo vendedor.
-  // Todos os outros tipos continuam só simulação — o backend recusaria a
-  // escrita mesmo que o botão tentasse, mas a UI já não oferece a opção pra
-  // não sugerir uma ação que vai falhar.
-  var PROMO_TIPOS_COM_ESCRITA = { DEAL: true, SELLER_CAMPAIGN: true };
-  function promocaoSuportaEscrita(p) { return !!PROMO_TIPOS_COM_ESCRITA[p.tipo]; }
-
-  // Verdadeiro quando ESTA linha já tem uma simulação de preço pendente
-  // (mesmo sinal usado por precoFinalExibidoDaLinha/promocaoVoceRecebeHtml)
-  // — é o que muda "Participar"/"Alterar" para "Confirmar participação"/
-  // "Confirmar alteração".
-  function promocaoJaSimulada(p, itemId) {
+  // "Você recebe" da linha. Auto-preenchido pelo backend (ctrl.anexarVoceRecebe,
+  // mesmo Motor de .../simular-margem, price=precoFinal + rebate=subsidioMl);
+  // a linha ESCOLHIDA com preço simulado mostra o resultado da simulação.
+  // Linha ACEITE nunca troca: o preço dela é do ML, a simulação é sobre
+  // entrar/sair (ver precoFinalExibidoDaLinha).
+  function promocaoRecebeDaLinha(p, itemId) {
     var sim = DET && DET.itemId === itemId ? DET.simulacaoMargem : null;
-    return !!(sim && DET.promoLinhaSelecionada === promocaoChave(p) && sim.preco != null);
+    var selecionada = !!(DET && DET.promoLinhaSelecionada === promocaoChave(p));
+    if (selecionada && p.modoEscrita !== "ACEITE" && sim && sim.preco != null) {
+      return sim.resultado ? sim.resultado : { calculando: true };
+    }
+    return p.voceRecebe || null;
   }
 
-  // Rótulo por STATUS BRUTO do ML e por TIPO (decisão de produto revisada —
-  // ver auditoria). A decisão NÃO usa mais statusExibicao sozinho:
-  // statusExibicao só diz qual promoção está formando o preço AGORA, não se
-  // o vendedor já participa dela. Uma promoção "started"/"active" já foi
-  // aceita pelo vendedor e pode ser alterada de verdade — mesmo quando
-  // statusExibicao é NÃO APLICADA (não é a que está formando o preço atual
-  // neste momento).
-  //  - tipo fora do escopo de escrita (nesta v1): sempre "Simular" — o botão
-  //    nunca vai além de selecionar + simular, em qualquer status.
-  //  - tipo com escrita, status "pending" (PROGRAMADA — ainda não começou):
-  //    sempre "Simular", nunca escreve.
-  //  - tipo com escrita, status "started"/"active" (já participada, ATIVA ou
-  //    NÃO APLICADA): "Alterar", ainda não simulado; "Confirmar alteração",
-  //    já simulado nesta linha — o próximo clique abre o diálogo de
-  //    confirmação (ver bindPromocoesAcoes/abrirConfirmacaoPromocao). Se a
-  //    promoção tem subsidioMl (retorno ML/rebate), o botão continua
-  //    "Alterar" normalmente — o bloqueio (aviso, sem PUT) acontece só ao
-  //    confirmar, dentro de abrirConfirmacaoPromocao.
-  //  - tipo com escrita, status "candidate" (ELEGÍVEL): "Participar", ainda
-  //    não simulado; "Confirmar participação", já simulado — fluxo normal
-  //    de POST, nunca afetado pelo bloqueio de rebate acima.
-  function promocaoJaParticipada(p) {
-    return p.status === "started" || p.status === "active";
-  }
-  function promocaoPodeEscrever(p) {
-    return promocaoJaParticipada(p) || p.status === "candidate";
-  }
-  function promocaoTarefaRotulo(p, itemId) {
-    if (!promocaoSuportaEscrita(p) || !promocaoPodeEscrever(p)) return "Simular";
-    var jaParticipada = promocaoJaParticipada(p);
-    if (promocaoJaSimulada(p, itemId)) return jaParticipada ? "Confirmar alteração" : "Confirmar participação";
-    return jaParticipada ? "Alterar" : "Participar";
+  function promocaoVoceRecebeHtml(p, itemId, moeda) {
+    var r = promocaoRecebeDaLinha(p, itemId);
+    if (r && r.calculando) return '<span class="am-promo__recebe am-promo__recebe--vazio">Simulando…</span>';
+    if (!r) return '<span class="am-promo__recebe am-promo__recebe--vazio">—</span>';
+    if (!r.computable) return '<span class="am-promo__recebe am-promo__recebe--vazio">Sem dados suficientes</span>';
+    return '<span class="am-promo__recebe">' + formatMoeda(r.profit, moeda) + "</span>" +
+      (r.marginPercent != null
+        ? '<span class="am-promo__recebe-pct">' + escapeHtml(formatarPercentualCompacto(r.marginPercent)) + "</span>"
+        : "");
   }
 
+  // "vs. hoje": quanto a linha muda a margem por venda em relação à margem
+  // real de hoje (cache.margem, a mesma da composição).
+  function promocaoVsHojeHtml(p, itemId, moeda) {
+    var r = promocaoRecebeDaLinha(p, itemId);
+    var cache = AM.state.performanceCache[itemId];
+    var hoje = cache && cache.margem ? cache.margem.profit : null;
+    if (!r || r.calculando || !r.computable || r.profit == null || hoje == null) return margemDeltaHtml(null, moeda);
+    return margemDeltaHtml(r.profit - hoje, moeda);
+  }
+
+  function promocaoPrecoHtml(p, itemId, moeda) {
+    var preco = precoFinalExibidoDaLinha(p, itemId);
+    if (preco == null) return '<span class="am-promo__preco am-promo__preco--vazio">Sem sugestão</span>';
+    var desc = "";
+    if (p.precoOriginal != null && p.precoOriginal > 0 && preco < p.precoOriginal) {
+      desc = '<span class="am-promo__preco-desc">−' +
+        escapeHtml(formatarPercentualCompacto(((p.precoOriginal - preco) / p.precoOriginal) * 100)) + "</span>";
+    }
+    return '<span class="am-promo__preco">' + formatMoeda(preco, moeda) + "</span>" + desc;
+  }
+
+  // Grupos por o que o operador PODE fazer — a ordem é a de leitura: o que
+  // forma o preço agora, o que já está inscrito, o que dá para inscrever por
+  // aqui, e o que só o painel do ML resolve. Chave é statusExibicao/status +
+  // modoEscrita (ambos do backend — meliPromocoesService).
+  var PROMO_GRUPOS = [
+    { chave: "ativa", titulo: "Ativa agora", dica: "É ela que forma o preço de hoje" },
+    { chave: "participa", titulo: "Você já participa", dica: "Inscrita, mas não é a que forma o preço agora" },
+    { chave: "pode", titulo: "Pode participar pelo VenForce", dica: "Escolha, simule e confirme por aqui" },
+    { chave: "ml", titulo: "Só pelo Mercado Livre", dica: "Dá para simular; a inscrição é feita no painel do Mercado Livre" },
+  ];
+
+  function promocaoGrupo(p) {
+    if (p.statusExibicao === "ATIVA") return "ativa";
+    if (promocaoParticipa(p)) return "participa";
+    if (p.status === "candidate" && (p.modoEscrita === "PRECO" || p.modoEscrita === "ACEITE")) return "pode";
+    return "ml";
+  }
+
+  // A LINHA INTEIRA é o controle: clicar escolhe a promoção e preenche a
+  // coluna Simulação da composição (ver selecionarPromocao). Nenhum botão
+  // por linha — a ação fica num lugar só (#am-det-margem-acoes).
   function promocaoLinhaHtml(p, itemId, moeda) {
-    var precoExibido = precoFinalExibidoDaLinha(p, itemId);
     var chave = promocaoChave(p);
-    var precoCel = '<span class="am-margem-comp__valor am-margem-edit am-promo__preco" ' +
-      'data-margem-item="' + escapeAttr(itemId) + '" data-margem-campo="preco" ' +
-      'data-promo-key="' + escapeAttr(chave) + '" ' +
-      'data-margem-valor="' + escapeAttr(precoExibido == null ? "" : precoExibido) + '">' +
-      botaoMargemEditHtml(formatMoeda(precoExibido, moeda), "Simular — não grava no Mercado Livre nem inscreve na promoção") +
-    "</span>";
-
+    var selecionada = !!(DET && DET.promoLinhaSelecionada === chave);
     var periodo = promocaoPeriodoTexto(p);
-    return '<tr class="am-promo__linha" data-promo-key="' + escapeAttr(chave) + '">' +
-      '<td class="am-promo__col-nome">' +
-        '<div class="am-promo__nome">' + escapeHtml(p.nome || p.tipoLabel) + "</div>" +
-        '<div class="am-promo__meta">' +
-          (periodo ? escapeHtml(periodo) + " · " : "") +
+    return '<button type="button" class="am-promo__linha' + (selecionada ? " is-selecionada" : "") + '" ' +
+        'data-acao="promo-selecionar" data-promo-key="' + escapeAttr(chave) + '" aria-pressed="' + (selecionada ? "true" : "false") + '">' +
+      '<span class="am-promo__radio" aria-hidden="true"></span>' +
+      '<span class="am-promo__col-nome">' +
+        '<span class="am-promo__nome">' + escapeHtml(p.nome || p.tipoLabel) + "</span>" +
+        '<span class="am-promo__meta">' +
           '<span class="vf-status ' + promocaoStatusClasse(p.statusExibicao) + '">' + escapeHtml(p.statusExibicao) + "</span>" +
-        "</div>" +
-      "</td>" +
-      '<td>' + promocaoDescontoHtml(p, moeda) + "</td>" +
-      '<td>' + precoCel + "</td>" +
-      '<td>' + promocaoSubsidioMlHtml(p, moeda) + "</td>" +
-      '<td>' + promocaoVoceRecebeHtml(p) + "</td>" +
-      '<td><button type="button" class="vf-btn vf-btn--ghost vf-btn--sm am-promo__acao" ' +
-        'data-acao="promo-acao" data-promo-key="' + escapeAttr(chave) + '">' +
-        promocaoTarefaRotulo(p, itemId) + "</button></td>" +
-    "</tr>";
+          (periodo ? "<span>" + escapeHtml(periodo) + "</span>" : "") +
+        "</span>" +
+      "</span>" +
+      '<span class="am-promo__col-num">' + promocaoPrecoHtml(p, itemId, moeda) + "</span>" +
+      '<span class="am-promo__col-num">' + promocaoSubsidioMlHtml(p, moeda) + "</span>" +
+      '<span class="am-promo__col-num">' + promocaoVoceRecebeHtml(p, itemId, moeda) + "</span>" +
+      '<span class="am-promo__col-num am-promo__col-vs">' + promocaoVsHojeHtml(p, itemId, moeda) + "</span>" +
+    "</button>";
   }
 
-  function promocoesTabelaHtml(lista, itemId, moeda) {
-    var linhas = lista.map(function (p) { return promocaoLinhaHtml(p, itemId, moeda); }).join("");
-    return '<div class="am-promo__scroll"><table class="am-promo__tabela">' +
-      "<thead><tr><th>Promoção</th><th>Desconto</th><th>Preço final</th><th>Subsídio ML</th><th>Você recebe</th><th>Tarefas</th></tr></thead>" +
-      "<tbody>" + linhas + "</tbody>" +
-    "</table></div>";
+  function promocoesListaHtml(lista, itemId, moeda) {
+    var grupos = PROMO_GRUPOS.map(function (g) {
+      var itens = lista.filter(function (p) { return promocaoGrupo(p) === g.chave; });
+      if (!itens.length) return "";
+      return '<div class="am-promo__grupo" data-grupo="' + g.chave + '">' +
+        '<div class="am-promo__grupo-cab">' +
+          '<span class="am-promo__grupo-titulo">' + escapeHtml(g.titulo) + "</span>" +
+          '<span class="am-promo__grupo-dica">' + escapeHtml(g.dica) + "</span>" +
+        "</div>" +
+        itens.map(function (p) { return promocaoLinhaHtml(p, itemId, moeda); }).join("") +
+      "</div>";
+    }).join("");
+    return '<div class="am-promo__scroll"><div class="am-promo__lista">' +
+      '<div class="am-promo__cab" aria-hidden="true">' +
+        "<span></span><span>Promoção</span><span>Preço final</span><span>Subsídio ML</span><span>Você recebe</span><span>vs. hoje</span>" +
+      "</div>" +
+      grupos +
+    "</div></div>";
   }
 
   function promocoesCorpoHtml(itemId, moeda) {
@@ -6392,17 +6467,18 @@
     if (!cache) return promocoesDicaHtml("Carregando promoções…");
     if (!cache.ok) return promocoesDicaHtml("Não foi possível carregar as promoções deste anúncio agora.");
     if (!cache.promocoes.length) return promocoesDicaHtml("Nenhuma promoção disponível para este anúncio no momento.");
-    return promocoesTabelaHtml(cache.promocoes, itemId, moeda);
+    return promocoesListaHtml(cache.promocoes, itemId, moeda);
   }
 
-  // Seção NÃO recolhível (ao contrário da composição da margem): a tabela já
+  // Seção NÃO recolhível (ao contrário da composição da margem): a lista já
   // nasce visível, lado a lado com a composição (ver .am-det-margem-grid no
-  // CSS) — só o CONTEÚDO troca de "Carregando…" para a tabela quando a
+  // CSS) — só o CONTEÚDO troca de "Carregando…" para a lista quando a
   // resposta chega, sem exigir um clique extra do operador.
   function promocoesSecaoHtml(itemId, moeda) {
     return '<div class="am-det-section am-promo" id="am-det-promo" data-item="' + escapeAttr(itemId) + '">' +
       '<div class="am-det-section__head">' +
         '<h3 class="am-det-section__title">Promoções disponíveis</h3>' +
+        '<span class="am-det-section__meta">Clique numa promoção para simular</span>' +
       "</div>" +
       '<div class="am-promo__body" id="am-det-promo-body">' + promocoesCorpoHtml(itemId, moeda) + "</div>" +
     "</div>";
@@ -6413,82 +6489,76 @@
     var corpo = el("am-det-promo-body");
     if (!corpo) return;
     corpo.innerHTML = promocoesCorpoHtml(itemId, DET.anuncio.moeda);
-    bindMargemEditavel(corpo);
-    bindPromocoesAcoes(corpo, itemId);
   }
 
-  // "Alterar"/"Participar": primeiro clique NUNCA grava nada no Mercado
-  // Livre — só seleciona a linha e aplica o preço final dela (real quando já
-  // ativa, sugerido quando candidata) na MESMA simulação de margem de
-  // sempre. Quando o ML não deu preço nenhum para aquela linha (candidate
-  // sem sugestão), só seleciona e abre o editor da célula para o operador
-  // digitar um valor — nunca inventa um número.
-  //
-  // "Confirmar participação"/"Confirmar alteração": só aparece (ver
-  // promocaoTarefaRotulo) depois desse primeiro clique, e só para
-  // DEAL/SELLER_CAMPAIGN (promocaoSuportaEscrita) — abre o diálogo de
-  // confirmação e só ESCREVE de verdade no clique em "Confirmar" dentro
-  // dele (ver abrirConfirmacaoPromocao/aplicarPromocaoReal).
-  function bindPromocoesAcoes(raiz, itemId) {
-    (raiz || document).querySelectorAll('[data-acao="promo-acao"]').forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        if (!DET || DET.itemId !== itemId) return;
-        var chave = btn.getAttribute("data-promo-key");
-        var linha = promocaoPorChave(itemId, chave);
-        if (!linha) return;
-
-        if (promocaoSuportaEscrita(linha) && promocaoPodeEscrever(linha) && promocaoJaSimulada(linha, itemId)) {
-          abrirConfirmacaoPromocao(itemId, linha);
-          return;
-        }
-
-        // "Selecionar a promoção" é incondicional (ver instrução de
-        // produto); só o "aplicar preço sugerido" depende de o ML ter
-        // devolvido um preço utilizável para esta linha.
-        DET.promoLinhaSelecionada = chave;
-
-        if (linha.precoFinal != null) {
-          DET.simulacaoMargem.preco = linha.precoFinal;
-          repintarPromocoesDoItem(itemId);
-          dispararSimulacaoMargem(itemId);
-          return;
-        }
-
-        repintarPromocoesDoItem(itemId);
-        var cel = document.querySelector(
-          '#am-det-promo-body [data-promo-key="' + chave + '"] .am-promo__preco'
-        );
-        if (cel) abrirEditorMargemCampo(cel);
-      });
+  function bindPromocoes(secao, itemId) {
+    if (!secao) return;
+    secao.addEventListener("click", function (e) {
+      var linha = e.target.closest('[data-acao="promo-selecionar"]');
+      if (!linha || !secao.contains(linha)) return;
+      e.stopPropagation();
+      selecionarPromocao(itemId, linha.getAttribute("data-promo-key"));
     });
   }
 
-  // Defesa em profundidade (MESMA régua do gate em bindPromocoesAcoes,
-  // tipo + status): só tipo com contrato de escrita nesta v1 (DEAL/
-  // SELLER_CAMPAIGN — ver promocaoSuportaEscrita/PROMO_TIPOS_COM_ESCRITA) E
-  // já-participada (Alterar) ou candidate (Participar) podem abrir este
-  // diálogo — uma PROGRAMADA (pending) nunca chega a escrever, e um tipo fora
-  // do escopo (SMART, PRICE_DISCOUNT, PRE_NEGOTIATED, PRICE_MATCHING,
-  // LIGHTNING, ...) nunca chega a escrever mesmo se já participado
-  // (started/active), mesmo se esta função for chamada de outro lugar no
-  // futuro.
-  function abrirConfirmacaoPromocao(itemId, linha) {
+  // Escolher uma promoção NUNCA grava nada: só preenche a coluna Simulação
+  // com o cenário dela. Clicar de novo na mesma linha desmarca.
+  //  · ACEITE em que o anúncio já participa → cenário de SAIR: volta ao
+  //    preço cheio (precoOriginal) se é ela que forma o preço hoje; se não
+  //    é, o preço de hoje não muda;
+  //  · qualquer outra → o preço final dela (real, ou sugerido pelo ML).
+  //    Sem preço sugerido, o campo de preço da simulação recebe o foco para
+  //    o operador digitar — nunca um número inventado.
+  function selecionarPromocao(itemId, chave) {
     if (!DET || DET.itemId !== itemId) return;
-    if (!promocaoSuportaEscrita(linha) || !promocaoPodeEscrever(linha)) return;
+    var p = promocaoPorChave(itemId, chave);
+    if (!p) return;
+    var sim = DET.simulacaoMargem;
+
+    if (DET.promoLinhaSelecionada === chave) {
+      DET.promoLinhaSelecionada = null;
+      sim.preco = null;
+      dispararSimulacaoMargem(itemId);
+      return;
+    }
+
+    DET.promoLinhaSelecionada = chave;
+    if (promocaoCenarioSaida(p)) {
+      sim.preco = p.statusExibicao === "ATIVA" && p.precoOriginal != null ? p.precoOriginal : null;
+    } else {
+      sim.preco = p.precoFinal != null ? p.precoFinal : null;
+    }
+    dispararSimulacaoMargem(itemId);
+
+    if (sim.preco == null && p.modoEscrita !== "ACEITE") {
+      var campo = document.querySelector('#am-det-margem-body .am-margem-sim__input[data-margem-campo="preco"]');
+      if (campo) campo.focus();
+    }
+  }
+
+  // Margem simulada para os diálogos — sempre o que veio do Motor.
+  function margemSimuladaTexto(moeda) {
+    var r = DET && DET.simulacaoMargem && DET.simulacaoMargem.resultado;
+    if (!r || !r.computable || r.profit == null) return "—";
+    return formatMoeda(r.profit, moeda) + (r.marginPercent != null ? " (" + formatarPercentualCompacto(r.marginPercent) + ")" : "");
+  }
+
+  // PRECO (DEAL/SELLER_CAMPAIGN): participar com o preço escolhido, ou
+  // alterar o preço de uma participação que forma o preço hoje. Defesa em
+  // profundidade — mesma régua de margemAcaoAtual; o backend relê tudo ao
+  // vivo de novo antes de escrever (meliPromocoesEscritaService).
+  function abrirConfirmacaoPromocao(itemId, linha) {
+    if (!DET || DET.itemId !== itemId || !linha) return;
+    if (linha.modoEscrita !== "PRECO") return;
     var sim = DET.simulacaoMargem;
     if (!sim || sim.preco == null) return;
 
-    var jaParticipada = promocaoJaParticipada(linha);
+    var jaParticipada = linha.status === "started" || linha.status === "active";
+    if (!jaParticipada && linha.status !== "candidate") return;
+    if (jaParticipada && linha.statusExibicao !== "ATIVA") return;
 
-    // Promoção "started"/"active" com retorno ML (subsidioMl != null): o
-    // Mercado Livre já participa financeiramente dela, e a escrita de
-    // "alterar" (PUT) para esse tipo ainda não está disponível (ver
-    // auditoria). Mostra o aviso e para aqui — aplicarPromocaoReal (o único
-    // lugar que chama POST/PUT real) nunca chega a ser referenciado neste
-    // caminho, então nenhuma escrita pode ocorrer. Nunca afeta "Participar"
-    // (candidate): o bloqueio é só para alteração de uma participação já
-    // existente.
+    // Participação started/active com retorno ML: a alteração (PUT) para
+    // esse caso ainda não está disponível — avisa e para aqui, sem escrita.
     if (jaParticipada && linha.subsidioMl != null) {
       toast(
         "Esta promoção possui participação do Mercado Livre (rebate). A alteração de valores ainda não está disponível para este tipo de promoção.",
@@ -6498,54 +6568,97 @@
     }
 
     var moeda = DET.anuncio.moeda;
-    var margemSimulada = (sim.resultado && sim.resultado.computable && sim.resultado.marginPercent != null)
-      ? formatarPercentualCompacto(sim.resultado.marginPercent) : "—";
-
     abrirConfirmacaoEscrita({
-      titulo: jaParticipada ? "Alterar participação na promoção" : "Participar da promoção",
-      textoConfirmar: "Confirmar",
+      titulo: jaParticipada ? "Alterar o preço da promoção?" : "Participar da promoção?",
+      textoConfirmar: jaParticipada ? "Alterar preço" : "Participar",
       linhas: [
         { rotulo: "Promoção", valor: linha.nome || linha.tipoLabel },
         { rotulo: "Preço atual", valor: formatMoeda(linha.precoOriginal, moeda) },
         { rotulo: "Novo preço", valor: formatMoeda(sim.preco, moeda) },
-        { rotulo: "Impacto estimado na margem", valor: margemSimulada },
+        { rotulo: "Margem por venda", valor: margemSimuladaTexto(moeda) },
       ],
-      aoConfirmar: function (concluir) { aplicarPromocaoReal(itemId, linha, sim.preco, concluir); },
+      aoConfirmar: function (concluir) {
+        escreverPromocao(itemId, "/promocoes/" + encodeURIComponent(linha.id) + "/aplicar", { precoNovo: sim.preco }, concluir,
+          function (d) { return d.metodo === "POST" ? "Participação confirmada no Mercado Livre." : "Promoção alterada no Mercado Livre."; });
+      },
     });
   }
 
-  // Nunca chamada fora do "Confirmar" do diálogo acima. O backend relê o
-  // estado AO VIVO da promoção antes de decidir POST (participar) x PUT
-  // (alterar) — nunca confia no status que esta tela guardou em cache (ver
-  // meliPromocoesEscritaService).
-  function aplicarPromocaoReal(itemId, linha, precoNovo, concluir) {
-    var corpo = { clienteSlug: AM.clienteAtual.slug, precoNovo: precoNovo };
+  // ACEITE (o Mercado Livre define o preço): participar ou deixar de
+  // participar — nenhum preço é enviado. Mesma régua de margemAcaoAtual.
+  function abrirConfirmacaoAceite(itemId, linha, sair) {
+    if (!DET || DET.itemId !== itemId || !linha || linha.modoEscrita !== "ACEITE") return;
+    if (sair ? !promocaoParticipa(linha) : linha.status !== "candidate") return;
+
+    var moeda = DET.anuncio.moeda;
+    var cache = AM.state.performanceCache[itemId];
+    var comp = cache && cache.composicao;
+    var sim = DET.simulacaoMargem;
+    var precoHoje = comp ? comp.venda : null;
+    var precoDepois = sim && sim.preco != null ? sim.preco : precoHoje;
+    var margemDepois = simulacaoTemOverride(sim)
+      ? margemSimuladaTexto(moeda)
+      : (cache && cache.margem && cache.margem.profit != null
+          ? formatMoeda(cache.margem.profit, moeda) +
+            (cache.margem.marginPercent != null ? " (" + formatarPercentualCompacto(cache.margem.marginPercent) + ")" : "")
+          : "—");
+
+    abrirConfirmacaoEscrita({
+      titulo: sair ? "Deixar de participar da promoção?" : "Participar da promoção?",
+      textoConfirmar: sair ? "Deixar de participar" : "Participar",
+      linhas: [
+        { rotulo: "Promoção", valor: linha.nome || linha.tipoLabel },
+        { rotulo: "Preço hoje", valor: formatMoeda(precoHoje, moeda) },
+        { rotulo: sair ? "Preço depois de sair" : "Preço na promoção", valor: formatMoeda(precoDepois, moeda) },
+        { rotulo: "Margem por venda", valor: margemDepois },
+      ],
+      aoConfirmar: function (concluir) {
+        escreverPromocao(itemId, "/promocoes/" + encodeURIComponent(linha.id) + (sair ? "/sair" : "/participar"),
+          { tipo: linha.tipo }, concluir,
+          function () { return sair ? "Você saiu da promoção no Mercado Livre." : "Participação confirmada no Mercado Livre."; });
+      },
+    });
+  }
+
+  // Nunca chamada fora do "Confirmar" dos diálogos acima. Depois do sucesso
+  // a promoção pode ter mudado de status e o preço do anúncio também — a
+  // simulação some, promoções e composição são relidas do zero, nunca se
+  // assume o que foi enviado.
+  function escreverPromocao(itemId, sufixo, extra, concluir, mensagemSucesso) {
+    var corpo = { clienteSlug: AM.clienteAtual.slug };
     if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    Object.keys(extra).forEach(function (k) { corpo[k] = extra[k]; });
 
     var meuToken = DET ? DET.token : null;
-    api(
-      "/anuncios-meli/" + encodeURIComponent(itemId) + "/promocoes/" + encodeURIComponent(linha.id) + "/aplicar",
-      { method: "POST", body: corpo }
-    ).then(function (r) {
+    api("/anuncios-meli/" + encodeURIComponent(itemId) + sufixo, { method: "POST", body: corpo }).then(function (r) {
       if (!DET || DET.token !== meuToken) { concluir(); return; } // modal fechado, ou outro MLB no meio do caminho
       var d = r.data || {};
       if (!d.ok) {
-        concluir(d.motivo || "Não foi possível aplicar a promoção.");
+        concluir(d.motivo || "Não foi possível atualizar a promoção.");
         return;
       }
 
-      // A promoção pode ter mudado de status (candidate -> started) e de
-      // preço — descarta o cache e relê do zero, nunca assume o que foi
-      // enviado.
-      DET.simulacaoMargem = { custoProduto: null, custosAdicionais: null, preco: null, resultado: null };
+      DET.simulacaoMargem = novaSimulacaoMargem();
       DET.promoLinhaSelecionada = null;
+      DET.simulacaoSeq = (DET.simulacaoSeq || 0) + 1;
       delete AM.state.promocoesCache[itemId];
+      var cache = AM.state.performanceCache[itemId];
+      if (cache) { cache.temComposicao = false; cache.temMargem = false; }
+      repintarPromocoesDoItem(itemId);
+      repintarComposicaoDoItem(itemId);
 
+      // Promoções primeiro: a composição relida precisa saber qual promoção
+      // ficou ATIVA (rebate) — mesma ordem de carregarComposicaoDoDetalhe.
       garantirPromocoesDoItem(itemId).then(function () {
+        if (!DET || DET.token !== meuToken) return null;
+        repintarPromocoesDoItem(itemId);
+        return garantirComposicaoDoItem(itemId);
+      }).then(function () {
         if (!DET || DET.token !== meuToken) return;
+        repintarComposicaoDoItem(itemId);
         repintarPromocoesDoItem(itemId);
       });
-      toast(d.metodo === "POST" ? "Participação confirmada no Mercado Livre." : "Promoção alterada no Mercado Livre.");
+      toast(mensagemSucesso(d));
       concluir();
     });
   }

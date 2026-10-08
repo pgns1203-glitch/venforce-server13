@@ -1873,6 +1873,69 @@ async function aplicarPromocao(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// POST /anuncios-meli/:itemId/promocoes/:promotionId/participar
+// POST /anuncios-meli/:itemId/promocoes/:promotionId/sair
+//   body: { clienteSlug, clienteContaId?, tipo }
+//
+// Promoções em que o MERCADO LIVRE define o preço (modoEscrita ACEITE, ver
+// meliPromocoesService.TIPOS_ESCRITA_ACEITE): o vendedor só participa ou deixa
+// de participar — nenhum preço é enviado. `tipo` desambigua o id (único só
+// dentro de cada tipo). Mesmo contrato de falha "esperada" de /aplicar
+// (200 + ok:false + codigo/motivo). Nunca chamado sem confirmação explícita
+// do operador no frontend.
+// ----------------------------------------------------------------------------
+async function escritaAceitePromocao(req, res, operacao, rotuloLog) {
+  try {
+    const { itemId, promotionId } = req.params;
+    const body = req.body || {};
+    const { clienteSlug } = body;
+    const clienteContaId = extrairClienteContaId(body.clienteContaId);
+    const tipo = body.tipo ? String(body.tipo).trim() : null;
+
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+
+    const anuncio = await anunciosService.obterAnuncio(cliente.id, itemId);
+    if (!anuncio) {
+      return res.status(404).json({
+        ok: false,
+        motivo: "Anúncio não encontrado no banco. Sincronize os anúncios deste cliente.",
+      });
+    }
+
+    let mlUserId = anuncio.ml_user_id || null;
+    if (!mlUserId) {
+      const contexto = await anunciosService.resolverContextoConta({
+        clienteId: cliente.id, clienteContaId, requireUsableGrant: true,
+      });
+      mlUserId = contexto.mlUserId;
+    }
+
+    const r = await operacao({ clienteId: cliente.id, itemId, mlUserId, promotionId, tipo });
+    if (!r.ok) return res.json({ ok: false, codigo: r.codigo, motivo: r.motivo });
+    return res.json(r);
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error(`[anuncios-meli] ${rotuloLog}:`, err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro interno ao atualizar a promoção." });
+  }
+}
+
+function participarPromocao(req, res) {
+  return escritaAceitePromocao(req, res, promocoesEscritaService.participarPromocaoAceite, "participarPromocao");
+}
+
+function sairPromocao(req, res) {
+  return escritaAceitePromocao(req, res, promocoesEscritaService.sairPromocao, "sairPromocao");
+}
+
+// ----------------------------------------------------------------------------
 // PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque
 //   body: { clienteSlug, clienteContaId?, estoque }
 //
@@ -3352,6 +3415,8 @@ module.exports = {
   variacoesLegado,
   promocoes,
   aplicarPromocao,
+  participarPromocao,
+  sairPromocao,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   adicionarImagem,

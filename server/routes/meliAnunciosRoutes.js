@@ -34,6 +34,8 @@
 //   GET    /anuncios-meli/:itemId/variacoes-legado (expansão do modelo legado)
 //   GET    /anuncios-meli/:itemId/promocoes    (promoções oficiais do item, read-only)
 //   POST   /anuncios-meli/:itemId/promocoes/:promotionId/aplicar (escrita real, DEAL/SELLER_CAMPAIGN)
+//   POST   /anuncios-meli/:itemId/promocoes/:promotionId/participar (ACEITE — preço definido pelo ML)
+//   POST   /anuncios-meli/:itemId/promocoes/:promotionId/sair       (ACEITE — deixar de participar)
 //   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
 //   POST   /anuncios-meli/:itemId/imagens       (adiciona uma imagem, anúncio sem variação)
 //   GET    /anuncios-meli/:itemId/fotos/variacoes (editor de fotos: leitura ao vivo)
@@ -249,6 +251,13 @@ router.get("/:itemId/promocoes", ctrl.promocoes);
 // chamado sem confirmação explícita do operador no frontend. Precisa vir
 // ANTES de "/:itemId" pelo mesmo motivo de sempre.
 router.post("/:itemId/promocoes/:promotionId/aplicar", ctrl.aplicarPromocao);
+
+// Promoções em que o Mercado Livre define o preço (ACEITE — SMART,
+// MARKETPLACE_CAMPAIGN, PRICE_MATCHING, PRE_NEGOTIATED, UNHEALTHY_STOCK): só
+// participar (POST sem preço) ou deixar de participar (DELETE). Mesmo acesso
+// e mesma confirmação explícita de /aplicar.
+router.post("/:itemId/promocoes/:promotionId/participar", ctrl.participarPromocao);
+router.post("/:itemId/promocoes/:promotionId/sair", ctrl.sairPromocao);
 
 // Edição de ESTOQUE de uma variação do modelo LEGADO NO MERCADO LIVRE (ver
 // meliVariacoesLegadoEstoqueService — GET fresco -> PUT /items { variations

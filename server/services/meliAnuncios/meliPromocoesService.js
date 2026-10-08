@@ -35,6 +35,33 @@ const ROTULO_TIPO = {
   SELLER_COUPON_CAMPAIGN: "Cupom do vendedor",
 };
 
+// Como o VenForce pode escrever em cada TIPO de promoção (ver
+// meliPromocoesEscritaService e a auditoria de documentacao_api_meli/*):
+//   PRECO  — DEAL/SELLER_CAMPAIGN: o vendedor escolhe o preço (deal_price) ao
+//            participar (POST) e ao alterar (PUT);
+//   ACEITE — o Mercado Livre define o preço: o vendedor só participa (POST
+//            sem preço, às vezes com offer_id) ou deixa de participar
+//            (DELETE com offer_id) — campanha-com-co-participacao.md,
+//            campanhas-smart-price-matching.md, desconto-pre-acordado-por-item.md;
+//   null   — fora do escopo (PRICE_DISCOUNT, DOD, LIGHTNING, VOLUME, cupons…):
+//            só simulação nesta tela, a inscrição é feita no painel do ML.
+const TIPOS_ESCRITA_PRECO = new Set(["DEAL", "SELLER_CAMPAIGN"]);
+const TIPOS_ESCRITA_ACEITE = new Set([
+  "MARKETPLACE_CAMPAIGN",
+  "SMART",
+  "PRICE_MATCHING",
+  "PRICE_MATCHING_MELI_ALL",
+  "PRE_NEGOTIATED",
+  "UNHEALTHY_STOCK",
+]);
+
+function modoEscritaPromocao(tipo) {
+  const t = String(tipo || "").toUpperCase().trim();
+  if (TIPOS_ESCRITA_PRECO.has(t)) return "PRECO";
+  if (TIPOS_ESCRITA_ACEITE.has(t)) return "ACEITE";
+  return null;
+}
+
 function rotuloTipoPromocao(tipo) {
   const t = String(tipo || "").toUpperCase().trim();
   return ROTULO_TIPO[t] || tipo || "Promoção";
@@ -178,6 +205,11 @@ function normalizarPromocao(promo, index, promotionIdAtivo = null) {
       (idPromo || refIdPromo) ||
       String((promo && promo.type) || "promo") + "-" + (status || "s") + "-" + index,
     tipo: (promo && promo.type) || null,
+    // offer_id da oferta/candidatura (ref_id na listagem v2 — OFFER-…/
+    // CANDIDATE-…). Exigido pelo ML para participar de parte dos tipos
+    // ACEITE e para deixar de participar (DELETE); null quando não vem.
+    refId: refIdPromo || (promo && promo.offer_id) || null,
+    modoEscrita: modoEscritaPromocao(promo && promo.type),
     tipoLabel: rotuloTipoPromocao(promo && promo.type),
     nome: (promo && promo.name) || null,
     status: status || null,
@@ -433,4 +465,7 @@ module.exports = {
   aplicarFallbackPrecoAtivo,
   rotuloTipoPromocao,
   statusLabelPromocao,
+  modoEscritaPromocao,
+  TIPOS_ESCRITA_PRECO,
+  TIPOS_ESCRITA_ACEITE,
 };

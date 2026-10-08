@@ -161,6 +161,27 @@ function respostaFalsa() {
     custosLoteService.resolverBaseDeCustos = original.resolverBaseDeCustos;
   }
 
+  await caso("resumo: card Score médio conta a faixa 60–79 (o filtro), não a média", async () => {
+    const pool = require("../config/database");
+    const queryOriginal = pool.query;
+    let sqlResumo = "";
+    pool.query = async (sql) => {
+      const q = String(sql).replace(/\s+/g, " ");
+      if (!q.includes("AS ativos")) return { rows: [] };
+      sqlResumo = q;
+      // Catálogo do print (Red Fish): todos ≥ 80, média 91, ninguém na faixa média.
+      return { rows: [{ total: 175, ativos: 156, score_muito_bom: 175, score_baixo: 0, score_faixa_media: 0, score_medio: 91 }] };
+    };
+    try {
+      const r = await anunciosService.obterResumo(1);
+      assert.strictEqual(r.scoreFaixaMedia, 0, "o card tem de mostrar 0 — é o que o filtro devolve");
+      assert.strictEqual(r.scoreMedio, 91, "a média continua disponível, com o nome de média");
+      assert.ok(sqlResumo.includes("COALESCE(score_venforce,0) >= 60 AND COALESCE(score_venforce,0) < 80)::int AS score_faixa_media"), sqlResumo);
+    } finally {
+      pool.query = queryOriginal;
+    }
+  });
+
   await caso("resolverBaseDeCustos nunca lança (erro estrutural vira base null)", async () => {
     const erro = Object.assign(new Error("x"), { statusCode: 409, payload: { codigo: "CONTA_AMBIGUA", erro: "Escolha a conta." } });
     const r = await custosLoteService.resolverBaseDeCustos(

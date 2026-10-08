@@ -457,6 +457,8 @@ async function obterResumo(clienteId, clienteContaId = null, includeLegacy = tru
         COUNT(*) FILTER (WHERE sku IS NULL OR sku = '')::int            AS sem_sku,
         COUNT(*) FILTER (WHERE COALESCE(score_venforce,0) < 60)::int    AS score_baixo,
         COUNT(*) FILTER (WHERE COALESCE(score_venforce,0) >= 80)::int   AS score_muito_bom,
+        COUNT(*) FILTER (WHERE COALESCE(score_venforce,0) >= 60
+                           AND COALESCE(score_venforce,0) < 80)::int    AS score_faixa_media,
         COUNT(*) FILTER (WHERE is_full = true)::int                     AS full,
         ROUND(AVG(score_venforce))::int                                AS score_medio,
         MAX(last_synced_at)                                            AS ultima_sync
@@ -476,6 +478,11 @@ async function obterResumo(clienteId, clienteContaId = null, includeLegacy = tru
     scoreBaixo: r.score_baixo || 0,
     scoreMuitoBom: r.score_muito_bom || 0,
     full: r.full || 0,
+    // Quantos anúncios estão na faixa 60–79 — o número do card "Score médio",
+    // com o mesmo limiar do filtro `score_medio`. Não confundir com
+    // `scoreMedio`, que é a MÉDIA dos scores (o card mostrava a média, e o
+    // filtro recortava a faixa: 91 no card, lista vazia ao clicar).
+    scoreFaixaMedia: r.score_faixa_media || 0,
     scoreMedio: r.score_medio || 0,
     ultimaSync: r.ultima_sync || null,
   };

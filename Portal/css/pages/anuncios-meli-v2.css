@@ -3369,3 +3369,365 @@
   font-weight: var(--vf-fw-medium);
   color: var(--vf-text);
 }
+
+/* ---- Custo do produto na lista ------------------------------------------
+ *
+ * Mora DENTRO da célula Margem (.am-margem é grade: valor na coluna 1, (i)
+ * na 2). O controle de custo é mais um filho da coluna 1, embaixo da margem.
+ * Em repouso o custo lê como legenda, não como botão (mesma regra do
+ * estoque): a moldura só aparece no hover/foco. "+ Custo" é a exceção —
+ * anúncio sem custo é pendência, e o convite precisa ser visível.
+ * Modo massa: a coluna Margem alarga para caber o campo, e o checkbox de
+ * seleção entra na coluna de ação. Nenhum token novo. */
+.vf-page-anuncios-meli .am-custo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-custo:empty {
+  display: none;
+}
+
+.vf-page-anuncios-meli .am-custo__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px var(--vf-sp-1);
+  margin-left: calc(-1 * var(--vf-sp-1));
+  font: inherit;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  cursor: pointer;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: var(--vf-radius-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-custo__btn svg {
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.vf-page-anuncios-meli [data-item]:hover .am-custo__btn svg,
+.vf-page-anuncios-meli .am-custo__btn:focus-visible svg {
+  opacity: 1;
+}
+
+.vf-page-anuncios-meli .am-custo__btn:hover {
+  color: var(--vf-primary-strong);
+  background: var(--vf-surface);
+  border-color: var(--vf-border-strong);
+}
+
+.vf-page-anuncios-meli .am-custo__add {
+  padding: 1px var(--vf-sp-2);
+  font: inherit;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary);
+  cursor: pointer;
+  background: none;
+  border: 1px dashed var(--vf-primary);
+  border-radius: 999px;
+}
+
+.vf-page-anuncios-meli .am-custo__add:hover {
+  background: var(--vf-primary-soft);
+  border-style: solid;
+}
+
+.vf-page-anuncios-meli .am-custo__btn:focus-visible,
+.vf-page-anuncios-meli .am-custo__add:focus-visible,
+.vf-page-anuncios-meli .am-custo__retry:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+@media (hover: none) {
+  .vf-page-anuncios-meli .am-custo__btn svg { opacity: 1; }
+}
+
+.vf-page-anuncios-meli .am-custo__campo {
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  max-width: 132px;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-primary-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-anuncios-meli .am-custo__campo:focus-within {
+  border-color: var(--vf-primary);
+  box-shadow: var(--vf-focus-ring);
+}
+
+.vf-page-anuncios-meli .am-custo__campo.is-dirty { border-color: var(--vf-info-strong); }
+.vf-page-anuncios-meli .am-custo__campo.is-invalid { border-color: var(--vf-danger-strong); }
+
+.vf-page-anuncios-meli .am-custo__prefixo {
+  padding: 0 2px 0 6px;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-custo__input {
+  width: 100%;
+  min-width: 0;
+  padding: 2px var(--vf-sp-1) 2px 0;
+  font: inherit;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text);
+  background: transparent;
+  border: 0;
+  outline: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-custo__salvando,
+.vf-page-anuncios-meli .am-custo__previa-carregando {
+  font-size: var(--vf-fs-2xs);
+  font-style: italic;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-custo__atual {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-custo__erro {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-danger-strong);
+  white-space: normal;
+}
+
+.vf-page-anuncios-meli .am-custo__retry {
+  padding: 0;
+  font: inherit;
+  font-weight: var(--vf-fw-semibold);
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+  background: none;
+  border: 0;
+}
+
+.vf-page-anuncios-meli .am-custo__tag {
+  justify-self: start;
+  padding: 0 4px;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-info-strong);
+  background: var(--vf-info-bg);
+  border-radius: var(--vf-radius-sm);
+}
+
+/* Modo massa: coluna Margem larga o bastante para o campo. */
+.vf-page-anuncios-meli .am-listagem.is-modo-custos > * {
+  --am-c-margem: 140px;
+}
+
+.vf-page-anuncios-meli .am-custo-sel {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--vf-sp-1);
+  cursor: pointer;
+}
+
+.vf-page-anuncios-meli .am-custo-sel input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--vf-primary);
+  cursor: pointer;
+}
+
+.vf-page-anuncios-meli .is-modo-custos .am-row,
+.vf-page-anuncios-meli .is-modo-custos .am-mlb {
+  cursor: default;
+}
+
+.vf-page-anuncios-meli .is-custo-sel {
+  background: var(--vf-primary-soft);
+}
+
+.vf-page-anuncios-meli .is-custo-erro {
+  background: var(--vf-danger-bg);
+}
+
+.vf-page-anuncios-meli .am-custo-oculta {
+  display: none;
+}
+
+/* Barra acima da lista: ação "Editar custos" / faixa do modo / seleção. */
+.vf-page-anuncios-meli .am-custos-barra:empty {
+  display: none;
+}
+
+.vf-page-anuncios-meli .am-custos-barra {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  margin-bottom: var(--vf-sp-3);
+}
+
+.vf-page-anuncios-meli .am-custos-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2);
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.vf-page-anuncios-meli .am-custos-aviso {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.vf-page-anuncios-meli .am-custos-modo {
+  position: sticky;
+  top: 0;
+  z-index: var(--vf-z-sticky);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-4);
+  align-items: center;
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  color: var(--vf-text-on-primary);
+  background: var(--vf-primary);
+  border-radius: var(--vf-radius);
+  box-shadow: var(--vf-shadow-xs);
+}
+
+.vf-page-anuncios-meli .am-custos-modo__titulo {
+  display: inline-flex;
+  gap: var(--vf-sp-1);
+  align-items: center;
+  font-family: var(--vf-font-display);
+  font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-anuncios-meli .am-custos-modo__dica {
+  flex: 1 1 220px;
+  font-size: var(--vf-fs-xs);
+  opacity: 0.9;
+}
+
+.vf-page-anuncios-meli .am-custos-modo__check {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  cursor: pointer;
+}
+
+.vf-page-anuncios-meli .am-custos-modo__btn {
+  color: var(--vf-text-on-primary);
+  background: transparent;
+  border: 1px solid currentColor;
+}
+
+.vf-page-anuncios-meli .am-custos-modo__btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.vf-page-anuncios-meli .am-custos-sel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+  align-items: center;
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  background: var(--vf-primary-soft);
+  border: 1px solid var(--vf-primary-border);
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-anuncios-meli .am-custos-sel .am-custo__campo {
+  max-width: 120px;
+}
+
+.vf-page-anuncios-meli .am-custos-sel__total {
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-primary-strong);
+}
+
+.vf-page-anuncios-meli .am-custos-sel__aviso {
+  flex-basis: 100%;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-warning-strong);
+}
+
+/* Barra de salvar fixa no rodapé — só existe no modo massa com pendência. */
+.vf-page-anuncios-meli .am-custos-savebar {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: var(--vf-z-sticky);
+  padding: var(--vf-sp-3) var(--vf-sp-4) calc(var(--vf-sp-3) + env(safe-area-inset-bottom, 0px));
+  background: var(--vf-surface);
+  border-top: 1px solid var(--vf-border-strong);
+  box-shadow: var(--vf-shadow-modal);
+  transform: translateY(110%);
+  transition: transform 0.2s ease;
+}
+
+.vf-page-anuncios-meli .am-custos-savebar.is-on { transform: none; }
+.vf-page-anuncios-meli .am-custos-savebar.is-ask { border-top: 2px solid var(--vf-warning-strong); }
+
+.vf-page-anuncios-meli .am-custos-savebar__in {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+  align-items: center;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.vf-page-anuncios-meli .am-custos-savebar__msg {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  min-width: 0;
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-anuncios-meli .am-custos-savebar__msg small {
+  font-weight: normal;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-custos-savebar__msg small.is-erro { color: var(--vf-danger-strong); }
+
+/* Com a barra de salvar visível, a paginação não fica atrás dela, e os
+   toasts sobem. */
+body.vf-page-anuncios-meli.am-custos-savebar-on {
+  padding-bottom: 88px;
+}
+
+body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
+  bottom: 96px;
+}
+
+.vf-page-anuncios-meli .am-toast-acao {
+  display: flex;
+  gap: var(--vf-sp-2);
+  align-items: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-page-anuncios-meli .am-custos-savebar,
+  .vf-page-anuncios-meli .am-custo__btn svg { transition: none; }
+}

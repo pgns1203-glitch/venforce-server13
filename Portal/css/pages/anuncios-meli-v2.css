@@ -1141,7 +1141,9 @@
 
 /* ---------------------------------------------------------------------
    Composição da margem — seção do modal de detalhe, sempre aberta, logo
-   depois das fotos e ao lado de "Promoções disponíveis". Nenhuma cor nova.
+   depois das fotos e ao lado de "Promoções disponíveis". Tabela HOJE ×
+   SIMULAÇÃO + uma ação única embaixo (ver margemComposicaoLadderHtml e
+   margemAcoesHtml em anuncios-meli.js). Nenhuma cor nova.
 --------------------------------------------------------------------- */
 .vf-page-anuncios-meli .am-margem-comp {
   margin-top: 32px;
@@ -1165,186 +1167,331 @@
 }
 
 .vf-page-anuncios-meli .am-margem-comp__ladder {
+  overflow: hidden;
   border: 1px solid var(--vf-border);
-  border-radius: 8px;
-  padding: 4px 14px;
-  max-width: 360px;
+  border-radius: var(--vf-radius);
 }
 
-.vf-page-anuncios-meli .am-margem-comp__linha {
-  display: flex;
+.vf-page-anuncios-meli .am-margem-sim__linha {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 88px 118px;
+  gap: 8px;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 7px 0;
+  min-height: 36px;
+  padding: 6px 14px;
   font-size: var(--vf-fs-sm);
 }
 
-.vf-page-anuncios-meli .am-margem-comp__linha + .am-margem-comp__linha {
+.vf-page-anuncios-meli .am-margem-sim__linha + .am-margem-sim__linha {
   border-top: 1px solid var(--vf-border);
 }
 
-.vf-page-anuncios-meli .am-margem-comp__rotulo {
+.vf-page-anuncios-meli .am-margem-sim__cab {
+  min-height: 0;
+  padding-top: 8px;
+  padding-bottom: 8px;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__cab span {
+  text-align: right;
+}
+
+.vf-page-anuncios-meli .am-margem-sim__cab span:last-child {
+  padding-right: 9px;
+  color: var(--vf-primary-strong);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__rotulo {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
   color: var(--vf-text-muted);
 }
 
-.vf-page-anuncios-meli .am-margem-comp__valor {
+.vf-page-anuncios-meli .am-margem-sim__hoje {
+  text-align: right;
   font-variant-numeric: tabular-nums;
-  color: var(--vf-text);
+  color: var(--vf-text-secondary);
 }
 
-.vf-page-anuncios-meli .am-margem-comp__total {
-  border-top: 2px solid var(--vf-border-strong) !important;
+.vf-page-anuncios-meli .am-margem-sim__sim {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-.vf-page-anuncios-meli .am-margem-comp__total .am-margem-comp__rotulo,
-.vf-page-anuncios-meli .am-margem-comp__total .am-margem-comp__valor {
-  font-weight: var(--vf-fw-bold);
-  color: var(--vf-text);
+.vf-page-anuncios-meli .am-margem-sim__valor {
+  padding-right: 9px;
+  color: var(--vf-text-secondary);
 }
 
-/* Preço / Custo do produto / Custos adicionais — campo editável sempre
-   visível: moldura tracejada + lápis, sem depender do hover para o
-   operador descobrir que dá para clicar. */
-.vf-page-anuncios-meli .am-margem-edit__btn {
-  display: inline-flex;
+.vf-page-anuncios-meli .am-margem-sim__valor.is-alterado {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+}
+
+/* Campo da coluna Simulação — um input de verdade (moldura sólida, R$ à
+   esquerda), nunca um texto que "vira" campo ao clicar. */
+.vf-page-anuncios-meli .am-margem-sim__campo {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px var(--vf-sp-2);
-  white-space: nowrap; /* valor + lápis sempre numa linha só */
-  font: inherit;
-  font-variant-numeric: tabular-nums;
-  color: var(--vf-text);
-  text-align: left;
-  cursor: pointer;
-  background: var(--vf-surface-2);
-  border: 1px dashed var(--vf-border-strong);
+  gap: 4px;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border-strong);
   border-radius: var(--vf-radius-sm);
 }
 
-.vf-page-anuncios-meli .am-margem-edit__lapis {
-  display: inline-flex;
+.vf-page-anuncios-meli .am-margem-sim__campo:hover {
+  border-color: var(--vf-border-hover);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__campo:focus-within {
+  border-color: var(--vf-primary);
+  box-shadow: 0 0 0 2px var(--vf-primary-soft);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__moeda {
+  font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
 }
 
-.vf-page-anuncios-meli .am-margem-edit__btn:hover {
-  background: var(--vf-surface);
-  border-style: solid;
-  border-color: var(--vf-primary);
-}
-
-.vf-page-anuncios-meli .am-margem-edit__btn:hover .am-margem-edit__lapis {
-  color: var(--vf-primary);
-}
-
-.vf-page-anuncios-meli .am-margem-edit__btn:focus-visible {
-  outline: 2px solid var(--vf-focus-color);
-  outline-offset: 1px;
-}
-
-.vf-page-anuncios-meli .am-margem-edit__input {
-  width: 110px;
-  padding: 1px var(--vf-sp-1);
+.vf-page-anuncios-meli .am-margem-sim__input {
+  flex: 1;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
   font: inherit;
+  font-weight: var(--vf-fw-semibold);
   font-variant-numeric: tabular-nums;
+  text-align: right;
   color: var(--vf-text);
-  background: var(--vf-surface);
-  border: 1px solid var(--vf-primary-border, var(--vf-border-strong));
-  border-radius: var(--vf-radius-sm);
+  background: transparent;
+  border: 0;
+  outline: none;
+  -moz-appearance: textfield;
+  appearance: textfield;
 }
 
-.vf-page-anuncios-meli .am-margem-edit__input::-webkit-outer-spin-button,
-.vf-page-anuncios-meli .am-margem-edit__input::-webkit-inner-spin-button {
+.vf-page-anuncios-meli .am-margem-sim__input::-webkit-outer-spin-button,
+.vf-page-anuncios-meli .am-margem-sim__input::-webkit-inner-spin-button {
   margin: 0;
   -webkit-appearance: none;
   appearance: none;
 }
 
-.vf-page-anuncios-meli .am-margem-edit__input[type="number"] {
-  -moz-appearance: textfield;
-  appearance: textfield;
-}
-
-/* Preço em voo: nenhum número na tela (nem o antigo, que já não vale
-   necessariamente, nem o novo, que ainda não foi confirmado pelo ML). */
-.vf-page-anuncios-meli .am-margem-edit__salvando {
-  font-size: var(--vf-fs-2xs);
-  color: var(--vf-text-muted);
-  font-style: italic;
-}
-
-/* Margem simulada — cor de atenção (âmbar), nunca a mesma cor da margem
-   real: uma projeção que ainda não foi gravada em lugar nenhum não pode se
-   confundir visualmente com o número que o Motor já confirmou. */
-.vf-page-anuncios-meli .am-margem-comp__total--simulada {
-  border-top-color: var(--vf-warning-strong) !important;
-}
-
-.vf-page-anuncios-meli .am-margem-comp__total--simulada .am-margem-comp__rotulo,
-.vf-page-anuncios-meli .am-margem-comp__total--simulada .am-margem-comp__valor {
-  color: var(--vf-warning-strong);
-}
-
-.vf-page-anuncios-meli .am-margem-comp__restaurar {
-  margin-left: 6px;
-  padding: 1px 6px;
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-medium);
-  color: var(--vf-text-muted);
-  cursor: pointer;
-  background: none;
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius-sm);
-}
-
-.vf-page-anuncios-meli .am-margem-comp__restaurar:hover {
-  color: var(--vf-text);
-  border-color: var(--vf-border-strong);
-}
-
-/* Tag ao lado do rótulo "Preço" — só aparece quando a edição é uma escrita
-   REAL no Mercado Livre (nunca ao lado de Custo do produto/Custos
-   adicionais, que são só simulação). */
-.vf-page-anuncios-meli .am-margem-comp__ml-tag {
-  height: 18px;
-  padding: 0 6px;
-}
-
-.vf-page-anuncios-meli .am-margem-comp__acoes {
-  display: flex;
-  gap: 6px;
-}
-
-/* "Aplicar preço no Mercado Livre" — linha de ação sozinha, sem rótulo à
-   esquerda, alinhada à direita como o resto dos valores da "escada". Só
-   aparece quando há uma simulação de preço pendente (ver
-   margemComposicaoLadderHtml). */
-.vf-page-anuncios-meli .am-margem-comp__linha--acao {
-  justify-content: flex-end;
-}
-
-/* Preço bloqueado (promoção ativa no Mercado Livre) — valor em texto puro,
-   sem moldura de botão: não é um convite a editar, é informativo, igual ao
-   título travado por catálogo. */
+/* Preço travado (promoção ativa, ou promoção em que o ML define o preço) —
+   texto puro, sem moldura: não é um convite a editar. O motivo fica no ⓘ. */
 .vf-page-anuncios-meli .am-margem-comp__valor--bloqueado {
   color: var(--vf-text-muted);
   cursor: default;
 }
 
+.vf-page-anuncios-meli .am-margem-sim__linha--total {
+  font-weight: var(--vf-fw-bold);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__linha--total .am-margem-sim__rotulo,
+.vf-page-anuncios-meli .am-margem-sim__linha--total .am-margem-sim__hoje {
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__linha--total .am-margem-sim__sim {
+  padding-right: 9px;
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__pct {
+  display: block;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__calculando {
+  font-size: var(--vf-fs-xs);
+  font-style: italic;
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__dif {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+  border-top: 1px solid var(--vf-border);
+}
+
+/* "Simulando: <promoção>" ao lado do título, com ✕ para descartar. */
+.vf-page-anuncios-meli .am-margem-sim__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 220px;
+  padding: 2px 2px 2px 10px;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary-strong);
+  background: var(--vf-primary-soft);
+  border: 1px solid var(--vf-primary-border);
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__chip-nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-margem-sim__chip-x {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font-size: var(--vf-fs-md);
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__chip-x:hover {
+  background: var(--vf-primary-soft-hover);
+}
+
+.vf-page-anuncios-meli .am-margem-sim__chip-x:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+/* Selo de diferença — "+R$ 2,44" / "−R$ 13,69" / "= hoje". Forma (pílula)
+   + sinal no texto, nunca só a cor. */
+.vf-page-anuncios-meli .am-delta {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-bold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-page-anuncios-meli .am-delta.is-pos {
+  color: var(--vf-success-strong);
+  background: var(--vf-success-bg);
+}
+
+.vf-page-anuncios-meli .am-delta.is-neg {
+  color: var(--vf-warning-strong);
+  background: var(--vf-warning-bg);
+}
+
+.vf-page-anuncios-meli .am-delta.is-igual {
+  color: var(--vf-neutral-strong);
+  background: var(--vf-neutral-bg);
+}
+
+.vf-page-anuncios-meli .am-delta.is-vazio {
+  padding: 0;
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+/* Ação única da simulação (ver margemAcoesHtml). */
+.vf-page-anuncios-meli .am-margem-acoes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.vf-page-anuncios-meli .am-margem-acoes .vf-btn {
+  width: 100%;
+  justify-content: center;
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__principal {
+  min-height: 44px;
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__btn--sair {
+  color: var(--vf-danger-strong);
+  border-color: var(--vf-danger-border);
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__btn--sair:hover:not(:disabled) {
+  color: var(--vf-danger-strong);
+  background: var(--vf-danger-bg);
+  border-color: var(--vf-danger-border);
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__dica,
+.vf-page-anuncios-meli .am-margem-acoes__rodape {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  line-height: 1.5;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__rodape {
+  text-align: center;
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__nota {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  line-height: 1.45;
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__nota.is-info,
+.vf-page-anuncios-meli .am-margem-acoes__nota.is-warning {
+  padding: 10px 12px;
+  border: 1px solid;
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__nota.is-info {
+  color: var(--vf-info-strong);
+  background: var(--vf-info-bg);
+  border-color: var(--vf-info-border);
+}
+
+.vf-page-anuncios-meli .am-margem-acoes__nota.is-warning {
+  color: var(--vf-warning-strong);
+  background: var(--vf-warning-bg);
+  border-color: var(--vf-warning-border);
+}
+
 /* ---------------------------------------------------------------------
    Promoções disponíveis — ao lado da Composição da margem (mesmo canva).
-   Como ela, nasce visível, com
-   "Carregando…" até a resposta de GET /:itemId/promocoes chegar (busca em
-   segundo plano, nunca atrasa a abertura do modal — ver
-   garantirPromocoesDoItem em anuncios-meli.js).
+   Nasce visível, com "Carregando…" até a resposta de GET /:itemId/promocoes
+   chegar (busca em segundo plano, nunca atrasa a abertura do modal — ver
+   garantirPromocoesDoItem). Lista agrupada; a LINHA INTEIRA é o botão de
+   escolha (ver promocaoLinhaHtml) — nenhuma ação por linha.
 --------------------------------------------------------------------- */
 .vf-page-anuncios-meli .am-det-margem-grid {
   margin-top: 32px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(330px, 380px) minmax(0, 1fr);
   gap: 32px;
   align-items: start;
 }
@@ -1368,54 +1515,145 @@
   overflow-x: auto;
 }
 
-.vf-page-anuncios-meli .am-promo__tabela {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: var(--vf-fs-sm);
+.vf-page-anuncios-meli .am-promo__lista {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 600px;
 }
 
-.vf-page-anuncios-meli .am-promo__tabela th {
-  padding: 6px 10px;
+.vf-page-anuncios-meli .am-promo__cab,
+.vf-page-anuncios-meli .am-promo__linha {
+  display: grid;
+  grid-template-columns: 16px minmax(140px, 1fr) 92px 80px 124px 104px;
+  gap: 12px;
+  align-items: center;
+}
+
+.vf-page-anuncios-meli .am-promo__cab {
+  padding: 0 13px 2px;
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-bold);
-  text-align: left;
-  color: var(--vf-text-muted);
   letter-spacing: var(--vf-ls-caps);
   text-transform: uppercase;
-  border-bottom: 1px solid var(--vf-border-strong);
-  white-space: nowrap;
+  color: var(--vf-text-muted);
 }
 
-.vf-page-anuncios-meli .am-promo__tabela td {
-  padding: 8px 10px;
-  vertical-align: top;
-  border-bottom: 1px solid var(--vf-border);
+.vf-page-anuncios-meli .am-promo__cab span:nth-child(n + 3) {
+  text-align: right;
 }
 
-.vf-page-anuncios-meli .am-promo__tabela tr:last-child td {
-  border-bottom: none;
+.vf-page-anuncios-meli .am-promo__grupo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.vf-page-anuncios-meli .am-promo__grupo-cab {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  padding: 8px 2px 0;
+}
+
+.vf-page-anuncios-meli .am-promo__grupo-titulo {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-promo__grupo-dica {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-promo__linha {
+  width: 100%;
+  min-height: 52px;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: var(--vf-fs-sm);
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.vf-page-anuncios-meli .am-promo__linha:hover {
+  background: var(--vf-surface-hover);
+  border-color: var(--vf-border-hover);
+}
+
+.vf-page-anuncios-meli .am-promo__linha:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+.vf-page-anuncios-meli .am-promo__linha.is-selecionada {
+  background: var(--vf-primary-soft);
+  border-color: var(--vf-primary);
+}
+
+.vf-page-anuncios-meli .am-promo__radio {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--vf-border-hover);
+  border-radius: 50%;
+}
+
+.vf-page-anuncios-meli .am-promo__linha.is-selecionada .am-promo__radio {
+  border-color: var(--vf-primary);
+}
+
+.vf-page-anuncios-meli .am-promo__linha.is-selecionada .am-promo__radio::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  background: var(--vf-primary);
+  border-radius: 50%;
 }
 
 .vf-page-anuncios-meli .am-promo__col-nome {
-  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
 }
 
 .vf-page-anuncios-meli .am-promo__nome {
+  overflow: hidden;
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .vf-page-anuncios-meli .am-promo__meta {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  margin-top: 2px;
+  gap: 2px 8px;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
-  white-space: nowrap;
 }
 
-.vf-page-anuncios-meli .am-promo__desconto,
+.vf-page-anuncios-meli .am-promo__col-num {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  text-align: right;
+}
+
+.vf-page-anuncios-meli .am-promo__preco,
 .vf-page-anuncios-meli .am-promo__recebe,
 .vf-page-anuncios-meli .am-promo__subsidio {
   font-variant-numeric: tabular-nums;
@@ -1423,22 +1661,25 @@
   white-space: nowrap;
 }
 
-.vf-page-anuncios-meli .am-promo__desconto-pct,
-.vf-page-anuncios-meli .am-promo__recebe-pct {
-  color: var(--vf-text-muted);
-  font-size: var(--vf-fs-2xs);
+.vf-page-anuncios-meli .am-promo__preco,
+.vf-page-anuncios-meli .am-promo__recebe {
+  font-weight: var(--vf-fw-semibold);
 }
 
-.vf-page-anuncios-meli .am-promo__desconto--vazio,
+.vf-page-anuncios-meli .am-promo__preco-desc,
+.vf-page-anuncios-meli .am-promo__recebe-pct {
+  font-size: var(--vf-fs-2xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-promo__preco--vazio,
 .vf-page-anuncios-meli .am-promo__recebe--vazio,
 .vf-page-anuncios-meli .am-promo__subsidio--vazio {
-  color: var(--vf-text-muted);
-  font-style: italic;
   font-size: var(--vf-fs-2xs);
-}
-
-.vf-page-anuncios-meli .am-promo__acao {
-  white-space: nowrap;
+  font-style: italic;
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
 }
 
 .vf-page-anuncios-meli .am-mlb__acao {

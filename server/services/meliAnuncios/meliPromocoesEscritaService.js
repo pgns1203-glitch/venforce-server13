@@ -32,7 +32,7 @@
 
 const { mlFetch } = require("../../utils/mlClient");
 const { motivoDoErroMl, codigoDoErroMl } = require("./meliConteudoService");
-const { listarPromocoesDoItem } = require("./meliPromocoesService");
+const { listarPromocoesDoItem, TIPOS_ESCRITA_ACEITE } = require("./meliPromocoesService");
 
 const TIPOS_COM_ESCRITA = new Set(["DEAL", "SELLER_CAMPAIGN"]);
 
@@ -222,8 +222,116 @@ async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, preco
   };
 }
 
+// ---------------------------------------------------------------------------
+// Tipos ACEITE (o Mercado Livre define o preço — ver meliPromocoesService.
+// TIPOS_ESCRITA_ACEITE): o vendedor só PARTICIPA ou DEIXA DE PARTICIPAR.
+// Nunca envia preço. Mesma regra de sempre: relê o estado AO VIVO antes de
+// escrever e decide pelo status relido, nunca pelo que o frontend guardou.
+//
+//   participar  → só status candidate; POST {promotion_id, promotion_type}
+//                 + offer_id da candidatura quando o tipo exige (SMART,
+//                 PRICE_MATCHING, PRE_NEGOTIATED, UNHEALTHY_STOCK — a doc de
+//                 MARKETPLACE_CAMPAIGN não leva offer_id);
+//   sair        → só status started/active/pending; DELETE com
+//                 promotion_type + promotion_id + offer_id (os três
+//                 obrigatórios na doc — sem offer_id, nada é enviado).
+// ---------------------------------------------------------------------------
+const TIPOS_ACEITE_SEM_OFFER_NO_POST = new Set(["MARKETPLACE_CAMPAIGN"]);
+const STATUS_PODE_SAIR = new Set(["started", "active", "pending"]);
+
+async function relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo }) {
+  const id = String(itemId || "").trim();
+  if (!id) return { falha: falha("ITEM_ID_AUSENTE", "Item sem identificador do Mercado Livre.") };
+
+  const lista = await listarPromocoesDoItem({ clienteId, itemId: id, mlUserId });
+  // id + tipo: o id só é único dentro de cada tipo (ver deduplicarPromocoes).
+  const promo = lista.find((p) => String(p.id) === String(promotionId) && (!tipo || p.tipo === tipo));
+  if (!promo) {
+    return {
+      falha: falha(
+        "PROMOCAO_NAO_ENCONTRADA",
+        "Esta promoção não está mais disponível para este anúncio. Atualize a tela e tente novamente."
+      ),
+    };
+  }
+  if (!TIPOS_ESCRITA_ACEITE.has(promo.tipo)) {
+    return {
+      falha: falha(
+        "TIPO_SEM_ACEITE",
+        "Nesta promoção o preço é escolhido pelo vendedor ou ela só é gerida pelo Mercado Livre — não dá para só participar/sair por aqui."
+      ),
+    };
+  }
+  return { id, promo };
+}
+
+async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo }) {
+  const lido = await relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo });
+  if (lido.falha) return lido.falha;
+  const { id, promo } = lido;
+
+  if (promo.status !== "candidate") {
+    return falha("PROMOCAO_JA_PARTICIPA", "O anúncio já participa desta promoção. Atualize a tela.");
+  }
+
+  const corpo = { promotion_id: promo.id, promotion_type: promo.tipo };
+  if (!TIPOS_ACEITE_SEM_OFFER_NO_POST.has(promo.tipo)) {
+    if (!promo.refId) {
+      return falha("OFFER_ID_AUSENTE", "O Mercado Livre não informou a oferta desta promoção — participe pelo painel do Mercado Livre.");
+    }
+    corpo.offer_id = promo.refId;
+  }
+
+  const resp = await mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(id)}?app_version=v2`, {
+    method: "POST",
+    body: JSON.stringify(corpo),
+    mlUserId,
+  });
+  if (!resp || !resp.ok) {
+    return falha(codigoDoErroMl(resp && resp.data, resp && resp.status), motivoDoErroMl(resp && resp.data, resp && resp.status));
+  }
+
+  const precoConfirmado = Number(resp.data && resp.data.price);
+  return {
+    ok: true,
+    acao: "PARTICIPAR",
+    promotionId: promo.id,
+    tipo: promo.tipo,
+    precoConfirmado: Number.isFinite(precoConfirmado) ? precoConfirmado : null,
+  };
+}
+
+async function sairPromocao({ clienteId, itemId, mlUserId, promotionId, tipo }) {
+  const lido = await relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo });
+  if (lido.falha) return lido.falha;
+  const { id, promo } = lido;
+
+  if (!STATUS_PODE_SAIR.has(promo.status)) {
+    return falha("PROMOCAO_NAO_PARTICIPA", "O anúncio não participa desta promoção. Atualize a tela.");
+  }
+  if (!promo.refId) {
+    return falha("OFFER_ID_AUSENTE", "O Mercado Livre não informou a oferta desta promoção — saia pelo painel do Mercado Livre.");
+  }
+
+  const qs =
+    "promotion_type=" + encodeURIComponent(promo.tipo) +
+    "&promotion_id=" + encodeURIComponent(promo.id) +
+    "&offer_id=" + encodeURIComponent(promo.refId) +
+    "&app_version=v2";
+  const resp = await mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(id)}?${qs}`, {
+    method: "DELETE",
+    mlUserId,
+  });
+  if (!resp || !resp.ok) {
+    return falha(codigoDoErroMl(resp && resp.data, resp && resp.status), motivoDoErroMl(resp && resp.data, resp && resp.status));
+  }
+  return { ok: true, acao: "SAIR", promotionId: promo.id, tipo: promo.tipo };
+}
+
 module.exports = {
   aplicarPromocao,
+  participarPromocaoAceite,
+  sairPromocao,
   normalizarPrecoPromocao,
   TIPOS_COM_ESCRITA,
 };

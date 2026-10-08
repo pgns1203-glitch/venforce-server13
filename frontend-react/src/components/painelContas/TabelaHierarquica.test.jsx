@@ -90,9 +90,11 @@ describe("linha do cliente: escopo, status, fonte e frescor sem abrir nada", () 
     const linha = screen.getByText("Acme Comércio").closest("tr");
     expect(within(linha).getByText("Consolidado · 3 contas")).toBeInTheDocument();
     expect(within(linha).getByText("Sincronizado")).toBeInTheDocument();
-    expect(within(linha).getByText(/· API/)).toBeInTheDocument();
+    // Origem é um selo (o mesmo da conta); "dados até" fica ao lado do estado,
+    // curto no ano da competência — a data completa vai no title.
+    expect(within(linha).getByText("API")).toHaveClass("vf-ph-origem", "is-api");
     expect(within(linha).getByText(/atualizado 29\/09\/2026/)).toBeInTheDocument();
-    expect(within(linha).getByText(/dados até 28\/09\/2026/)).toBeInTheDocument();
+    expect(within(linha).getByText("dados até 28/09")).toHaveAttribute("title", "Dados até 28/09/2026");
     expect(within(linha).getByText("Squad Alpha")).toBeInTheDocument();
   });
 
@@ -106,8 +108,11 @@ describe("linha do cliente: escopo, status, fonte e frescor sem abrir nada", () 
   it("sem dado, o frescor continua escrito — ausência vira —, nunca some", () => {
     render(<Casca clientes={[semDados()]} />);
     const linha = screen.getByText("Acme Comércio").closest("tr");
-    expect(within(linha).getByText("dados até —")).toBeInTheDocument();
-    expect(within(linha).getByText("· sem fonte")).toBeInTheDocument();
+    // "Sem dados em set/2026" já diz que não há "dados até"; origem e
+    // atualização continuam escritas, com a ausência explícita.
+    expect(within(linha).getByText("Sem dados em set/2026")).toBeInTheDocument();
+    expect(within(linha).queryByText(/dados até/)).toBeNull();
+    expect(within(linha).getByText("sem fonte")).toHaveClass("vf-ph-origem", "is-vazio");
     expect(within(linha).getByText("atualizado —")).toBeInTheDocument();
   });
 
@@ -158,6 +163,52 @@ describe("linha do cliente: escopo, status, fonte e frescor sem abrir nada", () 
   it("uma conta só: singular", () => {
     render(<Casca clientes={[semDados({ escopo: { tipo: "conta", rotulo: "Shopee 1 · COREMIX", contasOperacionais: 1, contasComDado: 0, contasPrecisamAcao: 1 } })]} />);
     expect(screen.getByText("1 conta precisa de ação")).toBeInTheDocument();
+  });
+});
+
+describe("acabamento visual: origem, ação e ferramentas do cliente aberto", () => {
+  it("conta manual: selo Manual, botão 'Editar dados' e legenda discreta só no FAT", async () => {
+    const onLancar = vi.fn();
+    const manual = conta(2, {
+      rotulo: "Shopee 1 · LOJA", marketplace: "shopee", fonte: { tipo: "manual", rotulo: "Manual" },
+      status: { codigo: "manual", rotulo: "Lançado manualmente" }, podeLancarManual: true,
+      manual: { valores: resumo({ fat: 90 }), atualizadoPor: "Ana" },
+    });
+    const { container } = render(<Casca clientes={[cliente({ contas: [conta(1, { podeLancarManual: true }), manual] })]} onLancar={onLancar} />);
+    await abrirCliente();
+    const [api, man] = container.querySelectorAll(".vf-ph-row--conta");
+    expect(within(api).getByText("API")).toHaveClass("vf-ph-origem", "is-api");
+    expect(within(api).getByRole("button", { name: "Lançar dados — Mercado Livre 1 · LOJA 1" })).toHaveTextContent("Lançar dados");
+    expect(within(man).getByText("Manual")).toHaveClass("vf-ph-origem", "is-manual");
+    const editar = within(man).getByRole("button", { name: "Editar dados — Shopee 1 · LOJA" });
+    expect(editar).toHaveClass("is-editar");
+    expect(man.querySelector(".vf-ph-col--fat .vf-ph-valor__origem")).toHaveTextContent("manual");
+    expect(man.querySelector(".vf-ph-col--lc .vf-ph-valor__origem")).toBeNull();
+    expect(api.querySelector(".vf-ph-valor__origem")).toBeNull();
+    await userEvent.click(editar);
+    expect(onLancar).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 2 }));
+  });
+
+  it("cliente com dado: estado e 'dados até' numa linha, a ação na linha de baixo", () => {
+    const { container } = render(<Casca clientes={[cliente({
+      escopo: { tipo: "consolidado", rotulo: "Consolidado · 2 de 3 contas", contasOperacionais: 3, contasComDado: 2, contasPrecisamAcao: 1 },
+      status: { codigo: "parcial", rotulo: "Parcial", motivo: null, precisaAtencao: true },
+    })]} />);
+    const linhas = container.querySelectorAll(".vf-ph-cliente__meta--empilhado .vf-ph-cliente__meta-linha");
+    expect(linhas).toHaveLength(2);
+    expect(linhas[0]).toHaveTextContent("Parcial");
+    expect(linhas[0]).toHaveTextContent("dados até 28/09");
+    expect(linhas[1]).toHaveTextContent("1 conta precisa de ação");
+  });
+
+  it("composição e consolidado semanal são duas ações de UMA linha, logo abaixo das contas", async () => {
+    const { container } = render(<Casca clientes={[cliente({ contas: [conta(1, { importId: 77 }), conta(2), conta(3)] })]} />);
+    await abrirCliente();
+    const ferramentas = container.querySelectorAll(".vf-ph-row--ferramentas");
+    expect(ferramentas).toHaveLength(1);
+    expect(ferramentas[0].previousElementSibling).toHaveClass("vf-ph-row--conta");
+    expect(within(ferramentas[0]).getByRole("button", { name: /Composição do faturamento de Acme Comércio/ })).toHaveAttribute("aria-expanded", "false");
+    expect(within(ferramentas[0]).getByRole("button", { name: /Consolidado semanal do cliente Acme Comércio/ })).toHaveAttribute("aria-expanded", "false");
   });
 });
 

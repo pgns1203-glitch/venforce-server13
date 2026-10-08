@@ -12,7 +12,9 @@
 //   Conferência             ✓ fecha             ✓ fecha         ✓ fecha
 //
 // Uma COLUNA por conta: cada operação tem o próprio demonstrativo, e a soma
-// fica ao lado, nunca no lugar. Valores em centavos (é uma conferência, não
+// fica ao lado, nunca no lugar. Apresentado como SEÇÃO de detalhe da linha do
+// cliente: demonstrativo à esquerda (valor e pedidos na mesma linha) e, na
+// largura que sobra, a leitura — pedidos por conta, definições e notas. Valores em centavos (é uma conferência, não
 // um resumo). O FAT é o oficial do import; a conferência só diz se
 // bruto − exclusões chega nele. Nada aqui é recalculado no navegador.
 
@@ -99,73 +101,105 @@ export function DemonstrativoComposicao({ contas = [], somaDasContas = null, com
     );
   }
 
+  // Seção de detalhe, não tabela solta: à esquerda o demonstrativo (uma
+  // coluna por conta, valor e pedidos na MESMA linha); à direita, na largura
+  // que sobra, a leitura — definições e notas. Nenhum número novo.
+  const escopo = comComposicao.length === 1 ? comComposicao[0].rotulo : `${comComposicao.length} contas`;
   return (
-    <div className="vf-ph-comp">
-      <table className="vf-ph-comp__tabela">
-        <caption className="vf-visually-hidden">
-          Composição do faturamento por conta em {rotularCompetenciaCurta(competencia)}: faturamento bruto, exclusões e FAT.
-        </caption>
-        <thead>
-          <tr>
-            <th scope="col" className="vf-ph-comp__rotulo-col">
-              <span className="vf-visually-hidden">Linha</span>
-            </th>
-            {colunas.map((c) => (
-              <th key={c.chave} scope="col" className={`num${c.soma ? " is-soma" : ""}`}>
-                <span className="vf-ph-comp__conta">{c.rotulo}</span>
-                {periodoCurto(c.comp.periodo) && (
-                  <span className="vf-ph-comp__periodo">
-                    {periodoCurto(c.comp.periodo)}
-                    {c.soma && c.comp.periodo?.diferente ? " · períodos diferentes" : ""}
-                  </span>
-                )}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          <tr className="vf-ph-comp__linha is-bruto">
-            <th scope="row">
-              Faturamento bruto
-              <span className="vf-ph-comp__ajuda">todos os pedidos, cancelados inclusos · regra da Cliente 360 V1</span>
-            </th>
-            {colunas.map((c) => <CelulaValor key={c.chave} grupo={c.comp.bruto} forte soma={c.soma} />)}
-          </tr>
-          {exclusoes.map((l) => (
-            <tr key={l.chave} className="vf-ph-comp__linha is-exclusao">
-              <th scope="row" title={l.ajuda}>− {l.rotulo}</th>
-              {colunas.map((c) => <CelulaValor key={c.chave} grupo={c.comp.exclusoes?.[l.chave]} negativo soma={c.soma} />)}
-            </tr>
-          ))}
-          <tr className="vf-ph-comp__linha is-total">
-            <th scope="row">
-              = FAT
-              <span className="vf-ph-comp__ajuda">pedidos válidos · Central de Vendas</span>
-            </th>
-            {colunas.map((c) => (
-              <td key={c.chave} className={`num vf-ph-comp__valor is-forte${c.soma ? " is-soma" : ""}`}>
-                <span className="vf-ph-comp__moeda">{c.comp.fat === null ? "—" : formatarMoeda(c.comp.fat)}</span>
-                <span className="vf-ph-comp__pedidos">{pedidos(c.comp.validos?.pedidos ?? 0)}</span>
-              </td>
-            ))}
-          </tr>
-          <tr className="vf-ph-comp__linha is-conferencia">
-            <th scope="row" title="Faturamento bruto menos as exclusões, comparado ao FAT oficial do import.">Conferência</th>
-            {colunas.map((c) => <CelulaConferencia key={c.chave} reconciliacao={c.comp.reconciliacao} soma={c.soma} />)}
-          </tr>
-        </tbody>
-      </table>
+    <section className="vf-ph-comp" aria-label={`Composição do faturamento em ${rotularCompetenciaCurta(competencia)}`}>
+      <header className="vf-ph-comp__cabecalho">
+        <p className="vf-ph-comp__titulo">
+          Composição do faturamento
+          <span className="vf-ph-comp__escopo"> · {escopo} · {rotularCompetenciaCurta(competencia)}</span>
+        </p>
+        <p className="vf-ph-comp__formula" aria-hidden="true">bruto − exclusões = FAT</p>
+      </header>
 
-      <ul className="vf-ph-comp__notas">
-        {semComposicao.map((c) => (
-          <li key={c.contaId}>{c.rotulo}: {c.motivo || "sem pedidos para compor"} — fora do demonstrativo.</li>
-        ))}
-        {notas.map((n) => <li key={n}>{n}</li>)}
-        <li>
-          Mesmo import e mesmos pedidos do FAT de cada conta; cada pedido cai em um só grupo. O valor do pedido é a soma
-          dos itens (a base do FAT) — a Cliente 360 V1 ao vivo usa o total do pedido.
-        </li>
-      </ul>
-    </div>
+      <div className="vf-ph-comp__corpo">
+        <table className="vf-ph-comp__tabela">
+          <caption className="vf-visually-hidden">
+            Composição do faturamento por conta em {rotularCompetenciaCurta(competencia)}: faturamento bruto, exclusões e FAT.
+          </caption>
+          <thead>
+            <tr>
+              <th scope="col" className="vf-ph-comp__rotulo-col">
+                <span className="vf-visually-hidden">Linha</span>
+              </th>
+              {colunas.map((c) => (
+                <th key={c.chave} scope="col" className={`num${c.soma ? " is-soma" : ""}`}>
+                  <span className="vf-ph-comp__conta">{c.rotulo}</span>
+                  {periodoCurto(c.comp.periodo) && (
+                    <span className="vf-ph-comp__periodo">
+                      {periodoCurto(c.comp.periodo)}
+                      {c.soma && c.comp.periodo?.diferente ? " · períodos diferentes" : ""}
+                    </span>
+                  )}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="vf-ph-comp__linha is-bruto">
+              <th scope="row" title="Todos os pedidos, cancelados inclusos · regra da Cliente 360 V1">Faturamento bruto</th>
+              {colunas.map((c) => <CelulaValor key={c.chave} grupo={c.comp.bruto} forte soma={c.soma} />)}
+            </tr>
+            {exclusoes.map((l) => (
+              <tr key={l.chave} className="vf-ph-comp__linha is-exclusao">
+                <th scope="row" title={l.ajuda}>− {l.rotulo}</th>
+                {colunas.map((c) => <CelulaValor key={c.chave} grupo={c.comp.exclusoes?.[l.chave]} negativo soma={c.soma} />)}
+              </tr>
+            ))}
+            <tr className="vf-ph-comp__linha is-total">
+              <th scope="row" title="Pedidos válidos · Central de Vendas">= FAT</th>
+              {colunas.map((c) => (
+                <td key={c.chave} className={`num vf-ph-comp__valor is-forte${c.soma ? " is-soma" : ""}`}>
+                  <span className="vf-ph-comp__moeda">{c.comp.fat === null ? "—" : formatarMoeda(c.comp.fat)}</span>
+                  <span className="vf-ph-comp__pedidos">{pedidos(c.comp.validos?.pedidos ?? 0)}</span>
+                </td>
+              ))}
+            </tr>
+            <tr className="vf-ph-comp__linha is-conferencia">
+              <th scope="row" title="Faturamento bruto menos as exclusões, comparado ao FAT oficial do import.">Conferência</th>
+              {colunas.map((c) => <CelulaConferencia key={c.chave} reconciliacao={c.comp.reconciliacao} soma={c.soma} />)}
+            </tr>
+          </tbody>
+        </table>
+
+        <aside className="vf-ph-comp__lado" aria-label="Como ler a composição">
+          <ul className="vf-ph-comp__fluxos" aria-label="Pedidos por conta">
+            {colunas.map((c) => (
+              <li key={c.chave} className="vf-ph-comp__fluxo">
+                <span className="vf-ph-comp__fluxo-conta">{c.soma ? "Soma" : c.rotulo}</span>
+                <span className="vf-ph-comp__fluxo-numeros">
+                  {pedidos(c.comp.bruto?.pedidos ?? 0)} → {formatarNumero(c.comp.validos?.pedidos ?? 0)} válidos
+                  {c.comp.totalExcluido?.pedidos != null && ` · ${formatarNumero(c.comp.totalExcluido.pedidos)} fora do FAT`}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <dl className="vf-ph-comp__definicoes">
+            <div><dt>Faturamento bruto</dt><dd>todos os pedidos, cancelados inclusos (regra da Cliente 360 V1)</dd></div>
+            <div>
+              <dt>Exclusões</dt>
+              <dd>
+                cancelamento sem reclamação; devolução concluída; reclamação aberta — com devolução em andamento ou em
+                mediação — que ainda pode reverter
+              </dd>
+            </div>
+            <div><dt>FAT</dt><dd>pedidos válidos (Central de Vendas)</dd></div>
+          </dl>
+          <ul className="vf-ph-comp__notas">
+            {semComposicao.map((c) => (
+              <li key={c.contaId}>{c.rotulo}: {c.motivo || "sem pedidos para compor"} — fora do demonstrativo.</li>
+            ))}
+            {notas.map((n) => <li key={n}>{n}</li>)}
+            <li>
+              Mesmo import e mesmos pedidos do FAT de cada conta; cada pedido cai em um só grupo. O valor do pedido é a soma
+              dos itens (a base do FAT) — a Cliente 360 V1 ao vivo usa o total do pedido.
+            </li>
+          </ul>
+        </aside>
+      </div>
+    </section>
   );
 }

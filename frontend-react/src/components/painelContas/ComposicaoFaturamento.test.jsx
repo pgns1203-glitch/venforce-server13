@@ -100,6 +100,22 @@ describe("demonstrativo: uma coluna por conta, soma ao lado", () => {
     expect(screen.getByText(/1 pedido aparece em mais de uma conta \(R\$ 70,00 a mais na soma\)/)).toBeInTheDocument();
   });
 
+  it("seção de detalhe: título com o escopo e, ao lado, pedidos por conta (contagens do servidor)", () => {
+    render(<DemonstrativoComposicao contas={[conta1, conta2]} somaDasContas={soma} competencia="2026-09" />);
+    const secao = screen.getByRole("region", { name: /Composição do faturamento em set\/2026/ });
+    expect(within(secao).getByText(/· 2 contas · set\/2026/)).toBeInTheDocument();
+    const fluxos = within(screen.getByRole("list", { name: "Pedidos por conta" })).getAllByRole("listitem");
+    expect(fluxos).toHaveLength(3);
+    expect(fluxos[1]).toHaveTextContent("Mercado Livre 2 · AMR");
+    expect(fluxos[1]).toHaveTextContent("947 pedidos → 884 válidos · 63 fora do FAT");
+    expect(fluxos[2]).toHaveTextContent(/^Soma/);
+  });
+
+  it("conta única: o título nomeia a conta", () => {
+    render(<DemonstrativoComposicao contas={[conta2]} somaDasContas={null} competencia="2026-09" />);
+    expect(screen.getByRole("region", { name: /Composição do faturamento/ })).toHaveTextContent("Composição do faturamento · Mercado Livre 2 · AMR · set/2026");
+  });
+
   it("nenhuma conta com pedidos: diz que não há o que compor", () => {
     render(<DemonstrativoComposicao contas={[shopee]} competencia="2026-09" />);
     expect(screen.getByText(/Nenhuma conta tem pedidos importados em set\/2026/)).toBeInTheDocument();

@@ -5,29 +5,192 @@
    da Fundação Global V2. Só var(--vf-*), nenhum token novo. */
 
 /* ── Enquadramento ──────────────────────────────────────────────────────
-   Cabeçalho e barra de controle têm altura FIXA; só a tabela cresce. O
-   respiro vertical padrão da Fundação (--vf-section-gap = 24px em compacto)
-   é generoso demais para uma tela cujo trabalho inteiro acontece na tabela —
-   aqui cada bloco encosta no seguinte, sem virar aperto. */
+   Uma ferramenta, não uma pilha de blocos: cabeçalho de UMA linha (título à
+   esquerda, modo manual à direita) e, embaixo, um PAINEL único com seções,
+   filtros, resumo e tabela dentro da mesma moldura. Só a tabela cresce. */
 .vf-ph-shell {
-  padding: var(--vf-sp-5) var(--vf-sp-5) var(--vf-sp-6);
+  padding: var(--vf-sp-4) var(--vf-sp-5) var(--vf-sp-4);
 }
 
 .vf-ph-page {
   gap: var(--vf-sp-3);
 }
 
+/* z-index: o painel "Entender" do modo manual abre POR CIMA da barra e do
+   cabeçalho preso da tabela, que vêm depois no documento. */
 .vf-ph-header {
-  align-items: baseline;
+  position: relative;
+  z-index: 5;
+  align-items: center;
+  gap: var(--vf-sp-2) var(--vf-sp-4);
+  margin: 0;
+}
+
+.vf-ph-header .vf-page-header__main {
+  flex: 0 1 auto;
+}
+
+.vf-ph-header .vf-page-header__title {
+  font-size: var(--vf-fs-lg);
+  line-height: var(--vf-lh-tight);
 }
 
 .vf-ph-header .vf-page-header__description {
-  margin-top: 2px;
+  margin: 2px 0 0;
   font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
 }
 
 .vf-ph-esqueleto {
   gap: var(--vf-sp-2);
+}
+
+/* ── Modo manual: selo, não faixa ───────────────────────────────────────
+   Sempre visível no cabeçalho, do tamanho de um controle. Tom informativo
+   (azul) — o mesmo do selo "Manual" nas linhas: é a mesma informação. */
+.vf-ph-modo {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px var(--vf-sp-2);
+  min-height: 28px;
+  padding: 2px 3px 2px 10px;
+  border: 1px solid var(--vf-info-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-info-bg);
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-snug);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-modo__selo {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-info-strong);
+  white-space: nowrap;
+}
+
+.vf-ph-modo__selo::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-info);
+}
+
+.vf-ph-modo__entender {
+  height: 22px;
+  padding: 0 var(--vf-sp-2);
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-info-strong);
+  cursor: pointer;
+}
+
+.vf-ph-modo__entender:hover,
+.vf-ph-modo__entender[aria-expanded="true"] {
+  background: var(--vf-info-bg-hover);
+}
+
+.vf-ph-modo__entender:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+.vf-ph-modo__detalhe {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: var(--vf-z-dropdown);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: min(380px, 90vw);
+  padding: var(--vf-sp-3) 14px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+  box-shadow: var(--vf-shadow-popover);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-modo__detalhe p {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-snug);
+}
+
+.vf-ph-modo__detalhe-titulo {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+/* Confirmação de lançamento: uma linha fina, título e texto lado a lado. */
+.vf-ph-confirmacao.vf-banner {
+  align-items: center;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.vf-ph-confirmacao .vf-banner__content {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 var(--vf-sp-2);
+}
+
+.vf-ph-confirmacao .vf-banner__description {
+  margin: 0;
+}
+
+/* ── Painel ─────────────────────────────────────────────────────────────
+   A moldura é da ferramenta inteira. Dentro dela, cada faixa se separa da
+   seguinte por uma régua fina — sem caixa dentro de caixa. */
+.vf-ph-painel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface);
+}
+
+.vf-ph-painel > .vf-ph-wrap {
+  border: none;
+  border-top: 1px solid var(--vf-border);
+  border-radius: 0 0 calc(var(--vf-radius-sm) - 1px) calc(var(--vf-radius-sm) - 1px);
+}
+
+.vf-ph-painel > .vf-ph-vazio {
+  border-top: 1px solid var(--vf-border);
+}
+
+/* Competência sem nenhum dado: nota fina entre a barra e a tabela. */
+.vf-ph-aviso {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--vf-sp-2);
+  padding: 7px var(--vf-sp-3);
+  border-top: 1px solid var(--vf-info-border);
+  background: var(--vf-info-bg);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-ph-aviso p {
+  margin: 0;
+}
+
+.vf-ph-aviso__titulo {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-info-strong);
 }
 
 /* ── Barra de controle ──────────────────────────────────────────────────
@@ -37,7 +200,8 @@
 .vf-ph-barra {
   display: flex;
   flex-direction: column;
-  gap: var(--vf-sp-2);
+  gap: 6px;
+  padding: 10px var(--vf-sp-3) 8px;
 }
 
 /* Filtros e ações lado a lado, sem quebrar a barra em três linhas: se faltar
@@ -134,15 +298,34 @@
   margin: 0;
 }
 
-/* Divisor: traço vertical fino entre os itens (não um "·" de texto). */
-.vf-ph-resumo__numeros > * + *::before {
-  content: "";
+.vf-ph-resumo__numeros {
+  gap: var(--vf-sp-1) var(--vf-sp-4);
+}
+
+/* A forma do estado da tabela, no resumo: ● ok · ◆ alerta · ○ sem dado. */
+.vf-ph-resumo__ponto {
   display: inline-block;
-  width: 1px;
-  height: 11px;
-  margin: 0 var(--vf-sp-3);
-  vertical-align: -1px;
-  background: var(--vf-border-strong);
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-neutral);
+  vertical-align: 1px;
+}
+
+.vf-ph-resumo__ponto.is-success { background: var(--vf-success); }
+
+.vf-ph-resumo__ponto.is-warning {
+  width: 6px;
+  height: 6px;
+  border-radius: 0;
+  background: var(--vf-warning);
+  transform: rotate(45deg);
+}
+
+.vf-ph-resumo__ponto.is-empty {
+  background: transparent;
+  border: 1.5px solid var(--vf-neutral);
 }
 
 .vf-ph-resumo__n {
@@ -306,7 +489,7 @@
    explica, e discreto o bastante para não competir com a tabela. */
 .vf-ph-rodape {
   margin: 0;
-  max-width: 940px;
+  max-width: none;
   font-size: var(--vf-fs-2xs);
   line-height: var(--vf-lh-snug);
   color: var(--vf-text-muted);
@@ -347,29 +530,39 @@
 }
 
 /* ── Seções por marketplace ─────────────────────────────────────────────
-   Abas (vf-tabs da Fundação) acima da barra: a seção muda o NÚMERO, não só
-   a lista. A frase embaixo diz de onde vem o dado da seção. */
+   Primeira faixa do painel: abas (vf-tabs da Fundação) à esquerda e, na
+   mesma linha, à direita, a frase que diz de onde vem o número da seção. */
 .vf-ph-secoes {
   display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-1);
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 0 var(--vf-sp-4);
+  padding: 0 var(--vf-sp-2);
+  border-bottom: 1px solid var(--vf-border);
 }
 
 /* Portal/style.css (legado) também define .vf-tabs/.vf-tab como pílula
    esticada (flex:1, caixa com borda, margin-bottom). Aqui vale o padrão de
    abas da Fundação V2 — neutralizado SÓ dentro do Painel, sem tocar no CSS
-   global. */
+   global. A régua de baixo é a do painel. */
 .vf-ph-secoes .vf-tabs {
+  flex: 0 1 auto;
+  min-width: 0;
   margin: 0;
   padding: 0;
   border: 0;
-  border-bottom: 1px solid var(--vf-border);
   border-radius: 0;
   background: transparent;
 }
 
 .vf-ph-secoes .vf-tab {
   flex: 0 0 auto;
+  padding: 9px var(--vf-sp-3) 8px;
+  font-size: var(--vf-fs-xs);
+}
+
+.vf-ph-secoes .vf-tab.is-active {
+  font-weight: var(--vf-fw-semibold);
 }
 
 .vf-ph-secoes__n {
@@ -379,13 +572,38 @@
   background: var(--vf-surface-2);
   border: 1px solid var(--vf-border);
   font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
   font-variant-numeric: tabular-nums;
   text-align: center;
   color: var(--vf-text-secondary);
 }
 
+.vf-ph-secoes .vf-tab.is-active .vf-ph-secoes__n {
+  border-color: var(--vf-primary-border);
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
 .vf-ph-secoes__descricao {
+  flex: 0 1 auto;
+  min-width: 0;
   margin: 0;
+  padding: 0 var(--vf-sp-1) 9px;
+  overflow: hidden;
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .vf-ph-secoes {
+    flex-wrap: wrap;
+  }
+
+  .vf-ph-secoes__descricao {
+    flex-basis: 100%;
+    padding-top: 4px;
+    white-space: normal;
+  }
 }

@@ -244,10 +244,36 @@ async function lerCustosDosItens({ clienteSlug, clienteContaId = null, itemIds }
   };
 }
 
+/**
+ * Só a Base de Custos do contexto do Motor — para o card e o filtro "Sem
+ * custo" da lista. Nunca lança: o resumo e a lista funcionam sem Base, só sem
+ * esse recorte (`base: null` + motivo).
+ *
+ * @returns {Promise<{ base: {id, slug, nome}|null, motivo, mensagem }>}
+ */
+async function resolverBaseDeCustos({ clienteSlug, clienteContaId = null }, deps = {}) {
+  const resolverContexto = deps.resolverContextoPrecificacao || contextoPrecificacao.resolverContextoPrecificacao;
+  try {
+    const contexto = await resolverContexto({ clienteSlugRaw: clienteSlug, clienteContaId });
+    if (!contexto.pronto || !contexto.base) {
+      return { base: null, motivo: contexto.motivo, mensagem: contexto.mensagem };
+    }
+    const { id, slug, nome } = contexto.base;
+    return { base: { id, slug, nome }, motivo: contexto.motivo, mensagem: null };
+  } catch (err) {
+    return {
+      base: null,
+      motivo: (err.payload && err.payload.codigo) || "CONTEXTO_INDISPONIVEL",
+      mensagem: (err.payload && (err.payload.erro || err.payload.motivo)) || "Não foi possível resolver a Base de Custos.",
+    };
+  }
+}
+
 module.exports = {
   MAX_ITENS_LOTE,
   salvarCustosEmLote,
   lerCustosDosItens,
+  resolverBaseDeCustos,
   // exportados para teste
   validarPedido,
   normalizarItemId,

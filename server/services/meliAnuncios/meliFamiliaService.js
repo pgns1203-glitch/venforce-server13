@@ -209,12 +209,67 @@ function predicadoFiltroItem(filtro) {
   }
 }
 
+// FILTROS COMBINÁVEIS. `filtro` e `status` aceitam lista separada por vírgula
+// (ex.: filtro=sem_custo,sem_sku&status=active). Regra de combinação, a de
+// qualquer filtro facetado:
+//   · faixas do MESMO eixo são exclusivas entre si, então combinam por OU —
+//     status (active,paused) e as faixas de score (baixo/médio/muito bom);
+//     combinar por E daria sempre lista vazia;
+//   · eixos diferentes combinam por E (ativos E sem custo E sem SKU).
+// Tudo casa no MESMO item (o grupo entra se um item dele casar com tudo).
+// Valor desconhecido é ignorado, como sempre foi no filtro único.
+const GRUPO_SCORE = new Set(["score_baixo", "score_medio", "score_muito_bom"]);
+const FILTROS_CONHECIDOS = new Set([
+  "sem_fotos", "score_baixo", "sem_sku", "ficha_incompleta", "pausados",
+  "score_muito_bom", "score_medio", "mercado_full", "sem_agrupamento", "sem_custo",
+]);
+
+function listaDeValores(valor) {
+  const bruto = Array.isArray(valor) ? valor.join(",") : String(valor || "");
+  return Array.from(new Set(bruto.split(",").map((v) => v.trim()).filter(Boolean)));
+}
+
+function normalizarFiltros(filtro) {
+  return listaDeValores(filtro).filter((f) => FILTROS_CONHECIDOS.has(f));
+}
+
+// "Sem custo" = o MLB não tem custo na Base de Custos resolvida pelo contexto
+// do Motor — a mesma leitura de meliCustosLoteService.lerCustosDosItens
+// (linha sem variação, chave com ou sem o prefixo MLB, custo não nulo). Sem
+// Base resolvida o recorte não existe: quem chama não passa baseCustoId e o
+// filtro é ignorado (o controller avisa em `filtrosIgnorados`).
+function predicadoSemCusto(baseCustoIdx) {
+  return `NOT EXISTS (SELECT 1 FROM custos c
+                       WHERE c.base_id = $${baseCustoIdx}
+                         AND c.sku_id = ''
+                         AND c.custo_produto IS NOT NULL
+                         AND UPPER(TRIM(c.produto_id)) IN (UPPER(b.item_id), REGEXP_REPLACE(UPPER(b.item_id), '^MLB', '')))`;
+}
+
+function predicadosDosFiltros(filtros, { baseCustoIdx = null } = {}) {
+  const partes = [];
+  const scores = [];
+  for (const f of filtros) {
+    if (f === "sem_custo") {
+      if (baseCustoIdx != null) partes.push(predicadoSemCusto(baseCustoIdx));
+      continue;
+    }
+    const pred = predicadoFiltroItem(f);
+    if (!pred) continue;
+    if (GRUPO_SCORE.has(f)) scores.push(pred);
+    else partes.push(pred);
+  }
+  if (scores.length === 1) partes.push(scores[0]);
+  else if (scores.length > 1) partes.push(`(${scores.join(" OR ")})`);
+  return partes;
+}
+
 // Monta os predicados COMUNS a qualquer leitura do catálogo agrupado
 // (LISTAR_AGRUPADO_PAGINA, LISTAR_CHAVES_FILTRADAS): filtro de conta
 // (clausulaConta) + busca/status/filtro (match por item, o grupo entra se
 // QUALQUER item dele casar). Devolve `nextParamIndex` para quem monta a
 // query poder continuar empilhando params próprios (ex.: limit/offset).
-function construirFiltroBase({ clienteId, clienteContaId = null, includeLegacy = true, q = "", status = "", filtro = "" }) {
+function construirFiltroBase({ clienteId, clienteContaId = null, includeLegacy = true, q = "", status = "", filtro = "", baseCustoId = null }) {
   const params = [clienteId];
   let i = 2;
 
@@ -230,13 +285,24 @@ function construirFiltroBase({ clienteId, clienteContaId = null, includeLegacy =
     match.push(`(b.titulo ILIKE $${qIdx} OR b.item_id ILIKE $${qIdx} OR b.sku ILIKE $${qIdx}
                  OR b.up_family_name ILIKE $${qIdx} OR b.user_product_id ILIKE $${qIdx})`);
   }
-  if (status) {
-    params.push(String(status));
+  const statusLista = listaDeValores(status);
+  if (statusLista.length === 1) {
+    params.push(statusLista[0]);
     match.push(`b.status = $${i}`);
     i++;
+  } else if (statusLista.length > 1) {
+    params.push(statusLista);
+    match.push(`b.status = ANY($${i}::text[])`);
+    i++;
   }
-  const predFiltro = predicadoFiltroItem(filtro);
-  if (predFiltro) match.push(predFiltro);
+  const filtros = normalizarFiltros(filtro);
+  let baseCustoIdx = null;
+  if (filtros.includes("sem_custo") && baseCustoId != null) {
+    params.push(baseCustoId);
+    baseCustoIdx = i;
+    i++;
+  }
+  match.push(...predicadosDosFiltros(filtros, { baseCustoIdx }));
   const matchSql = match.length ? match.join(" AND ") : "TRUE";
 
   return { params, nextParamIndex: i, conta, matchSql };
@@ -403,6 +469,7 @@ async function listarAgrupado({
   q = "",
   status = "",
   filtro = "",
+  baseCustoId = null,
   page = 1,
   limit = 20,
 }) {
@@ -410,7 +477,7 @@ async function listarAgrupado({
   await require("./meliAnunciosService").ensureSchema();
 
   const { params, nextParamIndex, conta, matchSql } = construirFiltroBase({
-    clienteId, clienteContaId, includeLegacy, q, status, filtro,
+    clienteId, clienteContaId, includeLegacy, q, status, filtro, baseCustoId,
   });
   let i = nextParamIndex;
 
@@ -651,11 +718,11 @@ async function resolverItensDeFamilias({ clienteId, clienteContaId = null, famil
 // chaves que o ranking do Motor precisa (ver meliAnunciosController.
 // listarAgrupadoOrdenadoPorMotor). Aggregados completos de uma chave
 // específica vêm depois, só para a página final, via listarAgrupadoPorChaves.
-async function listarChavesFiltradas({ clienteId, clienteContaId = null, includeLegacy = true, q = "", status = "", filtro = "" }) {
+async function listarChavesFiltradas({ clienteId, clienteContaId = null, includeLegacy = true, q = "", status = "", filtro = "", baseCustoId = null }) {
   await ensureSchema();
 
   const { params, conta, matchSql } = construirFiltroBase({
-    clienteId, clienteContaId, includeLegacy, q, status, filtro,
+    clienteId, clienteContaId, includeLegacy, q, status, filtro, baseCustoId,
   });
 
   const sql = `
@@ -684,6 +751,25 @@ async function listarChavesFiltradas({ clienteId, clienteContaId = null, include
 
   const { rows } = await db.query(sql, params);
   return rows;
+}
+
+// Quantos MLB do escopo (cliente/conta) estão sem custo na Base — o número do
+// card "Sem custo". Conta ANÚNCIOS, como os demais cards do resumo
+// (meliAnunciosService.obterResumo), com o mesmo predicado do filtro.
+async function contarSemCusto({ clienteId, clienteContaId = null, includeLegacy = true, baseCustoId }) {
+  const { params, conta, matchSql } = construirFiltroBase({
+    clienteId, clienteContaId, includeLegacy, filtro: "sem_custo", baseCustoId,
+  });
+  const sql = `
+    -- CONTAR_SEM_CUSTO
+    WITH base AS (
+      SELECT a.item_id FROM meli_anuncios a
+       WHERE a.cliente_id = $1${conta.sql}
+    )
+    SELECT COUNT(*)::int AS total FROM base b WHERE ${matchSql};
+  `;
+  const { rows } = await db.query(sql, params);
+  return rows[0] ? rows[0].total : 0;
 }
 
 // Hidrata os AGREGADOS completos (estoque por UP distinto, vendidos por
@@ -774,7 +860,9 @@ module.exports = {
   obterFamiliaDetalhe,
   resolverItensDeFamilias,
   construirFiltroBase,
+  normalizarFiltros,
   montarAnunciosDeRows,
   listarChavesFiltradas,
+  contarSemCusto,
   listarAgrupadoPorChaves,
 };

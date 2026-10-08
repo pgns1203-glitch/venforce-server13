@@ -142,6 +142,19 @@ async function resumo(req, res) {
     }
 
     const dados = await anunciosService.obterResumo(cliente.id, contaId, includeLegacy);
+
+    // Card "Sem custo": depende da Base de Custos do contexto do Motor. Sem
+    // Base resolvida o número não existe (null), e a tela mostra o motivo em
+    // vez de um zero enganoso.
+    const baseCustos = await custosLoteService.resolverBaseDeCustos({ clienteSlug: cliente.slug, clienteContaId });
+    dados.semCusto = null;
+    dados.semCustoMotivo = baseCustos.base ? null : baseCustos.mensagem;
+    if (baseCustos.base) {
+      dados.semCusto = await familiaService.contarSemCusto({
+        clienteId: cliente.id, clienteContaId: contaId, includeLegacy, baseCustoId: baseCustos.base.id,
+      });
+    }
+
     return res.json({
       ok: true,
       cliente: { slug: cliente.slug, nome: cliente.nome },
@@ -266,9 +279,9 @@ const CURVA_ABC_ORDEM = { A: 1, B: 2, C: 3 };
 // ver chamadores) — Restrição Global #5 do plano ("nunca vira erro 500 nem
 // ordenação quebrada"): cai pro SQL padrão da página pedida, só sinalizando
 // `ordenacaoAplicada:false` pro frontend mostrar o aviso.
-async function fallbackOrdenacaoIndisponivel({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, indisponivel }) {
+async function fallbackOrdenacaoIndisponivel({ cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit, indisponivel }) {
   const fallback = await familiaService.listarAgrupado({
-    clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+    clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
   });
   return { ...fallback, ordenacaoAplicada: false, ordenacaoIndisponivel: indisponivel };
 }
@@ -476,9 +489,9 @@ async function anexarMargemProjetadaNaPagina(anuncios, { clienteId, clienteConta
   }
 }
 
-async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit, config }) {
+async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit, config }) {
   const chaves = await familiaService.listarChavesFiltradas({
-    clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro,
+    clienteId: cliente.id, clienteContaId, includeLegacy, q, status, filtro, baseCustoId,
   });
 
   const familyIds = Array.from(new Set(chaves.filter((c) => c.family_id != null).map((c) => c.family_id)));
@@ -512,13 +525,13 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
       // aqui não pode quebrar a LISTAGEM (que funcionaria normalmente sem
       // ordenação) — vira aviso, nunca 500 nem o fluxo de escolha de conta.
       return fallbackOrdenacaoIndisponivel({
-        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
         indisponivel: { codigo: "CONTA_ML_INDISPONIVEL", mensagem: "Não foi possível determinar a conta do Mercado Livre para ordenar por Unidades vendidas." },
       });
     }
     if (!mlUserId) {
       return fallbackOrdenacaoIndisponivel({
-        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
         indisponivel: { codigo: "CONTA_ML_INDISPONIVEL", mensagem: "Não foi possível determinar a conta do Mercado Livre para ordenar por Unidades vendidas." },
       });
     }
@@ -528,7 +541,7 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
     });
     if (!resultadoVendas || !resultadoVendas.ok) {
       return fallbackOrdenacaoIndisponivel({
-        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
         indisponivel: { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
       });
     }
@@ -549,7 +562,7 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
         err.message
       );
       return fallbackOrdenacaoIndisponivel({
-        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
         indisponivel: { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
       });
     }
@@ -570,7 +583,7 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
       .some((s) => (s.computable && s.marginPercent != null) || s.profit != null);
     if (!temAlgumSinal) {
       return fallbackOrdenacaoIndisponivel({
-        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
         indisponivel: {
           codigo: "SNAPSHOT_INDISPONIVEL",
           mensagem: "Margem projetada ainda não foi calculada para este cliente.",
@@ -604,7 +617,7 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
         );
       }
       return fallbackOrdenacaoIndisponivel({
-        cliente, clienteContaId, includeLegacy, q, status, filtro, page, limit,
+        cliente, clienteContaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
         indisponivel: tipada
           ? { codigo: err.payload.codigo, mensagem: err.payload.erro }
           : { codigo: "ERRO_INESPERADO", mensagem: "Não foi possível ordenar globalmente no momento." },
@@ -783,13 +796,24 @@ async function listarAgrupado(req, res) {
       includeLegacy = contexto.includeLegacy;
     }
 
+    // `filtro` aceita lista (filtros combináveis, ver meliFamiliaService.
+    // predicadosDosFiltros). "sem_custo" precisa da Base do contexto do Motor;
+    // sem ela o recorte é ignorado e a resposta diz isso, nunca em silêncio.
+    let baseCustoId = null;
+    const filtrosIgnorados = [];
+    if (familiaService.normalizarFiltros(filtro).includes("sem_custo")) {
+      const baseCustos = await custosLoteService.resolverBaseDeCustos({ clienteSlug: cliente.slug, clienteContaId });
+      if (baseCustos.base) baseCustoId = baseCustos.base.id;
+      else filtrosIgnorados.push({ filtro: "sem_custo", motivo: baseCustos.mensagem });
+    }
+
     const configGlobal = ORDENACOES_GLOBAIS[ordenarPor];
     const resultado = configGlobal
       ? await listarAgrupadoOrdenadoPorMotor({
-          cliente, clienteContaId: contaId, includeLegacy, q, status, filtro, page, limit, config: configGlobal,
+          cliente, clienteContaId: contaId, includeLegacy, q, status, filtro, baseCustoId, page, limit, config: configGlobal,
         })
       : await familiaService.listarAgrupado({
-          clienteId: cliente.id, clienteContaId: contaId, includeLegacy, q, status, filtro, page, limit,
+          clienteId: cliente.id, clienteContaId: contaId, includeLegacy, q, status, filtro, baseCustoId, page, limit,
         });
 
     // A célula de margem precisa dos campos de snapshot em QUALQUER resposta
@@ -814,6 +838,7 @@ async function listarAgrupado(req, res) {
       resposta.ordenacaoAplicada = resultado.ordenacaoAplicada;
       resposta.ordenacaoIndisponivel = resultado.ordenacaoIndisponivel;
     }
+    if (filtrosIgnorados.length) resposta.filtrosIgnorados = filtrosIgnorados;
     return res.json(resposta);
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);

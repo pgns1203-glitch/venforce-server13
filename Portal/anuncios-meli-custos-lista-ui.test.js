@@ -300,7 +300,7 @@ function wireInterception(cdp, excecoes) {
     if (pathname.includes("/operacao/cliente-360/clientes")) return respond({ ok: true, clientes: [N97] });
     if (/\/clientes\/[^/?]+\/contas/.test(pathname)) return respond({ ok: true, cliente: N97, contas: N97_CONTAS });
     if (pathname === "/anuncios-meli/clientes") return respond({ ok: true, clientes: [{ id: 87, nome: N97.nome, slug: "n97", mlConectado: true, totalAnuncios: 5 }] });
-    if (pathname === "/anuncios-meli/resumo") return respond({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, full: 2, ultimaSync: new Date().toISOString() } });
+    if (pathname === "/anuncios-meli/resumo") return respond({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, semCusto: 2, full: 2, ultimaSync: new Date().toISOString() } });
     if (pathname === "/anuncios-meli/custos") {
       if (!SERVIDOR.base) return respond({ ok: true, base: null, motivo: "BASE_MELI_NAO_VINCULADA", mensagem: SERVIDOR.mensagemSemBase, custos: {} });
       const custos = {};

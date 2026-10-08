@@ -570,7 +570,7 @@ function wireInterception(cdp) {
       return;
     }
     if (url.includes("/anuncios-meli/resumo")) {
-      await corpo({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, full: 2, ultimaSync: new Date().toISOString() } });
+      await corpo({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, semCusto: 2, full: 2, ultimaSync: new Date().toISOString() } });
       return;
     }
 
@@ -1526,6 +1526,48 @@ async function run() {
       // Desliga para não contaminar as verificações seguintes.
       await clicar(cdp, '#am-resumo [data-kpi="sem_sku"]');
       await waitFor(cdp, "document.querySelectorAll('.am-listagem > .am-row').length === 4", "o filtro não foi desligado");
+    });
+
+    await check("15b — cards combinam: Ativos + Sem custo + Sem SKU vão juntos; Total limpa tudo", async () => {
+      const ultimoPedidoLista = (desde) => pedidos.slice(desde).filter((u) => /^\/anuncios-meli\/familias\?/.test(u)).pop() || "";
+      // Espera o pedido da lista do ÚLTIMO clique (o card repinta na hora; o
+      // fetch chega um instante depois).
+      const pedidoCom = async (desde, casa) => {
+        for (let t = 0; t < 100; t++) {
+          const p = ultimoPedidoLista(desde);
+          if (p) { const q = new URLSearchParams(p.split("?")[1]); if (casa(q)) return q; }
+          await new Promise((r) => setTimeout(r, 50));
+        }
+        return new URLSearchParams(ultimoPedidoLista(desde).split("?")[1]);
+      };
+      let antes = pedidos.length;
+      await clicar(cdp, '#am-resumo [data-kpi="ativos"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-resumo .am-kpi.is-active').length === 1", "Ativos não ficou ativo");
+      await clicar(cdp, '#am-resumo [data-kpi="sem_custo"]');
+      await clicar(cdp, '#am-resumo [data-kpi="sem_sku"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-resumo .am-kpi.is-active').length === 3", "os três cards precisam ficar ativos juntos");
+      const qs = await pedidoCom(antes, (p) => p.get("filtro") === "sem_custo,sem_sku");
+      assert.strictEqual(qs.get("status"), "active");
+      assert.strictEqual(qs.get("filtro"), "sem_custo,sem_sku");
+      const indicador = await cdp.evaluate("document.getElementById('am-filtros-ativos').textContent");
+      assert.strictEqual(indicador, "3 filtros ativos");
+
+      // Desligar um card tira só ele.
+      antes = pedidos.length;
+      await clicar(cdp, '#am-resumo [data-kpi="sem_custo"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-resumo .am-kpi.is-active').length === 2", "desligar um card não pode derrubar os outros");
+      const qs2 = await pedidoCom(antes, (p) => p.get("filtro") === "sem_sku");
+      assert.strictEqual(qs2.get("status"), "active");
+      assert.strictEqual(qs2.get("filtro"), "sem_sku");
+
+      // "Total" limpa todos.
+      antes = pedidos.length;
+      await clicar(cdp, '#am-resumo [data-kpi="total"]');
+      await waitFor(cdp, "document.querySelectorAll('#am-resumo .am-kpi.is-active').length === 0", "Total precisa limpar todos os cards");
+      const qs3 = await pedidoCom(antes, (p) => !p.get("filtro") && !p.get("status"));
+      assert.strictEqual(qs3.get("status"), null);
+      assert.strictEqual(qs3.get("filtro"), null);
+      await waitFor(cdp, "document.querySelectorAll('.am-listagem > .am-row').length === 4", "a lista não voltou inteira");
     });
 
     /* ── 16 e 17: as duas formas de linha abrem o mesmo modal ───────────── */

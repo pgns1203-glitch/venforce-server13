@@ -27,8 +27,8 @@ function ok(label, condition) {
 
 const CLIENTES = [{ id: 1, slug: "n97", nome: "N97" }];
 const CONTAS = [
-  { id: 10, cliente_id: 1, nome: "ML Principal", ativo: true },
-  { id: 11, cliente_id: 1, nome: "ML Secundaria", ativo: true },
+  { id: 10, cliente_id: 1, nome: "Shopee 1", ativo: true },
+  { id: 11, cliente_id: 1, nome: "Shopee 2", ativo: true },
 ];
 
 function criarBanco() {
@@ -239,6 +239,123 @@ async function run() {
     const A = await criarEPublicar(corpo({ periodo: "2026-09", marca: "CONTA_10", conta: 10 }));
     const B = await criarEPublicar(corpo({ periodo: "2026-09", marca: "CONTA_11", conta: 11 }));
     ok("outra operação na mesma competência: independente", A.token !== B.token && db.linhas.length === 2);
+  });
+
+
+  // ------------------------------------------------------------------
+  // PATCH de entrega que JA teve link (caminho legado: `_entregaIdSalvo`
+  // continua definido depois de salvar/publicar e o operador troca so a conta
+  // ou o periodo). A entrega com token_publico e historica: o PATCH nao pode
+  // alterar o que ela representa.
+  // ------------------------------------------------------------------
+  const rejeita = async (label, promise, codigo) => {
+    let erro = null;
+    try { await promise; } catch (e) { erro = e; }
+    ok(label, !!erro && erro.statusCode === 409 && erro.code === codigo);
+    return erro;
+  };
+
+  // Cenario pedido: Shopee conta 1 -> troca so para Shopee conta 2 -> salva B.
+  await comBanco(async (db) => {
+    const payloadA = { versao: 1, cliente: { slug: "n97" }, periodo: "2026-09", marketplace: "shopee", marca: "CONTA_1" };
+    const A = await criarEPublicar({
+      ...corpo({ periodo: "2026-09", marca: "x", conta: 10 }), payload_json: payloadA,
+    });
+    const linhaA = () => db.linhas.find((e) => e.id === A.id);
+    ok("Shopee 1: A publicado vinculado a conta 1", linhaA().cliente_conta_id === 10 && !!A.token);
+
+    // O legado re-salva com o MESMO id (estado nao zerado) e a conta nova.
+    const erro = await rejeita(
+      "trocar so para conta 2 e re-salvar (PATCH) em entrega com link -> 409 ENTREGA_PUBLICADA_IMUTAVEL",
+      servico.atualizarEntrega({ idRaw: A.id, body: { periodo: "2026-09", payload_json: payloadA, cliente_conta_id: 11 } }),
+      "ENTREGA_PUBLICADA_IMUTAVEL"
+    );
+    ok("o erro diz qual campo tentou mudar", Array.isArray(erro.payload.campos) && erro.payload.campos.includes("cliente_conta_id"));
+    ok("A nao teve a conta alterada", linhaA().cliente_conta_id === 10);
+
+    // Fallback do legado: repete a intencao como CRIACAO (POST, sem substituir).
+    const B = await criarEPublicar({
+      ...corpo({ periodo: "2026-09", marca: "x", conta: 11 }), payload_json: { ...payloadA, marca: "CONTA_2" },
+    });
+    ok("B e um registro independente de A", B.id !== A.id && db.linhas.length === 2);
+    ok("B vinculado a conta 2", db.linhas.find((e) => e.id === B.id).cliente_conta_id === 11);
+    ok("A continua vinculado a conta 1", linhaA().cliente_conta_id === 10);
+    ok("A nao teve periodo alterado", linhaA().periodo === "2026-09");
+    ok("A nao teve payload alterado", linhaA().payload_json.marca === "CONTA_1");
+    ok("link A != link B", A.token !== B.token);
+    ok("link historico A continua valido e abre A", (await abrirLink(A.token)).payload_json.marca === "CONTA_1");
+    ok("link B abre B", (await abrirLink(B.token)).payload_json.marca === "CONTA_2");
+  });
+
+  // Matriz do guard em entrega COM link.
+  await comBanco(async (db) => {
+    const payload = { versao: 1, cliente: { slug: "n97" }, marca: "A" };
+    const A = await criarEPublicar({ ...corpo({ periodo: "2026-09", marca: "x", conta: 10 }), payload_json: payload });
+    const linhaA = () => db.linhas.find((e) => e.id === A.id);
+    const snapshot = JSON.stringify(linhaA());
+
+    await rejeita("PATCH que muda periodo em entrega com link -> 409",
+      servico.atualizarEntrega({ idRaw: A.id, body: { periodo: "Outubro 2026" } }), "ENTREGA_PUBLICADA_IMUTAVEL");
+    await rejeita("PATCH que muda payload_json em entrega com link -> 409",
+      servico.atualizarEntrega({ idRaw: A.id, body: { payload_json: { ...payload, marca: "OUTRA" } } }), "ENTREGA_PUBLICADA_IMUTAVEL");
+    await rejeita("PATCH que muda titulo em entrega com link -> 409",
+      servico.atualizarEntrega({ idRaw: A.id, body: { titulo: "Outro titulo" } }), "ENTREGA_PUBLICADA_IMUTAVEL");
+    await rejeita("PATCH que muda tipo em entrega com link -> 409",
+      servico.atualizarEntrega({ idRaw: A.id, body: { tipo: "relatorio_misto" } }), "ENTREGA_PUBLICADA_IMUTAVEL");
+    await rejeita("PATCH que remove a conta (null) em entrega com link -> 409",
+      servico.atualizarEntrega({ idRaw: A.id, body: { cliente_conta_id: null } }), "ENTREGA_PUBLICADA_IMUTAVEL");
+    // Payload com cliente.slug congelado: a trava de identidade (anterior ao
+    // guard) tambem recusa; qualquer das duas protege a entrega.
+    let erroCliente = null;
+    try { await servico.atualizarEntrega({ idRaw: A.id, body: { cliente_slug: "outro-cliente" } }); } catch (e) { erroCliente = e; }
+    ok("PATCH que troca o cliente (slug) em entrega com link -> 409",
+      !!erroCliente && erroCliente.statusCode === 409
+      && ["ENTREGA_PUBLICADA_IMUTAVEL", "IDENTIDADE_DIVERGENTE"].includes(erroCliente.code));
+    ok("nenhuma das tentativas alterou a linha de A", JSON.stringify(linhaA()) === snapshot);
+
+    // Segundo clique do legado: mesmo periodo, mesmo payload, mesma conta.
+    const r = await servico.atualizarEntrega({
+      idRaw: A.id,
+      body: { periodo: "Setembro 2026", payload_json: JSON.parse(JSON.stringify(payload)), cliente_conta_id: 10 },
+    });
+    ok("PATCH sem mudanca real (segundo clique) continua aceito", r.ok === true);
+    ok("...e a entrega segue igual", linhaA().periodo === "2026-09" && linhaA().payload_json.marca === "A" && linhaA().cliente_conta_id === 10);
+    const re = await servico.publicarEntrega({ idRaw: A.id });
+    ok("...e republicar devolve o MESMO token", re.entrega.token_publico === A.token);
+
+    // Campos operacionais continuam editaveis.
+    const futuro = new Date(Date.now() + 86400000).toISOString();
+    await servico.atualizarEntrega({ idRaw: A.id, body: { expires_at: futuro } });
+    ok("expires_at continua editavel em entrega com link", !!linhaA().expires_at && new Date(linhaA().expires_at).toISOString() === futuro);
+    await servico.atualizarEntrega({ idRaw: A.id, body: { status: "publicado" } });
+    ok("status continua editavel em entrega com link", linhaA().status === "publicado");
+  });
+
+  // Guard de cliente isolado: sem slug congelado no payload, so o guard protege.
+  await comBanco(async (db) => {
+    const A = await criarEPublicar({ ...corpo({ periodo: "2026-09", marca: "x", conta: 10 }), payload_json: { versao: 1, marca: "A" } });
+    await rejeita("PATCH que troca o cliente em entrega com link (sem slug congelado) -> ENTREGA_PUBLICADA_IMUTAVEL",
+      servico.atualizarEntrega({ idRaw: A.id, body: { cliente_slug: "outro-cliente" } }), "ENTREGA_PUBLICADA_IMUTAVEL");
+    ok("o cliente de A nao mudou", db.linhas.find((e) => e.id === A.id).cliente_slug === "n97");
+  });
+
+  // Entrega despublicada mas que JA teve link continua historica.
+  await comBanco(async (db) => {
+    const A = await criarEPublicar(corpo({ periodo: "2026-09", marca: "A", conta: 10 }));
+    await servico.despublicarEntrega({ idRaw: A.id });
+    await rejeita("entrega despublicada (token existente) tambem e imutavel",
+      servico.atualizarEntrega({ idRaw: A.id, body: { periodo: "2026-10" } }), "ENTREGA_PUBLICADA_IMUTAVEL");
+  });
+
+  // Rascunho que nunca teve link segue 100% editavel.
+  await comBanco(async (db) => {
+    const { entrega } = await servico.criarEntrega({ userId: 7, body: corpo({ periodo: "2026-09", marca: "R1", conta: 10 }) });
+    await servico.atualizarEntrega({ idRaw: entrega.id, body: {
+      periodo: "2026-10", cliente_conta_id: 11, titulo: "Novo", payload_json: { versao: 1, cliente: { slug: "n97" }, marca: "R2" },
+    } });
+    const l = db.linhas[0];
+    ok("rascunho sem link: periodo, conta, titulo e payload continuam editaveis",
+      l.periodo === "2026-10" && l.cliente_conta_id === 11 && l.titulo === "Novo" && l.payload_json.marca === "R2");
   });
 
   console.log(`\nentregasClienteLinksHistoricos.test.js: ${checks} verificacoes passaram.`);

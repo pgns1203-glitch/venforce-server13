@@ -1027,9 +1027,13 @@ async function criarOuAtualizarEntregaFechamento(payload, periodo) {
       body: JSON.stringify({ periodo: periodo || "", payload_json: payload }),
     });
     if (patchResp.status === 401) { window.location.replace("index.html"); throw new Error("401"); }
-    // Se o PATCH falhar (ex.: entrega removida), recria abaixo.
     if (patchResp.ok) return _entregaIdSalvo;
+    // Se o PATCH falhar recria abaixo como entrega NOVA. Caso tipico: 409
+    // ENTREGA_PUBLICADA_IMUTAVEL — a entrega salva já teve link público (é
+    // histórica) e o operador mudou período/conta; ela fica como está e o novo
+    // fechamento ganha registro e link próprios. Outro caso: entrega removida.
     _entregaIdSalvo = null;
+    _entregaPublicada = false;
   }
 
   const criarResp = await fetch(`${API_BASE}/entregas-cliente`, {
@@ -1040,6 +1044,10 @@ async function criarOuAtualizarEntregaFechamento(payload, periodo) {
       titulo: payload.titulo || "Relatório de Fechamento Financeiro",
       periodo: periodo || "",
       cliente_slug: clienteSlug,
+      // Mesma operação que o cálculo usou (ver salvarFechamentoFinanceiro); sem
+      // ela a entrega nasceria client-level e um "Salvar" posterior com conta
+      // pareceria uma mudança de operação numa entrega já publicada.
+      cliente_conta_id: contaMercadoState.contaId ? Number(contaMercadoState.contaId) : null,
       status: "rascunho",
       payload_json: payload,
       origem_tipo: "fechamento_financeiro",
@@ -2551,6 +2559,23 @@ async function salvarFechamentoFinanceiro() {
 
     if (resp.status === 401) { window.location.replace("index.html"); return; }
     let json = await resp.json();
+
+    /* A entrega salva já teve link público, então é histórica: o servidor recusa
+       alterar período/conta/conteúdo dela (409 ENTREGA_PUBLICADA_IMUTAVEL). A
+       intenção do operador passa a ser a criação de uma NOVA entrega — a
+       anterior e o link dela ficam intactos. Cai no tratamento de D4 abaixo se
+       a competência já tiver dono. */
+    if (resp.status === 409 && json?.code === "ENTREGA_PUBLICADA_IMUTAVEL") {
+      _entregaIdSalvo = null;
+      _entregaPublicada = false;
+      resp = await fetch(`${API_BASE}/entregas-cliente`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
+        body: corpoEntrega(),
+      });
+      if (resp.status === 401) { window.location.replace("index.html"); return; }
+      json = await resp.json();
+    }
 
     /* D4 (P2.6) — a competência agora tem dono. Antes, um segundo "Salvar" do
        mesmo mês criava outra linha em silêncio; se as duas fossem publicadas,

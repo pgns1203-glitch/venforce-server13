@@ -14,6 +14,7 @@
 // por que as ações sumiram — degradar em silêncio seria pior.
 
 import { formatarDataHora, rotularCompetencia } from "../../utils/dates.js";
+import { mesmaCompetencia } from "../../utils/financeiro/competencia.js";
 import { BlocoIndisponivel, BlocoSkeleton } from "../visao/BlocoCard.jsx";
 import { EntregaAcoes, linkPublico } from "./EntregaAcoes.jsx";
 
@@ -73,9 +74,9 @@ function TabelaSomenteLeitura({ lista, motivo, onTentarDeNovo }) {
 
 export function RelatoriosTab({ relatorios, entregas, periodo }) {
   // Bloco indisponível é decisão do backend — nada a operar.
-  if (!relatorios.disponivel) return <BlocoIndisponivel motivo={relatorios.motivo} />;
+  if (relatorios && !relatorios.disponivel) return <BlocoIndisponivel motivo={relatorios.motivo} />;
 
-  const leitura = relatorios.dados || [];
+  const leitura = relatorios?.dados || [];
 
   if (entregas.carregando && !entregas.entregas) return <BlocoSkeleton linhas={4} />;
 
@@ -114,7 +115,7 @@ export function RelatoriosTab({ relatorios, entregas, periodo }) {
         </thead>
         <tbody>
           {lista.map((e) => {
-            const doPeriodoEmTela = String(e.periodo || "").includes(periodo);
+            const doPeriodoEmTela = mesmaCompetencia(e.periodo, periodo);
             return (
               <tr key={e.id} className={doPeriodoEmTela ? "is-destacada" : undefined}>
                 <td>

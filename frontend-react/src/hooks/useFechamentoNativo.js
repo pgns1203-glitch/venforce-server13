@@ -257,6 +257,20 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
 
   const substituir = useCallback(() => salvar({ substituir: true }), [salvar]);
 
+  // Há trabalho que uma troca de competência jogaria fora? Arquivos
+  // escolhidos, ajustes digitados ou um resultado processado.
+  const temArquivo = !!(arquivos.sales || arquivos.costs || arquivos.ordersAll);
+  const temAjuste = Object.values(ajustes).some((v) => String(v ?? "").trim() !== "");
+  const temResultado = !!processamento && estado !== "form" && estado !== "processando";
+  const trabalho = useMemo(
+    () => ({
+      temTrabalho: temArquivo || temAjuste || !!processamento || estado === "processando",
+      temResultado,
+      processadoNaoSalvo: temResultado && estado !== "salvo",
+    }),
+    [temArquivo, temAjuste, processamento, estado, temResultado]
+  );
+
   const resetar = useCallback(() => {
     abortRef.current?.abort();
     setEstado("form");
@@ -271,6 +285,7 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
 
   return {
     estado,
+    trabalho,
     marketplace: mkt,
     marketplaceSuportado,
     arquivos, setArquivo,

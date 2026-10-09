@@ -16,12 +16,12 @@
 // O que NÃO está aqui: seletor de Cliente/Conta/Período (vêm do Shell),
 // seletor de marketplace (é o da operação) e TikTok (segue no legado).
 
+import { useEffect } from "react";
 import { useFechamentoNativo } from "../../hooks/useFechamentoNativo.js";
 import { cardsDoSummary } from "../../utils/fechamentoPayload.js";
 import { formatarMoeda } from "../../utils/currency.js";
 import { rotularCompetencia } from "../../utils/dates.js";
 import { ehAdmin } from "../../services/apiClient.js";
-import { FechamentoContextoBar } from "./fechamento/FechamentoContextoBar.jsx";
 import { BaseCustosStatus } from "./fechamento/BaseCustosStatus.jsx";
 import { FechamentoFileCard } from "./fechamento/FechamentoFileCard.jsx";
 import { FechamentoAjustes } from "./fechamento/FechamentoAjustes.jsx";
@@ -32,8 +32,15 @@ function avisoDoCampo(validacao, campo) {
   return validacao.itens.find((i) => i.campo === campo)?.mensagem || null;
 }
 
-export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, contaNome, periodo, periodoLabel, onSalvo }) {
+export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, periodo, periodoLabel, onSalvo, onTrabalho }) {
   const f = useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, marketplace, periodo, onSalvo });
+
+  // A página precisa saber se há trabalho em andamento para não trocar de
+  // competência em silêncio (CompetenciaFechamento pede confirmação).
+  const { temTrabalho, temResultado, processadoNaoSalvo } = f.trabalho;
+  useEffect(() => {
+    onTrabalho?.({ temTrabalho, temResultado, processadoNaoSalvo });
+  }, [onTrabalho, temTrabalho, temResultado, processadoNaoSalvo]);
   const legado = `financeiro.html?cliente=${encodeURIComponent(clienteSlug || "")}`;
 
   const noForm = f.estado === "form" || f.estado === "processando";
@@ -61,14 +68,6 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
 
   return (
     <div className="vf-stack vf-fin-novo">
-      <FechamentoContextoBar
-        clienteNome={clienteNome}
-        marketplace={f.marketplace}
-        contaNome={contaNome}
-        clienteContaId={clienteContaId}
-        periodoLabel={periodoLabel}
-      />
-
       {noForm && (
         <>
           <section className="vf-fin-novo__passo">

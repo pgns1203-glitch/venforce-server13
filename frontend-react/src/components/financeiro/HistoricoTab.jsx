@@ -11,6 +11,7 @@
 // status/datas) — e isso não é preenchido com zero aqui.
 
 import { formatarDataHora, rotularCompetencia } from "../../utils/dates.js";
+import { mesmaCompetencia } from "../../utils/financeiro/competencia.js";
 import { BlocoIndisponivel, BlocoSkeleton } from "../visao/BlocoCard.jsx";
 
 const STATUS_DOT = { publicado: "●", rascunho: "○" };
@@ -36,10 +37,10 @@ function normalizar(entregas, leitura) {
 }
 
 export function HistoricoTab({ relatorios, entregas, periodo }) {
-  if (!relatorios.disponivel) return <BlocoIndisponivel motivo={relatorios.motivo} />;
+  if (relatorios && !relatorios.disponivel) return <BlocoIndisponivel motivo={relatorios.motivo} />;
   if (entregas.carregando && !entregas.entregas) return <BlocoSkeleton linhas={4} />;
 
-  const lista = normalizar(entregas.erro ? null : entregas.entregas, relatorios.dados).sort((a, b) =>
+  const lista = normalizar(entregas.erro ? null : entregas.entregas, relatorios?.dados).sort((a, b) =>
     String(b.periodo).localeCompare(String(a.periodo))
   );
 
@@ -54,7 +55,7 @@ export function HistoricoTab({ relatorios, entregas, periodo }) {
   return (
     <ul className="vf-fin-historico">
       {lista.map((r, i) => {
-        const doPeriodoEmTela = String(r.periodo || "").includes(periodo);
+        const doPeriodoEmTela = mesmaCompetencia(r.periodo, periodo);
         return (
           <li key={`${r.periodo}-${i}`} className={`vf-fin-historico__item${doPeriodoEmTela ? " is-destacada" : ""}`}>
             <span className={`vf-fin-historico__dot is-${STATUS_TOM[r.status] || "neutral"}`} aria-hidden="true">

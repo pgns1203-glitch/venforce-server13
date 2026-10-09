@@ -1,28 +1,33 @@
 // frontend-react/src/components/financeiro/ResultadoTab.jsx
-// Composição do resultado do fechamento salvo (payload_json.cards, estrutura
+// Composição do resultado do fechamento SALVO (payload_json.cards, estrutura
 // livre — server/services/financeiroVisaoService.js). `disponivel` é
 // obrigatório POR ITEM (Master Spec M6): um card sem valor nunca vira R$0.
+// Desde a paridade operacional não é mais uma aba: é o bloco "Fechamento
+// salvo" da aba Fechamento.
 
 import { formatarMoeda } from "../../utils/currency.js";
 import { AUSENTE } from "../../utils/numbers.js";
+import { formatarPercentual, pontosParaFracao } from "../../utils/percentage.js";
 
-export function ResultadoTab({ resultado, clienteSlug, periodoLabel, onGerar }) {
-  if (!resultado.disponivel) {
+// O payload salvo tem dois formatos de card: o do V3 (valor numérico; os
+// percentuais já em pontos e com "%" no título) e o do legado (valor já
+// formatado em texto). Cada um é exibido como foi gravado — nunca um
+// percentual como R$ nem uma string como "R$ NaN".
+function valorDoItem(item) {
+  if (!item.disponivel) return AUSENTE;
+  if (typeof item.valor === "string") return item.valor;
+  if (String(item.rotulo || "").includes("%")) return formatarPercentual(pontosParaFracao(item.valor));
+  return formatarMoeda(item.valor);
+}
+
+export function ResultadoTab({ resultado, periodoLabel }) {
+  if (!resultado?.disponivel) {
     return (
       <div className="vf-empty">
-        <p className="vf-empty__title">Sem fechamento processado</p>
-        <p className="vf-empty__description">{resultado.motivo || `Nenhum fechamento gerado para ${periodoLabel} ainda.`}</p>
-        <div className="vf-empty__actions">
-          {onGerar ? (
-            <button type="button" className="vf-btn vf-btn--primary" onClick={onGerar}>
-              Gerar fechamento
-            </button>
-          ) : (
-            <a className="vf-btn vf-btn--ghost" href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>
-              Financeiro (legado) →
-            </a>
-          )}
-        </div>
+        <p className="vf-empty__title">Nenhum fechamento salvo</p>
+        <p className="vf-empty__description">
+          {resultado?.motivo || `Nenhum fechamento salvo para ${periodoLabel}.`} Processe um fechamento acima para visualizar o resultado.
+        </p>
       </div>
     );
   }
@@ -31,18 +36,24 @@ export function ResultadoTab({ resultado, clienteSlug, periodoLabel, onGerar }) 
   if (!composicao.length) {
     return (
       <div className="vf-empty">
-        <p className="vf-empty__description">O fechamento de {periodoLabel} não tem linhas de composição registradas.</p>
+        <p className="vf-empty__description">
+          O fechamento salvo de {periodoLabel} não registrou a composição do resultado. Reprocesse para ver o detalhe.
+        </p>
       </div>
     );
   }
 
-  const maxAbs = Math.max(1, ...composicao.map((c) => Math.abs(Number(c.valor) || 0)));
+  const maxAbs = Math.max(
+    1,
+    ...composicao.filter((c) => typeof c.valor === "number" && !String(c.rotulo || "").includes("%")).map((c) => Math.abs(c.valor))
+  );
 
   return (
     <div className="vf-fin-composicao">
       {composicao.map((item, i) => {
-        const negativo = Number(item.valor) < 0;
-        const pct = item.disponivel ? Math.min(100, (Math.abs(Number(item.valor) || 0) / maxAbs) * 100) : 0;
+        const numerico = typeof item.valor === "number" && !String(item.rotulo || "").includes("%");
+        const negativo = numerico && item.valor < 0;
+        const pct = item.disponivel && numerico ? Math.min(100, (Math.abs(item.valor) / maxAbs) * 100) : 0;
         return (
           <div className="vf-fin-composicao__linha" key={item.chave || i}>
             <span className="vf-fin-composicao__rotulo">{item.rotulo || item.chave || "—"}</span>
@@ -52,7 +63,7 @@ export function ResultadoTab({ resultado, clienteSlug, periodoLabel, onGerar }) 
                 style={{ width: `${pct}%` }}
               />
             </span>
-            <span className="vf-fin-composicao__valor">{item.disponivel ? formatarMoeda(item.valor) : AUSENTE}</span>
+            <span className="vf-fin-composicao__valor">{valorDoItem(item)}</span>
           </div>
         );
       })}

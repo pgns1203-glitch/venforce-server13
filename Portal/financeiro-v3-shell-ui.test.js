@@ -203,12 +203,17 @@ let competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-08
 function resetEntregas() {
   entregasFalham = false;
   entregasRequestCount = 0;
+  // Paridade operacional: a lista vem filtrada por conta (+ legadas). 801–803
+  // são DESTA conta (42); 804 é legada (sem operação registrada) e nunca pode
+  // ser atribuída à conta em tela.
   entregasFake = [
-    { id: 801, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Agosto", periodo: "2026-08", status: "publicado", publicado: true, token_publico: "tok-agosto", created_at: "2026-08-26T10:00:00Z", published_at: "2026-08-26T12:00:00Z" },
-    { id: 802, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Julho", periodo: "2026-07", status: "publicado", publicado: true, token_publico: "tok-julho", created_at: "2026-07-28T10:00:00Z", published_at: "2026-07-28T11:00:00Z" },
-    { id: 803, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Junho", periodo: "2026-06", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-06-29T10:00:00Z", published_at: null },
+    { id: 801, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", cliente_conta_id: 42, titulo: "Fechamento Agosto", periodo: "2026-08", status: "publicado", publicado: true, token_publico: "tok-agosto", created_at: "2026-08-26T10:00:00Z", published_at: "2026-08-26T12:00:00Z" },
+    { id: 802, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", cliente_conta_id: 42, titulo: "Fechamento Julho", periodo: "2026-07", status: "publicado", publicado: true, token_publico: "tok-julho", created_at: "2026-07-28T10:00:00Z", published_at: "2026-07-28T11:00:00Z" },
+    { id: 803, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", cliente_conta_id: 42, titulo: "Fechamento Junho", periodo: "2026-06", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-06-29T10:00:00Z", published_at: null },
+    { id: 804, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", cliente_conta_id: null, titulo: "Fechamento Maio (legado)", periodo: "2026-05", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-05-30T10:00:00Z", published_at: null },
   ];
 }
+let ultimaListaEntregasUrl = null;
 resetEntregas();
 
 function wireFetchInterception(cdp) {
@@ -269,6 +274,15 @@ function wireFetchInterception(cdp) {
       });
       return;
     }
+    // GET /entregas-cliente/:id — a apresentação da entrega (payload_json),
+    // lida pelo painel "Entrega para o cliente". Shape do controller real.
+    const umaMatch = url.match(/\/entregas-cliente\/(\d+)(?:[?#]|$)/);
+    if (umaMatch && req.method === "GET") {
+      const alvo = entregasFake.find((e) => e.id === Number(umaMatch[1]));
+      if (!alvo) { await respond("Fetch.fulfillRequest", { requestId: params.requestId, responseCode: 404, responseHeaders: [...cors, { name: "content-type", value: "application/json" }], body: Buffer.from(JSON.stringify({ ok: false, erro: "Entrega não encontrada." })).toString("base64") }); return; }
+      await json({ ok: true, entrega: { ...alvo, payload_json: { entrega: { destaques: [], atencoes: [], prioridades: { alta: [], media: [], baixa: [] } } } } });
+      return;
+    }
     if (url.includes("/entregas-cliente")) {
       // POST sem sufixo /:id/(des)publicar = criar entrega
       if (req.method === "POST") {
@@ -278,6 +292,7 @@ function wireFetchInterception(cdp) {
         return;
       }
       entregasRequestCount += 1;
+      ultimaListaEntregasUrl = url;
       if (entregasFalham) { await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" }); return; }
       await json({ ok: true, total: entregasFake.length, entregas: entregasFake });
       return;
@@ -335,8 +350,20 @@ async function run() {
       })();`,
     });
 
+    // Navegar com requisições da página anterior ainda em voo (pausadas no
+    // Fetch) às vezes aborta as primeiras chamadas da página nova
+    // (ERR_ABORTED em /me/context) e a página nunca chega a READY — corrida
+    // do harness, não do produto, já presente na versão anterior deste smoke.
+    // Passar por about:blank encerra a página antiga antes de abrir a nova.
+    async function navegar(url) {
+      await cdp.send("Page.navigate", { url: "about:blank" });
+      await waitFor(cdp, "location.href === 'about:blank' && document.readyState === 'complete'", "about:blank não carregou");
+      await sleep(100);
+      await cdp.send("Page.navigate", { url });
+    }
+
     async function seedAndGoto(qs) {
-      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html` });
+      await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html`);
       await sleep(60);
       await cdp.evaluate(`
         localStorage.setItem("vf-token", "ui-test-token");
@@ -344,9 +371,43 @@ async function run() {
         sessionStorage.clear();
       `);
       consoleErrors.length = 0;
-      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html${qs ? "?" + qs : ""}` });
+      await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html${qs ? "?" + qs : ""}`);
       await waitFor(cdp, "window.VF && window.VF.context", "vf-context não montou");
     }
+
+    // ── Paridade operacional: as abas são Fechamento · Relatórios gerados ·
+    // Histórico. A aba Fechamento fica MONTADA (com `hidden`) quando outra
+    // está ativa, então toda leitura mira o painel VISÍVEL. ─────────────────
+    const ABAS_ESPERADAS = ["Fechamento", "Relatórios gerados", "Histórico"];
+    const PAINEL = ".vf-fin-painel:not([hidden])";
+    const textoDoPainel = () => cdp.evaluate(`document.querySelector(${JSON.stringify(PAINEL)}).innerText`);
+    const textoDe = (sel) => cdp.evaluate(`(function(){ var el = document.querySelector(${JSON.stringify(sel)}); return el ? el.innerText : null; })()`);
+    const acharAba = (rotulo) => `Array.prototype.find.call(document.querySelectorAll('.vf-tab'), function(b){ return b.textContent.trim() === ${JSON.stringify(rotulo)}; })`;
+    async function abrirAba(rotulo) {
+      const existe = await cdp.evaluate(`(function(){ var b = ${acharAba(rotulo)}; if (!b) return false; b.click(); return true; })()`);
+      assert.ok(existe, `a aba "${rotulo}" não existe`);
+      await waitFor(cdp, `(function(){ var b = ${acharAba(rotulo)}; return b && b.getAttribute('aria-selected') === 'true'; })()`, `a aba "${rotulo}" não ficou ativa`);
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(PAINEL)}) !== null`, `o painel da aba "${rotulo}" não apareceu`);
+      await sleep(150);
+    }
+    // Clica no botão de texto exato dentro de `escopo` (seletor CSS).
+    const clicarBotao = (escopo, rotulo) => cdp.evaluate(`
+      (function(){ var raiz = document.querySelector(${JSON.stringify(escopo)}); if (!raiz) return false;
+        var b = Array.prototype.find.call(raiz.querySelectorAll('button'), function(x){ return x.textContent.trim() === ${JSON.stringify(rotulo)}; });
+        if (!b) return false; b.click(); return true; })()
+    `);
+    const botaoDesabilitado = (rotulo) => cdp.evaluate(`
+      (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === ${JSON.stringify(rotulo)}; }); return b ? b.disabled : null; })()
+    `);
+    const RESULTADO = 'section[aria-label="Resultado do processamento"]';
+    const SALVO = 'section[aria-label="Fechamento salvo"]';
+    const ENTREGA = 'section[aria-label="Entrega para o cliente"]';
+
+    // O bundle que a página TEM que carregar é o que o build gravou em
+    // financeiro-v3.html — o teste lê do disco, nunca de um hash fixo.
+    const htmlDoBuild = fs.readFileSync(path.join(PORTAL_DIR, "financeiro-v3.html"), "utf8");
+    const jsDoBuild = (htmlDoBuild.match(/src="\.\/(assets\/financeiro-v3\/financeiro-v3-[^"]+\.js)"/) || [])[1];
+    const cssDoBuild = (htmlDoBuild.match(/href="\.\/(assets\/financeiro-v3\/financeiro-v3-[^"]+\.css)"/) || [])[1];
 
     // ═══ 1. Deep link com conta real, caminho feliz ═══
     financeiroPayload = payloadFeliz();
@@ -365,50 +426,112 @@ async function run() {
       assert.ok(href && href.includes("financeiro.html"), `link para o legado ausente/incorreto: ${href}`);
     });
 
-    await check("F4.1 — aba Resultado (padrão): composição renderiza, item sem custo mostra '—', nunca R$0", async () => {
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+    await check("Build — a página carrega o bundle gravado em financeiro-v3.html (JS e CSS existem e respondem 200)", async () => {
+      assert.ok(jsDoBuild && cssDoBuild, `financeiro-v3.html deveria referenciar o JS e o CSS do build: ${jsDoBuild} / ${cssDoBuild}`);
+      assert.ok(fs.existsSync(path.join(PORTAL_DIR, jsDoBuild)), `o JS referenciado não existe no disco: ${jsDoBuild}`);
+      assert.ok(fs.existsSync(path.join(PORTAL_DIR, cssDoBuild)), `o CSS referenciado não existe no disco: ${cssDoBuild}`);
+      const carregados = await cdp.evaluate(`(function(){
+        var s = document.querySelector('script[src*="assets/financeiro-v3/"]');
+        var l = document.querySelector('link[rel="stylesheet"][href*="assets/financeiro-v3/"]');
+        var rec = performance.getEntriesByType('resource').map(function(e){ return { nome: e.name, status: e.responseStatus }; });
+        return { js: s && s.getAttribute('src'), css: l && l.getAttribute('href'), rec: rec };
+      })()`);
+      assert.strictEqual(carregados.js, `./${jsDoBuild}`, `a página não carregou o JS do build: ${carregados.js}`);
+      assert.strictEqual(carregados.css, `./${cssDoBuild}`, `a página não carregou o CSS do build: ${carregados.css}`);
+      for (const arq of [jsDoBuild, cssDoBuild]) {
+        const r = carregados.rec.find((e) => e.nome.endsWith(arq));
+        assert.ok(r, `o navegador não buscou ${arq}`);
+        if (r.status !== undefined && r.status !== 0) assert.strictEqual(r.status, 200, `${arq} respondeu ${r.status}`);
+      }
+    });
+
+    await check("Paridade — as abas são Fechamento · Relatórios gerados · Histórico; Resultado e Conciliação não são mais abas", async () => {
+      const abas = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('.vf-tab'), function(b){ return b.textContent.trim(); })");
+      assert.deepStrictEqual(abas, ABAS_ESPERADAS, `abas inesperadas: ${JSON.stringify(abas)}`);
+      assert.ok(!abas.includes("Resultado") && !abas.includes("Conciliação"), `abas antigas não podem voltar: ${JSON.stringify(abas)}`);
+      const ativa = await cdp.evaluate("(document.querySelector('.vf-tab[aria-selected=\"true\"]') || {}).textContent");
+      assert.strictEqual(ativa && ativa.trim(), "Fechamento", `a aba padrão deveria ser Fechamento: ${ativa}`);
+    });
+
+    await check("Paridade — Fechamento carrega a ilha: competência por extenso, status DESTA conta e formulário nativo", async () => {
+      const competencia = await textoDe('[data-testid="competencia-extenso"]');
+      assert.strictEqual(competencia, "Agosto/2026", `competência em tela: ${competencia}`);
+      const status = await textoDe('[data-testid="status-competencia"]');
+      assert.strictEqual(status, "Publicado", `Agosto tem entrega publicada desta conta: ${status}`);
+      await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "a base vinculada de MELI não foi reconhecida");
+      const texto = await textoDoPainel();
+      assert.ok(/Base de custos/i.test(texto) && /Processar fechamento/i.test(texto), `o formulário nativo deveria estar no Fechamento: ${texto.slice(0, 300)}`);
+    });
+
+    await check("Paridade — Fechamento salvo (antiga aba Resultado): composição renderiza, sem custo mostra '—', nunca R$0", async () => {
+      const texto = await textoDe(`${PAINEL} ${SALVO}`);
+      assert.ok(texto, "o bloco 'Fechamento salvo' deveria estar dentro do Fechamento");
       assert.ok(texto.includes("Faturamento bruto"), `composição ausente: ${texto}`);
       assert.ok(/Custo de produto[\s\S]*—/.test(texto), `custo ausente deveria mostrar '—', não R$0: ${texto}`);
       assert.ok(!texto.includes("R$ 0,00"), `nenhum valor ausente pode virar R$ 0,00: ${texto}`);
     });
 
-    await check("F4.1 — aba Conciliação: status e cobertura corretos", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Conciliação').click()");
-      await sleep(150);
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
-      assert.ok(texto.includes("parcial") || texto.includes("Parcial"), `status de conciliação ausente: ${texto}`);
+    await check("Paridade — conciliação Mercado Pago é um BLOCO dentro do Fechamento (MELI), com status e cobertura", async () => {
+      const abriu = await cdp.evaluate(`(function(){ var d = document.querySelector(${JSON.stringify(`${PAINEL} ${SALVO} details.vf-fin-disclosure`)}); if (!d) return false; d.open = true; return true; })()`);
+      assert.ok(abriu, "o bloco de conciliação Mercado Pago deveria existir no Fechamento salvo (MELI)");
+      await sleep(80);
+      const texto = await textoDe(`${PAINEL} ${SALVO} details.vf-fin-disclosure`);
+      assert.ok(/Conciliação Mercado Pago/.test(texto), `título do bloco ausente: ${texto}`);
+      assert.ok(/Conciliação parcial/.test(texto), `status de conciliação ausente: ${texto}`);
       assert.ok(/93,8%|93.8%/.test(texto), `cobertura não encontrada: ${texto}`);
     });
 
-    await check("F4.2 — aba Relatórios gerados: 3 entregas, link público só quando publicado, rascunho oferece Publicar", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
-      await sleep(200);
-      const linhas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr').length");
-      assert.strictEqual(linhas, 3, `esperado 3 entregas, achei ${linhas}`);
-      const rascunho = await cdp.evaluate("document.querySelector('.vf-fin-painel tbody tr:last-child').innerText");
-      assert.ok(!/Abrir/.test(rascunho), `rascunho não pode oferecer link público: ${rascunho}`);
-      assert.ok(/Publicar/.test(rascunho), `rascunho deveria oferecer Publicar: ${rascunho}`);
+    await check("F4.2 — Entrega para o cliente age sobre o período EM TELA, com a competência nomeada", async () => {
+      const texto = await textoDe(`${PAINEL} ${ENTREGA}`);
+      assert.ok(texto, "o painel 'Entrega para o cliente' deveria aparecer para a entrega desta conta");
+      assert.ok(/Despublicar/.test(texto), `Agosto está publicado: o painel deveria oferecer Despublicar: ${texto}`);
+      // Entrega que já teve link abre com a apresentação RECOLHIDA e, aberta,
+      // em leitura (sem "Salvar alterações").
+      const apresentacao = await cdp.evaluate(`(function(){ var d = document.querySelector(${JSON.stringify(`${PAINEL} ${ENTREGA} details.vf-fin-disclosure`)}); if (!d) return null; var fechada = !d.open; d.open = true; return { fechada: fechada }; })()`);
+      assert.ok(apresentacao && apresentacao.fechada, "a apresentação de uma entrega histórica deveria abrir recolhida");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(`${PAINEL} ${ENTREGA}`)}) || {innerText:''}).innerText.indexOf('o conteúdo é histórico') >= 0`, "a entrega que já teve link deveria se declarar histórica (somente leitura)");
+      assert.strictEqual(await clicarBotao(`${PAINEL} ${ENTREGA}`, "Salvar alterações"), false, "entrega histórica não pode oferecer 'Salvar alterações'");
+      assert.ok(await clicarBotao(`${PAINEL} ${ENTREGA}`, "Despublicar"), "botão Despublicar ausente");
+      await sleep(120);
+      const confirm = await textoDe(`${PAINEL} ${ENTREGA} .vf-fin-confirm`);
+      assert.ok(/Agosto\/2026/.test(confirm), `a confirmação tem que nomear o período em tela (Agosto/2026): ${confirm}`);
+      assert.ok(await clicarBotao(`${PAINEL} ${ENTREGA} .vf-fin-confirm`, "Cancelar"), "botão Cancelar ausente");
+      await sleep(80);
+      assert.strictEqual(entregasFake.find((e) => e.id === 801).publicado, true, "Cancelar não pode ter despublicado nada");
+    });
+
+    await check("Paridade — troca para Relatórios gerados: lista desta conta + legada, cada linha identificada", async () => {
+      await abrirAba("Relatórios gerados");
+      assert.ok(/cliente_conta_id=42/.test(ultimaListaEntregasUrl || ""), `a lista deveria ser pedida pela conta em tela: ${ultimaListaEntregasUrl}`);
+      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr`)}).length`);
+      assert.strictEqual(linhas, 4, `esperado 3 entregas da conta + 1 legada, achei ${linhas}`);
+      const daConta = await textoDe(`${PAINEL} tbody tr[data-entrega="801"]`);
+      assert.ok(/Mercado Livre 1/.test(daConta), `entrega desta conta deveria nomear a conta: ${daConta}`);
+      const legada = await textoDe(`${PAINEL} tbody tr[data-entrega="804"]`);
+      assert.ok(/Legado · operação não registrada/.test(legada), `a legada não pode ser atribuída à conta em tela: ${legada}`);
+      assert.ok(!/Mercado Livre 1/.test(legada), `a legada não pode levar o nome da conta: ${legada}`);
+      const rascunho = await cdp.evaluate(`(function(){ var tr = document.querySelector(${JSON.stringify(`${PAINEL} tbody tr[data-entrega="803"]`)}); return { texto: tr.innerText, publicadoEm: tr.cells[6].innerText.trim() }; })()`);
+      assert.ok(!/Abrir/.test(rascunho.texto), `rascunho não pode oferecer link público: ${rascunho.texto}`);
+      assert.ok(/Publicar/.test(rascunho.texto), `rascunho deveria oferecer Publicar: ${rascunho.texto}`);
       // Publicado nunca finge data de publicação; rascunho mostra ausência.
-      assert.ok(/—/.test(rascunho), `rascunho deveria mostrar '—' em "Publicado em": ${rascunho}`);
+      assert.strictEqual(rascunho.publicadoEm, "—", `rascunho deveria mostrar '—' em "Publicado em": ${rascunho.publicadoEm}`);
     });
 
-    await check("F4.2 — a linha da competência em tela é marcada (a lista é do cliente inteiro, não do período)", async () => {
-      const marcadas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr.is-destacada').length");
+    await check("F4.2 — a linha da competência em tela é marcada", async () => {
+      const marcadas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr.is-destacada`)}).length`);
       assert.strictEqual(marcadas, 1, `esperado exatamente 1 linha marcada como período em tela, achei ${marcadas}`);
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel tbody tr.is-destacada').innerText");
+      const texto = await textoDe(`${PAINEL} tbody tr.is-destacada`);
       assert.ok(/Agosto\/2026/.test(texto), `a linha marcada deveria ser a de Agosto/2026: ${texto}`);
-      const aviso = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
-      assert.ok(/não é\s*\n?\s*filtrada por conta|não\s+é\s+filtrada por conta/.test(aviso.replace(/\s+/g, " ")), `o escopo de cliente deveria estar dito na tela: ${aviso.slice(0, 200)}`);
+      const aviso = await textoDoPainel();
+      assert.ok(/Entregas desta operação e as legadas do cliente/.test(aviso), `o escopo da lista deveria estar dito na tela: ${aviso.slice(0, 200)}`);
     });
 
+    const LINHA_JUNHO = `${PAINEL} tbody tr[data-entrega="803"]`;
     await check("F4.2 — um clique não publica: a confirmação aparece e NOMEIA a competência", async () => {
       const antes = entregasRequestCount;
-      await cdp.evaluate(`
-        (function(){ var tr = document.querySelector('.vf-fin-painel tbody tr:last-child');
-          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
-      `);
+      assert.ok(await clicarBotao(LINHA_JUNHO, "Publicar"), "botão Publicar ausente na linha de Junho");
       await sleep(120);
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-confirm').innerText");
+      const texto = await textoDe(`${LINHA_JUNHO} .vf-fin-confirm`);
       assert.ok(/Publicar Junho\/2026\?/.test(texto), `a confirmação deveria nomear a competência: ${texto}`);
       assert.strictEqual(entregasRequestCount, antes, "um clique só não pode ter disparado nenhuma requisição");
       assert.strictEqual(entregasFake.find((e) => e.id === 803).publicado, false, "nada podia ter sido publicado ainda");
@@ -416,87 +539,82 @@ async function run() {
 
     await check("F4.2 — confirmar publica de verdade e a tela relê do servidor (estado autoritativo, não remendo local)", async () => {
       const antes = entregasRequestCount;
-      await cdp.evaluate(`
-        (function(){ var box = document.querySelector('.vf-fin-confirm');
-          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
-      `);
-      await waitFor(cdp, "document.querySelectorAll('.vf-fin-painel tbody tr')[2].innerText.indexOf('Despublicar') >= 0", "a linha não passou a publicada");
+      assert.ok(await clicarBotao(`${LINHA_JUNHO} .vf-fin-confirm`, "Publicar"), "botão de confirmação ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(LINHA_JUNHO)}) || {innerText:''}).innerText.indexOf('Despublicar') >= 0`, "a linha não passou a publicada");
       assert.strictEqual(entregasFake.find((e) => e.id === 803).publicado, true, "o servidor deveria ter registrado a publicação");
       assert.ok(entregasRequestCount > antes, "a tela deveria ter relido a lista depois da escrita");
-      const linha = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr')[2].innerText");
-      assert.ok(/Abrir/.test(linha), `entrega publicada deveria oferecer o link público: ${linha}`);
-      assert.ok(!/—/.test(linha.split("\t").slice(3, 4).join("")), `"Publicado em" não pode continuar vazio: ${linha}`);
+      const linha = await cdp.evaluate(`(function(){ var tr = document.querySelector(${JSON.stringify(LINHA_JUNHO)}); return { texto: tr.innerText, publicadoEm: tr.cells[6].innerText.trim() }; })()`);
+      assert.ok(/Abrir/.test(linha.texto), `entrega publicada deveria oferecer o link público: ${linha.texto}`);
+      assert.notStrictEqual(linha.publicadoEm, "—", `"Publicado em" não pode continuar vazio: ${linha.publicadoEm}`);
     });
 
     await check("F4.2 — despublicar revoga o link (a válvula que o Financeiro legado nunca ligou)", async () => {
-      await cdp.evaluate(`
-        (function(){ var tr = document.querySelectorAll('.vf-fin-painel tbody tr')[2];
-          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
-      `);
+      assert.ok(await clicarBotao(LINHA_JUNHO, "Despublicar"), "botão Despublicar ausente");
       await sleep(120);
-      const confirm = await cdp.evaluate("document.querySelector('.vf-fin-confirm').innerText");
+      const confirm = await textoDe(`${LINHA_JUNHO} .vf-fin-confirm`);
       assert.ok(/Despublicar Junho\/2026\?/.test(confirm), `confirmação de despublicar deveria nomear a competência: ${confirm}`);
-      await cdp.evaluate(`
-        (function(){ var box = document.querySelector('.vf-fin-confirm');
-          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
-      `);
-      await waitFor(cdp, "document.querySelectorAll('.vf-fin-painel tbody tr')[2].innerText.indexOf('Publicar') >= 0", "a linha não voltou a rascunho");
+      assert.ok(await clicarBotao(`${LINHA_JUNHO} .vf-fin-confirm`, "Despublicar"), "botão de confirmação ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(LINHA_JUNHO)}) || {innerText:''}).innerText.indexOf('Publicar') >= 0`, "a linha não voltou a rascunho");
       const alvo = entregasFake.find((e) => e.id === 803);
       assert.strictEqual(alvo.publicado, false);
       assert.strictEqual(alvo.token_publico, null, "o token público precisa ser revogado");
     });
 
-    await check("F4.2 — aba Fechamento publica o período EM TELA, com a competência nomeada", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
-      await sleep(200);
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
-      assert.ok(/Despublicar/.test(texto), `Agosto está publicado: a aba deveria oferecer Despublicar: ${texto}`);
-      await cdp.evaluate(`
-        (function(){ var p = document.querySelector('.vf-fin-painel');
-          Array.prototype.find.call(p.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
-      `);
-      await sleep(120);
-      const confirm = await cdp.evaluate("document.querySelector('.vf-fin-confirm').innerText");
-      assert.ok(/Agosto\/2026/.test(confirm), `a aba Fechamento tem que agir sobre o período em tela (Agosto/2026): ${confirm}`);
-      await cdp.evaluate(`
-        (function(){ var box = document.querySelector('.vf-fin-confirm');
-          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Cancelar'; }).click(); })();
-      `);
-      await sleep(80);
-      assert.strictEqual(entregasFake.find((e) => e.id === 801).publicado, true, "Cancelar não pode ter despublicado nada");
+    await check("Paridade — troca para Histórico: 12 competências desta conta, mais recente primeiro, legada sinalizada à parte", async () => {
+      await abrirAba("Histórico");
+      const itens = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} .vf-fin-historico__item`)}), function(li){ return { m: li.getAttribute('data-competencia'), t: li.innerText }; })`);
+      assert.strictEqual(itens.length, 12, `esperadas 12 competências, achei ${itens.length}`);
+      assert.strictEqual(itens[0].m, "2026-08", `histórico deveria começar por Agosto/2026 (mais recente): ${itens[0].m}`);
+      assert.ok(/Agosto\/2026/.test(itens[0].t) && /Publicado/.test(itens[0].t), `Agosto: ${itens[0].t}`);
+      const junho = itens.find((i) => i.m === "2026-06");
+      assert.ok(junho && /Rascunho salvo/.test(junho.t), `Junho voltou a rascunho: ${junho && junho.t}`);
+      const maio = itens.find((i) => i.m === "2026-05");
+      assert.ok(maio && /Sem fechamento/.test(maio.t), `a legada não conta como fechamento desta conta: ${maio && maio.t}`);
+      assert.ok(/existe fechamento legado \(sem conta\)/.test(maio.t), `a legada deveria ser sinalizada: ${maio.t}`);
     });
 
-    await check("F4.1 — aba Histórico: 3 períodos, mais recente primeiro", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Histórico').click()");
-      await sleep(200);
-      const primeiro = await cdp.evaluate("document.querySelector('.vf-fin-historico__item .vf-fin-historico__periodo').textContent");
-      assert.ok(/Agosto/i.test(primeiro), `histórico deveria começar por Agosto/2026 (mais recente): ${primeiro}`);
+    await check("Paridade — voltar para Fechamento: a ilha continua montada, na mesma competência", async () => {
+      await abrirAba("Fechamento");
+      const competencia = await textoDe('[data-testid="competencia-extenso"]');
+      assert.strictEqual(competencia, "Agosto/2026", `a competência não podia mudar com a troca de aba: ${competencia}`);
+      const texto = await textoDoPainel();
+      assert.ok(/Processar fechamento/i.test(texto), `o formulário do Fechamento deveria continuar lá: ${texto.slice(0, 200)}`);
+      const salvo = await textoDe(`${PAINEL} ${SALVO}`);
+      assert.ok(salvo && salvo.includes("Faturamento bruto"), "o Fechamento salvo deveria continuar lá");
+    });
+
+    await check("Paridade — no Histórico, escolher um mês abre o Fechamento daquele mês", async () => {
+      await abrirAba("Histórico");
+      await cdp.evaluate(`(function(){ var li = document.querySelector(${JSON.stringify(`${PAINEL} .vf-fin-historico__item[data-competencia="2026-07"] .vf-fin-historico__periodo`)}); li.click(); })()`);
+      await waitFor(cdp, `(function(){ var b = ${acharAba("Fechamento")}; return b && b.getAttribute('aria-selected') === 'true'; })()`, "escolher Julho deveria abrir o Fechamento");
+      await waitFor(cdp, `(document.querySelector('[data-testid="competencia-extenso"]') || {}).innerText === 'Julho/2026'`, "a competência deveria ser Julho/2026");
+      await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Publicado'`, "Julho tem entrega publicada desta conta");
     });
 
     /* ── F4.2 — modo degradado: a lista operacional cai, a leitura fica ── */
     entregasFalham = true;
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=deg` });
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=deg`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
     await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
     await sleep(200);
 
-    await check("F4.2 — /entregas-cliente fora do ar: a tabela continua em LEITURA, com motivo e retry, sem botão inerte", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
-      await sleep(250);
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+    await check("F4.2 — /entregas-cliente fora do ar: Relatórios gerados continua em LEITURA, com motivo e retry, sem botão inerte", async () => {
+      await abrirAba("Relatórios gerados");
+      await sleep(100);
+      const texto = await textoDoPainel();
       assert.ok(/Ações indisponíveis no momento/.test(texto), `deveria explicar por que as ações sumiram: ${texto}`);
       assert.ok(/Tentar novamente/.test(texto), "o modo degradado precisa oferecer retry");
       assert.ok(!/Publicar/.test(texto), `sem id não existe ação — nenhum botão Publicar podia aparecer: ${texto}`);
-      const linhas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr').length");
+      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr`)}).length`);
       assert.strictEqual(linhas, 3, `a leitura do payload do Financeiro deveria sobreviver, achei ${linhas} linhas`);
     });
 
     entregasFalham = false;
     resetEntregas();
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=1b` });
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=1b`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
     await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
-    await sleep(200);
+    await sleep(300);
 
     const shot1 = path.join(SHOTS_DIR, "financeiro-v3-feliz.png");
     const png1 = await cdp.send("Page.captureScreenshot", { format: "png" });
@@ -505,27 +623,29 @@ async function run() {
 
     // ═══ 2. Sem fechamento no período — estado vazio honesto, não erro ═══
     financeiroPayload = payloadSemFechamento();
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=2` });
+    entregasFake = []; // nenhuma entrega desta conta (nem legada) no período
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=2`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
     await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram após reload");
     await sleep(200);
 
-    await check("Conv#3 §10 — sem fechamento no período: estado vazio honesto + CTA que abre o fluxo NATIVO, não o legado", async () => {
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
-      assert.ok(/Sem fechamento processado|Nenhum fechamento/.test(texto), `estado vazio ausente: ${texto}`);
-      // O caminho normal do V3 não manda o usuário de volta para o legado.
-      const temLinkLegado = await cdp.evaluate(`document.querySelector('.vf-fin-painel a[href*="financeiro.html"]') !== null`);
-      assert.strictEqual(temLinkLegado, false, "o estado vazio não pode ter o legado como CTA de gerar");
-      await cdp.evaluate(`
-        (function(){ var p = document.querySelector('.vf-fin-painel');
-          Array.prototype.find.call(p.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Gerar fechamento'; }).click(); })();
-      `);
-      await sleep(150);
-      const fechamento = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
-      assert.ok(/Processar fechamento/.test(fechamento), `a aba Fechamento nativa deveria abrir com o formulário: ${fechamento.slice(0, 200)}`);
-      assert.ok(/Base de custos/.test(fechamento), `o formulário nativo começa pela base de custos: ${fechamento.slice(0, 200)}`);
-      // O legado segue existindo, mas como fallback (link secundário), não como CTA.
-      const temFallback = await cdp.evaluate(`document.querySelector('.vf-fin-painel a[href*="financeiro.html"]') !== null`);
+    await check("Conv#3 §10 — sem fechamento no período: status 'Sem fechamento', estado vazio honesto e o formulário NATIVO já disponível", async () => {
+      await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Sem fechamento'`, "o status da competência deveria ser 'Sem fechamento'");
+      try {
+        await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${SALVO}`)}) !== null`);
+      } catch (_) {
+        throw new Error(`o bloco 'Fechamento salvo' não apareceu: ${await cdp.evaluate("document.body.innerText")}`);
+      }
+      const salvo = await textoDe(`${PAINEL} ${SALVO}`);
+      assert.ok(/Nenhum fechamento salvo/i.test(salvo || ""), `estado vazio ausente: ${salvo}`);
+      assert.ok(!/R\$ 0,00/.test(salvo || ""), `sem fechamento não é R$ 0,00: ${salvo}`);
+      const entrega = await textoDe(`${PAINEL} ${ENTREGA}`);
+      assert.strictEqual(entrega, null, "sem entrega desta conta, o painel de entrega não aparece");
+      const texto = await textoDoPainel();
+      assert.ok(/Processar fechamento/i.test(texto), `o formulário nativo deveria estar no Fechamento: ${texto.slice(0, 200)}`);
+      assert.ok(/Base de custos/i.test(texto), `o formulário nativo começa pela base de custos: ${texto.slice(0, 200)}`);
+      // O legado segue existindo, mas como fallback (link do cabeçalho), não como CTA de gerar.
+      const temFallback = await cdp.evaluate(`document.querySelector('.vf-page-header__description a[href*="financeiro.html"]') !== null`);
       assert.ok(temFallback, "o Financeiro legado deve continuar acessível como fallback");
     });
 
@@ -534,22 +654,20 @@ async function run() {
     fs.writeFileSync(shot2, Buffer.from(png2.data, "base64"));
     console.log(`   screenshot: ${shot2}`);
 
-    // ═══ 2b. Conv#3 §25 — E2E do fluxo NATIVO: upload → processar → preview
-    // → salvar, com a competência divergente pedindo confirmação explícita ═══
+    // ═══ 2b. Conv#3 §25 — E2E do fluxo NATIVO: upload → processar → resultado
+    // → salvar entrega, com a competência divergente pedindo confirmação ═══
     const planilhaFake = path.join(SHOTS_DIR, "vendas-fake.xlsx");
     fs.writeFileSync(planilhaFake, "planilha-de-vendas-fake");
     competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-07", divergente: true, motivo: "As datas das vendas caem em julho/2026." };
     fechamentoRequestCount = 0;
     resetEntregas();
     entregasFake = []; // agosto ainda não tem entrega
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=2b` });
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=2b`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
     await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
     await sleep(200);
 
-    await check("Conv#3 §25 — MELI com base vinculada: só a planilha de vendas, processa e manda periodo + clienteContaId", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
-      await sleep(200);
+    await check("Conv#3 §25 — MELI com base vinculada: só a planilha de vendas, processa e o resultado nasce no Fechamento", async () => {
       // marketplace vem da operação (conta 42 = meli) — sem seletor na tela
       await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "a base vinculada de MELI não foi reconhecida");
       const semUploadCustos = await cdp.evaluate(`document.querySelector('input[aria-label="Planilha de custos"]') === null`);
@@ -558,38 +676,38 @@ async function run() {
       const inputNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
       await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: inputNode.nodeId });
       await sleep(150);
-      await cdp.evaluate(`
-        (function(){ Array.prototype.find.call(document.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Processar fechamento'; }).click(); })();
-      `);
-      await waitFor(cdp, "document.querySelector('.vf-fin-novo__cards') !== null", "o preview do fechamento não apareceu");
+      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente");
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "o resultado do processamento não apareceu no Fechamento");
       assert.strictEqual(fechamentoRequestCount, 1, "o processamento nativo deveria ter chamado o backend uma vez");
+      await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Processado · não salvo'`, "o status deveria dizer que o processamento não foi salvo");
     });
 
-    await check("Conv#3 §13 — competência divergente: 'Salvar' fica travado até confirmação explícita", async () => {
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-novo').innerText");
+    await check("Paridade — o resultado processado sobrevive à troca de aba (Relatórios → Fechamento) sem reprocessar", async () => {
+      await abrirAba("Relatórios gerados");
+      await abrirAba("Fechamento");
+      const ainda = await cdp.evaluate(`document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`);
+      assert.ok(ainda, "voltar ao Fechamento não pode jogar fora o resultado processado");
+      assert.strictEqual(fechamentoRequestCount, 1, "trocar de aba não pode reprocessar");
+    });
+
+    await check("Conv#3 §13 — competência divergente: 'Salvar entrega' fica travado até confirmação explícita", async () => {
+      const texto = await textoDe(".vf-fin-novo");
       assert.ok(/não bate com o período em tela/.test(texto), `o aviso de divergência deveria aparecer: ${texto.slice(0, 200)}`);
       assert.ok(/julho\/2026/i.test(texto), "o aviso deve nomear a competência detectada");
-      const travado = await cdp.evaluate(`
-        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Salvar fechamento'; }); return b ? b.disabled : null; })()
-      `);
-      assert.strictEqual(travado, true, "Salvar não pode estar habilitado antes da confirmação");
-      await cdp.evaluate(`document.querySelector('.vf-fin-novo input[type=checkbox]').click()`);
+      assert.strictEqual(await botaoDesabilitado("Salvar entrega"), true, "Salvar não pode estar habilitado antes da confirmação");
+      await cdp.evaluate(`document.querySelector('.vf-fin-novo .vf-banner input[type=checkbox]').click()`);
       await sleep(80);
-      const liberado = await cdp.evaluate(`
-        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Salvar fechamento'; }); return b ? b.disabled : null; })()
-      `);
-      assert.strictEqual(liberado, false, "depois de confirmar, Salvar libera");
+      assert.strictEqual(await botaoDesabilitado("Salvar entrega"), false, "depois de confirmar, Salvar libera");
     });
 
-    await check("Conv#3 §16 — salvar cria a entrega e a aba passa a oferecer publicar (sem ida ao legado)", async () => {
-      await cdp.evaluate(`
-        (function(){ Array.prototype.find.call(document.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Salvar fechamento'; }).click(); })();
-      `);
-      await waitFor(cdp, "document.querySelector('.vf-fin-novo').innerText.indexOf('Fechamento salvo') >= 0", "a confirmação de salvo não apareceu");
+    await check("Conv#3 §16 — salvar cria a entrega e o painel 'Entrega para o cliente' passa a oferecer publicar (sem ida ao legado)", async () => {
+      assert.ok(await clicarBotao(".vf-fin-novo", "Salvar entrega"), "botão Salvar entrega ausente");
+      await waitFor(cdp, "document.querySelector('.vf-fin-novo').innerText.indexOf('Entrega salva') >= 0", "a confirmação de salvo não apareceu");
       assert.strictEqual(entregasFake.length, 1, "a entrega deveria ter sido criada no backend fake");
       assert.strictEqual(entregasFake[0].id, 900);
-      // a lista operacional foi relida e a linha da competência agora tem ação
-      await waitFor(cdp, "Array.prototype.some.call(document.querySelectorAll('.vf-fin-painel button'), function(b){ return b.textContent.trim() === 'Publicar'; })", "a entrega recém-salva não virou publicável na tela");
+      // a lista operacional foi relida e a entrega desta conta agora tem ação
+      await waitFor(cdp, `Array.prototype.some.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} ${ENTREGA} button`)}), function(b){ return b.textContent.trim() === 'Publicar'; })`, "a entrega recém-salva não virou publicável na tela");
+      await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Rascunho salvo'`, "o status deveria passar a 'Rascunho salvo'");
     });
     competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false };
 
@@ -603,27 +721,22 @@ async function run() {
     N97_CONTAS[0].marketplace = "shopee";
     N97_CONTAS[0].nome = "Shopee 1";
     baseVinculosFake = []; // Shopee ainda SEM base vinculada
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee` });
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (cenário Shopee)");
     await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (cenário Shopee)");
     await sleep(200);
 
     await check("Missão FV3 §15 — Shopee sem base vinculada: pede planilha de custos e 'Processar' fica travado com o motivo em tela", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
-      await sleep(200);
       await waitFor(cdp, "document.querySelector('.vf-fin-base.is-ausente') !== null", "sem vínculo, a base de custos deveria aparecer como ausente");
       const doc = await cdp.send("DOM.getDocument", { depth: -1 });
       const salesNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
       await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: salesNode.nodeId });
       await sleep(150);
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-novo').innerText");
+      const texto = await textoDe(".vf-fin-novo");
       assert.ok(/Nenhuma base vinculada/.test(texto), `sem base, a tela precisa dizer isso: ${texto.slice(0, 300)}`);
       const temCardCustos = await cdp.evaluate(`document.querySelector('input[aria-label="Planilha de custos"]') !== null`);
       assert.ok(temCardCustos, "sem base, o card de upload de custos tem que aparecer");
-      const travado = await cdp.evaluate(`
-        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Processar fechamento'; }); return b ? b.disabled : null; })()
-      `);
-      assert.strictEqual(travado, true, "sem a planilha de custos, Shopee não pode deixar processar");
+      assert.strictEqual(await botaoDesabilitado("Processar fechamento"), true, "sem a planilha de custos, Shopee não pode deixar processar");
       assert.strictEqual(fechamentoRequestCount, 0, "nada podia ter sido enviado ao backend ainda");
     });
 
@@ -632,18 +745,13 @@ async function run() {
       const costsNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label="Planilha de custos"]' });
       await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: costsNode.nodeId });
       await sleep(150);
-      const liberado = await cdp.evaluate(`
-        (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === 'Processar fechamento'; }); return b ? b.disabled : null; })()
-      `);
-      assert.strictEqual(liberado, false, "com sales + costs, Shopee libera o processamento");
+      assert.strictEqual(await botaoDesabilitado("Processar fechamento"), false, "com sales + costs, Shopee libera o processamento");
       const semCamposMeli = await cdp.evaluate(
         "Array.prototype.every.call(document.querySelectorAll('.vf-fin-ajuste__label'), function(l){ return !/FULL|Custos adicionais/.test(l.textContent); })"
       );
       assert.ok(semCamposMeli, "campos exclusivos de MELI (FULL/custos adicionais) não podem aparecer no fluxo Shopee");
-      await cdp.evaluate(`
-        (function(){ Array.prototype.find.call(document.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Processar fechamento'; }).click(); })();
-      `);
-      await waitFor(cdp, "document.querySelector('.vf-fin-novo__cards') !== null", "o preview do fechamento Shopee não apareceu");
+      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente");
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "o resultado do fechamento Shopee não apareceu");
       assert.strictEqual(fechamentoRequestCount, 1, "o processamento nativo do Shopee deveria ter chamado o backend uma vez");
     });
 
@@ -655,14 +763,13 @@ async function run() {
           vinculo: { cliente_slug: "n97", marketplace: "shopee", cliente_conta_id: 42, conta_nome: "Shopee 1" },
         },
       ];
-      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee-base` });
+      await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee-base`);
       await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (Shopee c/ base)");
       await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (Shopee c/ base)");
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Fechamento').click()");
       await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "a base Shopee vinculada não foi reconhecida");
       const semUploadCustos = await cdp.evaluate(`document.querySelector('input[aria-label="Planilha de custos"]') === null`);
       assert.ok(semUploadCustos, "com base Shopee vinculada, não pode aparecer upload de custos");
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-novo').innerText");
+      const texto = await textoDe(".vf-fin-novo");
       assert.ok(/Comprou_chegou_shopee1/.test(texto), `a tela precisa dizer qual base será usada: ${texto.slice(0, 300)}`);
     });
 
@@ -673,13 +780,12 @@ async function run() {
       { id: 9, slug: "base-n97-meli", nome: "Comprou_chegou_meli1", ativo: true, vinculo: { cliente_slug: "n97", marketplace: "meli", cliente_conta_id: 42, conta_nome: "Mercado Livre 1" } },
     ];
 
-    // ═══ 2d. Convergência #4 §10 — fecha a lacuna de evidência Shopee nas
-    // abas de LEITURA. FinanceiroPage.jsx não tem NENHUM `if (marketplace)`
-    // nas abas Resultado/Conciliação/Relatórios gerados/Histórico — é código
-    // 100% compartilhado com MELI (confirmado lendo o componente). Isso era
-    // até aqui só INFERÊNCIA ("deveria funcionar, é o mesmo código"); este
-    // bloco roda a MESMA suíte de asserções da seção 1 contra um payload
-    // marcado marketplace=shopee, convertendo em EVIDÊNCIA direta. ═══
+    // ═══ 2d. Convergência #4 §10 — Shopee nas áreas de LEITURA: o mesmo
+    // Fechamento salvo / Relatórios gerados / Histórico do MELI, contra um
+    // payload marcado marketplace=shopee. A conciliação Mercado Pago é só do
+    // MELI e não pode aparecer aqui. ═══
+    N97_CONTAS[0].marketplace = "shopee";
+    N97_CONTAS[0].nome = "Shopee 1";
     financeiroPayload = {
       ok: true,
       contexto: { clienteId: 87, clienteSlug: "n97", clienteContaId: 42, marketplace: "shopee", periodo: "2026-08" },
@@ -714,72 +820,55 @@ async function run() {
     };
     resetEntregas();
     entregasFake = [
-      { id: 950, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", titulo: "Fechamento Shopee Agosto", periodo: "2026-08", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-08-26T10:00:00Z", published_at: null },
+      { id: 950, tipo: "fechamento_mensal", cliente_id: 87, cliente_slug: "n97", cliente_conta_id: 42, titulo: "Fechamento Shopee Agosto", periodo: "2026-08", status: "rascunho", publicado: false, token_publico: null, created_at: "2026-08-26T10:00:00Z", published_at: null },
     ];
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee-leitura` });
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee-leitura`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (Shopee leitura)");
     await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (Shopee leitura)");
     await sleep(200);
 
-    await check("Convergência #4 §10 — Shopee: aba Resultado renderiza a composição da fixture, sem R$0 fabricado", async () => {
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
+    await check("Convergência #4 §10 — Shopee: Fechamento salvo renderiza a composição da fixture, sem R$0 fabricado e sem conciliação MP", async () => {
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${SALVO}`)}) !== null`, "o Fechamento salvo Shopee não apareceu");
+      const texto = await textoDe(`${PAINEL} ${SALVO}`);
       assert.ok(texto.includes("Faturamento bruto"), `composição Shopee ausente: ${texto}`);
       assert.ok(/Custo de produto[\s\S]*—/.test(texto), `custo ausente deveria mostrar '—' também no Shopee: ${texto}`);
       assert.ok(!texto.includes("R$ 0,00"), `nenhum valor ausente pode virar R$ 0,00 no Shopee: ${texto}`);
-    });
-
-    await check("Convergência #4 §10 — Shopee: aba Conciliação renderiza status e cobertura da fixture", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Conciliação').click()");
-      await sleep(150);
-      const texto = await cdp.evaluate("document.querySelector('.vf-fin-painel').innerText");
-      assert.ok(/matched|conciliad/i.test(texto), `status de conciliação Shopee ausente: ${texto}`);
-      assert.ok(/100%|100,0%/.test(texto), `cobertura de 100% do Shopee não encontrada: ${texto}`);
+      assert.ok(!/Conciliação Mercado Pago/.test(texto), `a conciliação Mercado Pago é só do MELI: ${texto}`);
     });
 
     await check("Convergência #4 §10 — Shopee: Relatórios gerados lista a entrega Shopee e Histórico mostra o período", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
-      await sleep(200);
-      const linhas = await cdp.evaluate("document.querySelectorAll('.vf-fin-painel tbody tr').length");
+      await abrirAba("Relatórios gerados");
+      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr`)}).length`);
       assert.strictEqual(linhas, 1, `esperada 1 entrega Shopee, achei ${linhas}`);
-      const linha = await cdp.evaluate("document.querySelector('.vf-fin-painel tbody tr').innerText");
+      const linha = await textoDe(`${PAINEL} tbody tr`);
+      assert.ok(/Shopee/.test(linha), `a linha deveria identificar o marketplace Shopee: ${linha}`);
       assert.ok(/Publicar/.test(linha), `rascunho Shopee deveria oferecer Publicar: ${linha}`);
 
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Histórico').click()");
-      await sleep(200);
-      const periodo = await cdp.evaluate("document.querySelector('.vf-fin-historico__item .vf-fin-historico__periodo').textContent");
+      await abrirAba("Histórico");
+      const periodo = await textoDe(`${PAINEL} .vf-fin-historico__item .vf-fin-historico__periodo`);
       assert.ok(/Agosto/i.test(periodo), `histórico Shopee deveria mostrar Agosto/2026: ${periodo}`);
     });
 
     await check("Convergência #4 §10 — Shopee: Publicar/Despublicar escrevem de verdade e a tela relê do servidor", async () => {
-      await cdp.evaluate("Array.prototype.find.call(document.querySelectorAll('.vf-tab'), b => b.textContent.trim() === 'Relatórios gerados').click()");
-      await sleep(150);
-      await cdp.evaluate(`
-        (function(){ var tr = document.querySelector('.vf-fin-painel tbody tr');
-          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
-      `);
+      await abrirAba("Relatórios gerados");
+      const LINHA = `${PAINEL} tbody tr[data-entrega="950"]`;
+      assert.ok(await clicarBotao(LINHA, "Publicar"), "botão Publicar ausente na linha Shopee");
       await sleep(120);
-      await cdp.evaluate(`
-        (function(){ var box = document.querySelector('.vf-fin-confirm');
-          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Publicar'; }).click(); })();
-      `);
-      await waitFor(cdp, "document.querySelector('.vf-fin-painel tbody tr').innerText.indexOf('Despublicar') >= 0", "a entrega Shopee não passou a publicada");
+      assert.ok(await clicarBotao(`${LINHA} .vf-fin-confirm`, "Publicar"), "confirmação de publicar ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(LINHA)}) || {innerText:''}).innerText.indexOf('Despublicar') >= 0`, "a entrega Shopee não passou a publicada");
       assert.strictEqual(entregasFake.find((e) => e.id === 950).publicado, true, "o servidor deveria ter registrado a publicação Shopee");
       assert.ok(entregasFake.find((e) => e.id === 950).token_publico, "publicar Shopee deveria gerar token público");
 
-      await cdp.evaluate(`
-        (function(){ var tr = document.querySelector('.vf-fin-painel tbody tr');
-          Array.prototype.find.call(tr.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
-      `);
+      assert.ok(await clicarBotao(LINHA, "Despublicar"), "botão Despublicar ausente na linha Shopee");
       await sleep(120);
-      await cdp.evaluate(`
-        (function(){ var box = document.querySelector('.vf-fin-confirm');
-          Array.prototype.find.call(box.querySelectorAll('button'), function(b){ return b.textContent.trim() === 'Despublicar'; }).click(); })();
-      `);
-      await waitFor(cdp, "document.querySelector('.vf-fin-painel tbody tr').innerText.indexOf('Publicar') >= 0", "a entrega Shopee não voltou a rascunho");
+      assert.ok(await clicarBotao(`${LINHA} .vf-fin-confirm`, "Despublicar"), "confirmação de despublicar ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(LINHA)}) || {innerText:''}).innerText.indexOf('Publicar') >= 0`, "a entrega Shopee não voltou a rascunho");
       const alvo = entregasFake.find((e) => e.id === 950);
       assert.strictEqual(alvo.publicado, false);
       assert.strictEqual(alvo.token_publico, null, "despublicar Shopee precisa revogar o token público também");
     });
+    N97_CONTAS[0].marketplace = "meli";
+    N97_CONTAS[0].nome = "Mercado Livre 1";
 
     // ═══ 3. REGRESSÃO P0 — sem vf-token: nunca pode ficar em branco pra
     // sempre. bootProduction() (vf-shell.js) só chama vfContext.init() se
@@ -789,7 +878,7 @@ async function run() {
     // sozinha nesse caso. ═══
     await cdp.evaluate(`localStorage.removeItem("vf-token"); localStorage.removeItem("vf-user"); sessionStorage.clear();`);
     consoleErrors.length = 0;
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=3` });
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=3`);
     await waitFor(cdp, "document.body.innerText.includes('E-mail')", "sem vf-token deveria redirecionar para o login (index.html) em vez de ficar em branco pra sempre");
 
     await check("F4.1 — sem vf-token: redireciona para o login em vez de ficar em branco pra sempre (regressão da tela branca)", async () => {

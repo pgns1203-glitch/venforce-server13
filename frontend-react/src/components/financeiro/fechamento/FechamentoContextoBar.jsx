@@ -4,7 +4,9 @@
 // e cliente. Tudo vem do Shell — aqui é só LEITURA. Não existe seletor de
 // cliente, marketplace ou conta nesta tela: a entrega pertence ao contexto.
 
-export const MK_LABEL = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
+import { MK_LABEL } from "../../../utils/financeiro/marketplace.js";
+
+export { MK_LABEL };
 
 export function rotuloDaConta({ contaNome, contaRotuloExterno, clienteContaId }) {
   const nome = contaNome || (clienteContaId ? `Operação #${clienteContaId}` : null);

@@ -1,34 +1,38 @@
 // frontend-react/src/components/financeiro/RelatoriosTab.jsx
 //
-// F4.2 — a aba deixou de ser uma tabela de leitura e virou o lugar de
-// OPERAR os fechamentos já gerados: abrir, copiar o link, publicar e
-// despublicar. As ações vêm de GET /entregas-cliente (entregasApi.js), que
-// é o mesmo `listarEntregas` que alimenta o bloco `relatorios` do
-// GET /financeiro/:cliente — só que trazendo `id`, `token_publico` e
-// `published_at`, sem os quais nada disso seria possível.
+// RELATÓRIOS GERADOS — as entregas (artefatos que podem ser abertos,
+// publicados e enviados) DESTA operação, mais as entregas legadas sem
+// operação registrada. Cada linha responde de cara: de qual mês, de qual
+// marketplace e conta, em que modo, com que cobertura, se está publicada e
+// quando foi gerada.
 //
-// As duas fontes são CAMADAS, não concorrentes: o payload do Financeiro
-// diz se o bloco existe (`disponivel`/`motivo`, decisão do backend); a
-// lista de entregas diz quais linhas dá para operar. Se a segunda falhar, a
-// tabela continua sendo exibida a partir da primeira, em leitura, dizendo
-// por que as ações sumiram — degradar em silêncio seria pior.
+// Account-aware: a lista vem filtrada por `cliente_conta_id` (+ legadas) e
+// cada linha é rotulada pelo escopo — uma entrega da Conta 1 nunca aparece
+// como se fosse da Conta 2, e uma legada nunca é atribuída à conta em tela.
+//
+// Ações por `id`: Abrir, Copiar link, Publicar/Despublicar (EntregaAcoes) e
+// Excluir (DELETE /entregas-cliente/:id, com confirmação).
+//
+// Modo degradado: se a lista operacional falhar, a tabela continua a partir
+// do bloco `relatorios` de GET /financeiro, em leitura, dizendo por quê.
 
 import { formatarDataHora, rotularCompetencia } from "../../utils/dates.js";
 import { mesmaCompetencia } from "../../utils/financeiro/competencia.js";
+import { descreverEntrega } from "../../utils/financeiro/relatorios.js";
+import { formatarValor } from "./shared/ValorFinanceiro.jsx";
 import { BlocoIndisponivel, BlocoSkeleton } from "../visao/BlocoCard.jsx";
 import { EntregaAcoes, linkPublico } from "./EntregaAcoes.jsx";
+import { ExcluirEntrega } from "./relatorios/ExcluirEntrega.jsx";
 
 function Vazio() {
   return (
     <div className="vf-empty">
-      <p className="vf-empty__description">Nenhum relatório gerado para este cliente ainda.</p>
+      <p className="vf-empty__description">Nenhum relatório gerado para esta operação ainda.</p>
     </div>
   );
 }
 
-// Modo degradado: a lista operacional não carregou. Mostra o que o payload
-// do Financeiro já tinha (sem `id`, portanto sem ação) e diz o porquê.
-function TabelaSomenteLeitura({ lista, motivo, onTentarDeNovo }) {
+function TabelaSomenteLeitura({ lista, motivo, onTentarDeNovo, clienteContaId }) {
   return (
     <div className="vf-stack">
       <div className="vf-banner is-warning" role="status">
@@ -45,15 +49,15 @@ function TabelaSomenteLeitura({ lista, motivo, onTentarDeNovo }) {
       <div className="vf-table-wrap">
         <table className="vf-table vf-table--compact">
           <thead>
-            <tr><th>Período</th><th>Status</th><th>Gerado em</th><th>Publicado</th><th></th></tr>
+            <tr><th>Competência</th><th>Operação</th><th>Status</th><th>Gerado em</th><th></th></tr>
           </thead>
           <tbody>
             {lista.map((r, i) => (
-              <tr key={`${r.periodo}-${i}`}>
+              <tr key={`${r.id ?? r.periodo}-${i}`}>
                 <td>{rotularCompetencia(r.periodo)}</td>
-                <td>{r.status === "publicado" ? "Publicado" : "Rascunho"}</td>
+                <td>{r.clienteContaId == null ? "Legado · operação não registrada" : Number(r.clienteContaId) === Number(clienteContaId) ? "Esta conta" : `Outra conta (#${r.clienteContaId})`}</td>
+                <td>{r.publicado ? "Publicado" : "Rascunho"}</td>
                 <td>{formatarDataHora(r.geradoEm)}</td>
-                <td>{r.publicado ? "Sim" : "Não"}</td>
                 <td className="vf-table__actions">
                   {r.publicado && r.token ? (
                     <a className="vf-btn vf-btn--ghost vf-btn--sm" href={linkPublico(r.token)} target="_blank" rel="noreferrer">
@@ -72,22 +76,18 @@ function TabelaSomenteLeitura({ lista, motivo, onTentarDeNovo }) {
   );
 }
 
-export function RelatoriosTab({ relatorios, entregas, periodo }) {
-  // Bloco indisponível é decisão do backend — nada a operar.
+export function RelatoriosTab({ relatorios, entregas, periodo, clienteContaId, marketplace, contaNome, contaRotuloExterno }) {
   if (relatorios && !relatorios.disponivel) return <BlocoIndisponivel motivo={relatorios.motivo} />;
-
   const leitura = relatorios?.dados || [];
 
   if (entregas.carregando && !entregas.entregas) return <BlocoSkeleton linhas={4} />;
 
-  // Sem lista operacional (falhou, ou o hook não pôde carregar): a tabela
-  // continua, em leitura, dizendo por que as ações sumiram. Um botão que
-  // não tem `id` para agir é pior do que a ausência dele.
   if (!Array.isArray(entregas.entregas)) {
     if (!leitura.length) return <Vazio />;
     return (
       <TabelaSomenteLeitura
         lista={leitura}
+        clienteContaId={clienteContaId}
         motivo={entregas.erro?.mensagem || "A lista operacional de entregas não está disponível."}
         onTentarDeNovo={entregas.recarregar}
       />
@@ -96,55 +96,70 @@ export function RelatoriosTab({ relatorios, entregas, periodo }) {
 
   const lista = entregas.entregas;
   if (!lista.length) return <Vazio />;
+  const ctx = { clienteContaId, marketplace, contaNome, contaRotuloExterno };
 
   return (
-    <div className={`vf-table-wrap${entregas.carregando ? " is-atualizando" : ""}`}>
+    <div className={`vf-stack vf-stack--sm${entregas.carregando ? " is-atualizando" : ""}`}>
       <p className="vf-field__hint">
-        Entregas do <strong>cliente</strong> — <code>entregas_cliente</code> não guarda a operação, então esta lista não
-        é filtrada por conta.
+        Entregas desta operação e as legadas do cliente (salvas antes de a operação ser registrada), identificadas por linha.
       </p>
-      <table className="vf-table vf-table--compact">
-        <thead>
-          <tr>
-            <th>Período</th>
-            <th>Status</th>
-            <th>Gerado em</th>
-            <th>Publicado em</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {lista.map((e) => {
-            const doPeriodoEmTela = mesmaCompetencia(e.periodo, periodo);
-            return (
-              <tr key={e.id} className={doPeriodoEmTela ? "is-destacada" : undefined}>
-                <td>
-                  {rotularCompetencia(e.periodo)}
-                  {doPeriodoEmTela && <span className="vf-tag" style={{ marginLeft: 8 }}>período em tela</span>}
-                </td>
-                <td>
-                  <span className={`vf-status is-${e.publicado ? "success" : "neutral"}`}>
-                    {e.publicado ? "Publicado" : "Rascunho"}
-                  </span>
-                </td>
-                <td>{formatarDataHora(e.created_at)}</td>
-                {/* Ausência é ausência: um rascunho nunca teve published_at. */}
-                <td>{e.publicado ? formatarDataHora(e.published_at) : "—"}</td>
-                <td>
-                  <EntregaAcoes
-                    entrega={e}
-                    ocupada={entregas.acaoEmCurso === e.id}
-                    bloqueada={entregas.acaoEmCurso != null && entregas.acaoEmCurso !== e.id}
-                    erro={entregas.erroDeAcao?.id === e.id ? entregas.erroDeAcao.mensagem : null}
-                    onPublicar={entregas.publicar}
-                    onDespublicar={entregas.despublicar}
-                  />
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      <div className="vf-table-wrap vf-table-scroll">
+        <table className="vf-table vf-table--compact vf-fin-relatorios">
+          <thead>
+            <tr>
+              <th>Competência</th>
+              <th>Operação</th>
+              <th>Modo</th>
+              <th className="is-numeric">Cobertura custo</th>
+              <th>Status</th>
+              <th>Gerado em</th>
+              <th>Publicado em</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {lista.map((e) => {
+              const d = descreverEntrega(e, ctx);
+              const doPeriodoEmTela = mesmaCompetencia(e.periodo, periodo);
+              const ocupada = entregas.acaoEmCurso === e.id;
+              const bloqueada = entregas.acaoEmCurso != null && entregas.acaoEmCurso !== e.id;
+              return (
+                <tr key={e.id} className={doPeriodoEmTela ? "is-destacada" : undefined} data-escopo={d.escopo} data-entrega={e.id}>
+                  <td>
+                    <strong>{d.competenciaLabel}</strong>
+                    {d.periodoBruto && <span className="vf-field__hint"> ({d.periodoBruto})</span>}
+                    {doPeriodoEmTela && <span className="vf-tag" style={{ marginLeft: 8 }}>em tela</span>}
+                  </td>
+                  <td>
+                    <span className={d.escopo === "esta_conta" ? undefined : "vf-field__hint"}>{d.operacao}</span>
+                  </td>
+                  <td>{d.modo || "—"}</td>
+                  <td className="is-numeric">{formatarValor(d.cobertura, "pontos")}</td>
+                  <td>
+                    <span className={`vf-status is-${d.status.tom}`}>{d.status.label}</span>
+                  </td>
+                  <td>{formatarDataHora(d.geradoEm)}</td>
+                  {/* Ausência é ausência: um rascunho nunca teve published_at. */}
+                  <td>{d.publicadoEm ? formatarDataHora(d.publicadoEm) : "—"}</td>
+                  <td>
+                    <div className="vf-cluster vf-fin-relatorios__acoes">
+                      <EntregaAcoes
+                        entrega={e}
+                        ocupada={ocupada}
+                        bloqueada={bloqueada}
+                        erro={entregas.erroDeAcao?.id === e.id ? entregas.erroDeAcao.mensagem : null}
+                        onPublicar={entregas.publicar}
+                        onDespublicar={entregas.despublicar}
+                      />
+                      <ExcluirEntrega descricao={d} publicado={!!e.publicado} ocupada={ocupada} bloqueada={bloqueada} onExcluir={entregas.excluir} />
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

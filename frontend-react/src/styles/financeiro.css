@@ -537,3 +537,9 @@
 @media (max-width: 900px) {
   .vf-fin-prioridade__acao { grid-template-columns: 1fr; }
 }
+
+/* ── Relatórios gerados ───────────────────────────────────────────────── */
+.vf-fin-relatorios td.is-numeric,
+.vf-fin-relatorios th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vf-fin-relatorios__acoes { flex-wrap: wrap; gap: 4px; }
+.vf-fin-excluir { color: var(--vf-danger-strong, #9b1c1c); }

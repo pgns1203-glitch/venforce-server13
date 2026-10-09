@@ -436,11 +436,18 @@ async function listarEntregas({ query, clienteIdsPermitidos = null }) {
   params.push(offset);
   const offsetIndex = params.length;
 
+  // Financeiro V3 (Relatórios gerados) — resumo de LEITURA do fechamento
+  // gravado, para a lista dizer o modo e a cobertura sem trazer o
+  // payload_json inteiro (nem um GET por linha). Só projeção: nenhum
+  // filtro, ordem ou paginação muda. Entrega sem summary devolve null.
   const result = await pool.query(
     `SELECT
         id, tipo, cliente_id, cliente_conta_id, cliente_slug, cliente_nome, titulo, periodo, status,
         token_publico, publicado, origem_tipo, origem_id,
-        created_by, created_at, updated_at, published_at, expires_at
+        created_by, created_at, updated_at, published_at, expires_at,
+        payload_json->'summary'->>'calculationMode' AS modo_calculo,
+        payload_json->'summary'->>'calculatedCoveragePercent' AS cobertura_custo_percentual,
+        COALESCE(payload_json->>'marketplace', payload_json->'metadados'->>'marketplace') AS marketplace_payload
        FROM entregas_cliente
        ${whereSql}
        ORDER BY created_at DESC, id DESC

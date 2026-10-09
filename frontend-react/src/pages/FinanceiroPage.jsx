@@ -191,6 +191,7 @@ export default function FinanceiroPage() {
                 clienteContaId={clienteContaId}
                 marketplace={marketplace}
                 contaNome={contaNome}
+                contaRotuloExterno={contaRotuloExterno}
               />
             </div>
           )}

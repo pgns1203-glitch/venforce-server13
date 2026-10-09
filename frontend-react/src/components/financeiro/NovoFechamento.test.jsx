@@ -240,7 +240,7 @@ describe("NovoFechamento · validação e envio", () => {
     expect(form.get("marketplace")).toBe("meli");
     expect(form.get("costs")).toBeNull(); // base cobre — nada de upload
     expect(await screen.findByText(/Competência confere/)).toBeInTheDocument();
-    expect(screen.getByText(/Custos da base vinculada/)).toBeInTheDocument();
+    expect(screen.getByText(/custos da base Base Zenite/)).toBeInTheDocument();
   });
 
   it("sem base: o upload de custos vai junto no multipart", async () => {
@@ -287,10 +287,10 @@ describe("NovoFechamento · caixa-preta (incidente FIN-xxx) + base vinculada", (
     await subirVendas(usuario);
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
 
-    expect(await screen.findByText("Ocorrência de suporte FIN-777 criada")).toBeInTheDocument();
+    expect(await screen.findByText("FIN-777")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copiar código" })).toBeInTheDocument();
     // custos da base continuam visíveis no preview (as duas features juntas)
-    expect(screen.getByText(/Custos da base vinculada/)).toBeInTheDocument();
+    expect(screen.getByText(/custos da base Comprou_chegou_shopee1/)).toBeInTheDocument();
     // não-admin não vê o link de diagnóstico
     expect(screen.queryByRole("link", { name: "Abrir diagnóstico" })).not.toBeInTheDocument();
   });
@@ -338,7 +338,7 @@ describe("NovoFechamento · competência divergente", () => {
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
 
     expect(await screen.findByText(/não bate com o período em tela/)).toBeInTheDocument();
-    const salvar = screen.getByRole("button", { name: "Salvar fechamento" });
+    const salvar = screen.getByRole("button", { name: "Salvar entrega" });
     expect(salvar).toBeDisabled();
     await usuario.click(screen.getByRole("checkbox"));
     expect(salvar).toBeEnabled();
@@ -360,7 +360,7 @@ describe("NovoFechamento · duplicidade 409", () => {
     await subirVendas(usuario);
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
     await screen.findByText(/Competência confere/);
-    await usuario.click(screen.getByRole("button", { name: "Salvar fechamento" }));
+    await usuario.click(screen.getByRole("button", { name: "Salvar entrega" }));
 
     expect(await screen.findByText(/já tem um fechamento PUBLICADO/)).toBeInTheDocument();
     await usuario.click(screen.getByRole("button", { name: "Substituir" }));

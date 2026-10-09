@@ -188,10 +188,26 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
       setEstado("preview");
     } catch (err) {
       if (err?.name === "AbortError") return;
+      // Reprocessamento que falhou não deixa o resultado ANTERIOR na tela
+      // como se fosse o atual.
+      setProcessamento(null);
       setErro(normalizarErro(err));
       setEstado("form");
     }
   }, [validacao, arquivos, mkt, clienteSlug, clienteContaId, periodo, ajustes]);
+
+  // Voltar aos arquivos/ajustes SEM perder o que foi escolhido (trocar a
+  // planilha de custos, corrigir um ajuste). O resultado processado deixa de
+  // valer — Processar de novo gera o novo.
+  const voltarAoFormulario = useCallback(() => {
+    abortRef.current?.abort();
+    setProcessamento(null);
+    setErro(null);
+    setDuplicidade(null);
+    setConfirmouDivergencia(false);
+    setEntregaSalva(null);
+    setEstado("form");
+  }, []);
 
   const salvar = useCallback(
     async ({ substituir = false } = {}) => {
@@ -201,7 +217,7 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         return;
       }
       const ctx = contextoDoProcessamentoRef.current;
-      if (!ctx || ctx.clienteSlug !== clienteSlug || ctx.clienteContaId !== clienteContaId || ctx.periodo !== periodo) {
+      if (!ctx || ctx.clienteSlug !== clienteSlug || ctx.clienteContaId !== clienteContaId || ctx.periodo !== periodo || ctx.marketplace !== mkt) {
         setErro({ mensagem: "O contexto mudou desde o processamento. Processe novamente.", codigo: "contexto", status: 0 });
         setEstado("form");
         return;
@@ -306,6 +322,10 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
     duplicidade,
     entregaSalva,
     processar,
+    // Reprocessar = o MESMO processamento, com os arquivos/ajustes atuais
+    // (ex.: depois de corrigir a base vinculada). Nenhum endpoint novo.
+    reprocessar: processar,
+    voltarAoFormulario,
     salvar,
     substituir,
     resetar,

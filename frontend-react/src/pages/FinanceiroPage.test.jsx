@@ -288,3 +288,45 @@ describe("FinanceiroPage · publicar/despublicar a entrega desta conta", () => {
     expect(entregas.despublicar).toHaveBeenCalledWith(7);
   });
 });
+
+describe("FinanceiroPage · Relatórios gerados e Histórico", () => {
+  it("Relatórios identifica a conta da operação e o legado, linha a linha", async () => {
+    const usuario = userEvent.setup();
+    mockarHooks({
+      dados: dadosBase(),
+      operacao: operacaoPronta({ marketplace: "shopee", snapshot: { state: "READY", context: { clienteNome: "Loja" }, meta: { nome: "Shopee 2", externalAccountLabel: "shop-2" } } }),
+      entregas: estadoDeEntregas({
+        entregas: [
+          { id: 11, periodo: "2026-08", cliente_conta_id: 42, publicado: false, modo_calculo: "real_financial", cobertura_custo_percentual: "97.5" },
+          { id: 12, periodo: "Julho 2026", cliente_conta_id: null, publicado: false, marketplace_payload: "shopee" },
+        ],
+      }),
+    });
+    render(<FinanceiroPage />);
+    await usuario.click(screen.getByRole("tab", { name: "Relatórios gerados" }));
+    const tabela = screen.getByRole("table");
+    expect(within(tabela).getByText("Shopee · Shopee 2 · shop-2")).toBeInTheDocument();
+    expect(within(tabela).getByText("Legado · operação não registrada (Shopee)")).toBeInTheDocument();
+    expect(within(tabela).getByText("97,5%")).toBeInTheDocument();
+  });
+
+  it("trocar de aba e voltar não perde o arquivo escolhido no Fechamento", async () => {
+    const usuario = userEvent.setup();
+    mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [] }) });
+    render(<FinanceiroPage />);
+    await usuario.upload(screen.getByLabelText(/Planilha de vendas/), new File(["a"], "vendas-agosto.xlsx"));
+    await usuario.click(screen.getByRole("tab", { name: "Histórico" }));
+    await usuario.click(screen.getByRole("tab", { name: "Fechamento" }));
+    expect(screen.getByText("vendas-agosto.xlsx")).toBeInTheDocument();
+  });
+
+  it("Histórico: escolher um mês sem trabalho em andamento troca a competência e volta ao Fechamento", async () => {
+    const usuario = userEvent.setup();
+    mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [] }) });
+    render(<FinanceiroPage />);
+    await usuario.click(screen.getByRole("tab", { name: "Histórico" }));
+    await usuario.click(screen.getByRole("button", { name: "Julho/2026" }));
+    expect(mocks.setPeriodo).toHaveBeenCalledWith("2026-07");
+    expect(screen.getByRole("tab", { name: "Fechamento" })).toHaveAttribute("aria-selected", "true");
+  });
+});

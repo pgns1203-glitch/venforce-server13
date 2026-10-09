@@ -26,13 +26,14 @@ import { FechamentoFileCard } from "./fechamento/FechamentoFileCard.jsx";
 import { FechamentoAjustes } from "./fechamento/FechamentoAjustes.jsx";
 import { FechamentoAcao } from "./fechamento/FechamentoAcao.jsx";
 import { ResultadoProcessado } from "./resultado/ResultadoProcessado.jsx";
+import { PendenciasCusto } from "./pendencias/PendenciasCusto.jsx";
 
 function avisoDoCampo(validacao, campo) {
   if (validacao.ok) return null;
   return validacao.itens.find((i) => i.campo === campo)?.mensagem || null;
 }
 
-export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, periodo, periodoLabel, onSalvo, onTrabalho }) {
+export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, contaNome, periodo, periodoLabel, onSalvo, onTrabalho }) {
   const f = useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, marketplace, periodo, onSalvo });
 
   // A página precisa saber se há trabalho em andamento para não trocar de
@@ -136,13 +137,19 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
       {f.erro && <div className="vf-status is-danger" role="alert">{f.erro.mensagem}</div>}
 
       {comResultado && (
-        <PreviewFechamento f={f} periodo={periodo} periodoLabel={periodoLabel} legado={legado} />
+        <PreviewFechamento
+          f={f}
+          periodo={periodo}
+          periodoLabel={periodoLabel}
+          legado={legado}
+          contexto={{ cliente: clienteNome || clienteSlug, conta: contaNome || (clienteContaId ? `#${clienteContaId}` : null), competencia: periodo }}
+        />
       )}
     </div>
   );
 }
 
-function PreviewFechamento({ f, periodo, periodoLabel, legado }) {
+function PreviewFechamento({ f, periodo, periodoLabel, legado, contexto }) {
   const comp = f.competencia || {};
   const salvando = f.estado === "salvando";
   const salvo = f.estado === "salvo";
@@ -179,7 +186,19 @@ function PreviewFechamento({ f, periodo, periodoLabel, legado }) {
         </p>
       )}
 
-      <ResultadoProcessado processamento={f.processamento} marketplace={f.marketplace} periodo={periodo} />
+      <ResultadoProcessado processamento={f.processamento} marketplace={f.marketplace} periodo={periodo}>
+        {({ linhas }) => (
+          <PendenciasCusto
+            linhas={linhas}
+            processamento={f.processamento}
+            marketplace={f.marketplace}
+            contexto={contexto}
+            base={f.base.status === "encontrada" ? f.base.base : null}
+            onReprocessar={f.reprocessar}
+            reprocessando={reprocessando}
+          />
+        )}
+      </ResultadoProcessado>
 
       {/* ── Duplicidade (409) ───────────────────────────────────────────── */}
       {f.duplicidade && (

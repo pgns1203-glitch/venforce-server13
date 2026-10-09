@@ -370,3 +370,37 @@ describe("NovoFechamento · duplicidade 409", () => {
     expect(props.onSalvo).toHaveBeenCalled();
   });
 });
+
+describe("NovoFechamento · reprocessar e voltar aos arquivos", () => {
+  it("Reprocessar chama o MESMO endpoint com os mesmos arquivos; Editar arquivos mantém a planilha escolhida", async () => {
+    rede.requisitar.mockResolvedValue(vinculosCom({ marketplace: "meli", contaId: 42 }));
+    api.processar.mockResolvedValue(respostaOk({ costsSource: "base", costsBase: { id: 900, slug: "base-zenite", nome: "Base Zenite" } }));
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await screen.findByText("Base vinculada");
+    await subirVendas(usuario, "vendas-out.xlsx");
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText("Resultado do processamento");
+
+    await usuario.click(screen.getAllByRole("button", { name: "Reprocessar fechamento" })[0]);
+    await waitFor(() => expect(api.processar).toHaveBeenCalledTimes(2));
+    expect(api.processar.mock.calls[1][0].get("sales").name).toBe("vendas-out.xlsx");
+
+    await usuario.click(await screen.findByRole("button", { name: "Editar arquivos e ajustes" }));
+    expect(screen.getByText("Arquivos do fechamento")).toBeInTheDocument();
+    expect(screen.getByText("vendas-out.xlsx")).toBeInTheDocument();
+  });
+
+  it("reprocessamento que falha não deixa o resultado anterior na tela", async () => {
+    api.processar.mockResolvedValueOnce(respostaOk()).mockRejectedValueOnce(new FechamentoApiError("Planilha inválida.", { status: 400 }));
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await subirVendas(usuario);
+    await subirCustos(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText("Resultado do processamento");
+    await usuario.click(screen.getAllByRole("button", { name: "Reprocessar fechamento" })[0]);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Planilha inválida.");
+    expect(screen.queryByText("Resultado do processamento")).not.toBeInTheDocument();
+  });
+});

@@ -496,3 +496,10 @@
 .vf-fin-produtos .vf-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vf-fin-produtos .vf-table td:first-child { min-width: 200px; }
 .vf-fin-status-linha { gap: 4px; flex-wrap: nowrap; white-space: nowrap; }
+
+/* ── Pendências de custo ──────────────────────────────────────────────── */
+.vf-fin-pendencias { border-left: 3px solid var(--vf-warning); }
+.vf-fin-pendencias .vf-table td.is-numeric,
+.vf-fin-pendencias .vf-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vf-fin-corrigir { min-width: 260px; }
+.vf-fin-corrigir .vf-fin-ajuste__campo { max-width: 140px; }

@@ -57,7 +57,10 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
     clienteSlug,
     marketplace: mkt,
     clienteContaId,
-    habilitado: marketplaceSuportado && (estado === "form" || estado === "processando"),
+    // Fica ativa também no resultado: as pendências de custo precisam saber
+    // qual é a base vinculada desta conta para oferecer a correção rápida.
+    // Os deps do hook não mudam com o `estado`, então não há nova leitura.
+    habilitado: marketplaceSuportado,
   });
 
   const abortRef = useRef(null);

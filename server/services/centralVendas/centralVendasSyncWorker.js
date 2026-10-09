@@ -21,8 +21,52 @@ const pool = require("../../config/database");
 const runService = require("./centralVendasSyncRunService");
 const sourceService = require("./centralVendasSyncSourceService");
 const { assertNaoCancelado } = require("../../utils/comPrazo");
+const { isPgConnectionError } = require("./centralVendasTransientRetry");
 
 const CONCORRENCIA = Number(process.env.CENTRAL_VENDAS_SYNC_CONCURRENCY) || 1;
+
+// Fechar o run depois de perder a conexão: o PostgreSQL pode estar saindo de
+// uma recuperação de crash (segundos). Repete SÓ erro de conexão, com espera
+// curta e crescente (~0,5 + 1 + 2 + 4 s). UPDATEs idempotentes (só mexem em
+// run 'running' / fontes pending|running), então repetir é seguro.
+const FECHAR_RUN_TENTATIVAS = 5;
+const FECHAR_RUN_BACKOFF_MS = 500;
+const dormir = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fecharRunFalho(run, err, code, db, sleep) {
+  for (let tentativa = 1; ; tentativa += 1) {
+    try {
+      // Rede de segurança (seção 54): fecha qualquer fonte ainda pending/
+      // running deste run como failed antes de marcar o run como failed —
+      // nunca deixa "run failed, sources todas running".
+      await sourceService.falharFontesEmAndamento(run.id, { errorCode: code, errorMessage: err?.message }, db);
+      // completenessStatus é SEMPRE derivado de calcularCompletudeDoRun, nunca
+      // forçado — um run técnico failed pode ter fontes obrigatórias que
+      // fecharam bem antes do erro (ex.: erro de persistência depois de
+      // orders/shipments/claims/base completos) ou só uma fonte não-estrutural
+      // falha (ex.: claims), o que dá completude `partial`, não `failed`. Só
+      // falha estrutural (orders/base) força `failed` — ver STRUCTURAL_SOURCES
+      // em centralVendasSyncSourceService. runStatus:"failed" aqui garante o
+      // veredito estrito (nunca "unknown" por engano de run ainda em andamento).
+      const completeness = await sourceService.calcularCompletudeDoRun(run.id, { runStatus: "failed", db });
+      await runService.atualizarCompletenessRun(run.id, completeness.status, db);
+      await runService.marcarRunFailed(run.id, { code, message: err?.message || "Erro desconhecido na sincronizacao." }, db);
+      return;
+    } catch (fecharErr) {
+      if (!isPgConnectionError(fecharErr) || tentativa >= FECHAR_RUN_TENTATIVAS) {
+        // O erro ORIGINAL continua sendo o que sobe; o run fica 'running' e é
+        // fechado pela recuperação do próximo boot (noturno) ou pela
+        // reconciliação de abandono ao criar uma tentativa equivalente.
+        console.error(
+          `[centralVendas] sync-run #${run.id} não foi possível marcar como failed (${code}):`
+            + ` ${fecharErr?.code ? `${fecharErr.code} ` : ""}${fecharErr?.message}`
+        );
+        return;
+      }
+      await sleep(FECHAR_RUN_BACKOFF_MS * 2 ** (tentativa - 1));
+    }
+  }
+}
 
 const fila = [];
 let ativos = 0;
@@ -69,7 +113,7 @@ function resumoDoResultado(resultado) {
 // sempre os defaults reais (pool global, motor de sync real).
 async function executarSyncRun({
   run, context, params, db = pool, sincronizarVendasMeli: syncFnOverride = null,
-  marginSnapshotEnqueue: marginSnapshotEnqueueOverride = null, signal = null,
+  marginSnapshotEnqueue: marginSnapshotEnqueueOverride = null, signal = null, sleep = dormir,
 }) {
   const marcado = await runService.marcarRunRunning(run.id, db);
   if (!marcado) {
@@ -160,22 +204,10 @@ async function executarSyncRun({
 
     return resultado;
   } catch (err) {
-    const code = err?.code || "SYNC_EXECUTION_ERROR";
-    // Rede de segurança (seção 54): fecha qualquer fonte ainda pending/
-    // running deste run como failed antes de marcar o run como failed —
-    // nunca deixa "run failed, sources todas running".
-    await sourceService.falharFontesEmAndamento(run.id, { errorCode: code, errorMessage: err?.message }, db);
-    // completenessStatus é SEMPRE derivado de calcularCompletudeDoRun, nunca
-    // forçado — um run técnico failed pode ter fontes obrigatórias que
-    // fecharam bem antes do erro (ex.: erro de persistência depois de
-    // orders/shipments/claims/base completos) ou só uma fonte não-estrutural
-    // falha (ex.: claims), o que dá completude `partial`, não `failed`. Só
-    // falha estrutural (orders/base) força `failed` — ver STRUCTURAL_SOURCES
-    // em centralVendasSyncSourceService. runStatus:"failed" aqui garante o
-    // veredito estrito (nunca "unknown" por engano de run ainda em andamento).
-    const completeness = await sourceService.calcularCompletudeDoRun(run.id, { runStatus: "failed", db });
-    await runService.atualizarCompletenessRun(run.id, completeness.status, db);
-    await runService.marcarRunFailed(run.id, { code, message: err?.message || "Erro desconhecido na sincronizacao." }, db);
+    // Conexão com o PostgreSQL perdida no meio do sync (crash/restart do
+    // servidor, rede): código explícito, distinto de erro de execução.
+    const code = isPgConnectionError(err) ? "SYNC_DB_CONNECTION_LOST" : (err?.code || "SYNC_EXECUTION_ERROR");
+    await fecharRunFalho(run, err, code, db, sleep);
     throw err;
   }
 }

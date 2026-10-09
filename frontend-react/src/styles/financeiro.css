@@ -516,3 +516,24 @@
 .vf-fin-recon__estado.is-neutral { border-left-color: var(--vf-border-strong, #d6d9e4); }
 .vf-fin-recon__rotulo { font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-secondary); }
 .vf-fin-recon__valor { font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; }
+
+/* ── Entrega para o cliente ───────────────────────────────────────────── */
+.vf-fin-entrega__lista { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); }
+.vf-fin-entrega__linha { flex-wrap: nowrap; }
+.vf-fin-entrega__linha .vf-input { flex: 1 1 auto; min-width: 0; }
+.vf-fin-prioridade { border: 1px solid var(--vf-border); padding: var(--vf-sp-2, 8px) var(--vf-sp-3, 12px); }
+.vf-fin-prioridade > summary { cursor: pointer; font-weight: var(--vf-fw-semibold, 600); font-size: var(--vf-fs-sm, 0.875rem); }
+.vf-fin-prioridade[open] > summary { margin-bottom: var(--vf-sp-2, 8px); }
+.vf-fin-prioridade__ponto { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.vf-fin-prioridade__ponto.is-alta { background: var(--vf-danger); }
+.vf-fin-prioridade__ponto.is-media { background: var(--vf-warning); }
+.vf-fin-prioridade__ponto.is-baixa { background: var(--vf-success); }
+.vf-fin-prioridade__acao {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(180px, 2fr) minmax(110px, 0.7fr) auto;
+  gap: var(--vf-sp-2, 8px);
+  align-items: center;
+}
+@media (max-width: 900px) {
+  .vf-fin-prioridade__acao { grid-template-columns: 1fr; }
+}

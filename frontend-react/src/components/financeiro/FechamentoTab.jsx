@@ -15,7 +15,7 @@
 // entrega DESTA conta é operável aqui (entregaDoPeriodo). A legada, sem
 // operação registrada, é rotulada em Relatórios gerados.
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { formatarDataHora } from "../../utils/dates.js";
 import { EntregaPainel } from "./entrega/EntregaPainel.jsx";
 import { NovoFechamento } from "./NovoFechamento.jsx";
@@ -38,18 +38,18 @@ export function FechamentoTab({
   onSalvo,
   onTrabalho,
 }) {
-  const [processadoAgora, setProcessadoAgora] = useState(false);
+  const [trabalhoForm, setTrabalhoForm] = useState({ temTrabalho: false, temResultado: false, processadoNaoSalvo: false });
+  const [apresentacaoAlterada, setApresentacaoAlterada] = useState(false);
   const mkt = String(marketplace || "").toLowerCase();
+  const processadoAgora = trabalhoForm.temResultado;
 
-  // Estável de propósito: NovoFechamento reporta o trabalho num efeito, e um
-  // callback novo a cada render viraria um laço de renders.
-  const aoMudarTrabalho = useCallback(
-    (t) => {
-      setProcessadoAgora(!!t?.temResultado);
-      onTrabalho?.(t);
-    },
-    [onTrabalho]
-  );
+  // Trabalho da página = formulário/resultado + apresentação não salva. Os
+  // dois chegam por efeitos dos filhos; callbacks estáveis (setState) evitam
+  // laço de renders.
+  const aoMudarTrabalho = useCallback((t) => setTrabalhoForm(t), []);
+  useEffect(() => {
+    onTrabalho?.({ ...trabalhoForm, temTrabalho: trabalhoForm.temTrabalho || apresentacaoAlterada });
+  }, [onTrabalho, trabalhoForm, apresentacaoAlterada]);
 
   return (
     <div className="vf-stack">
@@ -73,7 +73,9 @@ export function FechamentoTab({
         contaNome={contaNome}
         clienteContaId={clienteContaId}
         periodo={periodo}
+        periodo={periodo}
         periodoLabel={periodoLabel}
+        onAlterado={setApresentacaoAlterada}
       />
 
       {!processadoAgora && (

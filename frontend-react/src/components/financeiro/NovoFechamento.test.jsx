@@ -371,6 +371,32 @@ describe("NovoFechamento · duplicidade 409", () => {
   });
 });
 
+describe("NovoFechamento · substituir preserva a apresentação", () => {
+  it("substituir leva destaques/prioridades da entrega existente para o novo payload (números novos)", async () => {
+    const apresentacao = { destaques: ["Meta batida"], atencoes: [], prioridades: { alta: [{ titulo: "Repor", desc: "", data: "" }], media: [], baixa: [] } };
+    rede.requisitar.mockImplementation(async (caminho) =>
+      caminho === "/entregas-cliente/78"
+        ? { ok: true, entrega: { id: 78, payload_json: { summary: { finalResult: 1 }, entrega: apresentacao } } }
+        : semVinculos
+    );
+    api.processar.mockResolvedValue(respostaOk());
+    api.salvar
+      .mockRejectedValueOnce(new FechamentoApiError("Já existe.", { status: 409, codigo: "ENTREGA_JA_EXISTE", entregaId: 78, publicado: false }))
+      .mockResolvedValueOnce({ id: 78 });
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await subirVendas(usuario);
+    await subirCustos(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await usuario.click(await screen.findByRole("button", { name: "Salvar entrega" }));
+    await usuario.click(await screen.findByRole("button", { name: "Substituir" }));
+    await waitFor(() => expect(api.salvar).toHaveBeenCalledTimes(2));
+    const body = api.salvar.mock.calls[1][0];
+    expect(body.payload_json.entrega).toEqual(apresentacao);
+    expect(body.payload_json.summary).toEqual(SUMMARY);
+  });
+});
+
 describe("NovoFechamento · reprocessar e voltar aos arquivos", () => {
   it("Reprocessar chama o MESMO endpoint com os mesmos arquivos; Editar arquivos mantém a planilha escolhida", async () => {
     rede.requisitar.mockResolvedValue(vinculosCom({ marketplace: "meli", contaId: 42 }));

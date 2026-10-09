@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { processarFechamento, salvarEntregaFechamento, FechamentoApiError } from "../services/financeiroFechamentoApi.js";
 import { montarPayloadFechamento } from "../utils/fechamentoPayload.js";
+import { buscarEntrega } from "../services/entregasApi.js";
 import { useBaseVinculada } from "./useBaseVinculada.js";
 
 const AJUSTES_INICIAIS = { ads: "", venforce: "", affiliates: "", fullCost: "", additionalCosts: "" };
@@ -241,6 +242,20 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         ajustes,
       });
 
+      // Substituir NÃO pode apagar a apresentação (destaques/prioridades) que
+      // já foi escrita na entrega existente: ela é levada para o novo payload.
+      // Só texto manual — os números são os do processamento atual.
+      if (substituir && duplicidade?.entregaId) {
+        try {
+          const existente = await buscarEntrega(duplicidade.entregaId, { signal: controlador.signal });
+          const apresentacao = existente?.entrega?.payload_json?.entrega;
+          if (apresentacao && typeof apresentacao === "object") payload.entrega = apresentacao;
+        } catch (err) {
+          if (err?.name === "AbortError") return;
+          /* sem a apresentação anterior, segue sem ela */
+        }
+      }
+
       const body = {
         tipo: "fechamento_mensal",
         titulo: payload.titulo,
@@ -271,7 +286,7 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         setEstado("preview");
       }
     },
-    [processamento, divergente, confirmouDivergencia, clienteSlug, clienteNome, clienteContaId, periodo, mkt, ajustes, onSalvo]
+    [processamento, divergente, confirmouDivergencia, clienteSlug, clienteNome, clienteContaId, periodo, mkt, ajustes, onSalvo, duplicidade]
   );
 
   const substituir = useCallback(() => salvar({ substituir: true }), [salvar]);

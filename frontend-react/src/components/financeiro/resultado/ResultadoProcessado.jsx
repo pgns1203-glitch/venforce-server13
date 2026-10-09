@@ -5,7 +5,10 @@
 // métricas do marketplace. Tudo vem da resposta de POST /fechamentos/financeiro;
 // nada é recalculado aqui.
 
+import { useMemo } from "react";
 import { ehAdmin } from "../../../services/apiClient.js";
+import { normalizarLinhas } from "../../../utils/financeiro/produtos.js";
+import { ProdutosFinanceiroTable } from "../produtos/ProdutosFinanceiroTable.jsx";
 import { rotuloModo, CONFIANCA_LABEL } from "../../../utils/financeiro/resumoFechamento.js";
 import { base64ParaBlob, baixarBlob, nomeDaPlanilhaProcessada, TIPO_XLSX } from "../../../utils/financeiro/arquivos.js";
 import { ResumoKpis } from "./ResumoKpis.jsx";
@@ -16,6 +19,13 @@ import { LeituraFechamento } from "./LeituraFechamento.jsx";
 import { MetricasSecundarias } from "./MetricasSecundarias.jsx";
 
 export function ResultadoProcessado({ processamento, marketplace, periodo, children }) {
+  // Linhas COMPLETAS do processamento em memória, normalizadas uma vez — a
+  // mesma lista alimenta tabela, filtros e pendências.
+  const linhas = useMemo(
+    () => normalizarLinhas(processamento?.detailedRows, { ambiguousIds: processamento?.summary?.ambiguousCostIds }),
+    [processamento]
+  );
+
   if (!processamento) {
     return (
       <div className="vf-empty">
@@ -102,7 +112,12 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, child
 
       <MetricasSecundarias summary={summary} marketplace={marketplace} />
 
-      {children}
+      {typeof children === "function" ? children({ linhas }) : children}
+
+      <section className="vf-stack vf-stack--sm" aria-label="Produtos">
+        <h4 className="vf-fin-bloco__titulo">Produtos do fechamento</h4>
+        <ProdutosFinanceiroTable linhas={linhas} />
+      </section>
 
       <details className="vf-fin-disclosure">
         <summary>Receitas, deduções, investimentos e resultado</summary>

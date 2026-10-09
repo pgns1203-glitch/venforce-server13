@@ -485,3 +485,14 @@
 .vf-fin-valor.is-negativo { color: var(--vf-danger-strong, #9b1c1c); }
 .vf-fin-acoes { align-items: center; }
 .vf-stack.is-atualizando { opacity: 0.6; transition: opacity 120ms ease; }
+
+/* ── Produtos do fechamento ───────────────────────────────────────────── */
+.vf-fin-produtos__toolbar { flex-wrap: wrap; gap: var(--vf-sp-2, 8px); align-items: center; }
+.vf-fin-produtos__filtros { flex-wrap: wrap; }
+.vf-fin-produtos__contagem { font-variant-numeric: tabular-nums; opacity: 0.7; margin-left: 4px; }
+.vf-fin-produtos__busca { min-width: 220px; flex: 1 1 220px; max-width: 360px; }
+.vf-fin-produtos .vf-table-scroll { overflow-x: auto; }
+.vf-fin-produtos .vf-table td.is-numeric,
+.vf-fin-produtos .vf-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vf-fin-produtos .vf-table td:first-child { min-width: 200px; }
+.vf-fin-status-linha { gap: 4px; flex-wrap: nowrap; white-space: nowrap; }

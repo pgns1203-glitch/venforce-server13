@@ -130,32 +130,58 @@ function formatarNoFuso(instanteMs, timeZone = TIMEZONE) {
 // Lock global da rodada (advisory lock de sessão)
 // ---------------------------------------------------------------------------
 
-async function adquirirLockGlobal(pool) {
+async function adquirirLockGlobal(pool, { logger = console } = {}) {
   const client = await pool.connect();
-  let locked = false;
+  // A conexão do lock fica OCIOSA a rodada inteira (horas). Se ela cair
+  // (crash/restart do PostgreSQL, rede), o `pg` emite 'error' neste client —
+  // sem listener isso derrubava o processo (incidente 2026-10-09). E o lock
+  // de sessão morre junto com a conexão: a partir daí a rodada em curso segue
+  // SEM exclusividade entre instâncias. Fica registrado (perdido()) e o
+  // release descarta a conexão sem tentar o unlock numa sessão que não existe.
+  // O listener entra ANTES da query do lock (cobre a queda durante ela) e sai
+  // em todo caminho de release.
+  let perdido = null;
+  let adquirido = false;
+  const aoPerderConexao = (err) => {
+    if (perdido) return;
+    perdido = err || new Error("conexão do lock encerrada");
+    if (!adquirido) return; // a query do lock rejeita com o mesmo erro e quem chamou registra
+    logger.error(
+      `${LOG} conexão do lock da rodada caiu (${mensagemSegura(perdido)}) — lock global perdido;`
+        + " a rodada em curso termina sem exclusividade entre instâncias"
+    );
+  };
+  const escuta = typeof client.on === "function";
+  if (escuta) client.on("error", aoPerderConexao);
+  const devolver = (err) => {
+    if (escuta) client.removeListener("error", aoPerderConexao);
+    client.release(err || undefined);
+  };
   try {
     const r = await client.query("SELECT pg_try_advisory_lock($1, $2) AS locked", [LOCK_NAMESPACE, LOCK_CHAVE_RODADA]);
-    locked = r.rows[0]?.locked === true;
+    adquirido = r.rows[0]?.locked === true;
   } catch (err) {
-    client.release();
+    devolver(err);
     throw err;
   }
-  if (!locked) {
-    client.release();
+  if (!adquirido) {
+    devolver(perdido);
     return { adquirido: false };
   }
   return {
     adquirido: true,
+    perdido: () => perdido !== null,
     async liberar() {
-      let falhou = null;
+      let falhou = perdido;
       try {
-        await client.query("SELECT pg_advisory_unlock($1, $2)", [LOCK_NAMESPACE, LOCK_CHAVE_RODADA]);
+        if (!falhou) await client.query("SELECT pg_advisory_unlock($1, $2)", [LOCK_NAMESPACE, LOCK_CHAVE_RODADA]);
       } catch (err) {
         falhou = err;
       } finally {
-        // Se o unlock falhou, a conexão NÃO volta para o pool (ainda seguraria
-        // o lock): release(err) a descarta e o Postgres solta o lock.
-        client.release(falhou || undefined);
+        // Conexão perdida ou unlock que falhou: a conexão NÃO volta para o
+        // pool (ainda seguraria o lock, ou está morta): release(err) a
+        // descarta e o Postgres solta o lock junto com a sessão.
+        devolver(falhou);
       }
     },
   };
@@ -236,7 +262,7 @@ function createScheduler(depsOverride = {}) {
     const execucao = (async () => {
       let lock;
       try {
-        lock = await deps.adquirirLockGlobal(deps.getPool());
+        lock = await deps.adquirirLockGlobal(deps.getPool(), { logger: deps.logger });
       } catch (err) {
         deps.logger.error(`${LOG} erro ao obter lock da rodada: ${mensagemSegura(err)}`);
         return { executada: false, motivo: "ERRO_LOCK" };
@@ -271,6 +297,9 @@ function createScheduler(depsOverride = {}) {
         deps.logger.error(`${LOG} erro na ${tipo === "recuperacao" ? "recuperação" : "rodada"}: ${mensagemSegura(err)}`);
         return { executada: false, motivo: "ERRO_RODADA" };
       } finally {
+        if (typeof lock.perdido === "function" && lock.perdido()) {
+          deps.logger.warn(`${LOG} ${tipo === "recuperacao" ? "recuperação" : "rodada"} encerrada depois de perder o lock global (conexão caiu)`);
+        }
         await lock.liberar().catch(() => {});
       }
     })().catch((err) => {

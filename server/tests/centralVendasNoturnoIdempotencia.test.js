@@ -111,6 +111,12 @@ function makeDb() {
         row.completeness_status = "complete";
         return { rows: [row] };
       }
+      if (sql.includes("UPDATE central_vendas_sync_runs") && sql.includes("status = 'failed'")) {
+        const row = runs.find((r) => r.id === params[0] && r.status === "running");
+        if (!row) return { rows: [] };
+        Object.assign(row, { status: "failed", error_code: params[1], error_message: params[2] });
+        return { rows: [row] };
+      }
       if (sql.includes("JOIN clientes c ON c.id = r.cliente_id") && sql.includes("r.id = $1 AND c.slug = $2")) {
         const row = runs.find((r) => r.id === params[0] && params[1] === cliente.slug);
         return { rows: row ? [row] : [] };
@@ -306,6 +312,42 @@ async function run() {
     eq("restart: todos os 10 chegam a completed", recuperacao.resumo.completed, 10);
     eq("restart: 2 publicados anteriores nao sao reexecutados", executados.length, 8);
     eq("restart: publicacoes totais sem duplicar as 2 anteriores", [...estados.values()].filter((r) => r.publicado).length, publicacoesIniciais + 8);
+  }
+
+  // 6. Conexão com o PostgreSQL caiu no meio do run (incidente 2026-10-09):
+  //    o run termina failed SYNC_DB_CONNECTION_LOST sem publicar; a próxima
+  //    tentativa (duas rodadas sobrepostas, inclusive) cria UM run novo e
+  //    publica uma vez — nunca dois runs ativos da mesma conta/período.
+  {
+    const db = makeDb();
+    let ativosMax = 0;
+    const medirAtivos = () => {
+      ativosMax = Math.max(ativosMax, db.runs.filter((r) => r.status === "queued" || r.status === "running").length);
+    };
+    async function executorQueCaiNaConexao({ run }) {
+      const marcado = await runService.marcarRunRunning(run.id, db);
+      if (!marcado) return null;
+      medirAtivos();
+      await runService.marcarRunFailed(run.id, { code: "SYNC_DB_CONNECTION_LOST", message: "Connection terminated unexpectedly" }, db);
+      throw new Error("Connection terminated unexpectedly");
+    }
+    const caiu = await svc.processarUnidade(unidade, depsCron(db, executorQueCaiNaConexao));
+    eq("conexão caiu: unidade falha de forma controlada", caiu.status, "falha");
+    eq("conexão caiu: run failed com código explícito", [db.runs[0].status, db.runs[0].error_code], ["failed", "SYNC_DB_CONNECTION_LOST"]);
+    eq("conexão caiu: nada publicado", db.publicados.size, 0);
+
+    const { executarSyncRun, stats } = makeExecutor(db, { duracaoMs: 20 });
+    const executorMedido = async (args) => { medirAtivos(); return executarSyncRun(args); };
+    const [a, b] = await Promise.all([
+      svc.processarUnidade(unidade, depsCron(db, executorMedido)),
+      svc.processarUnidade(unidade, depsCron(db, executorMedido)),
+    ]);
+    eq("nova tentativa: um único run novo", db.runs.length, 2);
+    eq("nova tentativa: mesmo run para as duas rodadas", a.runId, b.runId);
+    ok("nova tentativa: run novo (não reabre o failed)", a.runId !== db.runs[0].id);
+    eq("nova tentativa: uma ingestão", stats.ingestoes, 1);
+    eq("nova tentativa: uma publicação", db.publicados.size, 1);
+    eq("nunca dois runs ativos da mesma conta/período", ativosMax, 1);
   }
 
   concluido = true;

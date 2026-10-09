@@ -26,6 +26,23 @@ function calcularBackoffMs(tentativaFalha, { baseMs = BACKOFF_BASE_MS, random = 
 
 const dormir = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Conexão com o PostgreSQL perdida (não é erro da query): o servidor caiu,
+// reiniciou, entrou em recuperação de crash ou a rede cortou a sessão. NÃO
+// entra no retry acima — a transação morreu junto com a sessão e quem decide
+// o que fazer é o chamador. Só sinais do próprio `pg`/PostgreSQL: códigos de
+// rede genéricos (ECONNRESET...) também aparecem em HTTP e não contam aqui.
+//   57P01 admin_shutdown · 57P02 crash_shutdown · 57P03 cannot_connect_now
+//   classe 08 connection_exception
+const PG_CODIGOS_CONEXAO = new Set(["57P01", "57P02", "57P03"]);
+const PG_MENSAGENS_CONEXAO = /^(Connection terminated( unexpectedly| due to connection timeout)?|Client has encountered a connection error and is not queryable|Client was closed and is not queryable)$/;
+
+function isPgConnectionError(err) {
+  if (!err) return false;
+  const code = String(err.code || "");
+  if (PG_CODIGOS_CONEXAO.has(code) || /^08[0-9A-Z]{3}$/.test(code)) return true;
+  return PG_MENSAGENS_CONEXAO.test(String(err.message || ""));
+}
+
 /**
  * @param {(tentativa:number) => Promise<any>} operacao  recebe o nº da tentativa (1..max)
  * @param {object} [opts]
@@ -53,6 +70,7 @@ async function comRetryTransitorio(operacao, {
 
 module.exports = {
   isTransientPgError,
+  isPgConnectionError,
   calcularBackoffMs,
   comRetryTransitorio,
   MAX_TENTATIVAS,

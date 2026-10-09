@@ -9,6 +9,7 @@ import { useMemo } from "react";
 import { ehAdmin } from "../../../services/apiClient.js";
 import { normalizarLinhas } from "../../../utils/financeiro/produtos.js";
 import { ProdutosFinanceiroTable } from "../produtos/ProdutosFinanceiroTable.jsx";
+import { ReconciliacaoShopee } from "../shopee/ReconciliacaoShopee.jsx";
 import { rotuloModo, CONFIANCA_LABEL } from "../../../utils/financeiro/resumoFechamento.js";
 import { base64ParaBlob, baixarBlob, nomeDaPlanilhaProcessada, TIPO_XLSX } from "../../../utils/financeiro/arquivos.js";
 import { ResumoKpis } from "./ResumoKpis.jsx";
@@ -118,6 +119,8 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, child
         <h4 className="vf-fin-bloco__titulo">Produtos do fechamento</h4>
         <ProdutosFinanceiroTable linhas={linhas} />
       </section>
+
+      <ReconciliacaoShopee summary={summary} marketplace={marketplace} />
 
       <details className="vf-fin-disclosure">
         <summary>Receitas, deduções, investimentos e resultado</summary>

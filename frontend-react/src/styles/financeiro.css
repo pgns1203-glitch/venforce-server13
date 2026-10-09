@@ -503,3 +503,16 @@
 .vf-fin-pendencias .vf-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vf-fin-corrigir { min-width: 260px; }
 .vf-fin-corrigir .vf-fin-ajuste__campo { max-width: 140px; }
+
+/* ── Reconciliação Shopee ─────────────────────────────────────────────── */
+.vf-fin-recon__fluxo { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-4, 16px); }
+.vf-fin-recon__fluxo > div { display: flex; flex-direction: column; gap: 2px; }
+.vf-fin-recon__fluxo strong { font-size: var(--vf-fs-lg, 1.125rem); font-variant-numeric: tabular-nums; }
+.vf-fin-recon__estados { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--vf-sp-2, 8px); }
+.vf-fin-recon__estado { display: flex; flex-direction: column; gap: 2px; padding: var(--vf-sp-2, 8px) var(--vf-sp-3, 12px); border: 1px solid var(--vf-border); border-left-width: 3px; }
+.vf-fin-recon__estado.is-success { border-left-color: var(--vf-success); }
+.vf-fin-recon__estado.is-warning { border-left-color: var(--vf-warning); }
+.vf-fin-recon__estado.is-danger { border-left-color: var(--vf-danger); }
+.vf-fin-recon__estado.is-neutral { border-left-color: var(--vf-border-strong, #d6d9e4); }
+.vf-fin-recon__rotulo { font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-secondary); }
+.vf-fin-recon__valor { font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; }

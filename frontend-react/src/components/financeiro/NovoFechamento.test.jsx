@@ -109,7 +109,7 @@ describe("fechamentoPayload", () => {
       marketplace: "meli",
       ajustes: { ads: "1.000,00" },
     });
-    expect(p.cliente.slug).toBe("zenite");
+    expect(p.cliente).toEqual({ slug: "zenite", nome: "Zenite" });
     expect(p.metadados.origem).toBe("financeiro-v3-nativo");
     expect(p.metadados.ads).toBe(1000);
     expect(p.metadados.costsSource).toBe("base");
@@ -342,6 +342,28 @@ describe("NovoFechamento · competência divergente", () => {
     expect(salvar).toBeDisabled();
     await usuario.click(screen.getByRole("checkbox"));
     expect(salvar).toBeEnabled();
+  });
+});
+
+describe("NovoFechamento · identidade do cliente no payload", () => {
+  it("salvar grava cliente.nome com o nome real do contexto (e o slug à parte)", async () => {
+    rede.requisitar.mockResolvedValue(vinculosCom({ marketplace: "meli", contaId: 42 }));
+    api.processar.mockResolvedValue(respostaOk());
+    api.salvar.mockResolvedValue({ id: 5, publicado: false, token_publico: null });
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await screen.findByText("Base vinculada");
+    await subirVendas(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText(/Competência confere/);
+    await usuario.click(screen.getByRole("button", { name: "Salvar entrega" }));
+    await waitFor(() => expect(api.salvar).toHaveBeenCalledTimes(1));
+    expect(api.salvar.mock.calls[0][0].payload_json.cliente).toEqual({ slug: "zenite", nome: "Zenite Comercial" });
+  });
+
+  it("sem nome no contexto, cliente.nome fica null — nunca o slug", () => {
+    const p = montarPayloadFechamento({ processamento: respostaOk(), clienteSlug: "zenite", clienteNome: null, periodo: "2026-08", marketplace: "meli" });
+    expect(p.cliente).toEqual({ slug: "zenite", nome: null });
   });
 });
 

@@ -458,6 +458,9 @@ async function run() {
       assert.strictEqual(competencia, "Agosto/2026", `competência em tela: ${competencia}`);
       const status = await textoDe('[data-testid="status-competencia"]');
       assert.strictEqual(status, "Publicado", `Agosto tem entrega publicada desta conta: ${status}`);
+      // Nome amigável vem da carteira do Shell (GET /me/context → snapshot.cliente), não do slug.
+      const contexto = await textoDe('[data-testid="contexto-fechamento"]');
+      assert.ok(/N97 Comercial/.test(contexto), `o cabeçalho deveria mostrar o nome do cliente: ${contexto}`);
       await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "a base vinculada de MELI não foi reconhecida");
       const texto = await textoDoPainel();
       assert.ok(/Base de custos/i.test(texto) && /Processar fechamento/i.test(texto), `o formulário nativo deveria estar no Fechamento: ${texto.slice(0, 300)}`);
@@ -485,6 +488,8 @@ async function run() {
       const texto = await textoDe(`${PAINEL} ${ENTREGA}`);
       assert.ok(texto, "o painel 'Entrega para o cliente' deveria aparecer para a entrega desta conta");
       assert.ok(/Despublicar/.test(texto), `Agosto está publicado: o painel deveria oferecer Despublicar: ${texto}`);
+      const cliente = await cdp.evaluate(`(function(){ var dl = document.querySelector(${JSON.stringify(`${PAINEL} ${ENTREGA} [data-testid="identidade-entrega"]`)}); if (!dl) return null; var dt = Array.prototype.find.call(dl.querySelectorAll('dt'), function(d){ return /cliente/i.test(d.textContent); }); return dt && dt.nextElementSibling ? dt.nextElementSibling.textContent : null; })()`);
+      assert.strictEqual(cliente, "N97 Comercial", `"Entrega para o cliente" deveria mostrar o nome do cliente: ${cliente}`);
       // Entrega que já teve link abre com a apresentação RECOLHIDA e, aberta,
       // em leitura (sem "Salvar alterações").
       const apresentacao = await cdp.evaluate(`(function(){ var d = document.querySelector(${JSON.stringify(`${PAINEL} ${ENTREGA} details.vf-fin-disclosure`)}); if (!d) return null; var fechada = !d.open; d.open = true; return { fechada: fechada }; })()`);

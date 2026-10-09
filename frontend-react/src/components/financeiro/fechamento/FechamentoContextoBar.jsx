@@ -14,11 +14,13 @@ export function rotuloDaConta({ contaNome, contaRotuloExterno, clienteContaId })
   return contaRotuloExterno && contaRotuloExterno !== nome ? `${nome} · ${contaRotuloExterno}` : nome;
 }
 
+// O nome do cliente vem da carteira do Shell (useOperacaoAtual().clienteNome).
+// Sem ele, "—" — nunca o slug no lugar do nome.
 export function FechamentoContextoBar({ clienteNome, marketplace, contaNome, contaRotuloExterno, clienteContaId }) {
   const itens = [
     { rotulo: "Marketplace", valor: MK_LABEL[marketplace] || marketplace || null },
     { rotulo: "Conta", valor: rotuloDaConta({ contaNome, contaRotuloExterno, clienteContaId }) },
-    { rotulo: "Cliente", valor: clienteNome || null },
+    { rotulo: "Cliente", valor: clienteNome || "—" },
   ].filter((i) => i.valor);
 
   return (

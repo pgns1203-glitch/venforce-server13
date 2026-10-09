@@ -174,6 +174,7 @@ export function createVfContext(deps = {}) {
         ? { clienteId: ctx.clienteId, clienteSlug: ctx.clienteSlug, clienteContaId: ctx.clienteContaId }
         : null,
       meta: getAccountMeta(),
+      cliente: getClienteMeta(),
       integration: { grant: integration.grant, base: integration.base },
       error: lastError,
       reason: reason || "update",
@@ -706,6 +707,19 @@ export function createVfContext(deps = {}) {
   function getClienteAtual() {
     if (!ctx.clienteId) return null;
     return portfolio.find((c) => c.id === ctx.clienteId) || null;
+  }
+
+  // CACHE DE EXIBIÇÃO do cliente atual — o par de getAccountMeta() para o
+  // cliente. Vem da carteira já carregada (GET /me/context ou o fallback
+  // legado), nunca do slug: sem `nome` na carteira, `nome` é null. Viaja no
+  // snapshot para as ilhas React (ponte `vf:context`) receberem o nome no
+  // MESMO emit que troca cliente/conta. Não entra em getContext() — a
+  // identidade continua com três chaves (§6.1).
+  function getClienteMeta() {
+    const c = getClienteAtual();
+    if (!c) return null;
+    const nome = typeof c.nome === "string" && c.nome.trim() ? c.nome.trim() : null;
+    return { id: c.id, slug: c.slug, nome };
   }
 
   function getAccounts() {

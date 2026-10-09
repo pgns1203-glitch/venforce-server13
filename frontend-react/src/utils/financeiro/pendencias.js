@@ -110,9 +110,11 @@ export function agruparPendencias(linhas, { unmatchedCosts = [] } = {}) {
 // ── Planilha de pendências (CSV) ──────────────────────────────────────────
 // O frontend-react não tem dependência de XLSX; CSV com BOM + ";" abre
 // direto no Excel pt-BR. `novo_custo` vai vazio para quem for preencher.
+// `cliente` é o nome amigável (da carteira do Shell) e fica VAZIO quando ele
+// não existe — o slug tem coluna própria e nunca faz as vezes de nome.
 
 const COLUNAS_CSV = [
-  "marketplace", "cliente", "conta", "competencia", "produto", "item_id", "variation_id",
+  "marketplace", "cliente", "cliente_slug", "conta", "competencia", "produto", "item_id", "variation_id",
   "sku", "model_id", "motivo", "receita_impactada", "custo_atual", "novo_custo",
 ];
 
@@ -122,13 +124,13 @@ function celula(v) {
   return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-export function montarCsvPendencias(pendencias, { marketplace, cliente, conta, competencia } = {}) {
+export function montarCsvPendencias(pendencias, { marketplace, cliente, clienteSlug, conta, competencia } = {}) {
   const linhas = [COLUNAS_CSV.join(";")];
   for (const p of pendencias || []) {
     const variation = p.gap?.type === "variation_id" ? p.gap.value : null;
     linhas.push(
       [
-        marketplace, cliente, conta, competencia, p.produto, p.itemId, variation, p.sku, p.modelId,
+        marketplace, cliente, clienteSlug, conta, competencia, p.produto, p.itemId, variation, p.sku, p.modelId,
         p.motivo, p.receitaImpactada, null, null,
       ].map(celula).join(";")
     );

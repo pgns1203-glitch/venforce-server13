@@ -142,7 +142,7 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
           periodo={periodo}
           periodoLabel={periodoLabel}
           legado={legado}
-          contexto={{ cliente: clienteNome || clienteSlug, conta: contaNome || (clienteContaId ? `#${clienteContaId}` : null), competencia: periodo }}
+          contexto={{ cliente: clienteNome, clienteSlug, conta: contaNome || (clienteContaId ? `#${clienteContaId}` : null), competencia: periodo }}
         />
       )}
     </div>

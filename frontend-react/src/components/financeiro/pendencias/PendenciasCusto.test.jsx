@@ -46,11 +46,17 @@ describe("agruparPendencias", () => {
   });
 
   it("CSV traz as colunas pedidas, BOM e novo_custo vazio", () => {
-    const csv = montarCsvPendencias(agruparPendencias(linhasMeli), { marketplace: "meli", cliente: "Zenite", conta: "ML 1", competencia: "2026-10" });
+    const csv = montarCsvPendencias(agruparPendencias(linhasMeli), { marketplace: "meli", cliente: "Zenite Comercial", clienteSlug: "zenite", conta: "ML 1", competencia: "2026-10" });
     expect(csv.charCodeAt(0)).toBe(0xfeff);
     const [cab, l1] = csv.slice(1).split("\r\n");
-    expect(cab).toBe("marketplace;cliente;conta;competencia;produto;item_id;variation_id;sku;model_id;motivo;receita_impactada;custo_atual;novo_custo");
-    expect(l1).toBe("meli;Zenite;ML 1;2026-10;Calça;MLB1;;;;Não encontrado na base;150,00;;");
+    expect(cab).toBe("marketplace;cliente;cliente_slug;conta;competencia;produto;item_id;variation_id;sku;model_id;motivo;receita_impactada;custo_atual;novo_custo");
+    expect(l1).toBe("meli;Zenite Comercial;zenite;ML 1;2026-10;Calça;MLB1;;;;Não encontrado na base;150,00;;");
+  });
+
+  it("CSV sem nome do cliente: coluna cliente vazia, slug só em cliente_slug", () => {
+    const csv = montarCsvPendencias(agruparPendencias(linhasMeli), { marketplace: "meli", cliente: null, clienteSlug: "zenite", conta: "ML 1", competencia: "2026-10" });
+    const l1 = csv.slice(1).split("\r\n")[1];
+    expect(l1.startsWith("meli;;zenite;ML 1;")).toBe(true);
   });
 });
 

@@ -48,12 +48,17 @@ export function estadoDeEntregas(overrides = {}) {
 function operacaoPronta(overrides = {}) {
   return {
     pronta: true,
+    clienteId: 87,
     clienteSlug: "n97",
+    // contrato real de useOperacaoAtual(): o nome vem de snapshot.cliente
+    // (carteira do Shell), nunca de snapshot.context — que só tem identidade.
+    clienteNome: "Influência Jeans",
     clienteContaId: 42,
     marketplace: "meli",
     snapshot: {
       state: "READY",
-      context: { clienteNome: "Influência Jeans" },
+      context: { clienteId: 87, clienteSlug: "n97", clienteContaId: 42 },
+      cliente: { id: 87, slug: "n97", nome: "Influência Jeans" },
       meta: { nome: "Mercado Livre 1", externalAccountLabel: "2574840252" },
     },
     ...overrides,
@@ -170,6 +175,49 @@ describe("FinanceiroPage · contexto do Shell", () => {
     expect(ctx).toHaveTextContent("Mercado Livre 1 · 2574840252");
     expect(ctx).toHaveTextContent("Influência Jeans");
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("nome do cliente aparece no cabeçalho E na entrega para o cliente", () => {
+    mockarHooks({
+      dados: dadosBase(),
+      entregas: estadoDeEntregas({ entregas: [{ id: 7, periodo: "2026-08", cliente_conta_id: 42, publicado: false, token_publico: null, created_at: "2026-08-20T10:00:00Z" }] }),
+    });
+    render(<FinanceiroPage />);
+    expect(within(screen.getByTestId("contexto-fechamento")).getByText("Influência Jeans")).toBeInTheDocument();
+    const identidade = screen.getByTestId("identidade-entrega");
+    expect(within(identidade).getByText("Cliente").nextSibling).toHaveTextContent("Influência Jeans");
+  });
+
+  it("troca de cliente no Shell atualiza o nome junto com conta e marketplace — nada stale", () => {
+    mockarHooks({ dados: dadosBase() });
+    const { rerender } = render(<FinanceiroPage />);
+    expect(screen.getByTestId("contexto-fechamento")).toHaveTextContent("Influência Jeans");
+    mockarHooks({
+      dados: dadosBase(),
+      operacao: operacaoPronta({
+        clienteId: 90, clienteSlug: "zenite", clienteNome: "Zenite Comercial", clienteContaId: 77, marketplace: "shopee",
+        snapshot: { state: "READY", context: { clienteId: 90, clienteSlug: "zenite", clienteContaId: 77 }, cliente: { id: 90, slug: "zenite", nome: "Zenite Comercial" }, meta: { nome: "Shopee Zenite", externalAccountLabel: null } },
+      }),
+    });
+    rerender(<FinanceiroPage />);
+    const ctx = screen.getByTestId("contexto-fechamento");
+    expect(ctx).toHaveTextContent("Zenite Comercial");
+    expect(ctx).toHaveTextContent("Shopee Zenite");
+    expect(ctx).toHaveTextContent("Shopee");
+    expect(ctx).not.toHaveTextContent("Influência Jeans");
+  });
+
+  it("sem nome na carteira: fallback neutro '—', nunca o slug no lugar do nome", () => {
+    mockarHooks({
+      dados: dadosBase(),
+      operacao: operacaoPronta({ clienteSlug: "influencia-jeans", clienteNome: null, snapshot: { state: "READY", context: { clienteId: 87, clienteSlug: "influencia-jeans", clienteContaId: 42 }, cliente: { id: 87, slug: "influencia-jeans", nome: null }, meta: { nome: "Mercado Livre 1" } } }),
+      entregas: estadoDeEntregas({ entregas: [{ id: 7, periodo: "2026-08", cliente_conta_id: 42, publicado: false, token_publico: null, created_at: "2026-08-20T10:00:00Z" }] }),
+    });
+    render(<FinanceiroPage />);
+    const ctx = screen.getByTestId("contexto-fechamento");
+    expect(within(ctx).getByText("Cliente").nextSibling).toHaveTextContent(/^—$/);
+    expect(ctx).not.toHaveTextContent(/influencia|Influência/i);
+    expect(within(screen.getByTestId("identidade-entrega")).getByText("Cliente").nextSibling).toHaveTextContent(/^—$/);
   });
 
   it("o cabeçalho linka pro Financeiro legado com o clienteSlug da operação atual", () => {
@@ -294,7 +342,7 @@ describe("FinanceiroPage · Relatórios gerados e Histórico", () => {
     const usuario = userEvent.setup();
     mockarHooks({
       dados: dadosBase(),
-      operacao: operacaoPronta({ marketplace: "shopee", snapshot: { state: "READY", context: { clienteNome: "Loja" }, meta: { nome: "Shopee 2", externalAccountLabel: "shop-2" } } }),
+      operacao: operacaoPronta({ marketplace: "shopee", clienteNome: "Loja", snapshot: { state: "READY", context: { clienteId: 87, clienteSlug: "n97", clienteContaId: 42 }, cliente: { id: 87, slug: "n97", nome: "Loja" }, meta: { nome: "Shopee 2", externalAccountLabel: "shop-2" } } }),
       entregas: estadoDeEntregas({
         entregas: [
           { id: 11, periodo: "2026-08", cliente_conta_id: 42, publicado: false, modo_calculo: "real_financial", cobertura_custo_percentual: "97.5" },

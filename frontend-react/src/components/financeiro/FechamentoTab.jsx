@@ -3,9 +3,12 @@
 // A mesa de trabalho do fechamento, de cima para baixo:
 //
 //   1. NovoFechamento — arquivos, ajustes, Processar e, logo abaixo, o
-//      RESULTADO DO PROCESSAMENTO completo (não uma aba à parte).
+//      RESULTADO DO PROCESSAMENTO completo (não uma aba à parte), terminando
+//      nos produtos (a investigação detalhada vem por último).
 //   2. Entrega desta competência — a entrega DESTA conta (salva agora ou
 //      antes): apresentação para o cliente, publicar, copiar/abrir o link.
+//      É passada como slot ao NovoFechamento, que a posiciona entre as ações
+//      e os produtos (sempre no mesmo ponto da árvore: sem remontar).
 //   3. Fechamento salvo — quando nada foi processado agora, a composição
 //      gravada na entrega desta competência (GET /financeiro/:cliente) e, no
 //      MELI, a conciliação Mercado Pago da Central de Vendas. Era o conteúdo
@@ -63,19 +66,19 @@ export function FechamentoTab({
         periodoLabel={periodoLabel}
         onSalvo={onSalvo}
         onTrabalho={aoMudarTrabalho}
-      />
-
-      <EntregaPainel
-        entrega={entrega}
-        entregas={entregas}
-        clienteNome={clienteNome}
-        marketplace={mkt}
-        contaNome={contaNome}
-        clienteContaId={clienteContaId}
-        periodo={periodo}
-        periodo={periodo}
-        periodoLabel={periodoLabel}
-        onAlterado={setApresentacaoAlterada}
+        entregaSlot={
+          <EntregaPainel
+            entrega={entrega}
+            entregas={entregas}
+            clienteNome={clienteNome}
+            marketplace={mkt}
+            contaNome={contaNome}
+            clienteContaId={clienteContaId}
+            periodo={periodo}
+            periodoLabel={periodoLabel}
+            onAlterado={setApresentacaoAlterada}
+          />
+        }
       />
 
       {!processadoAgora && (

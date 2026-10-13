@@ -4,7 +4,8 @@
 // a ser obrigatório. Marketplace vem da operação (sem seletor na tela).
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { useEffect } from "react";
 import userEvent from "@testing-library/user-event";
 
 import { NovoFechamento } from "./NovoFechamento.jsx";
@@ -428,7 +429,7 @@ describe("NovoFechamento · reprocessar e voltar aos arquivos", () => {
     await screen.findByText("Base vinculada");
     await subirVendas(usuario, "vendas-out.xlsx");
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
-    await screen.findByText("Resultado do processamento");
+    await screen.findByText("Resultado do fechamento");
 
     await usuario.click(screen.getAllByRole("button", { name: "Reprocessar fechamento" })[0]);
     await waitFor(() => expect(api.processar).toHaveBeenCalledTimes(2));
@@ -446,9 +447,73 @@ describe("NovoFechamento · reprocessar e voltar aos arquivos", () => {
     await subirVendas(usuario);
     await subirCustos(usuario);
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
-    await screen.findByText("Resultado do processamento");
+    await screen.findByText("Resultado do fechamento");
     await usuario.click(screen.getAllByRole("button", { name: "Reprocessar fechamento" })[0]);
     expect(await screen.findByRole("alert")).toHaveTextContent("Planilha inválida.");
-    expect(screen.queryByText("Resultado do processamento")).not.toBeInTheDocument();
+    expect(screen.queryByText("Resultado do fechamento")).not.toBeInTheDocument();
+  });
+});
+
+describe("NovoFechamento · hierarquia da página (UI/UX)", () => {
+  const secoes = (container) => Array.from(container.querySelectorAll("[data-secao]")).map((e) => e.dataset.secao);
+  const rows = Array.from({ length: 60 }, (_, i) => ({ "# de anúncio": `MLB${i}`, "Título do anúncio": `Produto ${i}`, "Venda Total": 10, "Preço de custo": i === 0 ? null : 3, LC: i === 0 ? null : 2, MC: 20, "Cobertura de custo": i === 0 ? "sem custo" : "com custo" }));
+
+  async function processar(usuario) {
+    await subirVendas(usuario);
+    await subirCustos(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText("Resultado do fechamento");
+  }
+
+  it("produtos são a ÚLTIMA seção: depois de resultado, cobertura, pendências, composição, ações e entrega", async () => {
+    api.processar.mockResolvedValue(respostaOk({ detailedRows: rows, summary: { ...SUMMARY, calculatedCoveragePercent: 98, revenueWithoutCost: 10 }, unmatchedIds: ["MLB0"] }));
+    const usuario = userEvent.setup();
+    const { container } = render(<NovoFechamento {...props} entregaSlot={<section data-secao="entrega" />} />);
+    await processar(usuario);
+    expect(secoes(container)).toEqual(["resultado", "leitura", "cobertura", "pendencias", "composicao", "acoes", "entrega", "produtos"]);
+  });
+
+  it("a tabela de produtos é paginada (25 por vez), nunca as 60 linhas", async () => {
+    api.processar.mockResolvedValue(respostaOk({ detailedRows: rows }));
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await processar(usuario);
+    const tabela = screen.getByRole("table", { name: "Produtos do fechamento" });
+    expect(within(tabela).getAllByRole("row")).toHaveLength(26);
+    expect(screen.getByText("Página 1 de 3")).toBeInTheDocument();
+  });
+
+  it("antes de processar não há produtos nem ações; só o slot da entrega, no mesmo lugar", async () => {
+    const { container } = render(<NovoFechamento {...props} entregaSlot={<section data-secao="entrega" />} />);
+    await screen.findByText("Arquivos do fechamento");
+    expect(secoes(container)).toEqual(["entrega"]);
+  });
+
+  it("o painel da entrega NÃO é remontado ao processar (o que o operador digitou nele sobrevive)", async () => {
+    api.processar.mockResolvedValue(respostaOk({ detailedRows: rows }));
+    let montagens = 0;
+    function Painel() {
+      useEffect(() => { montagens += 1; }, []);
+      return <textarea aria-label="Destaque" />;
+    }
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} entregaSlot={<Painel />} />);
+    await usuario.type(screen.getByRole("textbox", { name: "Destaque" }), "rascunho");
+    await processar(usuario);
+    expect(montagens).toBe(1);
+    expect(screen.getByRole("textbox", { name: "Destaque" })).toHaveValue("rascunho");
+  });
+
+  it("corrigir um custo na linha NÃO reprocessa; o reprocesso é explícito", async () => {
+    rede.requisitar.mockImplementation(async (url) => (String(url).includes("base-vinculos") ? vinculosCom({ marketplace: "meli", contaId: 42 }) : { ok: true, padrao: { imposto_percentual: 8, taxa_fixa: 0 } }));
+    api.processar.mockResolvedValue(respostaOk({ detailedRows: rows, unmatchedIds: ["MLB0"], costsSource: "base", costsBase: { id: 900, slug: "base-zenite", nome: "Base Zenite" } }));
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await screen.findByText("Base vinculada");
+    await subirVendas(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText("Resultado do fechamento");
+    expect(await screen.findByRole("textbox", { name: "Novo custo unitário de MLB0" })).toBeInTheDocument();
+    expect(api.processar).toHaveBeenCalledTimes(1);
   });
 });

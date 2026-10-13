@@ -40,13 +40,33 @@ describe("ProdutosFinanceiroTable", () => {
     expect(screen.queryByText("Saia")).not.toBeInTheDocument();
   });
 
-  it("pagina linhas grandes (50 por página)", async () => {
+  it("pagina linhas grandes (25 por página) e nunca renderiza todas de uma vez", async () => {
+    const usuario = userEvent.setup();
+    const muitas = normalizarLinhas(Array.from({ length: 3625 }, (_, i) => ({ "# de anúncio": `MLB${i}`, "Título do anúncio": `P${i}`, "Venda Total": 1, LC: 1, MC: 20, "Cobertura de custo": "com custo" })));
+    render(<ProdutosFinanceiroTable linhas={muitas} />);
+    expect(screen.getByText("Página 1 de 145")).toBeInTheDocument();
+    expect(screen.getByText(/3\.625 de 3\.625 linhas · mostrando 1–25/)).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(26); // cabeçalho + 25
+    await usuario.click(screen.getByRole("button", { name: "Próxima" }));
+    expect(screen.getByText("P25")).toBeInTheDocument();
+    expect(screen.queryByText("P24")).not.toBeInTheDocument();
+  });
+
+  it("o operador escolhe o tamanho da página e a paginação volta para a primeira", async () => {
     const usuario = userEvent.setup();
     const muitas = normalizarLinhas(Array.from({ length: 120 }, (_, i) => ({ "# de anúncio": `MLB${i}`, "Título do anúncio": `P${i}`, "Venda Total": 1, LC: 1, MC: 20, "Cobertura de custo": "com custo" })));
     render(<ProdutosFinanceiroTable linhas={muitas} />);
-    expect(screen.getByText("Página 1 de 3")).toBeInTheDocument();
-    expect(screen.getAllByRole("row")).toHaveLength(51);
     await usuario.click(screen.getByRole("button", { name: "Próxima" }));
-    expect(screen.getByText("P50")).toBeInTheDocument();
+    await usuario.selectOptions(screen.getByRole("combobox", { name: "Linhas por página" }), "100");
+    expect(screen.getByText("Página 1 de 2")).toBeInTheDocument();
+    expect(screen.getAllByRole("row")).toHaveLength(101);
+  });
+
+  it("título longo é limitado em 2 linhas e o texto inteiro fica no tooltip", () => {
+    const titulo = "Kit ".repeat(80).trim();
+    const linhas = normalizarLinhas([{ "# de anúncio": "MLB9", "Título do anúncio": titulo, "Venda Total": 1, LC: 1, MC: 20, "Cobertura de custo": "com custo" }]);
+    render(<ProdutosFinanceiroTable linhas={linhas} />);
+    const el = screen.getByTitle(titulo);
+    expect(el).toHaveClass("vf-fin-clamp");
   });
 });

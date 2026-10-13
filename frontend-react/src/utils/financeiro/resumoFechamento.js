@@ -201,13 +201,16 @@ export function leituraDoFechamento({ summary = {}, marketplace = "", unmatchedI
   const s = summary || {};
   const frases = [];
   const modo = rotuloModo(s);
-  if (modo) frases.push({ tom: "neutral", texto: `Fechamento em modo ${modo}.` });
+  // `redundante`: a tela já diz isto no cabeçalho/KPIs — a frase continua
+  // disponível para quem a consome, mas a Leitura não a repete.
+  if (modo) frases.push({ tom: "neutral", texto: `Fechamento em modo ${modo}.`, redundante: true });
 
   const final = numOuNull(s.finalResult);
   if (final !== null) {
     frases.push({
       tom: final > 0 ? "success" : final < 0 ? "danger" : "neutral",
       texto: final > 0 ? `Resultado Final positivo: ${brl(final)}.` : final < 0 ? `Resultado Final negativo: ${brl(final)}.` : "Resultado Final zerado (R$ 0,00).",
+      redundante: true,
     });
   }
 

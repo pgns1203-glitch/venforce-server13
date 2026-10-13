@@ -232,10 +232,20 @@ class MockDb {
       this.chamadasMarginSnapshot.push(params);
       const ids = new Set(params[2]);
       const contaId = params.length > 3 ? params[3] : null;
-      return {
-        rows: this.marginSnapshots.filter((r) => r.cliente_id === params[0] && ids.has(r.item_id)
-          && (contaId == null || r.cliente_conta_id === contaId)),
-      };
+      const candidatas = this.marginSnapshots.filter((r) => {
+        if (r.cliente_id !== params[0] || !ids.has(r.item_id)) return false;
+        if (contaId != null) return r.cliente_conta_id === contaId;
+        // Sem conta: JOIN meli_anuncios — só a conta dona do item (ou dona NULL).
+        const dono = this.anuncios.find((a) => a.cliente_id === r.cliente_id && a.item_id === r.item_id);
+        return !!dono && (dono.cliente_conta_id === r.cliente_conta_id || dono.cliente_conta_id == null);
+      });
+      // DISTINCT ON (item_id) ... ORDER BY calculated_at DESC
+      const porItem = new Map();
+      for (const r of candidatas) {
+        const atual = porItem.get(r.item_id);
+        if (!atual || new Date(r.calculated_at) > new Date(atual.calculated_at)) porItem.set(r.item_id, r);
+      }
+      return { rows: Array.from(porItem.values()) };
     }
 
     throw new Error("MockDb: query não reconhecida: " + q.slice(0, 120));
@@ -1482,6 +1492,7 @@ async function run() {
     ],
   }, async (db) => {
     chamadasSnapshot.length = 0;
+    chamadasMontarItens.length = 0;
     snapshotHandler = ({ itemIds }) => new Map([
       // Legado tem MLB-C também (valor velho) — não pode vencer o canônico.
       ["MLB-C", { marginPercent: 40, profit: 20, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:34:00Z", origemJob: "orquestrador_manual" }],
@@ -1498,6 +1509,9 @@ async function run() {
     assert.strictEqual(porId["MLB-C"].margemProjetadaStatus, "LOW_MARGIN");
     assert.strictEqual(porId["MLB-C"].margemProjetadaCalculadaEm, "2026-10-12T06:10:00Z");
     assert.strictEqual(porId["MLB-C"].margemProjetadaOrigemJob, "margin_snapshot");
+    assert.strictEqual(porId["MLB-C"].margemProjetadaFonte, "margin_snapshot");
+    assert.strictEqual(porId["MLB-L"].margemProjetadaFonte, "legado");
+    assert.strictEqual(porId["MLB-L"].margemProjetadaCalculadaEm, "2026-09-28T03:34:00Z", "data é a do legado quando a fonte é o legado");
     assert.strictEqual(porId["MLB-L"].margemProjetadaPercent, 30, "sem linha canônica NA CONTA pedida: cai no legado");
     assert.strictEqual(porId["MLB-L"].margemProjetadaOrigemJob, "orquestrador_manual");
     assert.strictEqual(porId["MLB-U"].margemProjetadaComputable, false);
@@ -1505,10 +1519,70 @@ async function run() {
     assert.strictEqual(porId["MLB-U"].margemProjetadaStatus, "UNVALIDATED");
 
     assert.ok(db.chamadasMarginSnapshot.every((params) => params[3] === 10), "leitura canônica sempre filtrada pela conta pedida");
+    assert.strictEqual(db.chamadasMarginSnapshot.length, 1, "1 leitura canônica em lote por listagem (sem N+1, sem 2ª leitura para anexar)");
+    assert.strictEqual(chamadasMontarItens.length, 0, "nunca chama o Motor ao vivo");
     assert.ok(chamadasSnapshot.every((c) => !c.itemIds.includes("MLB-C") && !c.itemIds.includes("MLB-U")),
       "legado só é consultado para itens sem linha canônica");
     snapshotHandler = null;
     console.log("  ✓ AO. Margin Snapshot é a fonte da margem projetada; legado só preenche o que falta; conta filtra a leitura");
+  });
+
+  // AP. Multi-conta SEM clienteContaId na request: cada item lê só o
+  //     snapshot da conta DONA dele no catálogo — nunca o de outra conta do
+  //     mesmo cliente (nem o mais recente), nunca a conta principal. Ausência
+  //     nas duas fontes = campos vazios, nunca 0. Família herda a fonte do
+  //     filho que deu a data.
+  await withMockDb({
+    contas: [
+      { id: 10, cliente_id: 1, marketplace: "meli", nome: "ML 1", external_account_id: "111", is_primary: true, ativo: true },
+      { id: 20, cliente_id: 1, marketplace: "meli", nome: "ML 2", external_account_id: "222", is_primary: false, ativo: true },
+    ],
+    grants: [grantFixture({ id: 100, cliente_id: 1, ml_user_id: "111" }), grantFixture({ id: 200, cliente_id: 1, ml_user_id: "222" })],
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-10", cliente_conta_id: 10 }),
+      anuncioFixture({ item_id: "MLB-20", cliente_conta_id: 20 }),
+      anuncioFixture({ item_id: "MLB-NADA", cliente_conta_id: 10 }),
+      anuncioFixture({ item_id: "MLB-F1", cliente_conta_id: 10, user_product_id: "UP1" }),
+      anuncioFixture({ item_id: "MLB-F2", cliente_conta_id: 10, user_product_id: "UP2" }),
+    ],
+    userProducts: [
+      upFixture({ user_product_id: "UP1", family_id: "FAM1" }),
+      upFixture({ user_product_id: "UP2", family_id: "FAM1" }),
+    ],
+    marginSnapshots: [
+      { cliente_id: 1, cliente_conta_id: 10, item_id: "MLB-10", margin_percent: "11.00", profit: "1.00", status: "LOW_MARGIN", calculated_at: "2026-10-12T06:00:00Z" },
+      // Mesmo MLB gravado pela conta 20 (ex.: vendedor duplicado), MAIS RECENTE:
+      // nunca pode vencer a conta dona do item.
+      { cliente_id: 1, cliente_conta_id: 20, item_id: "MLB-10", margin_percent: "77.00", profit: "9.00", status: "HEALTHY", calculated_at: "2026-10-13T06:00:00Z" },
+      { cliente_id: 1, cliente_conta_id: 20, item_id: "MLB-20", margin_percent: "22.00", profit: "2.00", status: "HEALTHY", calculated_at: "2026-10-12T06:00:00Z" },
+      { cliente_id: 1, cliente_conta_id: 10, item_id: "MLB-F1", margin_percent: "15.00", profit: "3.00", status: "HEALTHY", calculated_at: "2026-10-12T05:00:00Z" },
+    ],
+  }, async () => {
+    chamadasMontarItens.length = 0;
+    snapshotHandler = ({ itemIds }) => new Map([
+      ["MLB-F2", { marginPercent: 25, profit: 5, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:34:00Z", origemJob: "orquestrador_manual" }],
+    ].filter(([id]) => itemIds.includes(id)));
+
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", page: "1", limit: "10" } }, res);
+    assert.strictEqual(res.statusCode, 200);
+    const porId = Object.fromEntries(res.corpo.anuncios.filter((a) => a.tipo === "item").map((a) => [a.item_id, a]));
+    assert.strictEqual(porId["MLB-10"].margemProjetadaPercent, 11, "lê a conta 10 (dona), nunca os 77% da conta 20");
+    assert.strictEqual(porId["MLB-10"].margemProjetadaCalculadaEm, "2026-10-12T06:00:00Z");
+    assert.strictEqual(porId["MLB-20"].margemProjetadaPercent, 22, "item da conta 20 lê a conta 20");
+    assert.strictEqual(porId["MLB-NADA"].margemProjetadaPercent, null, "sem snapshot em nenhuma fonte: null, nunca 0");
+    assert.strictEqual(porId["MLB-NADA"].margemProjetadaComputable, false);
+    assert.strictEqual(porId["MLB-NADA"].margemProjetadaCalculadaEm, null);
+    assert.strictEqual(porId["MLB-NADA"].margemProjetadaFonte, null);
+
+    const familia = res.corpo.anuncios.find((a) => a.tipo === "familia");
+    assert.strictEqual(familia.margemProjetadaMinPercent, 15);
+    assert.strictEqual(familia.margemProjetadaMaxPercent, 25, "filho sem canônico entra pela faixa via legado");
+    assert.strictEqual(familia.margemProjetadaCalculadaEm, "2026-10-12T05:00:00Z", "data da família = filho mais recente");
+    assert.strictEqual(familia.margemProjetadaFonte, "margin_snapshot", "fonte da família = fonte do filho que deu a data");
+    assert.strictEqual(chamadasMontarItens.length, 0, "nunca chama o Motor ao vivo");
+    snapshotHandler = null;
+    console.log("  ✓ AP. sem clienteContaId: cada item lê só a conta dona no catálogo; ausência = vazio; família herda fonte da data");
   });
 
   // AC. Checagem ESTÁTICA (arquitetural, não só o spy em runtime dos testes
@@ -1536,6 +1610,15 @@ async function run() {
       assert.ok(!bloco.includes(proibido), `branch margemProjetada NÃO pode referenciar ${proibido}`);
     }
     assert.ok(bloco.includes("margemProjetadaFonte"), "branch margemProjetada precisa usar a fonte de snapshot (Margin Snapshot + legado)");
+    // A fonte de Anúncios é leitura pura: nunca Motor, ML, Central de Margem
+    // (API/leitura da Central) nem enfileiramento de refresh por page load.
+    const fonteSrc = fs.readFileSync(
+      path.join(__dirname, "../services/motorMargem/anunciosMargemProjetadaFonte.js"),
+      "utf8"
+    );
+    for (const proibido of ["motorMargemService", "meliApiEvidenceAdapter", "mlFetch", "marginSnapshotReadService", "marginSnapshotApiService", "marginSnapshotTriggers", "marginSnapshotRunService", "enqueue"]) {
+      assert.ok(!fonteSrc.includes(proibido), `anunciosMargemProjetadaFonte NÃO pode referenciar ${proibido}`);
+    }
     console.log("  ✓ AC. branch margemProjetada (checagem estática): sem referência a Motor/ML — só o repositório de snapshot");
   }
 

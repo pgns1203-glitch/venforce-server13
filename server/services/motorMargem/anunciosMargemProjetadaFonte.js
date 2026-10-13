@@ -18,12 +18,15 @@
 // (Map item_id -> {marginPercent, profit, computable, status, calculadoEm,
 // origemJob}), então ranking e célula do controller não mudam.
 //
-// Escopo de conta: com `clienteContaId` resolvido, A é filtrada pela conta
-// (chave canônica). Sem conta (cliente legado/auto-resolvido), filtra só por
-// cliente_id — mesmo escopo que o legado sempre usou; quem chama já resolveu
-// `itemIds` contra o catálogo da conta certa. `item_id` (MLB) é único por
-// vendedor, então duas contas não disputam a mesma linha; o DISTINCT ON é só
-// defesa e fica com o cálculo mais recente.
+// Escopo de conta (multi-conta nunca mistura snapshots):
+//   - conta resolvida → A filtrada por `cliente_conta_id = conta` (chave
+//     canônica). Nunca cai em outra conta nem na principal.
+//   - conta NÃO resolvida (request sem clienteContaId) → cada item só lê a
+//     linha de A da conta DONA dele no catálogo (`meli_anuncios.cliente_conta_id`).
+//     Linha de catálogo legada sem conta (NULL) não tem dono declarado: aceita
+//     a linha de A do item (MLB é único por vendedor); o DISTINCT ON é só
+//     defesa e fica com o cálculo mais recente.
+// O legado (B) tem UNIQUE (cliente_id, item_id): 1 linha por item, sem conta.
 //
 // Rollback sem deploy: ANUNCIOS_MARGEM_FONTE=legado volta a ler só a tabela
 // antiga. Falha ao ler A (ex.: schema do Margin Snapshot ausente porque o
@@ -37,6 +40,16 @@ const MARKETPLACE = "meli";
 // Valor de `origemJob` para linhas vindas de A — distingue no payload a
 // fonte canônica de "manual_cli"/"orquestrador_manual" (legado).
 const ORIGEM_MARGIN_SNAPSHOT = "margin_snapshot";
+// `fonte` exposto na resposta de Anúncios (margemProjetadaFonte): qual tabela
+// respondeu — independente de quem gravou (origemJob).
+const FONTE_MARGIN_SNAPSHOT = "margin_snapshot";
+const FONTE_LEGADO = "legado";
+
+function marcarLegado(mapa) {
+  const marcado = new Map();
+  for (const [itemId, valor] of mapa) marcado.set(itemId, { ...valor, fonte: FONTE_LEGADO });
+  return marcado;
+}
 
 function fonteConfigurada(env = process.env) {
   return String(env.ANUNCIOS_MARGEM_FONTE ?? "").trim().toLowerCase() === "legado" ? "legado" : "snapshot";
@@ -47,20 +60,23 @@ async function lerMarginSnapshotPorItens({ clienteId, clienteContaId = null, ite
   if (!ids.length) return new Map();
 
   const params = [clienteId, MARKETPLACE, ids];
-  let filtroConta = "";
+  let escopoConta;
   if (clienteContaId != null) {
     params.push(clienteContaId);
-    filtroConta = " AND cliente_conta_id = $4";
+    escopoConta = "\n      WHERE s.cliente_conta_id = $4";
+  } else {
+    escopoConta = "\n       JOIN meli_anuncios a ON a.cliente_id = s.cliente_id AND a.item_id = s.item_id"
+      + "\n      WHERE (a.cliente_conta_id = s.cliente_conta_id OR a.cliente_conta_id IS NULL)";
   }
 
   const { rows } = await db.query(
     `-- LER_MARGIN_SNAPSHOT_PARA_ANUNCIOS
-     SELECT DISTINCT ON (item_id) item_id, margin_percent, profit, status, calculated_at
-       FROM margin_projection_snapshots
-      WHERE cliente_id = $1
-        AND marketplace = $2
-        AND item_id = ANY($3::text[])${filtroConta}
-      ORDER BY item_id, calculated_at DESC`,
+     SELECT DISTINCT ON (s.item_id) s.item_id, s.margin_percent, s.profit, s.status, s.calculated_at
+       FROM margin_projection_snapshots s${escopoConta}
+        AND s.cliente_id = $1
+        AND s.marketplace = $2
+        AND s.item_id = ANY($3::text[])
+      ORDER BY s.item_id, s.calculated_at DESC`,
     params
   );
 
@@ -76,6 +92,7 @@ async function lerMarginSnapshotPorItens({ clienteId, clienteContaId = null, ite
       status: r.status || null,
       calculadoEm: r.calculated_at || null,
       origemJob: ORIGEM_MARGIN_SNAPSHOT,
+      fonte: FONTE_MARGIN_SNAPSHOT,
     });
   }
   return porItem;
@@ -94,7 +111,7 @@ async function lerMargemProjetadaPorItens({ clienteId, clienteContaId = null, it
   if (!ids.length) return new Map();
 
   if (fonteConfigurada(deps.env) === "legado") {
-    return deps.lerLegado({ clienteId, itemIds: ids });
+    return marcarLegado(await deps.lerLegado({ clienteId, itemIds: ids }));
   }
 
   let canonico = new Map();
@@ -112,7 +129,7 @@ async function lerMargemProjetadaPorItens({ clienteId, clienteContaId = null, it
 
   // Erro no legado propaga (mesmo contrato de antes): o chamador já trata
   // falha de leitura com fallback próprio (campos ausentes / ordem padrão).
-  const doLegado = await deps.lerLegado({ clienteId, itemIds: faltantes });
+  const doLegado = marcarLegado(await deps.lerLegado({ clienteId, itemIds: faltantes }));
   const resultado = new Map(canonico);
   for (const [itemId, valor] of doLegado) {
     if (!resultado.has(itemId)) resultado.set(itemId, valor);
@@ -125,4 +142,6 @@ module.exports = {
   lerMarginSnapshotPorItens,
   fonteConfigurada,
   ORIGEM_MARGIN_SNAPSHOT,
+  FONTE_MARGIN_SNAPSHOT,
+  FONTE_LEGADO,
 };

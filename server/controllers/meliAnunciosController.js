@@ -354,6 +354,7 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
   const porItemStatus = {};
   const porItemCalculadoEm = {};
   const porItemOrigemJob = {};
+  const porItemFonte = {};
   for (const itemId of itemIds) {
     const s = snapshotPorItem.get(String(itemId));
     porItem[itemId] = s && s.computable && s.marginPercent != null ? s.marginPercent : null;
@@ -362,6 +363,7 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
     porItemStatus[itemId] = (s && s.status) || null;
     porItemCalculadoEm[itemId] = (s && s.calculadoEm) || null;
     porItemOrigemJob[itemId] = (s && s.origemJob) || null;
+    porItemFonte[itemId] = (s && s.fonte) || null;
   }
 
   // Família: soma de profit (informativo) + faixa/média de marginPercent dos
@@ -373,9 +375,13 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
   const porFamiliaMediaPercent = {};
   const porFamiliaProfit = {};
   const porFamiliaCalculadoEm = {};
+  // Fonte do filho que deu o `calculadoEm` da família — data e fonte sempre
+  // falam do MESMO cálculo.
+  const porFamiliaFonte = {};
   for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
     let somaProfit = null;
     let maisRecente = null;
+    let fonteMaisRecente = null;
     let min = null;
     let max = null;
     let somaMargem = 0;
@@ -384,7 +390,10 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
       const s = snapshotPorItem.get(String(itemId));
       if (!s) continue;
       if (s.profit != null) somaProfit = (somaProfit == null ? 0 : somaProfit) + s.profit;
-      if (s.calculadoEm && (!maisRecente || new Date(s.calculadoEm) > new Date(maisRecente))) maisRecente = s.calculadoEm;
+      if (s.calculadoEm && (!maisRecente || new Date(s.calculadoEm) > new Date(maisRecente))) {
+        maisRecente = s.calculadoEm;
+        fonteMaisRecente = s.fonte || null;
+      }
       if (s.computable && s.marginPercent != null) {
         somaMargem += s.marginPercent;
         qtdMargem += 1;
@@ -394,6 +403,7 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
     }
     porFamiliaProfit[familyId] = somaProfit != null ? Math.round(somaProfit * 100) / 100 : null;
     porFamiliaCalculadoEm[familyId] = maisRecente;
+    porFamiliaFonte[familyId] = fonteMaisRecente;
     const media = qtdMargem > 0 ? Math.round((somaMargem / qtdMargem) * 100) / 100 : null;
     porFamiliaMinPercent[familyId] = min;
     porFamiliaMaxPercent[familyId] = max;
@@ -402,9 +412,9 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
   }
 
   return {
-    porItem, porItemProfit, porItemComputable, porItemStatus, porItemCalculadoEm, porItemOrigemJob,
+    porItem, porItemProfit, porItemComputable, porItemStatus, porItemCalculadoEm, porItemOrigemJob, porItemFonte,
     porFamilia, porFamiliaMinPercent, porFamiliaMaxPercent, porFamiliaMediaPercent,
-    porFamiliaProfit, porFamiliaCalculadoEm,
+    porFamiliaProfit, porFamiliaCalculadoEm, porFamiliaFonte,
   };
 }
 
@@ -475,6 +485,7 @@ async function anexarMargemProjetadaNaPagina(anuncios, { clienteId, clienteConta
       anuncio.margemProjetadaStatus = null;
       anuncio.margemProjetadaCalculadaEm = faixa.porFamiliaCalculadoEm[fid] || null;
       anuncio.margemProjetadaOrigemJob = null;
+      anuncio.margemProjetadaFonte = faixa.porFamiliaFonte[fid] || null;
       anuncio.margemProjetadaMinPercent = ouNull(faixa.porFamiliaMinPercent[fid]);
       anuncio.margemProjetadaMaxPercent = ouNull(faixa.porFamiliaMaxPercent[fid]);
       anuncio.margemProjetadaMediaPercent = ouNull(faixa.porFamiliaMediaPercent[fid]);
@@ -486,6 +497,7 @@ async function anexarMargemProjetadaNaPagina(anuncios, { clienteId, clienteConta
       anuncio.margemProjetadaStatus = (s && s.status) || null;
       anuncio.margemProjetadaCalculadaEm = (s && s.calculadoEm) || null;
       anuncio.margemProjetadaOrigemJob = (s && s.origemJob) || null;
+      anuncio.margemProjetadaFonte = (s && s.fonte) || null;
     }
   }
 }
@@ -720,6 +732,7 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
         anuncio.margemProjetadaStatus = null;
         anuncio.margemProjetadaCalculadaEm = ranking.porFamiliaCalculadoEm[anuncio.family_id] || null;
         anuncio.margemProjetadaOrigemJob = null;
+        anuncio.margemProjetadaFonte = ranking.porFamiliaFonte[anuncio.family_id] || null;
         anuncio.margemProjetadaMinPercent = ranking.porFamiliaMinPercent[anuncio.family_id] != null
           ? ranking.porFamiliaMinPercent[anuncio.family_id] : null;
         anuncio.margemProjetadaMaxPercent = ranking.porFamiliaMaxPercent[anuncio.family_id] != null
@@ -733,6 +746,7 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
         anuncio.margemProjetadaStatus = ranking.porItemStatus[anuncio.item_id] || null;
         anuncio.margemProjetadaCalculadaEm = ranking.porItemCalculadoEm[anuncio.item_id] || null;
         anuncio.margemProjetadaOrigemJob = ranking.porItemOrigemJob[anuncio.item_id] || null;
+        anuncio.margemProjetadaFonte = ranking.porItemFonte[anuncio.item_id] || null;
       }
     }
   } else {
@@ -914,6 +928,7 @@ async function detalheFamilia(req, res) {
       filho.margemProjetadaStatus = (s && s.status) || null;
       filho.margemProjetadaCalculadaEm = (s && s.calculadoEm) || null;
       filho.margemProjetadaOrigemJob = (s && s.origemJob) || null;
+      filho.margemProjetadaFonte = (s && s.fonte) || null;
     }
 
     return res.json({

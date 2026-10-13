@@ -596,47 +596,7 @@
 .vf-fin-recon__valor { font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; }
 .vf-fin-recon__estado.is-danger .vf-fin-recon__valor { color: var(--vf-danger-strong, #9b1c1c); }
 
-/* ── Pendências: como corrigir (dois caminhos) ───────────────────────── */
-.vf-fin-fluxo {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
-  gap: var(--vf-sp-4, 16px);
-}
-.vf-fin-fluxo__caminho {
-  border: 1px solid var(--vf-border);
-  background: var(--vf-surface, #fff);
-  padding: var(--vf-sp-3, 12px) var(--vf-sp-4, 16px);
-  min-width: 0;
-}
-.vf-fin-fluxo__texto { margin: 0; font-size: var(--vf-fs-sm, 0.875rem); color: var(--vf-text-secondary); line-height: 1.5; }
-.vf-fin-fluxo__passos {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  counter-reset: passo;
-  display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-2, 8px);
-  font-size: var(--vf-fs-sm, 0.875rem);
-  color: var(--vf-text-secondary);
-}
-.vf-fin-fluxo__passos > li { counter-increment: passo; display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2, 8px); line-height: 1.45; }
-.vf-fin-fluxo__passos > li::before {
-  content: counter(passo);
-  flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--vf-bg-2, #f6f7fb);
-  border: 1px solid var(--vf-border-strong, #d6d9e4);
-  color: var(--vf-text, #1d2130);
-  font-size: var(--vf-fs-xs, 0.75rem);
-  font-weight: var(--vf-fw-semibold, 600);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-
+/* ── Pendências ───────────────────────────────────────────────────────── */
 .vf-fin-pendencias__tabela td { vertical-align: top; }
 .vf-fin-pendencias__tabela td:nth-child(4) { min-width: 150px; }
 .vf-fin-pendencias__tabela .vf-fin-ajuste__campo { min-width: 112px; max-width: 132px; }
@@ -761,7 +721,6 @@
   /* Sem espaço para dois painéis: a leitura desce, ainda compacta. */
   .vf-fin-topo { grid-template-columns: minmax(0, 1fr); }
   .vf-fin-leitura-card { padding: var(--vf-sp-3, 12px) 0 0; border-left: none; border-top: 1px solid var(--vf-border); }
-  .vf-fin-fluxo { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 1000px) {
   .vf-fin-resumo__principal { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -781,3 +740,81 @@
 /* Confirmação da correção: linha de largura total sob a pendência. */
 .vf-fin-pendencias__confirmacao > td { background: var(--vf-bg-2, #f6f7fb); padding: var(--vf-sp-3, 12px) var(--vf-sp-4, 16px); }
 .vf-fin-pendencias__confirmacao .vf-fin-corrigir { max-width: none; min-width: 0; }
+
+
+/* ═══ Hotfix final: composição leve, cobertura compacta, reconciliação, correção ═══ */
+
+/* Composição: colunas SEM caixa e SEM linhas de tabela — títulos, valores
+   alinhados e o Resultado como coluna de destaque. */
+.vf-fin-composicao-grid {
+  border: none;
+  background: transparent;
+  gap: 0;
+}
+.vf-fin-composicao-col { border-top: none; margin-top: 0; padding: 0 var(--vf-sp-5, 20px); }
+.vf-fin-composicao-col:first-child { padding-left: 0; }
+.vf-fin-composicao-col + .vf-fin-composicao-col { border-left: 1px solid var(--vf-border); }
+.vf-fin-composicao-col .vf-fin-extrato__linha { border-bottom: none; padding: 5px 0; }
+.vf-fin-composicao-col .vf-fin-extrato__linha dt { color: var(--vf-text-secondary); }
+.vf-fin-composicao-col[data-bloco="resultado"] { background: var(--vf-bg-2, #f6f7fb); padding-top: var(--vf-sp-3, 12px); padding-bottom: var(--vf-sp-3, 12px); }
+.vf-fin-composicao-col .vf-fin-extrato__linha.is-total { border-top: 1px solid var(--vf-border-strong, #d6d9e4); margin-top: 4px; padding-top: 8px; }
+.vf-fin-composicao-col .vf-fin-extrato__linha.is-total dd { font-size: var(--vf-fs-md, 1rem); }
+
+/* Cobertura: compacta, 1 linha por eixo. */
+.vf-fin-secao--compacta { gap: var(--vf-sp-2, 8px); }
+.vf-fin-secao--compacta .vf-fin-secao__titulo { font-size: var(--vf-fs-md, 1rem); }
+.vf-fin-cob { display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); }
+.vf-fin-cob__linha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2, 8px) var(--vf-sp-6, 24px);
+  padding: var(--vf-sp-2, 8px) var(--vf-sp-3, 12px);
+  background: var(--vf-bg-2, #f6f7fb);
+}
+.vf-fin-cob__resumo { display: flex; align-items: center; gap: var(--vf-sp-3, 12px); min-width: 230px; }
+.vf-fin-cob__nome { font-size: var(--vf-fs-xs, 0.75rem); text-transform: uppercase; letter-spacing: 0.05em; color: var(--vf-text-muted, #6b7285); width: 64px; }
+.vf-fin-cob__pct { font-weight: var(--vf-fw-bold, 700); font-variant-numeric: tabular-nums; min-width: 52px; }
+.vf-fin-cob__resumo .vf-fin-cobertura__barra { width: 90px; margin: 0; }
+.vf-fin-cob__itens { display: flex; flex-wrap: wrap; gap: var(--vf-sp-1, 4px) var(--vf-sp-5, 20px); margin: 0; font-size: var(--vf-fs-sm, 0.875rem); }
+.vf-fin-cob__item { display: flex; align-items: baseline; gap: 6px; }
+.vf-fin-cob__item dt { color: var(--vf-text-muted, #6b7285); font-size: var(--vf-fs-xs, 0.75rem); }
+.vf-fin-cob__item dd { margin: 0; font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; }
+
+/* Reconciliação: três colunas com acento de cor e valores em destaque. */
+.vf-fin-recon__grupos { gap: var(--vf-sp-6, 24px); }
+.vf-fin-recon__grupo { border-top: 3px solid var(--vf-border-strong, #d6d9e4); padding-top: var(--vf-sp-3, 12px); }
+.vf-fin-recon__grupo[data-grupo="consolidado"] { border-top-color: var(--vf-success); }
+.vf-fin-recon__grupo[data-grupo="andamento"] { border-top-color: var(--vf-warning); }
+.vf-fin-recon__grupo[data-grupo="fora"] { border-top-color: var(--vf-danger); }
+.vf-fin-recon__estado { border-left: none; padding-left: 0; }
+.vf-fin-recon__valor { font-size: var(--vf-fs-md, 1rem); }
+.vf-fin-recon__fluxo strong { font-size: 1.25rem; }
+
+/* Pendências: modo (individual × lote), identificação, imposto, escolha, lote. */
+.vf-fin-pendencias__modo { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-3, 12px); }
+.vf-fin-ids { display: flex; flex-direction: column; gap: 2px; white-space: nowrap; font-size: var(--vf-fs-xs, 0.75rem); }
+.vf-fin-ajuste__sufixo { margin-left: 4px; color: var(--vf-text-muted, #6b7285); font-size: var(--vf-fs-sm, 0.875rem); }
+.vf-fin-pendencias__rodape { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--vf-sp-3, 12px); padding-top: var(--vf-sp-3, 12px); border-top: 1px solid var(--vf-border); }
+.vf-fin-escolha { border: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); }
+.vf-fin-escolha__opcao { display: flex; align-items: flex-start; gap: var(--vf-sp-2, 8px); font-size: var(--vf-fs-sm, 0.875rem); cursor: pointer; }
+.vf-fin-escolha__opcao input { margin-top: 3px; }
+
+.vf-fin-lote__passos { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: var(--vf-sp-4, 16px); counter-reset: lote; }
+.vf-fin-lote__passo { counter-increment: lote; display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); padding: var(--vf-sp-3, 12px) var(--vf-sp-4, 16px); border: 1px solid var(--vf-border); background: var(--vf-surface, #fff); min-width: 0; }
+.vf-fin-lote__titulo::before { content: counter(lote); display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; margin-right: 8px; border-radius: 50%; background: var(--vf-bg-2, #f6f7fb); border: 1px solid var(--vf-border-strong, #d6d9e4); font-size: var(--vf-fs-xs, 0.75rem); }
+.vf-fin-lote__resumo { display: flex; flex-wrap: wrap; gap: 4px var(--vf-sp-4, 16px); margin: 0; font-size: var(--vf-fs-sm, 0.875rem); }
+.vf-fin-lote .is-ok { color: var(--vf-success-strong, #0a5c3d); }
+.vf-fin-lote .is-aviso { color: var(--vf-warning-strong, #8f4c00); }
+.vf-fin-lote .is-erro { color: var(--vf-danger-strong, #9b1c1c); }
+.vf-fin-lote__resultado p { margin: 2px 0; font-size: var(--vf-fs-sm, 0.875rem); font-weight: var(--vf-fw-medium, 500); }
+
+/* Tabela de correção individual: cabe em ~1000px úteis (1366 com o Shell) sem
+   cortar a coluna Ação. */
+.vf-fin-pendencias__tabela .vf-fin-clamp { min-width: 130px; max-width: 190px; }
+.vf-fin-pendencias__tabela td:nth-child(3) { min-width: 0; max-width: 150px; }
+.vf-fin-pendencias__tabela .vf-fin-ajuste__campo { min-width: 0; max-width: 104px; }
+.vf-fin-pendencias__tabela td:nth-child(7) .vf-fin-ajuste__campo { max-width: 76px; }
+.vf-fin-pendencias__tabela td:last-child { min-width: 0; }
+.vf-fin-pendencias__tabela .vf-btn { white-space: nowrap; }
+.vf-fin-pendencias__tabela th, .vf-fin-pendencias__tabela td { padding-left: 8px; padding-right: 8px; }

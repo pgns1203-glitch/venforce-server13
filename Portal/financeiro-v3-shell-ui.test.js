@@ -149,6 +149,8 @@ function processamentoRicoShopee() {
 }
 let processamentoFake = null; // quando setado, POST /fechamentos/financeiro devolve isto
 let upsertsFake = [];
+let baseCustosFake = {}; // slug → dicionário `dados` de GET /bases/:slug
+let previewPlanilhaFake = { ok: true, dados_importacao: [], resumo: { linhas_lidas: 0, linhas_ignoradas: 0 }, alertas: [] };
 
 // Sem fechamento gerado no período — shape real confirmado lendo
 // financeiroVisaoService.js: `resultado.disponivel` é FALSE quando não há
@@ -373,7 +375,15 @@ function wireFetchInterception(cdp) {
     }
     if (url.includes("/base-vinculos")) { await json({ ok: true, bases: baseVinculosFake }); return; }
     // Editor rápido de custo (mesmos endpoints de Bases): padrão + upsert.
-    if (/\/bases\/[^/]+\/custos\/padrao/.test(url)) { await json({ ok: true, padrao: { imposto_percentual: 8, taxa_fixa: 0 } }); return; }
+    // Atualizar por planilha: o parser REAL só lê (não grava); o fake devolve o que
+    // o leitor devolveria para a planilha "preenchida" do cenário.
+    if (/\/bases\/assistente\/preview/.test(url) && req.method === "POST") { await json(previewPlanilhaFake); return; }
+    if (/\/bases\/[^/]+\/custos\/padrao/.test(url)) { await json({ ok: true, padrao: { imposto_percentual: 0.08, taxa_fixa: 0 } }); return; } // fração, como o banco guarda
+    if (/\/bases\/([^/?#]+)(?:[?#]|$)/.test(url) && req.method === "GET") {
+      const slug = url.match(/\/bases\/([^/?#]+)/)[1];
+      await json({ ok: true, baseId: slug, nome: slug, marketplace: "meli", total: 0, dados: baseCustosFake[slug] || {} });
+      return;
+    }
     if (/\/bases\/[^/]+\/custos\/upsert/.test(url) && req.method === "POST") {
       upsertsFake.push(JSON.parse(req.postData || "{}"));
       await json({ ok: true, acao: "criado" });
@@ -962,7 +972,7 @@ async function run() {
     // Processamento GRANDE (3.625 / 1.800 linhas): a tela pagina e nunca
     // renderiza tudo. Larguras de notebook/desktop com o Shell ocupando a
     // lateral: nada de scroll horizontal na PÁGINA (só dentro da tabela).
-    const ORDEM_COMPLETA = ["resultado", "leitura", "cobertura", "composicao", "pendencias", "acoes", "produtos"];
+    const ORDEM_COMPLETA = ["resultado", "leitura", "composicao", "cobertura", "pendencias", "acoes", "produtos"];
     const secoesDaPagina = () => cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao]`)}), function(e){ return e.dataset.secao; })`);
     async function fotografar(nome, largura) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -1002,7 +1012,7 @@ async function run() {
       await sleep(300);
     }
 
-    await check("UX — MELI: topo (KPIs + leitura) → cobertura → composição → pendências → ações → entrega → produtos (produtos POR ÚLTIMO)", async () => {
+    await check("UX — MELI: topo (KPIs + leitura) → composição → cobertura compacta → pendências → ações → entrega → produtos (produtos POR ÚLTIMO)", async () => {
       assert.deepStrictEqual(await secoesDaPagina(), ORDEM_COMPLETA);
       // o painel "Entrega para o cliente" fica entre as ações e os produtos
       const posicoes = await cdp.evaluate(`(function(){
@@ -1037,7 +1047,7 @@ async function run() {
     await check("UX — MELI: pendência corrigida NA LINHA (custo atual, novo custo, o que será gravado) e o fechamento NÃO é reprocessado sozinho", async () => {
       const PEND = `${PAINEL} [data-secao="pendencias"]`;
       const cabecalhos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} th`)}), function(t){ return t.textContent; })`);
-      assert.deepStrictEqual(cabecalhos, ["Produto", "ID", "SKU / Model", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Ação"]);
+      assert.deepStrictEqual(cabecalhos, ["Produto", "Identificação", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Imposto %", "Ação"]);
       const antes = fechamentoRequestCount;
       const doc = await cdp.send("DOM.getDocument", { depth: -1 });
       const campo = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label="Novo custo unitário de MLB1000"]' });
@@ -1050,9 +1060,9 @@ async function run() {
       await waitFor(cdp, `(document.querySelector(${JSON.stringify(PEND)}) || {innerText:''}).innerText.indexOf('produto_id = MLB1000') >= 0`, "a confirmação deveria nomear exatamente o registro que será gravado");
       assert.strictEqual(upsertsFake.length, 0, "nada pode ser gravado antes da confirmação");
       assert.ok(await clicarBotao(PEND, "Confirmar e registrar"), "botão de confirmação ausente");
-      await waitFor(cdp, `(document.querySelector(${JSON.stringify(PEND)}) || {innerText:''}).innerText.indexOf('Registrado na base') >= 0`, "a linha deveria mostrar o sucesso");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(PEND)}) || {innerText:''}).innerText.indexOf('Custo atualizado na base') >= 0`, "a linha deveria mostrar o sucesso");
       assert.strictEqual(upsertsFake.length, 1);
-      assert.deepStrictEqual([upsertsFake[0].produto_id, upsertsFake[0].custo_produto], ["MLB1000", 12.5]);
+      assert.deepStrictEqual([upsertsFake[0].produto_id, upsertsFake[0].custo_produto, upsertsFake[0].imposto_percentual], ["MLB1000", 12.5, 0.08]); // imposto: padrão da base (fração), confirmado na tela
       assert.strictEqual(fechamentoRequestCount, antes, "corrigir custo não pode reprocessar sozinho");
       assert.ok(await clicarBotao(PEND, "Reprocessar fechamento"), "Reprocessar fechamento ausente");
       await sleep(400);
@@ -1080,13 +1090,13 @@ async function run() {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
     });
 
-    await check("UX — MELI: pendências explicam os dois caminhos (na linha / por planilha) e Bases abre em nova aba", async () => {
+    await check("UX — MELI: poucas pendências → correção individual por padrão (com seletor para o lote); Bases abre em nova aba só quando não há base para atualizar", async () => {
       const PEND = `${PAINEL} [data-secao="pendencias"]`;
       const txt = await textoDe(PEND);
-      assert.ok(/corrigir aqui, na linha/i.test(txt) && /corrigir por planilha/i.test(txt), "os dois caminhos deveriam aparecer");
-      assert.ok(/Atualizar por planilha/.test(txt) && /Novo custo/.test(txt), "o caminho de volta pela planilha deve estar escrito");
-      const alvo = await cdp.evaluate(`(function(){ var a = Array.prototype.find.call(document.querySelectorAll(${JSON.stringify(`${PEND} a`)}), function(x){ return /Bases de Custo/.test(x.textContent); }); return a ? a.getAttribute('target') + '|' + a.getAttribute('href') : null; })()`);
-      assert.strictEqual(alvo, "_blank|bases.html");
+      assert.ok(/Corrigir individualmente/.test(txt) && /Corrigir em lote/.test(txt), "o seletor de modo deveria aparecer");
+      assert.ok(/Poucas pendências/.test(txt), "deveria dizer que são poucas pendências");
+      const pressionado = await cdp.evaluate(`(function(){ var b = Array.prototype.find.call(document.querySelectorAll(${JSON.stringify(`${PEND} button`)}), function(x){ return x.textContent.trim() === 'Corrigir individualmente'; }); return b && b.getAttribute('aria-pressed'); })()`);
+      assert.strictEqual(pressionado, "true");
     });
 
     await check("UX — MELI: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200 (a tabela rola por dentro); screenshots gravadas", async () => {
@@ -1122,21 +1132,57 @@ async function run() {
     }
 
     await check("UX — Shopee: reconciliação (Order.all) vem ANTES da composição e dos produtos, agrupada por leitura", async () => {
-      assert.deepStrictEqual(await secoesDaPagina(), ["resultado", "leitura", "cobertura", "reconciliacao", "composicao", "pendencias", "acoes", "produtos"]);
+      assert.deepStrictEqual(await secoesDaPagina(), ["resultado", "leitura", "reconciliacao", "composicao", "cobertura", "pendencias", "acoes", "produtos"]);
       const grupos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="reconciliacao"] [data-grupo]`)}), function(e){ return e.dataset.grupo; })`);
       assert.deepStrictEqual(grupos, ["consolidado", "andamento", "fora"]);
       const texto = await textoDe(`${PAINEL} [data-secao="reconciliacao"]`);
       assert.ok(/Base do fechamento/.test(texto) && /Visão reconciliada/.test(texto), "o fluxo Base → Visão reconciliada deve aparecer");
     });
 
-    await check("UX — Shopee: cobertura financeira indisponível vira nota compacta (sem card vazio) e pendência NÃO oferece correção na linha", async () => {
+    await check("UX — Shopee: cobertura financeira indisponível vira nota compacta (sem card vazio)", async () => {
       const nota = await cdp.evaluate(`(function(){ var a = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="cobertura"] aside[data-eixo="financeiro"]`)}); return a ? a.getBoundingClientRect().height : null; })()`);
       assert.ok(nota !== null && nota < 90, `a nota de cobertura financeira deveria ser compacta, altura ${nota}`);
-      const campos = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="pendencias"] input`)}).length`);
-      assert.strictEqual(campos, 0, "Shopee não pode oferecer campo de custo (não escolhe Item × Variação)");
-      const texto = await textoDe(`${PAINEL} [data-secao="pendencias"]`);
-      assert.ok(/Baixar planilha \(XLSX\)/.test(texto), "a planilha XLSX deveria ser oferecida");
-      assert.ok(/a tela não escolhe o identificador/.test(texto));
+      const linhasCob = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="cobertura"] .vf-fin-cob__linha`)}).length`);
+      assert.strictEqual(linhasCob, 1, "a cobertura compacta deveria ter só a linha de custos");
+    });
+
+    await check("UX — Shopee: 72 pendências → CORREÇÃO EM LOTE por padrão, com os 5 passos; importa a planilha ali mesmo e atualiza a BASE", async () => {
+      const PEND = `${PAINEL} [data-secao="pendencias"]`;
+      const passos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} [data-passo]`)}), function(e){ return e.dataset.passo; })`);
+      assert.deepStrictEqual(passos, ["baixar", "preencher", "enviar", "importar", "reprocessar"]);
+      assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PEND} tbody input`)}).length`), 0, "no lote a tabela individual fica atrás do seletor");
+
+      // planilha preenchida: 2 linhas gravaveis (Itens novos na base), 70 sem Novo custo
+      previewPlanilhaFake = {
+        ok: true,
+        dados_importacao: [
+          { id: "169417000075", id_model: "555000000075", custo: 9.9, imposto: null },
+          { id: "169417000275", id_model: "555000000275", custo: 8, imposto: 0.08 },
+        ],
+        resumo: { linhas_lidas: 72, linhas_ignoradas: 70 }, alertas: [],
+      };
+      upsertsFake = [];
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const entrada = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label="Planilha de custos preenchida"]' });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: entrada.nodeId });
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(`${PEND} [data-previa]`)}) || {innerText:''}).innerText.indexOf('2 para adicionar') >= 0`, "o resumo da planilha deveria aparecer antes de gravar");
+      assert.strictEqual(upsertsFake.length, 0, "ler a planilha não pode gravar");
+      assert.ok(await clicarBotao(PEND, "Importar e atualizar base"), "botão Importar e atualizar base ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(`${PEND} [data-resultado]`)}) || {innerText:''}).innerText.indexOf('2 custos atualizados na base') >= 0`, "o resultado da importação deveria aparecer");
+      assert.strictEqual(upsertsFake.length, 2, "a base deveria receber 2 upserts (mesmo endpoint de Bases)");
+      assert.deepStrictEqual([upsertsFake[0].produto_id, upsertsFake[0].id_model, upsertsFake[0].custo_produto], ["169417000075", "555000000075", 9.9]);
+      const antes = fechamentoRequestCount;
+      assert.ok(await clicarBotao(PEND, "Reprocessar fechamento"), "Reprocessar fechamento ausente");
+      await sleep(400);
+      assert.strictEqual(fechamentoRequestCount, antes + 1, "só depois da base atualizada o operador reprocessa — e é um clique dele");
+    });
+
+    await check("UX — Shopee: no modo individual, Item que NÃO está na base é identidade SEGURA (campos de custo e imposto liberados)", async () => {
+      const PEND = `${PAINEL} [data-secao="pendencias"]`;
+      assert.ok(await clicarBotao(PEND, "Corrigir individualmente"), "seletor 'Corrigir individualmente' ausente");
+      await sleep(200);
+      const campos = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PEND} tbody tr[data-identidade="segura"] input`)}).length`);
+      assert.ok(campos >= 2, `deveria haver campos de custo/imposto nas linhas seguras, achei ${campos}`);
     });
 
     await check("UX — Shopee: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200; screenshots gravadas", async () => {

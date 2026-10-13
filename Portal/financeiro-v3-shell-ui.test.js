@@ -962,7 +962,7 @@ async function run() {
     // Processamento GRANDE (3.625 / 1.800 linhas): a tela pagina e nunca
     // renderiza tudo. Larguras de notebook/desktop com o Shell ocupando a
     // lateral: nada de scroll horizontal na PÁGINA (só dentro da tabela).
-    const ORDEM_COMPLETA = ["resultado", "leitura", "cobertura", "pendencias", "composicao", "acoes", "produtos"];
+    const ORDEM_COMPLETA = ["resultado", "leitura", "cobertura", "composicao", "pendencias", "acoes", "produtos"];
     const secoesDaPagina = () => cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao]`)}), function(e){ return e.dataset.secao; })`);
     async function fotografar(nome, largura) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: 1000, deviceScaleFactor: 1, mobile: false });
@@ -1002,7 +1002,7 @@ async function run() {
       await sleep(300);
     }
 
-    await check("UX — MELI: resultado → leitura → cobertura → pendências → composição → ações → entrega → produtos (produtos POR ÚLTIMO)", async () => {
+    await check("UX — MELI: topo (KPIs + leitura) → cobertura → composição → pendências → ações → entrega → produtos (produtos POR ÚLTIMO)", async () => {
       assert.deepStrictEqual(await secoesDaPagina(), ORDEM_COMPLETA);
       // o painel "Entrega para o cliente" fica entre as ações e os produtos
       const posicoes = await cdp.evaluate(`(function(){
@@ -1047,9 +1047,9 @@ async function run() {
       await sleep(80);
       const linha = `${PEND} tr:has(input[aria-label="Novo custo unitário de MLB1000"])`;
       assert.ok(await clicarBotao(linha, "Salvar na base"), "botão Salvar na base ausente");
-      await waitFor(cdp, `(document.querySelector(${JSON.stringify(linha)}) || {innerText:''}).innerText.indexOf('produto_id = MLB1000') >= 0`, "a confirmação deveria nomear exatamente o registro que será gravado");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(PEND)}) || {innerText:''}).innerText.indexOf('produto_id = MLB1000') >= 0`, "a confirmação deveria nomear exatamente o registro que será gravado");
       assert.strictEqual(upsertsFake.length, 0, "nada pode ser gravado antes da confirmação");
-      assert.ok(await clicarBotao(linha, "Confirmar e registrar"), "botão de confirmação ausente");
+      assert.ok(await clicarBotao(PEND, "Confirmar e registrar"), "botão de confirmação ausente");
       await waitFor(cdp, `(document.querySelector(${JSON.stringify(PEND)}) || {innerText:''}).innerText.indexOf('Registrado na base') >= 0`, "a linha deveria mostrar o sucesso");
       assert.strictEqual(upsertsFake.length, 1);
       assert.deepStrictEqual([upsertsFake[0].produto_id, upsertsFake[0].custo_produto], ["MLB1000", 12.5]);
@@ -1057,6 +1057,36 @@ async function run() {
       assert.ok(await clicarBotao(PEND, "Reprocessar fechamento"), "Reprocessar fechamento ausente");
       await sleep(400);
       assert.strictEqual(fechamentoRequestCount, antes + 1, "Reprocessar deveria chamar o motor UMA vez");
+    });
+
+    await check("UX — MELI: o resultado usa a largura útil (sem teto de 860px) e a Leitura fica AO LADO dos KPIs em 1366/1920; empilha em 1200", async () => {
+      const medir = () => cdp.evaluate(`(function(){
+        var r = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="resultado"]`)});
+        var k = r.querySelector('[data-testid="kpis-processamento"]').getBoundingClientRect();
+        var l = r.querySelector('aside[data-secao="leitura"]').getBoundingClientRect();
+        var main = document.querySelector('.vf-shell__main').getBoundingClientRect();
+        var comp = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="composicao"]`)}).getBoundingClientRect();
+        return { largura: r.getBoundingClientRect().width, main: main.width, composicao: comp.width, lado: l.left >= k.right - 1 && Math.abs(l.top - k.top) < 40 };
+      })()`);
+      for (const [largura, aoLado] of [[1920, true], [1366, true], [1200, false]]) {
+        await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: 1000, deviceScaleFactor: 1, mobile: false });
+        await sleep(300);
+        const m = await medir();
+        assert.ok(m.largura > 900 || largura === 1200, `o resultado ficou com ${m.largura}px em ${largura}px`);
+        // largura útil = a do Shell (menos o respiro) até o teto do design system para telas largas (1560px)
+        assert.ok(m.composicao >= Math.min(m.main - 100, 1560) - 4, `a composição deveria ocupar a largura útil (${m.composicao} de ${m.main}) em ${largura}px`);
+        assert.strictEqual(m.lado, aoLado, `Leitura ${aoLado ? "AO LADO" : "empilhada"} esperada em ${largura}px: ${JSON.stringify(m)}`);
+      }
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
+    });
+
+    await check("UX — MELI: pendências explicam os dois caminhos (na linha / por planilha) e Bases abre em nova aba", async () => {
+      const PEND = `${PAINEL} [data-secao="pendencias"]`;
+      const txt = await textoDe(PEND);
+      assert.ok(/corrigir aqui, na linha/i.test(txt) && /corrigir por planilha/i.test(txt), "os dois caminhos deveriam aparecer");
+      assert.ok(/Atualizar por planilha/.test(txt) && /Novo custo/.test(txt), "o caminho de volta pela planilha deve estar escrito");
+      const alvo = await cdp.evaluate(`(function(){ var a = Array.prototype.find.call(document.querySelectorAll(${JSON.stringify(`${PEND} a`)}), function(x){ return /Bases de Custo/.test(x.textContent); }); return a ? a.getAttribute('target') + '|' + a.getAttribute('href') : null; })()`);
+      assert.strictEqual(alvo, "_blank|bases.html");
     });
 
     await check("UX — MELI: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200 (a tabela rola por dentro); screenshots gravadas", async () => {
@@ -1092,7 +1122,7 @@ async function run() {
     }
 
     await check("UX — Shopee: reconciliação (Order.all) vem ANTES da composição e dos produtos, agrupada por leitura", async () => {
-      assert.deepStrictEqual(await secoesDaPagina(), ["resultado", "leitura", "cobertura", "pendencias", "reconciliacao", "composicao", "acoes", "produtos"]);
+      assert.deepStrictEqual(await secoesDaPagina(), ["resultado", "leitura", "cobertura", "reconciliacao", "composicao", "pendencias", "acoes", "produtos"]);
       const grupos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="reconciliacao"] [data-grupo]`)}), function(e){ return e.dataset.grupo; })`);
       assert.deepStrictEqual(grupos, ["consolidado", "andamento", "fora"]);
       const texto = await textoDe(`${PAINEL} [data-secao="reconciliacao"]`);

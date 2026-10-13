@@ -163,23 +163,28 @@ describe("PendenciasCusto · correção na linha", () => {
     // ambíguo nunca ganha campo de correção
     const ambigua = screen.getByText("Blusa").closest("tr");
     expect(within(ambigua).queryByRole("textbox")).not.toBeInTheDocument();
-    expect(within(ambigua).getByText(/Custo ambíguo — resolver em Bases de Custo/)).toBeInTheDocument();
+    expect(within(ambigua).getByText(/Custo ambíguo — há custos diferentes para o mesmo produto/)).toBeInTheDocument();
 
     const campo = within(linha).getByRole("textbox", { name: "Novo custo unitário de MLB1" });
     expect(within(linha).getByRole("button", { name: "Salvar na base" })).toBeDisabled();
     await usuario.type(campo, "12,50");
     await usuario.click(within(linha).getByRole("button", { name: "Salvar na base" }));
 
-    expect(within(linha).getByText(/produto_id = MLB1/)).toBeInTheDocument();
-    await waitFor(() => expect(within(linha).getByText(/imposto padrão da base \(8%\)/)).toBeInTheDocument());
+    // a confirmação ocupa uma linha PRÓPRIA, logo abaixo da pendência
+    const confirmacao = screen.getByRole("group", { name: "Confirmar custo de MLB1" });
+    expect(linha.nextElementSibling).toContainElement(confirmacao);
+    expect(within(confirmacao).getByText(/produto_id = MLB1/)).toBeInTheDocument();
+    await waitFor(() => expect(within(confirmacao).getByText(/imposto padrão da base \(8%\)/)).toBeInTheDocument());
+    expect(within(confirmacao).getByText(/só muda depois de reprocessar/)).toBeInTheDocument();
     expect(api.upsert).not.toHaveBeenCalled();
 
-    await usuario.click(within(linha).getByRole("button", { name: "Confirmar e registrar" }));
+    await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
     expect(api.upsert).toHaveBeenCalledWith("base-zenite", { produtoId: "MLB1", custoProduto: 12.5, produtoNome: "Calça" });
     expect(await within(linha).findByText(/Registrado na base — reprocesse/)).toBeInTheDocument();
     expect(reprocessar).not.toHaveBeenCalled(); // reprocesso é explícito, em lote
     expect(screen.getByRole("status")).toHaveTextContent("1 custo foi registrado na base");
     expect(screen.getByRole("button", { name: "Reprocessar fechamento" })).toHaveClass("vf-btn--primary");
+    expect(screen.getAllByRole("button", { name: "Reprocessar fechamento" })).toHaveLength(1); // um só ponto de reprocesso
   });
 
   it("custo inválido (0, vazio, texto) não habilita Salvar", async () => {
@@ -203,9 +208,11 @@ describe("PendenciasCusto · correção na linha", () => {
     const linha = screen.getByText("Calça").closest("tr");
     await usuario.type(within(linha).getByRole("textbox", { name: "Novo custo unitário de MLB1" }), "10");
     await usuario.click(within(linha).getByRole("button", { name: "Salvar na base" }));
-    await usuario.click(within(linha).getByRole("button", { name: "Confirmar e registrar" }));
-    expect(await within(linha).findByRole("alert")).toHaveTextContent("Base fora da sua carteira.");
-    expect(within(linha).getByRole("button", { name: "Confirmar e registrar" })).toBeEnabled(); // pode tentar de novo
+    await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
+    const alerta = await screen.findByRole("alert");
+    expect(alerta).toHaveTextContent("Base fora da sua carteira.");
+    expect(linha.nextElementSibling).toContainElement(alerta); // o erro aparece logo abaixo DA linha
+    expect(screen.getByRole("button", { name: "Confirmar e registrar" })).toBeEnabled(); // pode tentar de novo
     expect(within(screen.getByText("Blusa").closest("tr")).queryByRole("alert")).not.toBeInTheDocument();
     expect(reprocessar).not.toHaveBeenCalled();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
@@ -218,7 +225,7 @@ describe("PendenciasCusto · correção na linha", () => {
     const linha = screen.getByText("Calça").closest("tr");
     await usuario.type(within(linha).getByRole("textbox", { name: "Novo custo unitário de MLB1" }), "9,9");
     await usuario.click(within(linha).getByRole("button", { name: "Salvar na base" }));
-    await usuario.click(within(linha).getByRole("button", { name: "Confirmar e registrar" }));
+    await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
     await within(linha).findByText(/Registrado na base/);
     await usuario.click(screen.getByRole("button", { name: "Reprocessar fechamento" }));
     expect(reprocessar).toHaveBeenCalledTimes(1);
@@ -228,7 +235,9 @@ describe("PendenciasCusto · correção na linha", () => {
     render(<PendenciasCusto linhas={linhasMeli} processamento={{ costsSource: "upload" }} marketplace="meli" base={base} onReprocessar={vi.fn()} />);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Salvar na base" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Correção na linha indisponível/)).toBeInTheDocument();
+    const linha = screen.getByLabelText("Como corrigir as pendências");
+    expect(within(linha).getByText(/Indisponível neste fechamento:/)).toBeInTheDocument();
+    expect(within(linha).getByText(/usou a planilha de custos enviada/)).toBeInTheDocument();
   });
 
   it("base de OUTRA conta (slug diferente do usado no processamento): sem campo de correção", () => {
@@ -241,8 +250,10 @@ describe("PendenciasCusto · correção na linha", () => {
     render(<PendenciasCusto linhas={linhas} processamento={processamentoBase} marketplace="shopee" base={base} onReprocessar={vi.fn()} />);
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Salvar na base" })).not.toBeInTheDocument();
-    expect(screen.getByText(/a tela não escolhe o identificador/)).toBeInTheDocument();
-    expect(screen.getByText("Corrigir em Bases de Custo")).toBeInTheDocument();
+    const fluxo = screen.getByLabelText("Como corrigir as pendências");
+    expect(within(fluxo).getByText(/Indisponível neste fechamento:/)).toBeInTheDocument();
+    expect(within(fluxo).getByText(/a tela não escolhe o identificador sozinha/)).toBeInTheDocument();
+    expect(screen.getByText(/Shopee: custo no Item ou na Variação — corrigir em Bases de Custo/)).toBeInTheDocument();
   });
 
   it("Shopee com IDs conflitantes: o diagnóstico é exibido como veio, sem inventar match", () => {
@@ -271,6 +282,31 @@ describe("PendenciasCusto · correção na linha", () => {
   it("sem pendências não renderiza nada", () => {
     const { container } = render(<PendenciasCusto linhas={normalizarLinhas([{ "# de anúncio": "MLB4", "Venda Total": 1, "Preço de custo": 1, LC: 1, MC: 20, "Cobertura de custo": "com custo" }])} processamento={processamentoBase} marketplace="meli" />);
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe("PendenciasCusto · como corrigir (dois caminhos)", () => {
+  it("MELI com base: caminho 'na linha' ativo e nomeia a base; caminho 'planilha' com os 4 passos", () => {
+    render(<PendenciasCusto linhas={linhasMeli} processamento={processamentoBase} marketplace="meli" base={base} onReprocessar={vi.fn()} />);
+    const fluxo = screen.getByLabelText("Como corrigir as pendências");
+    const linha = fluxo.querySelector('[data-caminho="linha"]');
+    expect(linha).toHaveTextContent("Corrigir aqui, na linha");
+    expect(linha).toHaveTextContent("Base Zenite");
+    expect(linha).not.toHaveTextContent("Indisponível");
+    const passos = fluxo.querySelectorAll('[data-caminho="planilha"] ol > li');
+    expect(passos).toHaveLength(4);
+    expect(within(passos[0]).getByRole("button", { name: "Baixar planilha (XLSX)" })).toBeInTheDocument();
+    expect(passos[1]).toHaveTextContent("Novo custo");
+    expect(passos[2]).toHaveTextContent("Atualizar por planilha");
+    expect(within(passos[3]).getByRole("button", { name: "Reprocessar fechamento" })).toBeInTheDocument();
+  });
+
+  it("Bases de Custo abre em NOVA aba (o resultado processado não se perde na ida e volta)", () => {
+    render(<PendenciasCusto linhas={linhasMeli} processamento={processamentoBase} marketplace="meli" base={base} onReprocessar={vi.fn()} />);
+    const link = screen.getByRole("link", { name: /Bases de Custo/ });
+    expect(link).toHaveAttribute("href", "bases.html");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link.getAttribute("rel")).toMatch(/noopener/);
   });
 });
 

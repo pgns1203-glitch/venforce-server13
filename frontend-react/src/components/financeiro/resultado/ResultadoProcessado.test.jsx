@@ -138,7 +138,7 @@ describe("composição financeira · LC → Resultado Final", () => {
 describe("hierarquia da página · ordem das seções", () => {
   const ordem = (container) => Array.from(container.querySelectorAll("[data-secao]")).map((e) => e.dataset.secao);
 
-  it("resultado → leitura → cobertura → pendências → reconciliação → composição → ações", () => {
+  it("topo (KPIs + leitura ao lado) → cobertura → reconciliação → composição → pendências → ações", () => {
     const { container } = render(
       <ResultadoProcessado
         processamento={processamento({ summary: { ...SUMMARY_MELI, orderAllTotalCount: 10, orderAllTotalRevenue: 1000, orderAllCompletedCount: 10, orderAllCompletedRevenue: 1000 } })}
@@ -148,7 +148,7 @@ describe("hierarquia da página · ordem das seções", () => {
         acoes={<section data-secao="acoes" />}
       />
     );
-    expect(ordem(container)).toEqual(["resultado", "leitura", "cobertura", "pendencias", "reconciliacao", "composicao", "acoes"]);
+    expect(ordem(container)).toEqual(["resultado", "leitura", "cobertura", "reconciliacao", "composicao", "pendencias", "acoes"]);
   });
 
   it("os produtos NÃO fazem parte do resultado: a tabela vem depois, fora dele", () => {
@@ -166,13 +166,36 @@ describe("hierarquia da página · ordem das seções", () => {
     expect(apoio).toEqual(["mcCalculada", "finalMarginCalculated", "tacos", "tacox"]);
   });
 
-  it("Leitura separa alertas de contexto e não repete modo/Resultado Final", () => {
-    render(<ResultadoProcessado processamento={processamento({ unmatchedIds: ["A", "B"] })} marketplace="meli" periodo="2026-10" />);
-    const leitura = screen.getByRole("region", { name: "Leitura do fechamento" });
+  it("Leitura é um painel de APOIO dentro da faixa de topo, ao lado dos KPIs — não uma seção própria", () => {
+    const { container } = render(<ResultadoProcessado processamento={processamento({ unmatchedIds: ["A", "B"] })} marketplace="meli" periodo="2026-10" />);
+    const topo = container.querySelector(".vf-fin-topo");
+    expect(topo.querySelector('[data-testid="kpis-processamento"]')).not.toBeNull();
+    expect(topo.querySelector('aside[data-secao="leitura"]')).not.toBeNull();
+    expect(container.querySelector('section[data-secao="leitura"]')).toBeNull();
+  });
+
+  it("Leitura: só os ALERTAS à vista; contexto e notas técnicas recolhidos; sem repetir modo/Resultado Final", () => {
+    render(<ResultadoProcessado processamento={processamento({ unmatchedIds: ["A", "B"], summary: { ...SUMMARY_MELI, executiveNotes: ["Nota do motor."] } })} marketplace="meli" periodo="2026-10" />);
+    const leitura = screen.getByRole("complementary", { name: "Leitura do fechamento" });
     const alertas = within(leitura).getByRole("list", { name: "Pontos de atenção" });
     expect(alertas).toHaveTextContent("2 produtos sem custo identificado.");
     expect(leitura).not.toHaveTextContent("Resultado Final positivo");
     expect(leitura).not.toHaveTextContent("Fechamento em modo");
+    const recolhido = leitura.querySelector("details");
+    expect(recolhido).not.toBeNull();
+    expect(recolhido.open).toBe(false);
+    expect(within(recolhido).getByRole("list", { name: "Notas técnicas do motor" })).toBeInTheDocument();
+  });
+
+  it("sem alertas: diz que não há ponto de atenção (em vez de lista vazia)", () => {
+    render(<ResultadoProcessado processamento={processamento({ summary: { finalResult: 10, grossRevenueTotal: 100, calculatedCoveragePercent: 100 }, unmatchedIds: [] })} marketplace="meli" periodo="2026-10" />);
+    expect(within(screen.getByRole("complementary", { name: "Leitura do fechamento" })).getByText("Nenhum ponto de atenção.")).toBeInTheDocument();
+  });
+
+  it("eventos do período (cancelados/não pagos/devoluções) ficam na faixa de topo, junto dos KPIs", () => {
+    const { container } = render(<ResultadoProcessado processamento={processamento({ summary: { ...SUMMARY_MELI, cancelledCount: 4, unpaidCount: 1 } })} marketplace="shopee" periodo="2026-10" />);
+    expect(container.querySelector('.vf-fin-topo__numeros [aria-label="Eventos do período"]')).not.toBeNull();
+    expect(container.querySelector('[data-secao="cobertura"] [aria-label="Eventos do período"]')).toBeNull();
   });
 });
 

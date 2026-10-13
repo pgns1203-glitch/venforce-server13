@@ -465,12 +465,12 @@ describe("NovoFechamento · hierarquia da página (UI/UX)", () => {
     await screen.findByText("Resultado do fechamento");
   }
 
-  it("produtos são a ÚLTIMA seção: depois de resultado, cobertura, pendências, composição, ações e entrega", async () => {
+  it("produtos são a ÚLTIMA seção: depois de topo, cobertura, composição, pendências, ações e entrega", async () => {
     api.processar.mockResolvedValue(respostaOk({ detailedRows: rows, summary: { ...SUMMARY, calculatedCoveragePercent: 98, revenueWithoutCost: 10 }, unmatchedIds: ["MLB0"] }));
     const usuario = userEvent.setup();
     const { container } = render(<NovoFechamento {...props} entregaSlot={<section data-secao="entrega" />} />);
     await processar(usuario);
-    expect(secoes(container)).toEqual(["resultado", "leitura", "cobertura", "pendencias", "composicao", "acoes", "entrega", "produtos"]);
+    expect(secoes(container)).toEqual(["resultado", "leitura", "cobertura", "composicao", "pendencias", "acoes", "entrega", "produtos"]);
   });
 
   it("a tabela de produtos é paginada (25 por vez), nunca as 60 linhas", async () => {

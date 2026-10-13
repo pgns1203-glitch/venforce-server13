@@ -30,23 +30,26 @@ async function run() {
 
     const comConta = await fonte.lerMarginSnapshotPorItens({ clienteId: 1, clienteContaId: 10, itemIds: ["MLB1", "MLB2", "MLB1"] }, db);
     assert.ok(consultas[0].sql.includes("FROM margin_projection_snapshots"));
-    assert.ok(consultas[0].sql.includes("cliente_conta_id = $4"));
+    assert.ok(consultas[0].sql.includes("s.cliente_conta_id = $4"));
+    assert.ok(!consultas[0].sql.includes("meli_anuncios"), "conta resolvida: filtro direto pela chave canônica");
     assert.deepStrictEqual(consultas[0].params, [1, "meli", ["MLB1", "MLB2"], 10]);
     assert.deepStrictEqual(comConta.get("MLB1"), {
       marginPercent: 18.25, profit: 7.1, computable: true, status: "HEALTHY",
-      calculadoEm: "2026-10-12T06:00:00Z", origemJob: "margin_snapshot",
+      calculadoEm: "2026-10-12T06:00:00Z", origemJob: "margin_snapshot", fonte: "margin_snapshot",
     });
     assert.strictEqual(comConta.get("MLB2").computable, false, "margin_percent null = não computável");
     assert.strictEqual(comConta.get("MLB2").marginPercent, null);
 
     await fonte.lerMarginSnapshotPorItens({ clienteId: 1, clienteContaId: null, itemIds: ["MLB1"] }, db);
-    assert.ok(!consultas[1].sql.includes("cliente_conta_id"), "sem conta resolvida: escopo só por cliente (mesmo do legado)");
+    assert.ok(consultas[1].sql.includes("JOIN meli_anuncios a"), "sem conta resolvida: item só lê a conta dona dele no catálogo");
+    assert.ok(consultas[1].sql.includes("a.cliente_conta_id = s.cliente_conta_id OR a.cliente_conta_id IS NULL"));
+    assert.ok(!consultas[1].sql.includes("is_primary"), "nunca cai na conta principal em silêncio");
     assert.deepStrictEqual(consultas[1].params, [1, "meli", ["MLB1"]]);
 
     const vazio = await fonte.lerMarginSnapshotPorItens({ clienteId: 1, itemIds: [] }, db);
     assert.strictEqual(vazio.size, 0);
     assert.strictEqual(consultas.length, 2, "lista vazia não consulta o banco");
-    console.log("  ✓ 1. leitura canônica: escopo cliente/marketplace/conta e computable derivado de margin_percent");
+    console.log("  ✓ 1. leitura canônica: escopo por conta (resolvida = chave canônica; não resolvida = conta dona no catálogo)");
   }
 
   // 2. Canônico vence; legado só para os faltantes.
@@ -60,6 +63,7 @@ async function run() {
     });
     assert.strictEqual(r.get("A").marginPercent, 10);
     assert.strictEqual(r.get("B").marginPercent, 20);
+    assert.strictEqual(r.get("B").fonte, "legado", "linha do legado sai marcada como legado");
     assert.deepStrictEqual(chamadasLegado, [{ clienteId: 1, itemIds: ["B"] }]);
     console.log("  ✓ 2. Margin Snapshot vence; legado consultado só para o que falta");
   }
@@ -87,6 +91,8 @@ async function run() {
       logger: silencioso,
     });
     assert.strictEqual(r.get("A").marginPercent, 5);
+    assert.strictEqual(r.get("A").fonte, "legado");
+    assert.strictEqual(r.has("B"), false, "ausente nas duas fontes: ausente (nunca 0)");
     assert.deepStrictEqual(chamadasLegado[0].itemIds, ["A", "B"]);
     console.log("  ✓ 4. erro no Margin Snapshot: cai no legado, nunca derruba a listagem");
   }

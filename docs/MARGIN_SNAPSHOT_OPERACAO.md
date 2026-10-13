@@ -76,6 +76,89 @@ lote no processo), `MARGIN_SNAPSHOT_BATCH_MAX_ATTEMPTS` (3), `MARGIN_SNAPSHOT_BA
 `MARGIN_SNAPSHOT_MAX_CONSECUTIVE_BATCH_FAILURES` (3), `MARGIN_SNAPSHOT_MAX_CATALOG_ITEMS`
 (20000), `MARGIN_SNAPSHOT_WORKER_POLL_MS` (15000), `MARGIN_SNAPSHOT_RUNNING_STALE_MINUTES` (10).
 
+## Anúncios ML — alimentação autônoma da margem projetada
+
+Auditado em 2026-10-13 sobre `origin/main` `ab17097`.
+
+```
+Mercado Livre + Base → Motor de Margem → Margin Snapshot Worker → margin_projection_snapshots
+                                                                     ├─ Anúncios ML        (leitura em lote)
+                                                                     └─ Central de Margem  (leitura em lote)
+```
+
+Anúncios e Central de Margem são consumidores irmãos da mesma tabela.
+Anúncios lê por `anunciosMargemProjetadaFonte` (um `SELECT … item_id = ANY`
+por listagem) e não chama a Central de Margem, a Central de Vendas, o Motor
+nem o ML para mostrar margem. Abrir a tela não enfileira refresh.
+
+### O que produz snapshot novo (o worker só processa runs enfileirados)
+
+| Evento | Código | Flag |
+|---|---|---|
+| Sync da Central de Vendas **concluído** da conta (inclui o noturno) | `centralVendasSyncWorker` → `enfileirarAposSyncCentralVendas` | `MARGIN_SNAPSHOT_WORKER_ENABLED` (+ cooldown) |
+| Custo/imposto/taxa salvo na Base | `POST /bases/:slug/custos/upsert` | `…_WORKER_ENABLED` + `…_BASE_TRIGGER_ENABLED` |
+| Custos em lote pela lista de Anúncios | `POST /anuncios-meli/custos/lote` | idem |
+| Importação de Base nova já vinculada | `POST /importar-base` | idem |
+| Vincular/desvincular Base | `POST /base-vinculos`, `DELETE /base-vinculos/:baseId`, `/cliente-contas/:id/base` (vincular Base na conta) | idem |
+| Aprovação de custo enviado pelo seller | `PATCH /seller/custos-submissoes/:id` | idem |
+| Clique em atualizar na Central de Margem | `POST /operacao/central-margem/:slug/snapshot/refresh` | só o worker processar |
+
+Não existe refresh periódico próprio do Margin Snapshot: o motivo
+`freshness_cron` existe no schema, mas nada o usa. Também não existe gatilho
+para:
+
+- mudança de preço ou promoção feita pelo VenForce (`PATCH /:itemId/preco`,
+  promoções) ou direto no ML;
+- comissão, frete, tipo de anúncio, logística ou status alterados no ML;
+- Base desabilitada (`POST /bases/:id/desabilitar`) ou excluída
+  (`DELETE /bases/:id`).
+
+Esses casos só entram no próximo run da conta, em geral o noturno.
+
+### Defasagem esperada
+
+- **Mudança de Base:** minutos, o tempo de a fila chegar à conta (dedupe de
+  1 run ativo por conta; mudança durante um run em execução vira 1 rerun).
+- **Resto (preço, promoção, comissão, frete):** até ~24 h mais a fila da
+  noite, **desde que o sync noturno da Central de Vendas da conta conclua**.
+  O sync noturno é o gatilho da atualização diária; Anúncios não depende dele
+  para carregar dados. Se o sync de uma conta falhar, essa conta não
+  recalcula naquela noite e o snapshot anterior continua valendo, com a data
+  dele.
+- **Cooldown** (`MARGIN_SNAPSHOT_SYNC_TRIGGER_COOLDOWN_MINUTES`, padrão 360):
+  só pula o gatilho do sync se houve um refresh **concluído** há menos de
+  6 h, ou seja, se o snapshot já é recente.
+- O worker processa as contas uma por vez por processo
+  (`MARGIN_SNAPSHOT_WORKER_CONCURRENCY`, padrão 1); numa carteira grande, as
+  últimas contas da noite terminam horas depois do sync.
+
+### Configuração mínima na Render
+
+```
+MARGIN_SNAPSHOT_WORKER_ENABLED=true
+MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED=true
+CENTRAL_VENDAS_NOTURNO_ENABLED=true     # já necessário para a Central de Vendas; é o gatilho diário
+```
+
+Não são necessárias para Anúncios: `MARGIN_SNAPSHOT_READ_ENABLED` e
+`MARGIN_SNAPSHOT_READ_CLIENTES` (só trocam a fonte da tela da Central de
+Margem), `ANUNCIOS_MARGEM_FONTE` (só para rollback, `=legado`) e
+`MARGIN_SNAPSHOT_SYNC_TRIGGER_COOLDOWN_MINUTES` (o padrão serve).
+
+**Manter desligado:** `MARGEM_PROJETADA_SCHEDULER_ENABLED`. Ligado, ele faz
+uma segunda varredura completa por conta toda noite, gravando só na tabela
+legada.
+
+### Proposta (não implementada): refresh após preço/promoção
+
+O menor mecanismo, sem schema novo: depois de um `PATCH /:itemId/preco` ou de
+participar/sair/aplicar promoção com sucesso, chamar
+`enqueueMarginSnapshotRun({ reason: "manual_refresh" })` da conta, fire-and-
+forget, atrás de `MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED`. O dedupe (1 run ativo
+por conta) junta uma rajada de edições em no máximo 1 run em execução e 1 na
+fila. O custo é uma varredura completa do catálogo por rajada. Um refresh só
+dos itens alterados evita essa varredura, mas exige mudar o processor.
+
 ## Rollout sugerido
 
 1. Em staging/local com Postgres **não-produção**: `MARGIN_SNAPSHOT_WORKER_ENABLED=true`,

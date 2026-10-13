@@ -1762,9 +1762,14 @@
     return dois(d.getDate()) + "/" + dois(d.getMonth() + 1) + " às " + dois(d.getHours()) + ":" + dois(d.getMinutes());
   }
 
-  function margemCalculadaEmFrase(calculadoEm) {
+  // `fonte` (margemProjetadaFonte): "margin_snapshot" (fonte canônica) ou
+  // "legado" (tabela antiga, só enquanto o item não tem cálculo canônico).
+  // Só o tooltip diz qual — a célula não muda.
+  function margemCalculadaEmFrase(calculadoEm, fonte) {
     var quando = margemCalculadaEmTexto(calculadoEm);
-    return quando ? " Margem projetada calculada em " + quando + "." : "";
+    if (!quando) return "";
+    return " Margem projetada calculada em " + quando + "." +
+      (fonte === "legado" ? " Cálculo antigo, aguardando o próximo recálculo." : "");
   }
 
   // Célula de Margem da LISTAGEM (linha avulsa e filho expandido de
@@ -1784,7 +1789,7 @@
     var classe = MARGEM_CLASSE[a.margemProjetadaStatus] || "is-neutral";
     if (a.margemProjetadaComputable === true && a.margemProjetadaPercent != null) {
       var tip = "Margem projetada com base no preço atual e custos configurados." +
-        margemCalculadaEmFrase(a.margemProjetadaCalculadaEm);
+        margemCalculadaEmFrase(a.margemProjetadaCalculadaEm, a.margemProjetadaFonte);
       return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(a.margemProjetadaPercent) + "</span>" +
         infoDotHtml(tip);
     }
@@ -1825,7 +1830,7 @@
       var min = formatarPercentualCompacto(f.margemProjetadaMinPercent);
       var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
       var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo). A ordenação por margem usa a média." +
-        margemCalculadaEmFrase(f.margemProjetadaCalculadaEm);
+        margemCalculadaEmFrase(f.margemProjetadaCalculadaEm, f.margemProjetadaFonte);
       var linhas = min === max
         ? '<span class="am-margem__valor is-neutral" data-faixa="unico">' + max + "</span>"
         : '<span class="am-margem__valor is-neutral" data-faixa="min">' + min + "</span>" +

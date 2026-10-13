@@ -67,6 +67,19 @@ async function listarSubmissoes(req, res) {
 async function revisarSubmissao(req, res) {
   try {
     const payload = await sellerService.revisarSubmissao(req.user, req.params.id, req.body || {}, extrairIp(req));
+
+    // Margin Snapshot: aprovar submissão grava custo na Base oficial (mesmo
+    // upsertCustoBase do POST /bases/:slug/custos/upsert) → enfileira refresh
+    // das contas MELI que usam a base. Fire-and-forget, atrás de
+    // MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED; nunca atrasa nem falha esta rota.
+    // Base não-MELI não tem conta afetada (resolverContasAfetadasPorBase).
+    if (payload && payload.acao === "aplicado" && payload.baseId) {
+      const marginTriggers = require("../services/motorMargem/marginSnapshotTriggers");
+      marginTriggers.dispararSemBloquear(() =>
+        marginTriggers.enfileirarPorMudancaDeBase({ baseId: payload.baseId, requestedBy: req.user?.id ?? null })
+      );
+    }
+
     return res.json(payload);
   } catch (err) {
     return responderErro(res, err);

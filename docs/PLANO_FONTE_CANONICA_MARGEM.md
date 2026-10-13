@@ -1,6 +1,6 @@
 # Plano — fonte canônica da margem projetada
 
-Status: **plano**. Nada aqui foi executado: nenhuma pipeline removida, nenhuma
+Status: **plano** — passo 3 executado em 2026-10-13 (ver §3.1). Na data original, nada tinha sido executado: nenhuma pipeline removida, nenhuma
 tabela fundida, nenhuma flag alterada. Base: `origin/main` `1c4a8c2` +
 branch `feat/margin-realized-sync-hardening`. Data: 2026-09-28.
 
@@ -89,6 +89,26 @@ resiliência e cobertura de catálogo melhores.
   o mês corrente (mesmo defeito R-01 da Central de Margem).
 - `mapProjectionsForItems` (lote por `item_id = ANY`, escopo por conta) —
   pronto para o passo 1 acima.
+
+## 3.1 Passo 3 executado (2026-10-13)
+
+Anúncios ML passou a ler `margin_projection_snapshots` primeiro
+(`server/services/motorMargem/anunciosMargemProjetadaFonte.js`), nas três
+leituras do controller: célula da lista, ordenação global por margem e
+filhos de família. Item sem linha canônica cai na tabela legada
+(`anuncios_margem_projetada_snapshot`), com a data de cálculo dela — nunca
+some nem vira zero. Leitura canônica com erro (ex.: schema ausente porque o
+worker não está ligado) também cai no legado.
+
+- Passo 1 (comparação em log) foi pulado: o fallback por item + a data
+  exibida na célula + o rollback por env cobrem o risco sem uma rodada só
+  de observação.
+- Passo 2 resolvido pela própria troca: o status vem do worker (Motor sem
+  vendas), ou seja, o da projetada.
+- Rollback sem deploy: `ANUNCIOS_MARGEM_FONTE=legado`.
+- O valor só fica fresco se `MARGIN_SNAPSHOT_WORKER_ENABLED=true` (e, para
+  custo novo refletir sozinho, `MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED=true`).
+- Passos 4 e 5 (desligar B, aposentar a tabela) continuam pendentes.
 
 ## 4. Decisões pendentes (humanas)
 - Status em Anúncios: projetado (recomendado) ou exibido.

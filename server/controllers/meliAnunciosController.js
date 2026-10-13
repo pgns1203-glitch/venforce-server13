@@ -17,7 +17,7 @@ const anunciosService = require("../services/meliAnuncios/meliAnunciosService");
 const familiaService = require("../services/meliAnuncios/meliFamiliaService");
 const syncService = require("../services/meliAnuncios/meliSyncService");
 const otimizadorService = require("../services/meliAnuncios/otimizadorMeliService");
-const margemProjetadaSnapshotRepository = require("../services/motorMargem/margemProjetadaSnapshotRepository");
+const margemProjetadaFonte = require("../services/motorMargem/anunciosMargemProjetadaFonte");
 const criacaoService = require("../services/meliAnuncios/meliCriacaoService");
 const conteudoService = require("../services/meliAnuncios/meliConteudoService");
 const imagensService = require("../services/meliAnuncios/meliImagensService");
@@ -312,7 +312,8 @@ function montarUnidadesVendidasGlobal(resultadoVendas, itemIds, porFamiliaItens)
 }
 
 // margemProjetada é GLOBAL e NÃO passa pelo Motor de Margem — lê só o
-// snapshot já persistido (`margemProjetadaSnapshotRepository.lerSnapshotPorItens`,
+// snapshot já persistido (`anunciosMargemProjetadaFonte.lerMargemProjetadaPorItens`:
+// Margin Snapshot primeiro, tabela legada de Anúncios só para o que faltar;
 // ver comentário de ORDENACOES_GLOBAIS acima).
 //
 // Contrato de família (missão "faixa de margem projetada nos agrupadores"):
@@ -453,7 +454,7 @@ async function anexarMargemProjetadaNaPagina(anuncios, { clienteId, clienteConta
   let snapshotPorItem = new Map();
   if (itemIds.length) {
     try {
-      snapshotPorItem = await margemProjetadaSnapshotRepository.lerSnapshotPorItens({ clienteId, itemIds });
+      snapshotPorItem = await margemProjetadaFonte.lerMargemProjetadaPorItens({ clienteId, clienteContaId, itemIds });
     } catch (err) {
       console.error(
         "[anuncios-meli] anexarMargemProjetadaNaPagina: erro ao ler snapshot, campos de margem ficam ausentes:",
@@ -551,8 +552,8 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
 
     let snapshotPorItem;
     try {
-      snapshotPorItem = await margemProjetadaSnapshotRepository.lerSnapshotPorItens({
-        clienteId: cliente.id, itemIds: todosItemIds,
+      snapshotPorItem = await margemProjetadaFonte.lerMargemProjetadaPorItens({
+        clienteId: cliente.id, clienteContaId, itemIds: todosItemIds,
       });
     } catch (err) {
       // Mesma garantia dos outros 3 critérios: falha de leitura (erro de
@@ -895,8 +896,8 @@ async function detalheFamilia(req, res) {
     let snapshotDosFilhos = new Map();
     if (itemIdsFilhos.length) {
       try {
-        snapshotDosFilhos = await margemProjetadaSnapshotRepository.lerSnapshotPorItens({
-          clienteId: cliente.id, itemIds: itemIdsFilhos,
+        snapshotDosFilhos = await margemProjetadaFonte.lerMargemProjetadaPorItens({
+          clienteId: cliente.id, clienteContaId: contaId, itemIds: itemIdsFilhos,
         });
       } catch (err) {
         console.error(

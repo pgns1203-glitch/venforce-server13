@@ -72,7 +72,9 @@ Module._load = function loadWithStubs(request, parent, isMain) {
       },
     };
   }
-  if (request === "../services/motorMargem/margemProjetadaSnapshotRepository") {
+  // "./..." = require de dentro de anunciosMargemProjetadaFonte (fallback
+  // legado da fonte de margem projetada), carregado junto com o controller.
+  if (request === "../services/motorMargem/margemProjetadaSnapshotRepository" || request === "./margemProjetadaSnapshotRepository") {
     return {
       async lerSnapshotPorItens(args) {
         chamadasSnapshot.push(args);
@@ -128,8 +130,12 @@ function contaFiltro(a, clienteContaId, includeLegacy) {
 }
 
 class MockDb {
-  constructor({ contas = [], grants = [], anuncios = [], userProducts = [] } = {}) {
+  constructor({ contas = [], grants = [], anuncios = [], userProducts = [], marginSnapshots = [] } = {}) {
     this.contas = contas; this.grants = grants; this.anuncios = anuncios; this.userProducts = userProducts;
+    // Linhas cruas de margin_projection_snapshots (fonte canônica, lida antes
+    // do legado por anunciosMargemProjetadaFonte).
+    this.marginSnapshots = marginSnapshots;
+    this.chamadasMarginSnapshot = [];
   }
   async connect() { return { query: (sql, params) => this.query(sql, params), release() {} }; }
   upFor(clienteId, userProductId) {
@@ -220,6 +226,16 @@ class MockDb {
         porFamilia.get(up.family_id).push(a.item_id);
       }
       return { rows: Array.from(porFamilia.entries()).flatMap(([familyId, itens]) => itens.map((item_id) => ({ family_id: familyId, item_id }))) };
+    }
+
+    if (q.includes("-- LER_MARGIN_SNAPSHOT_PARA_ANUNCIOS")) {
+      this.chamadasMarginSnapshot.push(params);
+      const ids = new Set(params[2]);
+      const contaId = params.length > 3 ? params[3] : null;
+      return {
+        rows: this.marginSnapshots.filter((r) => r.cliente_id === params[0] && ids.has(r.item_id)
+          && (contaId == null || r.cliente_conta_id === contaId)),
+      };
     }
 
     throw new Error("MockDb: query não reconhecida: " + q.slice(0, 120));
@@ -1447,6 +1463,54 @@ async function run() {
     console.log("  ✓ AN. família com null/UNVALIDATED/null (mistura exata do prompt): visual '—' (min/max/média null), ranking NULLS LAST");
   });
 
+  // AO. Fonte canônica (docs/PLANO_FONTE_CANONICA_MARGEM.md, passo 3): o
+  //     Margin Snapshot (margin_projection_snapshots) vence o legado; o
+  //     legado só entra para o item que ainda não tem linha canônica; a conta
+  //     pedida filtra a leitura canônica. Vale para célula E ranking.
+  await withMockDb({
+    ...UMA_CONTA,
+    anuncios: [
+      anuncioFixture({ item_id: "MLB-C" }), anuncioFixture({ item_id: "MLB-L" }),
+      anuncioFixture({ item_id: "MLB-U" }),
+    ],
+    marginSnapshots: [
+      { cliente_id: 1, cliente_conta_id: 10, item_id: "MLB-C", margin_percent: "12.50", profit: "4.00", status: "LOW_MARGIN", calculated_at: "2026-10-12T06:10:00Z" },
+      // Não computável no Motor: margin_percent null → computable false.
+      { cliente_id: 1, cliente_conta_id: 10, item_id: "MLB-U", margin_percent: null, profit: null, status: "UNVALIDATED", calculated_at: "2026-10-12T06:10:00Z" },
+      // Outra conta do mesmo cliente: nunca lida com clienteContaId=10.
+      { cliente_id: 1, cliente_conta_id: 99, item_id: "MLB-L", margin_percent: "99.00", profit: "1.00", status: "HEALTHY", calculated_at: "2026-10-12T06:10:00Z" },
+    ],
+  }, async (db) => {
+    chamadasSnapshot.length = 0;
+    snapshotHandler = ({ itemIds }) => new Map([
+      // Legado tem MLB-C também (valor velho) — não pode vencer o canônico.
+      ["MLB-C", { marginPercent: 40, profit: 20, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:34:00Z", origemJob: "orquestrador_manual" }],
+      ["MLB-L", { marginPercent: 30, profit: 9, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:34:00Z", origemJob: "orquestrador_manual" }],
+    ].filter(([id]) => itemIds.includes(id)));
+
+    const res = fakeRes();
+    await ctrl.listarAgrupado({ query: { clienteSlug: "cliente-a", clienteContaId: "10", page: "1", limit: "10", ordenarPor: "margem_desc" } }, res);
+    assert.strictEqual(res.corpo.ordenacaoAplicada, true);
+    assert.deepStrictEqual(res.corpo.anuncios.map((a) => a.item_id), ["MLB-L", "MLB-C", "MLB-U"],
+      "ranking usa 12,5% (canônico) para MLB-C, nunca os 40% do legado");
+    const porId = Object.fromEntries(res.corpo.anuncios.map((a) => [a.item_id, a]));
+    assert.strictEqual(porId["MLB-C"].margemProjetadaPercent, 12.5);
+    assert.strictEqual(porId["MLB-C"].margemProjetadaStatus, "LOW_MARGIN");
+    assert.strictEqual(porId["MLB-C"].margemProjetadaCalculadaEm, "2026-10-12T06:10:00Z");
+    assert.strictEqual(porId["MLB-C"].margemProjetadaOrigemJob, "margin_snapshot");
+    assert.strictEqual(porId["MLB-L"].margemProjetadaPercent, 30, "sem linha canônica NA CONTA pedida: cai no legado");
+    assert.strictEqual(porId["MLB-L"].margemProjetadaOrigemJob, "orquestrador_manual");
+    assert.strictEqual(porId["MLB-U"].margemProjetadaComputable, false);
+    assert.strictEqual(porId["MLB-U"].margemProjetadaPercent, null);
+    assert.strictEqual(porId["MLB-U"].margemProjetadaStatus, "UNVALIDATED");
+
+    assert.ok(db.chamadasMarginSnapshot.every((params) => params[3] === 10), "leitura canônica sempre filtrada pela conta pedida");
+    assert.ok(chamadasSnapshot.every((c) => !c.itemIds.includes("MLB-C") && !c.itemIds.includes("MLB-U")),
+      "legado só é consultado para itens sem linha canônica");
+    snapshotHandler = null;
+    console.log("  ✓ AO. Margin Snapshot é a fonte da margem projetada; legado só preenche o que falta; conta filtra a leitura");
+  });
+
   // AC. Checagem ESTÁTICA (arquitetural, não só o spy em runtime dos testes
   //     acima): o bloco `margemProjetada` do controller não pode nem
   //     REFERENCIAR motorMargemService/meliApiEvidenceAdapter/
@@ -1471,7 +1535,7 @@ async function run() {
     for (const proibido of ["motorMargemService", "meliApiEvidenceAdapter", "marketplaceCurrentQuoteService", "mlFetch("]) {
       assert.ok(!bloco.includes(proibido), `branch margemProjetada NÃO pode referenciar ${proibido}`);
     }
-    assert.ok(bloco.includes("margemProjetadaSnapshotRepository"), "branch margemProjetada precisa usar o repositório de snapshot");
+    assert.ok(bloco.includes("margemProjetadaFonte"), "branch margemProjetada precisa usar a fonte de snapshot (Margin Snapshot + legado)");
     console.log("  ✓ AC. branch margemProjetada (checagem estática): sem referência a Motor/ML — só o repositório de snapshot");
   }
 

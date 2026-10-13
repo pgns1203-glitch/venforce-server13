@@ -67,6 +67,7 @@ leitura/escrita é por conta explícita, validada contra o cliente.
 | `MARGIN_SNAPSHOT_BASE_TRIGGER_ENABLED=true` | off | Mudança de custo/vínculo de Base enfileira as contas afetadas (exige também o worker ligado). |
 | `MARGIN_SNAPSHOT_READ_ENABLED=true` | off | A tela lê o snapshot para todos os clientes. |
 | `MARGIN_SNAPSHOT_READ_CLIENTES=slug-a,slug-b` | vazio | Liga a leitura só para esses clientes (rollout gradual). |
+| `ANUNCIOS_MARGEM_FONTE=legado` | vazio (= snapshot) | Anúncios ML volta a ler só `anuncios_margem_projetada_snapshot`. Sem a flag, Anúncios lê `margin_projection_snapshots` e usa o legado só para itens sem linha (ver `docs/PLANO_FONTE_CANONICA_MARGEM.md` §3.1). |
 
 Ajustes (defaults conservadores, com teto rígido): `MARGIN_SNAPSHOT_WORKER_CONCURRENCY`
 (1, máx 3 runs por processo), `MARGIN_SNAPSHOT_BATCH_PAUSE_MS` (250 ms entre inícios de

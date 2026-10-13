@@ -29,11 +29,35 @@ export const TIPO_FECHAMENTO = "fechamento_mensal";
 
 // Lista as entregas de fechamento do cliente. `limit` espelha o 24 que
 // financeiroVisaoService.js usa — dois anos de competências.
-export function listarEntregasDeFechamento(clienteSlug, { limit = 24, signal } = {}) {
+//
+// Financeiro V3 (paridade operacional) — com `clienteContaId` a lista passa
+// a ser DESTA operação mais as entregas legadas (cliente_conta_id NULL), o
+// mesmo recorte que GET /financeiro/:cliente já usa. Uma entrega de outra
+// conta do cliente não aparece mais aqui como se fosse desta. As legadas
+// continuam visíveis e a tela as rotula — nunca são atribuídas à conta.
+export function listarEntregasDeFechamento(clienteSlug, { clienteContaId = null, limit = 24, signal } = {}) {
   return requisitar("/entregas-cliente", {
-    params: { cliente_slug: clienteSlug, tipo: TIPO_FECHAMENTO, limit },
+    params: {
+      cliente_slug: clienteSlug,
+      tipo: TIPO_FECHAMENTO,
+      limit,
+      ...(clienteContaId != null ? { cliente_conta_id: clienteContaId, incluir_sem_conta: "true" } : {}),
+    },
     signal,
   });
+}
+
+// GET /entregas-cliente/:id — a entrega completa, com payload_json. Usado
+// pelo editor de apresentação (destaques/prioridades) de um rascunho salvo.
+export function buscarEntrega(id, { signal } = {}) {
+  return requisitar(`/entregas-cliente/${encodeURIComponent(id)}`, { signal });
+}
+
+// DELETE /entregas-cliente/:id — exclusão por ID EXATO, autorizada por
+// carteira no backend (entregasClienteController.excluirEntregaController).
+// Nunca por competência ou token.
+export function excluirEntrega(id, { signal } = {}) {
+  return requisitar(`/entregas-cliente/${encodeURIComponent(id)}`, { metodo: "DELETE", signal });
 }
 
 // POST /entregas-cliente/:id/publicar — gera `token_publico` e marca

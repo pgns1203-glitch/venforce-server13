@@ -7,13 +7,14 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useEntregasFechamento, entregaDoPeriodo } from "./useEntregasFechamento.js";
+import { useEntregasFechamento, entregaDoPeriodo, entregaLegadaDoPeriodo, escopoDaEntrega } from "./useEntregasFechamento.js";
 import { ApiError } from "../services/apiClient.js";
 
 const api = vi.hoisted(() => ({
   listarEntregasDeFechamento: vi.fn(),
   publicarEntrega: vi.fn(),
   despublicarEntrega: vi.fn(),
+  excluirEntrega: vi.fn(),
 }));
 
 vi.mock("../services/entregasApi.js", () => api);
@@ -39,6 +40,7 @@ beforeEach(() => {
   api.listarEntregasDeFechamento.mockResolvedValue({ ok: true, entregas: [entrega()] });
   api.publicarEntrega.mockResolvedValue({ ok: true });
   api.despublicarEntrega.mockResolvedValue({ ok: true });
+  api.excluirEntrega.mockResolvedValue({ ok: true });
 });
 
 afterEach(() => {
@@ -190,28 +192,68 @@ describe("useEntregasFechamento · escrita", () => {
   });
 });
 
-describe("entregaDoPeriodo", () => {
-  it("acha a entrega da competência em tela", () => {
-    const lista = [entrega({ id: 1, periodo: "2026-07" }), entrega({ id: 2, periodo: "2026-08" })];
-    expect(entregaDoPeriodo(lista, "2026-08").id).toBe(2);
+describe("useEntregasFechamento · conta e exclusão", () => {
+  it("com clienteContaId, a lista é pedida DESTA operação (mais as legadas)", async () => {
+    renderHook(() => useEntregasFechamento({ clienteSlug: "n97", clienteContaId: 10, habilitado: true }));
+    await waitFor(() => expect(api.listarEntregasDeFechamento).toHaveBeenCalled());
+    expect(api.listarEntregasDeFechamento).toHaveBeenCalledWith("n97", expect.objectContaining({ clienteContaId: 10 }));
   });
 
-  it("tolera o período em texto livre do fluxo legado (mesma regra do backend)", () => {
-    const lista = [entrega({ id: 3, periodo: "Agosto 2026-08 (parcial)" })];
-    expect(entregaDoPeriodo(lista, "2026-08").id).toBe(3);
+  it("trocar de conta recarrega a lista", async () => {
+    const { rerender } = renderHook((p) => useEntregasFechamento(p), {
+      initialProps: { clienteSlug: "n97", clienteContaId: 10, habilitado: true },
+    });
+    await waitFor(() => expect(api.listarEntregasDeFechamento).toHaveBeenCalledTimes(1));
+    rerender({ clienteSlug: "n97", clienteContaId: 20, habilitado: true });
+    await waitFor(() => expect(api.listarEntregasDeFechamento).toHaveBeenCalledTimes(2));
+    expect(api.listarEntregasDeFechamento).toHaveBeenLastCalledWith("n97", expect.objectContaining({ clienteContaId: 20 }));
+  });
+
+  it("excluir chama DELETE pelo id exato e relê do servidor", async () => {
+    const { result } = renderHook(() => useEntregasFechamento({ clienteSlug: "n97", clienteContaId: 10, habilitado: true }));
+    await waitFor(() => expect(result.current.entregas).not.toBeNull());
+    await act(async () => {
+      await result.current.excluir(501);
+    });
+    expect(api.excluirEntrega).toHaveBeenCalledWith(501);
+    expect(api.excluirEntrega).toHaveBeenCalledTimes(1);
+    expect(api.publicarEntrega).not.toHaveBeenCalled();
+    expect(api.listarEntregasDeFechamento).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("entregaDoPeriodo", () => {
+  it("acha a entrega DESTA conta na competência em tela", () => {
+    const lista = [entrega({ id: 1, periodo: "2026-07", cliente_conta_id: 10 }), entrega({ id: 2, periodo: "2026-08", cliente_conta_id: 10 })];
+    expect(entregaDoPeriodo(lista, "2026-08", 10).id).toBe(2);
+  });
+
+  it("aceita o mês por extenso do legado, por IGUALDADE (mesma regra do backend)", () => {
+    const lista = [entrega({ id: 3, periodo: "Agosto 2026", cliente_conta_id: 10 })];
+    expect(entregaDoPeriodo(lista, "2026-08", 10).id).toBe(3);
+  });
+
+  it("intervalo ou texto ambíguo NÃO casa por substring — nem com Julho nem com Agosto", () => {
+    const lista = [
+      entrega({ id: 4, periodo: "2026-07 a 2026-08", cliente_conta_id: 10 }),
+      entrega({ id: 5, periodo: "Agosto 2026-08 (parcial)", cliente_conta_id: 10 }),
+    ];
+    expect(entregaDoPeriodo(lista, "2026-08", 10)).toBeNull();
+    expect(entregaDoPeriodo(lista, "2026-07", 10)).toBeNull();
   });
 
   it("sem correspondência devolve null — nunca a primeira da lista", () => {
-    const lista = [entrega({ id: 1, periodo: "2026-07" }), entrega({ id: 2, periodo: "2026-06" })];
-    expect(entregaDoPeriodo(lista, "2026-08")).toBeNull();
+    const lista = [entrega({ id: 1, periodo: "2026-07", cliente_conta_id: 10 }), entrega({ id: 2, periodo: "2026-06", cliente_conta_id: 10 })];
+    expect(entregaDoPeriodo(lista, "2026-08", 10)).toBeNull();
   });
 
-  it("lista ausente ou período ausente devolve null", () => {
-    expect(entregaDoPeriodo(null, "2026-08")).toBeNull();
-    expect(entregaDoPeriodo([entrega()], null)).toBeNull();
+  it("lista, período ou conta ausentes devolvem null", () => {
+    expect(entregaDoPeriodo(null, "2026-08", 10)).toBeNull();
+    expect(entregaDoPeriodo([entrega({ cliente_conta_id: 10 })], null, 10)).toBeNull();
+    expect(entregaDoPeriodo([entrega({ periodo: "2026-08", cliente_conta_id: 10 })], "2026-08", null)).toBeNull();
   });
 
-  it("com clienteContaId, prefere a entrega desta conta mesmo se outra conta apareceu antes na lista (V3 P2.6 D1)", () => {
+  it("prefere a entrega desta conta mesmo se outra conta apareceu antes na lista (V3 P2.6 D1)", () => {
     const lista = [
       entrega({ id: 10, periodo: "2026-08", cliente_conta_id: 20 }), // Shopee, chegou primeiro na lista
       entrega({ id: 11, periodo: "2026-08", cliente_conta_id: 10 }), // MELI — é esta conta
@@ -219,16 +261,31 @@ describe("entregaDoPeriodo", () => {
     expect(entregaDoPeriodo(lista, "2026-08", 10).id).toBe(11);
   });
 
-  it("com clienteContaId sem entrega desta conta, cai para a entrega legada (cliente_conta_id null)", () => {
+  it("entrega legada (cliente_conta_id null) NÃO vira a entrega desta conta — fica em entregaLegadaDoPeriodo", () => {
     const lista = [
       entrega({ id: 12, periodo: "2026-08", cliente_conta_id: 20 }), // outra conta
       entrega({ id: 13, periodo: "2026-08", cliente_conta_id: null }), // legada, do cliente
     ];
-    expect(entregaDoPeriodo(lista, "2026-08", 10).id).toBe(13);
+    expect(entregaDoPeriodo(lista, "2026-08", 10)).toBeNull();
+    expect(entregaLegadaDoPeriodo(lista, "2026-08").id).toBe(13);
   });
 
-  it("com clienteContaId, NUNCA devolve a entrega de uma conta diferente e específica — nem por publicar/despublicar em outra conta por engano", () => {
+  it("NUNCA devolve a entrega de uma conta diferente e específica", () => {
     const lista = [entrega({ id: 14, periodo: "2026-08", cliente_conta_id: 20 })];
     expect(entregaDoPeriodo(lista, "2026-08", 10)).toBeNull();
+  });
+
+  it("duplicata da mesma conta: publicada vence, depois a mais recente", () => {
+    const lista = [
+      entrega({ id: 15, periodo: "2026-08", cliente_conta_id: 10, publicado: false, created_at: "2026-09-03T10:00:00Z" }),
+      entrega({ id: 16, periodo: "2026-08", cliente_conta_id: 10, publicado: true, created_at: "2026-09-01T10:00:00Z" }),
+    ];
+    expect(entregaDoPeriodo(lista, "2026-08", 10).id).toBe(16);
+  });
+
+  it("escopoDaEntrega distingue esta conta, outra conta e legado", () => {
+    expect(escopoDaEntrega({ cliente_conta_id: 10 }, 10)).toBe("esta_conta");
+    expect(escopoDaEntrega({ cliente_conta_id: 20 }, 10)).toBe("outra_conta");
+    expect(escopoDaEntrega({ cliente_conta_id: null }, 10)).toBe("legado");
   });
 });

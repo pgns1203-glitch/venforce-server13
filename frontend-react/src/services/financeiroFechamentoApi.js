@@ -148,3 +148,40 @@ export async function salvarEntregaFechamento(body, { signal } = {}) {
 
   return dados?.entrega || dados;
 }
+
+// ── PATCH /entregas-cliente/:id (JSON) ───────────────────────────────────────
+//
+// Atualiza a apresentação (payload_json.entrega) de uma entrega que NUNCA
+// teve link público. Entrega que já teve link é histórica: o backend recusa
+// com 409 ENTREGA_PUBLICADA_IMUTAVEL — e o `codigo` precisa chegar à tela
+// para ela dizer isso em vez de um erro genérico (por isso este cliente, e não
+// apiClient.requisitar, que descarta o `code`).
+export async function atualizarEntregaFechamento(id, body, { signal } = {}) {
+  const token = exigirToken();
+
+  let resposta;
+  try {
+    resposta = await fetch(`${API_BASE}/entregas-cliente/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      signal,
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    if (err?.name === "AbortError") throw err;
+    throw new FechamentoApiError("Não foi possível falar com o servidor. Verifique a conexão.", { status: 0, codigo: "rede" });
+  }
+
+  tratarComuns(resposta);
+  const dados = await lerJson(resposta);
+
+  if (!resposta.ok || dados?.ok === false) {
+    throw new FechamentoApiError(mensagemDeErro(dados, resposta.status), {
+      status: resposta.status,
+      codigo: dados?.code || (resposta.status >= 500 ? "servidor" : "erro_api"),
+      entregaId: dados?.entregaId ?? null,
+    });
+  }
+
+  return dados?.entrega || dados;
+}

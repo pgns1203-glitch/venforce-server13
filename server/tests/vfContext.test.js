@@ -481,6 +481,31 @@ caso("C32", "forma do contexto canônico: exatamente três chaves; marketplace n
   eq("marketplace está no meta", t.store.getAccountMeta().marketplace, "meli");
 });
 
+caso("C34", "snapshot.cliente: nome de exibição da carteira, troca junto com o cliente e nunca vem do slug", async () => {
+  const semNome = { id: 3, slug: "sem-nome", nome: "  ", ativo: true, contasAtivas: 1 };
+  const t = novo({ clientes: [C(1, "a"), C(2, "b"), semNome], contas: { a: [conta(42)], b: [conta(51)], "sem-nome": [conta(61)] } });
+  const recebidos = [];
+  t.store.subscribe((s) => recebidos.push(s));
+  await t.store.init({ api: t.api, user: USER });
+  eq("sem cliente escolhido, sem cliente no snapshot", t.store.getSnapshot().cliente, null);
+  t.store.setCliente("a");
+  await tick(3);
+  const snapA = t.store.getSnapshot();
+  eq("id", snapA.cliente.id, 1);
+  eq("slug", snapA.cliente.slug, "a");
+  eq("nome da carteira", snapA.cliente.nome, "Cliente a");
+  eq("identidade continua com três chaves", Object.keys(snapA.context).sort().join(","), "clienteContaId,clienteId,clienteSlug");
+  t.store.setCliente("b");
+  await tick(3);
+  const ultimo = recebidos[recebidos.length - 1];
+  eq("o emit que troca o cliente já traz o nome novo", ultimo.cliente && ultimo.cliente.nome, "Cliente b");
+  eq("e o id novo", ultimo.cliente && ultimo.cliente.id, ultimo.context && ultimo.context.clienteId);
+  t.store.setCliente("sem-nome");
+  await tick(3);
+  eq("carteira sem nome → null (nunca o slug)", t.store.getSnapshot().cliente.nome, null);
+  eq("slug segue no seu campo", t.store.getSnapshot().cliente.slug, "sem-nome");
+});
+
 caso("C33", "clearOperationalContext() sobre PORTFOLIO_ERROR não conserta a carteira (M12)", async () => {
   // Regressão real, encontrada rodando o protótipo: limpar o contexto no
   // login sobrescrevia PORTFOLIO_ERROR com NO_PORTFOLIO, e o operador via

@@ -7,37 +7,48 @@
 //
 // A experiência: quem opera não deveria precisar pensar "qual arquivo subo?".
 // A leitura é de cima para baixo —
-//   1. contexto da operação (uma linha)
-//   2. base de custos (usa a vinculada? precisa de upload?)
-//   3. arquivos do fechamento (só os que ainda faltam)
-//   4. ajustes do período
-//   5. processar (com o motivo de bloqueio à vista)
+//   1. base de custos (usa a vinculada? precisa de upload?)
+//   2. arquivos do fechamento (só os que ainda faltam)
+//   3. ajustes do período
+//   4. processar (com o motivo de bloqueio à vista)
+//   5. RESULTADO DO PROCESSAMENTO completo, no mesmo fluxo
+//   6. salvar entrega / reprocessar / editar arquivos
 //
-// O que NÃO está aqui: seletor de Cliente/Conta/Período (vêm do Shell),
-// seletor de marketplace (é o da operação) e TikTok (segue no legado).
+// O contexto (cliente, marketplace, conta, competência) fica no cabeçalho da
+// página. O que NÃO está aqui: seletor de Cliente/Conta/Período (vêm do
+// Shell), seletor de marketplace (é o da operação) e TikTok (segue no legado).
 
+import { useEffect } from "react";
 import { useFechamentoNativo } from "../../hooks/useFechamentoNativo.js";
-import { cardsDoSummary } from "../../utils/fechamentoPayload.js";
-import { formatarMoeda } from "../../utils/currency.js";
 import { rotularCompetencia } from "../../utils/dates.js";
-import { ehAdmin } from "../../services/apiClient.js";
-import { FechamentoContextoBar } from "./fechamento/FechamentoContextoBar.jsx";
 import { BaseCustosStatus } from "./fechamento/BaseCustosStatus.jsx";
 import { FechamentoFileCard } from "./fechamento/FechamentoFileCard.jsx";
 import { FechamentoAjustes } from "./fechamento/FechamentoAjustes.jsx";
 import { FechamentoAcao } from "./fechamento/FechamentoAcao.jsx";
+import { ResultadoProcessado } from "./resultado/ResultadoProcessado.jsx";
+import { PendenciasCusto } from "./pendencias/PendenciasCusto.jsx";
 
 function avisoDoCampo(validacao, campo) {
   if (validacao.ok) return null;
   return validacao.itens.find((i) => i.campo === campo)?.mensagem || null;
 }
 
-export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, contaNome, periodo, periodoLabel, onSalvo }) {
+export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, contaNome, periodo, periodoLabel, onSalvo, onTrabalho }) {
   const f = useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, marketplace, periodo, onSalvo });
+
+  // A página precisa saber se há trabalho em andamento para não trocar de
+  // competência em silêncio (CompetenciaFechamento pede confirmação).
+  const { temTrabalho, temResultado, processadoNaoSalvo } = f.trabalho;
+  useEffect(() => {
+    onTrabalho?.({ temTrabalho, temResultado, processadoNaoSalvo });
+  }, [onTrabalho, temTrabalho, temResultado, processadoNaoSalvo]);
   const legado = `financeiro.html?cliente=${encodeURIComponent(clienteSlug || "")}`;
 
-  const noForm = f.estado === "form" || f.estado === "processando";
   const processando = f.estado === "processando";
+  // Reprocessar mantém o resultado anterior visível (ocupado) até o novo
+  // chegar; o formulário só reaparece quando não há resultado.
+  const noForm = f.estado === "form" || (processando && !f.processamento);
+  const comResultado = !!f.processamento && f.estado !== "form";
 
   if (!f.marketplaceSuportado) {
     return (
@@ -61,14 +72,6 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
 
   return (
     <div className="vf-stack vf-fin-novo">
-      <FechamentoContextoBar
-        clienteNome={clienteNome}
-        marketplace={f.marketplace}
-        contaNome={contaNome}
-        clienteContaId={clienteContaId}
-        periodoLabel={periodoLabel}
-      />
-
       {noForm && (
         <>
           <section className="vf-fin-novo__passo">
@@ -133,23 +136,28 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
 
       {f.erro && <div className="vf-status is-danger" role="alert">{f.erro.mensagem}</div>}
 
-      {!noForm && f.processamento && (
-        <PreviewFechamento f={f} periodoLabel={periodoLabel} legado={legado} />
+      {comResultado && (
+        <PreviewFechamento
+          f={f}
+          periodo={periodo}
+          periodoLabel={periodoLabel}
+          legado={legado}
+          contexto={{ cliente: clienteNome, clienteSlug, conta: contaNome || (clienteContaId ? `#${clienteContaId}` : null), competencia: periodo }}
+        />
       )}
     </div>
   );
 }
 
-function PreviewFechamento({ f, periodoLabel, legado }) {
+function PreviewFechamento({ f, periodo, periodoLabel, legado, contexto }) {
   const comp = f.competencia || {};
-  const cards = cardsDoSummary(f.processamento.summary);
   const salvando = f.estado === "salvando";
   const salvo = f.estado === "salvo";
-  const origemCustos = f.processamento.costsSource === "base" ? f.processamento.costsBase : null;
+  const reprocessando = f.estado === "processando";
 
   return (
-    <div className="vf-stack vf-stack--sm">
-      {/* ── Competência ─────────────────────────────────────────────────── */}
+    <div className={`vf-stack${reprocessando ? " is-atualizando" : ""}`} aria-busy={reprocessando ? "true" : undefined}>
+      {/* ── Competência declarada pelo backend ─────────────────────────── */}
       {f.divergente ? (
         <div className="vf-banner is-warning" role="alert">
           <div className="vf-banner__content">
@@ -178,56 +186,19 @@ function PreviewFechamento({ f, periodoLabel, legado }) {
         </p>
       )}
 
-      {origemCustos && (
-        <p className="vf-field__hint">
-          Custos da base vinculada <strong>{origemCustos.nome || origemCustos.slug}</strong>.
-        </p>
-      )}
-
-      {/* ── Cards do resultado ──────────────────────────────────────────── */}
-      <div className="vf-fin-novo__cards">
-        {cards.map((c) => (
-          <div className="vf-fin-novo__card" key={c.titulo}>
-            <span className="vf-fin-novo__card-rotulo">{c.titulo}</span>
-            <span className="vf-fin-novo__card-valor">
-              {c.disponivel
-                ? (c.titulo.includes("%") ? `${Number(c.valor).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}%` : formatarMoeda(c.valor))
-                : "—"}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* ── Incidente de suporte (caixa-preta do fechamento) ───────────────
-          Captura 100% automática no backend quando há anomalia relevante —
-          este banner só avisa que já aconteceu, sem exigir ação do usuário. */}
-      {f.processamento.incidente?.codigo && (
-        <div className="vf-banner is-info" role="status">
-          <div className="vf-banner__content">
-            <p className="vf-banner__title">Ocorrência de suporte {f.processamento.incidente.codigo} criada</p>
-            <p className="vf-banner__description">
-              Os arquivos utilizados foram preservados temporariamente para diagnóstico. Se precisar de ajuda, informe este código.
-            </p>
-            <div className="vf-cluster">
-              <button
-                type="button"
-                className="vf-btn vf-btn--secondary vf-btn--sm"
-                onClick={() => navigator.clipboard?.writeText(f.processamento.incidente.codigo)}
-              >
-                Copiar código
-              </button>
-              {ehAdmin() && (
-                <a
-                  className="vf-btn vf-btn--ghost vf-btn--sm"
-                  href={`financeiro-debug.html?incidente=${encodeURIComponent(f.processamento.incidente.codigo)}`}
-                >
-                  Abrir diagnóstico
-                </a>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <ResultadoProcessado processamento={f.processamento} marketplace={f.marketplace} periodo={periodo}>
+        {({ linhas }) => (
+          <PendenciasCusto
+            linhas={linhas}
+            processamento={f.processamento}
+            marketplace={f.marketplace}
+            contexto={contexto}
+            base={f.base.status === "encontrada" ? f.base.base : null}
+            onReprocessar={f.reprocessar}
+            reprocessando={reprocessando}
+          />
+        )}
+      </ResultadoProcessado>
 
       {/* ── Duplicidade (409) ───────────────────────────────────────────── */}
       {f.duplicidade && (
@@ -257,29 +228,30 @@ function PreviewFechamento({ f, periodoLabel, legado }) {
 
       {/* ── Ações ───────────────────────────────────────────────────────── */}
       {salvo ? (
-        <div className="vf-stack vf-stack--sm">
-          <div className="vf-status is-success" role="status">
-            Fechamento salvo. A entrega aparece abaixo — publique por lá quando quiser gerar o link do cliente.
-          </div>
-          <div className="vf-cluster">
-            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={f.resetar}>
-              Processar outro
-            </button>
-          </div>
+        <div className="vf-cluster">
+          <span className="vf-status is-success" role="status">
+            Entrega salva. Edite a apresentação e publique em “Entrega para o cliente”, logo abaixo.
+          </span>
+          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={f.resetar}>
+            Processar outro
+          </button>
         </div>
       ) : !f.duplicidade ? (
-        <div className="vf-cluster">
+        <div className="vf-cluster vf-fin-acoes">
           <button
             type="button"
             className="vf-btn vf-btn--primary"
-            disabled={salvando || (f.divergente && !f.confirmouDivergencia)}
+            disabled={salvando || reprocessando || (f.divergente && !f.confirmouDivergencia)}
             aria-busy={salvando ? "true" : undefined}
             onClick={() => f.salvar()}
           >
-            {salvando ? "Salvando…" : "Salvar fechamento"}
+            {salvando ? "Salvando…" : "Salvar entrega"}
           </button>
-          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={f.resetar}>
-            Voltar
+          <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" disabled={salvando || reprocessando} onClick={f.reprocessar}>
+            {reprocessando ? "Reprocessando…" : "Reprocessar fechamento"}
+          </button>
+          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" disabled={salvando} onClick={f.voltarAoFormulario}>
+            Editar arquivos e ajustes
           </button>
         </div>
       ) : null}

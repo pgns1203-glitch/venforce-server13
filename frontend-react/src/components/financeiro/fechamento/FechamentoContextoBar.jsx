@@ -1,24 +1,36 @@
 // frontend-react/src/components/financeiro/fechamento/FechamentoContextoBar.jsx
 //
-// Uma linha só, no topo do fechamento: o que está sendo fechado. Cliente,
-// marketplace, operação e competência — tudo já vem do Shell, aqui é só
-// exibição compacta para o formulário não parecer uma tela solta.
+// O que está sendo fechado: marketplace, conta (com o identificador externo)
+// e cliente. Tudo vem do Shell — aqui é só LEITURA. Não existe seletor de
+// cliente, marketplace ou conta nesta tela: a entrega pertence ao contexto.
 
-const MK_LABEL = { meli: "Mercado Livre", shopee: "Shopee", tiktok: "TikTok Shop" };
+import { MK_LABEL } from "../../../utils/financeiro/marketplace.js";
 
-export function FechamentoContextoBar({ clienteNome, marketplace, contaNome, clienteContaId, periodoLabel }) {
+export { MK_LABEL };
+
+export function rotuloDaConta({ contaNome, contaRotuloExterno, clienteContaId }) {
+  const nome = contaNome || (clienteContaId ? `Operação #${clienteContaId}` : null);
+  if (!nome) return null;
+  return contaRotuloExterno && contaRotuloExterno !== nome ? `${nome} · ${contaRotuloExterno}` : nome;
+}
+
+// O nome do cliente vem da carteira do Shell (useOperacaoAtual().clienteNome).
+// Sem ele, "—" — nunca o slug no lugar do nome.
+export function FechamentoContextoBar({ clienteNome, marketplace, contaNome, contaRotuloExterno, clienteContaId }) {
   const itens = [
-    clienteNome,
-    MK_LABEL[marketplace] || marketplace,
-    contaNome || (clienteContaId ? `Operação #${clienteContaId}` : null),
-    periodoLabel,
-  ].filter(Boolean);
+    { rotulo: "Marketplace", valor: MK_LABEL[marketplace] || marketplace || null },
+    { rotulo: "Conta", valor: rotuloDaConta({ contaNome, contaRotuloExterno, clienteContaId }) },
+    { rotulo: "Cliente", valor: clienteNome || "—" },
+  ].filter((i) => i.valor);
 
   return (
-    <p className="vf-fin-novo__contexto">
-      {itens.map((item, i) => (
-        <span key={i} className="vf-fin-novo__contexto-item">{item}</span>
+    <dl className="vf-fin-contexto" data-testid="contexto-fechamento">
+      {itens.map((item) => (
+        <div key={item.rotulo} className="vf-fin-contexto__item">
+          <dt>{item.rotulo}</dt>
+          <dd>{item.valor}</dd>
+        </div>
       ))}
-    </p>
+    </dl>
   );
 }

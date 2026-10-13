@@ -109,7 +109,7 @@ describe("fechamentoPayload", () => {
       marketplace: "meli",
       ajustes: { ads: "1.000,00" },
     });
-    expect(p.cliente.slug).toBe("zenite");
+    expect(p.cliente).toEqual({ slug: "zenite", nome: "Zenite" });
     expect(p.metadados.origem).toBe("financeiro-v3-nativo");
     expect(p.metadados.ads).toBe(1000);
     expect(p.metadados.costsSource).toBe("base");
@@ -240,7 +240,7 @@ describe("NovoFechamento · validação e envio", () => {
     expect(form.get("marketplace")).toBe("meli");
     expect(form.get("costs")).toBeNull(); // base cobre — nada de upload
     expect(await screen.findByText(/Competência confere/)).toBeInTheDocument();
-    expect(screen.getByText(/Custos da base vinculada/)).toBeInTheDocument();
+    expect(screen.getByText(/custos da base Base Zenite/)).toBeInTheDocument();
   });
 
   it("sem base: o upload de custos vai junto no multipart", async () => {
@@ -287,10 +287,10 @@ describe("NovoFechamento · caixa-preta (incidente FIN-xxx) + base vinculada", (
     await subirVendas(usuario);
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
 
-    expect(await screen.findByText("Ocorrência de suporte FIN-777 criada")).toBeInTheDocument();
+    expect(await screen.findByText("FIN-777")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copiar código" })).toBeInTheDocument();
     // custos da base continuam visíveis no preview (as duas features juntas)
-    expect(screen.getByText(/Custos da base vinculada/)).toBeInTheDocument();
+    expect(screen.getByText(/custos da base Comprou_chegou_shopee1/)).toBeInTheDocument();
     // não-admin não vê o link de diagnóstico
     expect(screen.queryByRole("link", { name: "Abrir diagnóstico" })).not.toBeInTheDocument();
   });
@@ -338,10 +338,32 @@ describe("NovoFechamento · competência divergente", () => {
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
 
     expect(await screen.findByText(/não bate com o período em tela/)).toBeInTheDocument();
-    const salvar = screen.getByRole("button", { name: "Salvar fechamento" });
+    const salvar = screen.getByRole("button", { name: "Salvar entrega" });
     expect(salvar).toBeDisabled();
     await usuario.click(screen.getByRole("checkbox"));
     expect(salvar).toBeEnabled();
+  });
+});
+
+describe("NovoFechamento · identidade do cliente no payload", () => {
+  it("salvar grava cliente.nome com o nome real do contexto (e o slug à parte)", async () => {
+    rede.requisitar.mockResolvedValue(vinculosCom({ marketplace: "meli", contaId: 42 }));
+    api.processar.mockResolvedValue(respostaOk());
+    api.salvar.mockResolvedValue({ id: 5, publicado: false, token_publico: null });
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await screen.findByText("Base vinculada");
+    await subirVendas(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText(/Competência confere/);
+    await usuario.click(screen.getByRole("button", { name: "Salvar entrega" }));
+    await waitFor(() => expect(api.salvar).toHaveBeenCalledTimes(1));
+    expect(api.salvar.mock.calls[0][0].payload_json.cliente).toEqual({ slug: "zenite", nome: "Zenite Comercial" });
+  });
+
+  it("sem nome no contexto, cliente.nome fica null — nunca o slug", () => {
+    const p = montarPayloadFechamento({ processamento: respostaOk(), clienteSlug: "zenite", clienteNome: null, periodo: "2026-08", marketplace: "meli" });
+    expect(p.cliente).toEqual({ slug: "zenite", nome: null });
   });
 });
 
@@ -360,7 +382,7 @@ describe("NovoFechamento · duplicidade 409", () => {
     await subirVendas(usuario);
     await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
     await screen.findByText(/Competência confere/);
-    await usuario.click(screen.getByRole("button", { name: "Salvar fechamento" }));
+    await usuario.click(screen.getByRole("button", { name: "Salvar entrega" }));
 
     expect(await screen.findByText(/já tem um fechamento PUBLICADO/)).toBeInTheDocument();
     await usuario.click(screen.getByRole("button", { name: "Substituir" }));
@@ -368,5 +390,65 @@ describe("NovoFechamento · duplicidade 409", () => {
     expect(api.salvar.mock.calls[1][0].substituir).toBe(true);
     expect(api.salvar.mock.calls[1][0].cliente_conta_id).toBe(42);
     expect(props.onSalvo).toHaveBeenCalled();
+  });
+});
+
+describe("NovoFechamento · substituir preserva a apresentação", () => {
+  it("substituir leva destaques/prioridades da entrega existente para o novo payload (números novos)", async () => {
+    const apresentacao = { destaques: ["Meta batida"], atencoes: [], prioridades: { alta: [{ titulo: "Repor", desc: "", data: "" }], media: [], baixa: [] } };
+    rede.requisitar.mockImplementation(async (caminho) =>
+      caminho === "/entregas-cliente/78"
+        ? { ok: true, entrega: { id: 78, payload_json: { summary: { finalResult: 1 }, entrega: apresentacao } } }
+        : semVinculos
+    );
+    api.processar.mockResolvedValue(respostaOk());
+    api.salvar
+      .mockRejectedValueOnce(new FechamentoApiError("Já existe.", { status: 409, codigo: "ENTREGA_JA_EXISTE", entregaId: 78, publicado: false }))
+      .mockResolvedValueOnce({ id: 78 });
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await subirVendas(usuario);
+    await subirCustos(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await usuario.click(await screen.findByRole("button", { name: "Salvar entrega" }));
+    await usuario.click(await screen.findByRole("button", { name: "Substituir" }));
+    await waitFor(() => expect(api.salvar).toHaveBeenCalledTimes(2));
+    const body = api.salvar.mock.calls[1][0];
+    expect(body.payload_json.entrega).toEqual(apresentacao);
+    expect(body.payload_json.summary).toEqual(SUMMARY);
+  });
+});
+
+describe("NovoFechamento · reprocessar e voltar aos arquivos", () => {
+  it("Reprocessar chama o MESMO endpoint com os mesmos arquivos; Editar arquivos mantém a planilha escolhida", async () => {
+    rede.requisitar.mockResolvedValue(vinculosCom({ marketplace: "meli", contaId: 42 }));
+    api.processar.mockResolvedValue(respostaOk({ costsSource: "base", costsBase: { id: 900, slug: "base-zenite", nome: "Base Zenite" } }));
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await screen.findByText("Base vinculada");
+    await subirVendas(usuario, "vendas-out.xlsx");
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText("Resultado do processamento");
+
+    await usuario.click(screen.getAllByRole("button", { name: "Reprocessar fechamento" })[0]);
+    await waitFor(() => expect(api.processar).toHaveBeenCalledTimes(2));
+    expect(api.processar.mock.calls[1][0].get("sales").name).toBe("vendas-out.xlsx");
+
+    await usuario.click(await screen.findByRole("button", { name: "Editar arquivos e ajustes" }));
+    expect(screen.getByText("Arquivos do fechamento")).toBeInTheDocument();
+    expect(screen.getByText("vendas-out.xlsx")).toBeInTheDocument();
+  });
+
+  it("reprocessamento que falha não deixa o resultado anterior na tela", async () => {
+    api.processar.mockResolvedValueOnce(respostaOk()).mockRejectedValueOnce(new FechamentoApiError("Planilha inválida.", { status: 400 }));
+    const usuario = userEvent.setup();
+    render(<NovoFechamento {...props} />);
+    await subirVendas(usuario);
+    await subirCustos(usuario);
+    await usuario.click(screen.getByRole("button", { name: "Processar fechamento" }));
+    await screen.findByText("Resultado do processamento");
+    await usuario.click(screen.getAllByRole("button", { name: "Reprocessar fechamento" })[0]);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Planilha inválida.");
+    expect(screen.queryByText("Resultado do processamento")).not.toBeInTheDocument();
   });
 });

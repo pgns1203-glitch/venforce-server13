@@ -1,109 +1,145 @@
 // frontend-react/src/components/financeiro/FechamentoTab.jsx
 //
-// Status do fechamento do período — leitura vinda de
-// server/services/financeiroVisaoService.js — e, desde F4.2, a publicação
-// do período EM TELA.
+// A mesa de trabalho do fechamento, de cima para baixo:
 //
-// Convergência #3 — GERAR um fechamento (upload + cálculo) passou a
-// acontecer AQUI, no <NovoFechamento>: o endpoint POST /fechamentos/financeiro
-// já era o mesmo motor dos dois lados; o que faltava era o formulário V3
-// mandar `periodo` + `clienteContaId` (que o cabeçalho mostra) e tratar a
-// competência declarada + a duplicidade. Backend Readiness pós-Conv.#2 §5.
-// O Financeiro legado continua existindo como fallback (link em NovoFechamento),
-// só deixou de ser o caminho obrigatório.
+//   1. NovoFechamento — arquivos, ajustes, Processar e, logo abaixo, o
+//      RESULTADO DO PROCESSAMENTO completo (não uma aba à parte).
+//   2. Entrega desta competência — a entrega DESTA conta (salva agora ou
+//      antes): apresentação para o cliente, publicar, copiar/abrir o link.
+//   3. Fechamento salvo — quando nada foi processado agora, a composição
+//      gravada na entrega desta competência (GET /financeiro/:cliente) e, no
+//      MELI, a conciliação Mercado Pago da Central de Vendas. Era o conteúdo
+//      das antigas abas "Resultado" e "Conciliação".
 //
-// Publicar/despublicar agem sobre uma entrega concreta, por `id`, e cada
-// entrega carrega o próprio período — nada é inferido.
+// Publicar/despublicar agem sobre uma entrega concreta, por `id`, e só a
+// entrega DESTA conta é operável aqui (entregaDoPeriodo). A legada, sem
+// operação registrada, é rotulada em Relatórios gerados.
 
+import { useCallback, useEffect, useState } from "react";
 import { formatarDataHora } from "../../utils/dates.js";
-import { entregaDoPeriodo } from "../../hooks/useEntregasFechamento.js";
-import { EntregaAcoes } from "./EntregaAcoes.jsx";
+import { EntregaPainel } from "./entrega/EntregaPainel.jsx";
 import { NovoFechamento } from "./NovoFechamento.jsx";
+import { ResultadoTab } from "./ResultadoTab.jsx";
+import { ConciliacaoTab } from "./ConciliacaoTab.jsx";
 
-const STATUS_INFO = {
-  publicado: { label: "Publicado", tom: "success" },
-  rascunho: { label: "Rascunho", tom: "warning" },
-  nao_gerado: { label: "Não gerado", tom: "neutral" },
-};
+export function FechamentoTab({
+  resultado,
+  conciliacao,
+  carregandoLeitura = false,
+  clienteSlug,
+  clienteNome,
+  clienteContaId,
+  marketplace,
+  contaNome,
+  periodo,
+  periodoLabel,
+  entregas,
+  entrega,
+  onSalvo,
+  onTrabalho,
+}) {
+  const [trabalhoForm, setTrabalhoForm] = useState({ temTrabalho: false, temResultado: false, processadoNaoSalvo: false });
+  const [apresentacaoAlterada, setApresentacaoAlterada] = useState(false);
+  const mkt = String(marketplace || "").toLowerCase();
+  const processadoAgora = trabalhoForm.temResultado;
 
-export function FechamentoTab({ resultado, clienteSlug, clienteNome, clienteContaId, marketplace, contaNome, periodo, periodoLabel, entregas, onSalvo }) {
-  const dados = resultado.dados;
-  const semFechamento = !resultado.disponivel || !dados || dados.status === "nao_gerado";
-
-  // A entrega operável do período em tela. Enquanto a lista carrega, não
-  // existe ação — e o status vem do payload de leitura, que já chegou.
-  const entrega = entregaDoPeriodo(entregas?.entregas, periodo, clienteContaId);
-  const statusAtual = entrega ? (entrega.publicado ? "publicado" : "rascunho") : dados?.status;
-  const status = STATUS_INFO[statusAtual] || STATUS_INFO.nao_gerado;
+  // Trabalho da página = formulário/resultado + apresentação não salva. Os
+  // dois chegam por efeitos dos filhos; callbacks estáveis (setState) evitam
+  // laço de renders.
+  const aoMudarTrabalho = useCallback((t) => setTrabalhoForm(t), []);
+  useEffect(() => {
+    onTrabalho?.({ ...trabalhoForm, temTrabalho: trabalhoForm.temTrabalho || apresentacaoAlterada });
+  }, [onTrabalho, trabalhoForm, apresentacaoAlterada]);
 
   return (
     <div className="vf-stack">
-      <div className="vf-cluster" style={{ justifyContent: "space-between" }}>
-        <span className={`vf-status is-${status.tom}`}>{status.label}</span>
-        <span className="vf-field__hint">{periodoLabel}</span>
-      </div>
+      <NovoFechamento
+        clienteSlug={clienteSlug}
+        clienteNome={clienteNome}
+        clienteContaId={clienteContaId}
+        marketplace={marketplace}
+        contaNome={contaNome}
+        periodo={periodo}
+        periodoLabel={periodoLabel}
+        onSalvo={onSalvo}
+        onTrabalho={aoMudarTrabalho}
+      />
 
-      <section className="vf-section vf-section--inset">
-        <NovoFechamento
-          clienteSlug={clienteSlug}
-          clienteNome={clienteNome}
-          clienteContaId={clienteContaId}
-          marketplace={marketplace}
-          contaNome={contaNome}
-          periodo={periodo}
+      <EntregaPainel
+        entrega={entrega}
+        entregas={entregas}
+        clienteNome={clienteNome}
+        marketplace={mkt}
+        contaNome={contaNome}
+        clienteContaId={clienteContaId}
+        periodo={periodo}
+        periodo={periodo}
+        periodoLabel={periodoLabel}
+        onAlterado={setApresentacaoAlterada}
+      />
+
+      {!processadoAgora && (
+        <FechamentoSalvo
+          resultado={resultado}
+          conciliacao={conciliacao}
+          carregando={carregandoLeitura}
+          entrega={entrega}
+          marketplace={mkt}
           periodoLabel={periodoLabel}
-          onSalvo={onSalvo}
         />
-      </section>
-
-      {semFechamento && !entrega ? (
-        <div className="vf-empty">
-          <p className="vf-empty__title">Nenhum fechamento gerado</p>
-          <p className="vf-empty__description">
-            {resultado.motivo || `${periodoLabel} ainda não tem fechamento processado. Use o formulário acima.`}
-          </p>
-        </div>
-      ) : (
-        <>
-          <p className="vf-field__hint">
-            Gerado em {formatarDataHora(entrega?.created_at || dados?.geradoEm)}
-            {entrega?.publicado || dados?.publicadoEm
-              ? ` · publicado em ${formatarDataHora(entrega?.published_at || dados?.publicadoEm)}`
-              : ""}
-          </p>
-
-          {entrega ? (
-            <div className="vf-stack vf-stack--sm">
-              <EntregaAcoes
-                entrega={entrega}
-                ocupada={entregas.acaoEmCurso === entrega.id}
-                bloqueada={entregas.acaoEmCurso != null && entregas.acaoEmCurso !== entrega.id}
-                erro={entregas.erroDeAcao?.id === entrega.id ? entregas.erroDeAcao.mensagem : null}
-                onPublicar={entregas.publicar}
-                onDespublicar={entregas.despublicar}
-              />
-              <p className="vf-field__hint">
-                Publicar gera um link público sem senha e sem validade. Despublicar revoga o link atual.
-              </p>
-            </div>
-          ) : (
-            // Sem `id` não existe ação — e dizer por quê é melhor do que um
-            // botão que não faz nada.
-            <p className="vf-field__hint">
-              {entregas?.carregando
-                ? "Carregando as ações desta entrega…"
-                : entregas?.erro
-                ? `Ações indisponíveis: ${entregas.erro.mensagem}`
-                : "Esta entrega não apareceu na lista operacional do cliente."}
-            </p>
-          )}
-
-          <p className="vf-field__hint">
-            Para substituir este fechamento, processe de novo no formulário acima — o backend
-            oferece a troca preservando o link público.
-          </p>
-        </>
       )}
     </div>
+  );
+}
+
+// O fechamento JÁ SALVO desta competência — leitura. Sem processamento em
+// memória, é o que a tela tem a dizer sobre o mês.
+function FechamentoSalvo({ resultado, conciliacao, carregando, entrega, marketplace, periodoLabel }) {
+  if (carregando) {
+    return (
+      <div className="vf-stack vf-stack--sm" aria-busy="true">
+        <div className="vf-skeleton vf-skeleton--title" />
+        <div className="vf-skeleton vf-skeleton--row" />
+      </div>
+    );
+  }
+  if (!resultado) return null;
+
+  // O bloco de leitura escolhe a entrega da competência com a mesma regra do
+  // backend; `escopoConta=false` com entrega significa que ela é legada (do
+  // cliente) — dito, nunca escondido.
+  const dados = resultado.dados;
+  const temSalvo = resultado.disponivel && dados && dados.status !== "nao_gerado";
+
+  return (
+    <section className="vf-section vf-section--inset vf-stack vf-stack--sm" aria-label="Fechamento salvo">
+      <div className="vf-cluster vf-cluster--between">
+        <h3 className="vf-fin-novo__passo-titulo">Fechamento salvo de {periodoLabel}</h3>
+        {temSalvo && (
+          <span className="vf-field__hint">
+            Gerado em {formatarDataHora(entrega?.created_at || dados?.geradoEm)}
+            {entrega?.publicado ? ` · publicado em ${formatarDataHora(entrega?.published_at)}` : ""}
+          </span>
+        )}
+      </div>
+      {resultado.origemClientLevel && (
+        <p className="vf-field__hint">
+          Fechamento legado · operação não registrada — {resultado.origemClientLevel.motivo}
+        </p>
+      )}
+      {resultado.ambiguidade && (
+        <p className="vf-field__hint">
+          {resultado.ambiguidade.total} fechamentos gravados para esta competência; exibindo o #{resultado.ambiguidade.escolhidoId}.
+        </p>
+      )}
+      <ResultadoTab resultado={resultado} periodoLabel={periodoLabel} />
+
+      {marketplace === "meli" && conciliacao && (
+        <details className="vf-fin-disclosure">
+          <summary>Conciliação Mercado Pago (Central de Vendas)</summary>
+          <ConciliacaoTab conciliacao={conciliacao} />
+        </details>
+      )}
+    </section>
   );
 }

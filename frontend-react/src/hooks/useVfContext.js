@@ -69,7 +69,18 @@ export function useOperacaoAtual() {
     pronta,
     clienteId: snapshot.context?.clienteId ?? null,
     clienteSlug: snapshot.context?.clienteSlug ?? null,
+    clienteNome: nomeDoCliente(snapshot),
     clienteContaId: snapshot.context?.clienteContaId ?? null,
     marketplace: snapshot.meta?.marketplace ?? null,
   };
+}
+
+// Nome amigável do cliente — `snapshot.cliente` (getClienteMeta() em
+// vf-context.js, da carteira do Shell). Só vale se for do MESMO cliente do
+// contexto; nunca derivado do slug. Ausente → null (a tela mostra "—").
+export function nomeDoCliente(snapshot) {
+  const cliente = snapshot?.cliente;
+  const id = snapshot?.context?.clienteId;
+  if (!cliente || id == null || String(cliente.id) !== String(id)) return null;
+  return typeof cliente.nome === "string" && cliente.nome.trim() ? cliente.nome.trim() : null;
 }

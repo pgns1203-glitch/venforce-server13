@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { processarFechamento, salvarEntregaFechamento, FechamentoApiError } from "../services/financeiroFechamentoApi.js";
 import { montarPayloadFechamento } from "../utils/fechamentoPayload.js";
+import { buscarEntrega } from "../services/entregasApi.js";
 import { useBaseVinculada } from "./useBaseVinculada.js";
 
 const AJUSTES_INICIAIS = { ads: "", venforce: "", affiliates: "", fullCost: "", additionalCosts: "" };
@@ -57,7 +58,10 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
     clienteSlug,
     marketplace: mkt,
     clienteContaId,
-    habilitado: marketplaceSuportado && (estado === "form" || estado === "processando"),
+    // Fica ativa também no resultado: as pendências de custo precisam saber
+    // qual é a base vinculada desta conta para oferecer a correção rápida.
+    // Os deps do hook não mudam com o `estado`, então não há nova leitura.
+    habilitado: marketplaceSuportado,
   });
 
   const abortRef = useRef(null);
@@ -188,10 +192,26 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
       setEstado("preview");
     } catch (err) {
       if (err?.name === "AbortError") return;
+      // Reprocessamento que falhou não deixa o resultado ANTERIOR na tela
+      // como se fosse o atual.
+      setProcessamento(null);
       setErro(normalizarErro(err));
       setEstado("form");
     }
   }, [validacao, arquivos, mkt, clienteSlug, clienteContaId, periodo, ajustes]);
+
+  // Voltar aos arquivos/ajustes SEM perder o que foi escolhido (trocar a
+  // planilha de custos, corrigir um ajuste). O resultado processado deixa de
+  // valer — Processar de novo gera o novo.
+  const voltarAoFormulario = useCallback(() => {
+    abortRef.current?.abort();
+    setProcessamento(null);
+    setErro(null);
+    setDuplicidade(null);
+    setConfirmouDivergencia(false);
+    setEntregaSalva(null);
+    setEstado("form");
+  }, []);
 
   const salvar = useCallback(
     async ({ substituir = false } = {}) => {
@@ -201,7 +221,7 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         return;
       }
       const ctx = contextoDoProcessamentoRef.current;
-      if (!ctx || ctx.clienteSlug !== clienteSlug || ctx.clienteContaId !== clienteContaId || ctx.periodo !== periodo) {
+      if (!ctx || ctx.clienteSlug !== clienteSlug || ctx.clienteContaId !== clienteContaId || ctx.periodo !== periodo || ctx.marketplace !== mkt) {
         setErro({ mensagem: "O contexto mudou desde o processamento. Processe novamente.", codigo: "contexto", status: 0 });
         setEstado("form");
         return;
@@ -221,6 +241,20 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         marketplace: mkt,
         ajustes,
       });
+
+      // Substituir NÃO pode apagar a apresentação (destaques/prioridades) que
+      // já foi escrita na entrega existente: ela é levada para o novo payload.
+      // Só texto manual — os números são os do processamento atual.
+      if (substituir && duplicidade?.entregaId) {
+        try {
+          const existente = await buscarEntrega(duplicidade.entregaId, { signal: controlador.signal });
+          const apresentacao = existente?.entrega?.payload_json?.entrega;
+          if (apresentacao && typeof apresentacao === "object") payload.entrega = apresentacao;
+        } catch (err) {
+          if (err?.name === "AbortError") return;
+          /* sem a apresentação anterior, segue sem ela */
+        }
+      }
 
       const body = {
         tipo: "fechamento_mensal",
@@ -252,10 +286,24 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         setEstado("preview");
       }
     },
-    [processamento, divergente, confirmouDivergencia, clienteSlug, clienteNome, clienteContaId, periodo, mkt, ajustes, onSalvo]
+    [processamento, divergente, confirmouDivergencia, clienteSlug, clienteNome, clienteContaId, periodo, mkt, ajustes, onSalvo, duplicidade]
   );
 
   const substituir = useCallback(() => salvar({ substituir: true }), [salvar]);
+
+  // Há trabalho que uma troca de competência jogaria fora? Arquivos
+  // escolhidos, ajustes digitados ou um resultado processado.
+  const temArquivo = !!(arquivos.sales || arquivos.costs || arquivos.ordersAll);
+  const temAjuste = Object.values(ajustes).some((v) => String(v ?? "").trim() !== "");
+  const temResultado = !!processamento && estado !== "form" && estado !== "processando";
+  const trabalho = useMemo(
+    () => ({
+      temTrabalho: temArquivo || temAjuste || !!processamento || estado === "processando",
+      temResultado,
+      processadoNaoSalvo: temResultado && estado !== "salvo",
+    }),
+    [temArquivo, temAjuste, processamento, estado, temResultado]
+  );
 
   const resetar = useCallback(() => {
     abortRef.current?.abort();
@@ -271,6 +319,7 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
 
   return {
     estado,
+    trabalho,
     marketplace: mkt,
     marketplaceSuportado,
     arquivos, setArquivo,
@@ -291,6 +340,10 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
     duplicidade,
     entregaSalva,
     processar,
+    // Reprocessar = o MESMO processamento, com os arquivos/ajustes atuais
+    // (ex.: depois de corrigir a base vinculada). Nenhum endpoint novo.
+    reprocessar: processar,
+    voltarAoFormulario,
     salvar,
     substituir,
     resetar,

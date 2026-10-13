@@ -4,7 +4,7 @@
 
 const pool = require("../../config/database");
 const { mlFetch } = require("../../utils/mlClient");
-const { resolveMlGrant } = require("../mlTokenService");
+const { exigirContextoPronto, criarErroHttp } = require("./contextoPrecificacaoService");
 const { resolverPrecosItem } = require("./precoItemService");
 
 function extrairSkuMl(body) {
@@ -295,13 +295,9 @@ async function diagMarcarErro(relatorioId, mensagem) {
 
 // Worker em background — roda dentro do mesmo processo via setImmediate.
 //
-// options.mlUserId: a conta ML já resolvida pelo controller (via
-// exigirContextoPronto/resolveMarketplaceAccountContext) no momento do
-// POST /start, quando o cliente tem 2+ contas Mercado Livre. Sem isso, este
-// worker reconsultava o grant só por clienteId e podia usar uma conta
-// diferente da que o Shell tinha selecionado (a chamada abaixo delega a
-// resolveMlGrant, existente e inalterado — só passa a receber mlUserId
-// quando o chamador já o conhece).
+// Revalida o contexto no início do worker. Um job antigo sem Conta só
+// continua se houver uma única operação; nunca consulta Grant principal.
+// Os IDs resolvidos pelo POST viajam em memória, sem alterar o schema.
 async function executarDiagnosticoCompleto(relatorioId, options = {}) {
   let cliente, base, mlUserId, margemAlvo;
   try {
@@ -315,7 +311,20 @@ async function executarDiagnosticoCompleto(relatorioId, options = {}) {
     const row = r.rows[0];
     cliente = { id: row.cliente_id, slug: row.cliente_slug };
     base = { id: row.base_id, slug: row.base_slug };
-    mlUserId = (await resolveMlGrant({ clienteId: row.cliente_id, mlUserId: options.mlUserId || undefined, requireUsable: true })).ml_user_id;
+    const contexto = await exigirContextoPronto({
+      clienteSlugRaw: row.cliente_slug, baseSlugRaw: row.base_slug,
+      clienteContaId: options.clienteContaId,
+    });
+    if (Number(contexto.cliente.id) !== Number(row.cliente_id) ||
+        Number(contexto.base.id) !== Number(row.base_id)) {
+      throw criarErroHttp(409, { code: "BASE_ACCOUNT_MISMATCH", erro: "Identidade do relatório diverge do contexto operacional." });
+    }
+    if (options.mlUserId != null && String(options.mlUserId) !== String(contexto.mlUserId)) {
+      throw criarErroHttp(409, { code: "GRANT_ACCOUNT_MISMATCH", erro: "Seller do diagnóstico diverge da Conta resolvida." });
+    }
+    cliente = contexto.cliente;
+    base = contexto.base;
+    mlUserId = contexto.mlUserId;
     margemAlvo = row.margem_alvo != null ? Number(row.margem_alvo) : null;
     if (!mlUserId) throw new Error("Cliente sem conta ML vinculada.");
     if (!base.id) throw new Error("Base não encontrada.");

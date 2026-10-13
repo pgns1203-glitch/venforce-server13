@@ -1,8 +1,8 @@
 // server/services/automacoes/contextoPrecificacaoService.js
 // Resolução única do contexto de precificação ML de um cliente:
 //   - cliente selecionado
-//   - grant/token ML vinculado
-//   - base ATIVA vinculada ao cliente no marketplace MELI
+//   - Conta ativa e seller/Grant exatos
+//   - Base ativa da operação MELI (legado apenas com cardinalidade 1)
 //
 // Toda a lógica de "qual base do cliente usar" mora aqui. Nenhum outro
 // service deve refazer a consulta em base_cliente_vinculos — precificação,
@@ -13,7 +13,8 @@
 // Este arquivo apenas RESOLVE qual base/grant usar; não calcula nada.
 
 const pool = require("../../config/database");
-const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
+const { resolveMarketplaceAccountContext, resolverContaParaVinculoLegado, obterConta } = require("../clienteContas/clienteContaService");
+const { assertAccountContext } = require("../clienteContas/accountContextInvariant");
 const { CODIGOS_CANONICOS } = require("../../utils/erroContextoCanonico");
 
 function normalizarSlug(nome) {
@@ -26,6 +27,7 @@ function criarErroHttp(statusCode, payload) {
   const err = new Error(payload?.erro || "Erro");
   err.statusCode = statusCode;
   err.payload = payload;
+  err.code = payload?.code || payload?.codigo;
   return err;
 }
 
@@ -74,35 +76,67 @@ const CODE_POR_MOTIVO = {
 
 // Bases ATIVAS vinculadas ao cliente no marketplace MELI (vínculo ativo).
 // Fonte única desta consulta em todo o backend.
-// `v.cliente_conta_id` viaja no resultado só para permitir o narrowing por
-// conta (D-8) em resolverContextoPrecificacao — NUNCA sai no payload público
-// (o mapeamento final do `base` resolvido é uma allowlist explícita, ver
-// abaixo). NULL = vínculo legado, ainda não migrado por conta.
+// A projeção conserva a identidade e atividade do vínculo para o invariante.
+// NULL é legado; a elegibilidade depende da cardinalidade comprovada.
 async function buscarBasesMeliDoCliente(clienteId) {
   const result = await pool.query(
-    `SELECT b.id, b.slug, b.nome, b.ativo, b.created_at, b.updated_at, v.cliente_conta_id
+    `SELECT b.id, b.slug, b.nome, b.ativo, b.created_at, b.updated_at, b.marketplace, v.cliente_conta_id,
+            v.cliente_id, v.marketplace AS vinculo_marketplace, v.ativo AS vinculo_ativo
        FROM base_cliente_vinculos v
        JOIN bases b ON b.id = v.base_id AND b.ativo = true
       WHERE v.cliente_id = $1
         AND v.ativo = true
         AND v.marketplace = 'meli'
+        AND b.marketplace = 'meli'
       ORDER BY b.updated_at DESC NULLS LAST, b.id ASC`,
     [clienteId]
   );
   return result.rows;
 }
 
-// D-8: bases candidatas de UMA conta. Com conta definida, uma base é
-// candidata quando o vínculo já foi migrado para esta conta
-// (cliente_conta_id === contaId) ou ainda é legado/client-level
-// (cliente_conta_id NULL — não pertence a NENHUMA conta específica, logo não
-// é "roubado" de ninguém). Nunca uma base vinculada explicitamente a uma
-// conta DIFERENTE. Sem conta (cliente totalmente legado), todas as bases.
-// Fonte única desta regra: o resolver abaixo e a prontidão por conta
-// (automacoesController) usam o mesmo filtro.
-function basesMeliDaConta(basesMeli, contaId) {
-  if (contaId == null) return basesMeli;
-  return basesMeli.filter((b) => b.cliente_conta_id == null || Number(b.cliente_conta_id) === Number(contaId));
+// Uma Base NULL só tem dono operacional comprovável com uma Conta elegível.
+// Sem essa prova, nem a seleção explícita de Conta autoriza o fallback.
+function basesMeliDaConta(basesMeli, contaId, eligibleAccountCount = null) {
+  if (contaId == null) return [];
+  return basesMeli.filter((b) => Number(b.cliente_conta_id) === Number(contaId) ||
+    (b.cliente_conta_id == null && Number(eligibleAccountCount) === 1));
+}
+
+function erroContexto(code, mensagem, statusCode = 409, ids = {}) {
+  return criarErroHttp(statusCode, { ok: false, code, codigo: code, erro: mensagem, ...ids });
+}
+
+function validarIdentidade({ cliente, conta, grant = null, base = null, eligibleAccountCount = null, clienteContaId = conta?.id }) {
+  assertAccountContext({ clienteId: cliente.id, clienteContaId,
+    marketplace: "meli", conta, grant, base, requireAccount: true,
+    mlUserId: grant?.ml_user_id, strict: true, eligibleAccountCount });
+}
+
+// Projeções de identidade, sem credenciais. Inclui Grants históricos: um
+// status inválido não é prova de titularidade comercial diferente.
+async function validarTitularidadeSeller(cliente, conta) {
+  const seller = conta.external_account_id;
+  if (!seller) return;
+  const contas = await pool.query(
+    "SELECT id, cliente_id FROM cliente_contas WHERE marketplace = 'meli' AND external_account_id = $1",
+    [String(seller)]
+  );
+  const grants = await pool.query(
+    "SELECT id, cliente_id, cliente_conta_id, ml_user_id FROM ml_tokens WHERE ml_user_id = $1",
+    [String(seller)]
+  );
+  if (contas.rows.some((c) => Number(c.cliente_id) !== Number(cliente.id)) ||
+      grants.rows.some((g) => Number(g.cliente_id) !== Number(cliente.id))) {
+    throw erroContexto("SELLER_OWNERSHIP_AMBIGUOUS", "Seller vinculado a mais de um Cliente; revise a titularidade.", 409,
+      { clienteId: cliente.id, clienteContaId: conta.id });
+  }
+  if (contas.rows.some((c) => Number(c.id) !== Number(conta.id))) {
+    throw erroContexto("ACCOUNT_CONTEXT_AMBIGUOUS", "Seller vinculado a mais de uma Conta.");
+  }
+  if (grants.rows.length > 1) {
+    throw erroContexto("GRANT_CONTEXT_AMBIGUOUS", "Mais de um Grant para a identidade operacional.");
+  }
+  for (const grant of grants.rows) validarIdentidade({ cliente, conta, grant });
 }
 
 // Quantas cliente_contas ATIVAS o cliente tem no marketplace MELI. MESMA
@@ -120,8 +154,8 @@ async function contarContasMeliAtivas(clienteId) {
   return result.rows[0]?.total || 0;
 }
 
-// Resolve o contexto de um cliente SEM lançar erro para condições de negócio.
-// Lança apenas 404 quando o cliente não existe. Retorna:
+// Resolve o contexto. Incoerências/ambiguidades lançam erro; ausência de
+// Grant ou Base produz prontidão negativa. Retorna:
 // { cliente, conta|null, grant:{conectado, ml_user_id}, base|null, basesMeli[], pronto, motivo, mensagem }
 //
 // clienteContaId (opcional): a CONTA Mercado Livre selecionada no Shell V3.
@@ -132,8 +166,8 @@ async function contarContasMeliAtivas(clienteId) {
 // outro cliente, marketplace incompatível, conta inativa, conta ambígua sem
 // seleção) sempre propagam intactos: nunca caem de volta no fallback
 // legado, que escolheria uma conta em silêncio (o bug que esta função existe
-// para corrigir). Sem clienteContaId e sem cliente_contas cadastradas para
-// o cliente, o comportamento é o legado (grant principal/fallback).
+// para corrigir). Sem clienteContaId, a compatibilidade exige exatamente uma Conta ativa.
+// Zero Contas nunca aciona o Grant principal.
 async function resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId = null }) {
   const clienteSlug = normalizarSlug(clienteSlugRaw);
   if (!clienteSlug) {
@@ -154,57 +188,52 @@ async function resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId = n
   }
   const cliente = c.rows[0];
 
+  // Usa os resolvers existentes para cardinalidade e Conta; zero operações
+  // não é autorização para selecionar Grant principal no caminho legado.
+  const selecionada = clienteContaId != null && clienteContaId !== "";
+  let conta = selecionada
+    ? await obterConta(clienteContaId)
+    : await resolverContaParaVinculoLegado({ clienteId: cliente.id, marketplace: "meli" });
+  if (!conta) throw erroContexto("ACCOUNT_CONTEXT_NOT_FOUND", "Cliente sem operação MELI ativa.", 404);
+  validarIdentidade({ cliente, conta });
+  await validarTitularidadeSeller(cliente, conta);
+
   let mlUserId = null;
-  let conta = null;
+  let grantId = null;
   try {
     const accountContext = await resolveMarketplaceAccountContext({
-      clienteSlug: cliente.slug,
-      marketplace: "meli",
-      clienteContaId: clienteContaId || null,
-      // true: replica o `resolveMlGrant({..., requireUsable: true})` do
-      // comportamento original — um grant existente mas indisponível
-      // (revogado/expirado sem renovação) deve virar "não conectado", não
-      // ser devolvido como se estivesse usável. Ver o catch abaixo: esse
-      // erro (sem `statusCode`) é engolido do mesmo jeito que o try/catch
-      // original engolia.
+      clienteSlug: cliente.slug, marketplace: "meli", clienteContaId: conta.id,
       requireUsableGrant: true,
     });
+    validarIdentidade({ cliente, conta: accountContext.conta, grant: accountContext.grant, clienteContaId: conta.id });
     conta = accountContext.conta;
     mlUserId = accountContext.grant?.ml_user_id ?? null;
+    grantId = accountContext.grant?.id ?? null;
   } catch (error) {
-    // Erro ESTRUTURAL de conta (403 CONTA_NAO_PERTENCE_AO_CLIENTE, 422
-    // MARKETPLACE_INCOMPATIVEL, 409 CONTA_INATIVA/CONTA_AMBIGUA, 404 conta
-    // inexistente) — nunca é engolido: bloquear é a regra, escolher outra
-    // conta em silêncio é o bug. `statusCode` só existe nesses erros
-    // estruturais (criarErroHttp em clienteContaService.js); um
-    // ML_GRANT_NOT_FOUND/ML_GRANT_UNUSABLE/ML_GRANT_REVOKED do
-    // mlTokenService não tem `statusCode` e cai no `grant.conectado = false`
-    // normal abaixo — mesmo comportamento de antes desta mudança.
-    if (error.statusCode) throw error;
+    // Só indisponibilidade conhecida de integração vira prontidão negativa.
+    // Falhas de banco e incoerência de identidade sempre propagam.
+    if (!["ML_GRANT_NOT_FOUND", "ML_GRANT_UNUSABLE", "ML_GRANT_REVOKED"].includes(error.code)) throw error;
   }
-  const grant = { conectado: Boolean(mlUserId), ml_user_id: mlUserId };
-
+  const grant = { conectado: Boolean(mlUserId), ml_user_id: mlUserId, id: grantId };
   const basesMeli = await buscarBasesMeliDoCliente(cliente.id);
-
-  // Escopo de conta para as bases: a conta resolvida ou, quando o grant
-  // falhou (conta fica null no catch acima), a conta pedida explicitamente —
-  // ela já passou pelas checagens estruturais (pertence ao cliente, MELI,
-  // ativa), que rodam antes do grant. Sem isso a prontidão de uma conta sem
-  // grant exibiria bases de OUTRA conta do cliente.
-  const contaIdEscopo = conta ? conta.id : (clienteContaId != null && clienteContaId !== "" ? Number(clienteContaId) : null);
-  const basesConta = basesMeliDaConta(basesMeli, contaIdEscopo);
+  const eligibleAccountCount = await contarContasMeliAtivas(cliente.id);
+  const basesConta = basesMeliDaConta(basesMeli, conta.id, eligibleAccountCount);
+  const baseLegadaAmbigua = eligibleAccountCount !== 1 && basesMeli.some((b) => b.cliente_conta_id == null);
 
   let base = null;
   let motivo = MOTIVOS.OK;
 
   if (!grant.conectado) {
     motivo = MOTIVOS.GRANT_ML_NAO_CONECTADO;
+  } else if (basesConta.length === 0 && baseLegadaAmbigua) {
+    throw erroContexto("ACCOUNT_CONTEXT_AMBIGUOUS", "Base legada sem Conta em Cliente com múltiplas operações MELI.");
   } else if (basesConta.length === 0) {
     motivo = MOTIVOS.BASE_MELI_NAO_VINCULADA;
   } else if (basesConta.length > 1) {
     motivo = MOTIVOS.MULTIPLAS_BASES_MELI;
   } else {
     base = basesConta[0];
+    validarIdentidade({ cliente, conta, base, eligibleAccountCount });
   }
 
   const pronto = motivo === MOTIVOS.OK;
@@ -213,16 +242,8 @@ async function resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId = n
     cliente: { id: cliente.id, nome: cliente.nome, slug: cliente.slug },
     conta,
     grant,
-    base: base
-      ? {
-          id: base.id,
-          slug: base.slug,
-          nome: base.nome,
-          ativo: base.ativo,
-          created_at: base.created_at,
-          updated_at: base.updated_at,
-        }
-      : null,
+    base,
+    eligibleAccountCount,
     basesMeli,
     basesConta,
     pronto,
@@ -231,28 +252,31 @@ async function resolverContextoPrecificacao({ clienteSlugRaw, clienteContaId = n
   };
 }
 
-// Valida um baseSlug informado explicitamente (compatibilidade): a base precisa
-// existir, estar ativa e estar vinculada ao cliente no marketplace MELI.
-async function validarBaseInformada({ clienteId, baseSlugRaw }) {
+// Base explícita: ler TODOS os vínculos, sem LIMIT/ordem que esconda
+// conflito. O mesmo invariante valida pai, Conta, marketplace e atividade.
+async function validarBaseInformada({ contexto, baseSlugRaw }) {
   const baseSlug = normalizarSlug(baseSlugRaw);
   if (!baseSlug) return null;
   const r = await pool.query(
-    `SELECT b.id, b.slug, b.nome, b.ativo, b.created_at, b.updated_at
-       FROM base_cliente_vinculos v
-       JOIN bases b ON b.id = v.base_id AND b.ativo = true
-      WHERE v.cliente_id = $1
-        AND v.ativo = true
-        AND v.marketplace = 'meli'
-        AND b.slug = $2
-      LIMIT 1`,
-    [clienteId, baseSlug]
+    `SELECT b.id, b.slug, b.nome, b.ativo, b.created_at, b.updated_at,
+            b.marketplace, v.cliente_id, v.cliente_conta_id,
+            v.marketplace AS vinculo_marketplace, v.ativo AS vinculo_ativo
+       FROM bases b
+       LEFT JOIN base_cliente_vinculos v ON v.base_id = b.id AND v.ativo = true
+      WHERE b.slug = $1`,
+    [baseSlug]
   );
-  return r.rows[0] || null;
+  if (!r.rows.length) throw erroContexto("BASE_NOT_FOUND", "Base informada não encontrada.", 404);
+  if (r.rows.length > 1) throw erroContexto("ACCOUNT_CONTEXT_AMBIGUOUS", "Base com mais de um vínculo ativo.");
+  const base = r.rows[0];
+  validarIdentidade({ cliente: contexto.cliente, conta: contexto.conta, base,
+    eligibleAccountCount: contexto.eligibleAccountCount });
+  return base;
 }
 
 // Resolve o contexto e EXIGE que esteja pronto para análise. Usado pelos
 // endpoints que precisam de uma base concreta (preview-ml, diagnóstico).
-// - Se baseSlugRaw vier (compat), valida se pertence ao cliente + MELI + ativa.
+// - Se baseSlugRaw vier (compat), valida a identidade completa da operação.
 // - Se não vier, resolve automaticamente a base vinculada.
 // Lança erro controlado (statusCode + payload.codigo) quando não é possível.
 async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw, clienteContaId = null }) {
@@ -271,7 +295,7 @@ async function exigirContextoPronto({ clienteSlugRaw, baseSlugRaw, clienteContaI
   const baseSlugStr = String(baseSlugRaw || "").trim();
   if (baseSlugStr) {
     // Caminho de compatibilidade: baseSlug foi informado pelo frontend antigo.
-    const base = await validarBaseInformada({ clienteId: contexto.cliente.id, baseSlugRaw: baseSlugStr });
+    const base = await validarBaseInformada({ contexto, baseSlugRaw: baseSlugStr });
     if (!base) {
       throw criarErroHttp(STATUS_POR_MOTIVO[MOTIVOS.BASE_MELI_NAO_VINCULADA], {
         ok: false,

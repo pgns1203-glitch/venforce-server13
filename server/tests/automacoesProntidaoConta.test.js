@@ -10,7 +10,7 @@
 //   A. 2 contas, uma base cada, grants válidos → cada conta pronta com a SUA base.
 //   B. Conta B sem base → "ausente", nunca reaproveita a Base A.
 //   C. Mesma conta com 2 bases ativas → "multiplas" (duplicidade real).
-//   D. Legado: sem cliente_contas, 1 base sem conta → pronto; 2+ contas sem
+//   D. Legado: uma Conta, 1 Base sem Conta → pronto; 2+ contas sem
 //      seleção → 409, nunca escolhe uma conta/base em silêncio.
 //   E. Grant da conta B inválido → só B bloqueia; não herda o grant de A e a
 //      linha de base continua escopada em B.
@@ -22,13 +22,13 @@ const pool = require("../config/database");
 const Module = require("module");
 
 let GRANTS_VALIDOS = new Set();
-async function resolveMlGrantStub({ mlUserId }) {
+async function resolveMlGrantStub({ clienteId, mlUserId }) {
   if (!mlUserId || !GRANTS_VALIDOS.has(String(mlUserId))) {
     const err = new Error("Grant indisponível.");
     err.code = "ML_GRANT_NOT_FOUND";
     throw err;
   }
-  return { ml_user_id: String(mlUserId) };
+  return { id: 42, cliente_id: clienteId, ml_user_id: String(mlUserId) };
 }
 const originalLoad = Module._load;
 Module._load = function loadWithMlTokenStub(request, parent, isMain) {
@@ -84,7 +84,7 @@ function mockDb({ contas, vinculos }) {
       return { rows: v ? [{ vinculo_id: v.id, base_id: v.base_id, slug: bases[v.base_id].slug, nome: bases[v.base_id].nome }] : [] };
     }
     if (q.includes("b.ativo = true") && q.includes("v.cliente_id = $1")) {
-      return { rows: vinculos.filter((v) => v.cliente_id === Number(params[0])).map((v) => ({ ...bases[v.base_id], cliente_conta_id: v.cliente_conta_id })) };
+      return { rows: vinculos.filter((v) => v.cliente_id === Number(params[0])).map((v) => ({ ...bases[v.base_id], cliente_id: v.cliente_id, marketplace: "meli", vinculo_marketplace: v.marketplace, vinculo_ativo: v.ativo, cliente_conta_id: v.cliente_conta_id })) };
     }
     if (q.includes("v.cliente_id = $1 AND v.marketplace = $2 AND v.ativo = true")) {
       const v = vinculos.find((x) => x.cliente_id === Number(params[0]));
@@ -143,8 +143,8 @@ async function run() {
   ok("C — conta 87 não é contaminada pela duplicidade da 86", r.body.prontidao.baseStatus === "ok" && r.body.prontidao.prontoParaAnalise === true);
 
   // D — legado.
-  r = await prontidao({ contas: [], vinculos: [vinc(9, null, 7009)] }, [], { clienteSlug: "alianza_jeans" });
-  ok("D — sem cliente_contas e sem grant: base legado exibida, bloqueia por grant", r.body.prontidao.baseMeli === "base-legado" && r.body.prontidao.motivo === "GRANT_ML_NAO_CONECTADO");
+  r = await prontidao({ contas: [contaA], vinculos: [vinc(9, null, 7009)] }, [], { clienteSlug: "alianza_jeans" });
+  ok("D — uma Conta e sem Grant: base legado exibida, bloqueia por grant", r.body.prontidao.baseMeli === "base-legado" && r.body.prontidao.motivo === "GRANT_ML_NAO_CONECTADO");
   r = await prontidao({ contas: [contaA], vinculos: [vinc(9, null, 7009)] }, ["111"], { clienteSlug: "alianza_jeans" });
   ok("D — 1 conta + vínculo legado: pronto com a base legado", r.body.prontidao.prontoParaAnalise === true && r.body.prontidao.baseMeli === "base-legado");
   r = await prontidao(ambas, ["111", "222"], { clienteSlug: "alianza_jeans" });

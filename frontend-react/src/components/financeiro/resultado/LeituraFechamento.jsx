@@ -1,12 +1,12 @@
 // Leitura do fechamento — frases determinísticas sobre números do backend.
 // Explica POR QUE o fechamento é parcial; não usa IA nem cria interpretação.
 //
-// Dois pesos: ALERTAS (warning/danger — o que pede atenção) em destaque, e
-// CONTEXTO (neutral/success) em texto de apoio. Frases que só repetem o que o
-// cabeçalho e os KPIs já dizem (modo, Resultado Final) não são repetidas aqui.
-// Notas técnicas do motor ficam recolhidas.
+// É APOIO, não protagonista: um painel discreto ao lado dos KPIs (na faixa de
+// topo do resultado), em texto pequeno. Só os ALERTAS (warning/danger) ficam
+// à vista; contexto (neutral/success) e as notas técnicas do motor ficam
+// recolhidos. Frases que só repetem o que o cabeçalho e os KPIs já dizem (modo,
+// Resultado Final) não aparecem aqui.
 import { leituraDoFechamento } from "../../../utils/financeiro/resumoFechamento.js";
-import { SecaoFinanceira } from "../shared/SecaoFinanceira.jsx";
 
 const MARCA = { success: "✓", warning: "!", danger: "×", neutral: "·" };
 const ehAlerta = (f) => f.tom === "warning" || f.tom === "danger";
@@ -24,10 +24,12 @@ export function LeituraFechamento({ processamento, marketplace }) {
 
   const alertas = frases.filter(ehAlerta);
   const contexto = frases.filter((f) => !ehAlerta(f));
+  const recolhido = contexto.length + notas.length;
 
   return (
-    <SecaoFinanceira id="leitura" titulo="Leitura do fechamento" className="vf-fin-leitura-bloco">
-      {alertas.length > 0 && (
+    <aside className="vf-fin-leitura-card" aria-label="Leitura do fechamento" data-secao="leitura">
+      <h4 className="vf-fin-bloco__titulo">Leitura do fechamento</h4>
+      {alertas.length > 0 ? (
         <ul className="vf-fin-leitura vf-fin-leitura--alertas" aria-label="Pontos de atenção">
           {alertas.map((f, i) => (
             <li key={i} className={`vf-fin-leitura__item is-${f.tom}`}>
@@ -35,26 +37,30 @@ export function LeituraFechamento({ processamento, marketplace }) {
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="vf-fin-leitura__vazio">Nenhum ponto de atenção.</p>
       )}
-      {contexto.length > 0 && (
-        <ul className="vf-fin-leitura vf-fin-leitura--contexto" aria-label="Contexto">
-          {contexto.map((f, i) => (
-            <li key={i} className={`vf-fin-leitura__item is-${f.tom}`}>
-              <span aria-hidden="true">{MARCA[f.tom]}</span> {f.texto}
-            </li>
-          ))}
-        </ul>
-      )}
-      {notas.length > 0 && (
-        <details className="vf-fin-disclosure">
-          <summary>Notas técnicas do motor ({notas.length})</summary>
-          <ul className="vf-fin-leitura">
-            {notas.map((n, i) => (
-              <li key={i} className="vf-fin-leitura__item is-neutral">{n}</li>
-            ))}
-          </ul>
+      {recolhido > 0 && (
+        <details className="vf-fin-disclosure vf-fin-disclosure--leve">
+          <summary>Contexto e notas técnicas ({recolhido})</summary>
+          {contexto.length > 0 && (
+            <ul className="vf-fin-leitura vf-fin-leitura--contexto" aria-label="Contexto">
+              {contexto.map((f, i) => (
+                <li key={i} className={`vf-fin-leitura__item is-${f.tom}`}>
+                  <span aria-hidden="true">{MARCA[f.tom]}</span> {f.texto}
+                </li>
+              ))}
+            </ul>
+          )}
+          {notas.length > 0 && (
+            <ul className="vf-fin-leitura vf-fin-leitura--notas" aria-label="Notas técnicas do motor">
+              {notas.map((n, i) => (
+                <li key={i} className="vf-fin-leitura__item is-neutral">{n}</li>
+              ))}
+            </ul>
+          )}
         </details>
       )}
-    </SecaoFinanceira>
+    </aside>
   );
 }

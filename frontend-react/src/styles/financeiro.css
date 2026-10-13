@@ -127,8 +127,13 @@
 
 .vf-fin-novo {
   gap: var(--vf-sp-6, 24px);
-  max-width: 860px;
+  /* SEM max-width: o resultado do processamento usa a largura útil toda.
+     Um teto aqui (era 860px) espremia o pós-processamento em qualquer tela. */
+  min-width: 0;
 }
+/* O formulário (arquivos, ajustes, Processar) é que mantém largura de leitura. */
+.vf-fin-novo__passo,
+.vf-fin-novo__acao { max-width: 980px; }
 
 /* Barra de contexto — uma linha, separadores discretos */
 .vf-fin-novo__contexto {
@@ -461,6 +466,31 @@
   color: var(--vf-text-secondary);
 }
 
+/* ── Faixa de topo: números à esquerda, leitura (apoio) à direita ─────── */
+.vf-fin-topo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+  gap: var(--vf-sp-6, 24px);
+  align-items: start;
+}
+.vf-fin-topo__numeros { display: flex; flex-direction: column; gap: var(--vf-sp-4, 16px); min-width: 0; }
+
+/* Leitura: painel discreto — texto pequeno, sem moldura pesada. */
+.vf-fin-leitura-card {
+  min-width: 0;
+  padding: 0 0 0 var(--vf-sp-4, 16px);
+  border-left: 2px solid var(--vf-border);
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2, 8px);
+}
+.vf-fin-leitura-card .vf-fin-bloco__titulo { margin: 0; }
+.vf-fin-leitura-card .vf-fin-leitura__item { font-size: var(--vf-fs-xs, 0.75rem); line-height: 1.45; }
+.vf-fin-leitura__vazio { margin: 0; font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-muted, #6b7285); }
+.vf-fin-disclosure--leve { border-top: none; padding-top: 0; }
+.vf-fin-disclosure--leve > summary { font-size: var(--vf-fs-xs, 0.75rem); margin-bottom: var(--vf-sp-2, 8px); }
+.vf-fin-leitura--notas { margin-top: var(--vf-sp-2, 8px); }
+
 /* ── Resultado executivo: faixa principal + apoio ─────────────────────── */
 .vf-fin-resumo { display: flex; flex-direction: column; gap: var(--vf-sp-4, 16px); }
 .vf-fin-resumo__principal {
@@ -473,7 +503,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: var(--vf-sp-4, 16px) var(--vf-sp-5, 20px);
+  padding: var(--vf-sp-4, 16px);
   min-width: 0;
 }
 .vf-fin-kpi + .vf-fin-kpi { border-left: 1px solid var(--vf-border); }
@@ -486,7 +516,7 @@
 }
 .vf-fin-kpi__valor {
   font-family: var(--vf-font-display, inherit);
-  font-size: 1.125rem;
+  font-size: 1.0625rem;
   font-weight: var(--vf-fw-bold, 700);
   font-variant-numeric: tabular-nums;
   line-height: 1.2;
@@ -531,7 +561,7 @@
 /* ── Composição financeira: quatro colunas, uma moldura ───────────────── */
 .vf-fin-composicao-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   border: 1px solid var(--vf-border);
   background: var(--vf-surface, #fff);
 }
@@ -557,18 +587,61 @@
 }
 .vf-fin-recon__grupo { min-width: 0; border-top: 1px solid var(--vf-border); padding-top: var(--vf-sp-2, 8px); }
 .vf-fin-recon__lista { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--vf-sp-3, 12px); }
-.vf-fin-recon__estado { display: grid; grid-template-columns: 1fr auto; column-gap: var(--vf-sp-3, 12px); }
+.vf-fin-recon__estado { display: grid; grid-template-columns: 1fr auto; column-gap: var(--vf-sp-3, 12px); padding-left: var(--vf-sp-3, 12px); border-left: 3px solid var(--vf-border-strong, #d6d9e4); }
+.vf-fin-recon__estado.is-success { border-left-color: var(--vf-success); }
+.vf-fin-recon__estado.is-warning { border-left-color: var(--vf-warning); }
+.vf-fin-recon__estado.is-danger { border-left-color: var(--vf-danger); }
 .vf-fin-recon__estado .vf-field__hint { grid-column: 1 / -1; }
 .vf-fin-recon__rotulo { font-size: var(--vf-fs-sm, 0.875rem); }
 .vf-fin-recon__valor { font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; }
 .vf-fin-recon__estado.is-danger .vf-fin-recon__valor { color: var(--vf-danger-strong, #9b1c1c); }
 
-/* ── Pendências ───────────────────────────────────────────────────────── */
+/* ── Pendências: como corrigir (dois caminhos) ───────────────────────── */
+.vf-fin-fluxo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr);
+  gap: var(--vf-sp-4, 16px);
+}
+.vf-fin-fluxo__caminho {
+  border: 1px solid var(--vf-border);
+  background: var(--vf-surface, #fff);
+  padding: var(--vf-sp-3, 12px) var(--vf-sp-4, 16px);
+  min-width: 0;
+}
+.vf-fin-fluxo__texto { margin: 0; font-size: var(--vf-fs-sm, 0.875rem); color: var(--vf-text-secondary); line-height: 1.5; }
+.vf-fin-fluxo__passos {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: passo;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2, 8px);
+  font-size: var(--vf-fs-sm, 0.875rem);
+  color: var(--vf-text-secondary);
+}
+.vf-fin-fluxo__passos > li { counter-increment: passo; display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2, 8px); line-height: 1.45; }
+.vf-fin-fluxo__passos > li::before {
+  content: counter(passo);
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--vf-bg-2, #f6f7fb);
+  border: 1px solid var(--vf-border-strong, #d6d9e4);
+  color: var(--vf-text, #1d2130);
+  font-size: var(--vf-fs-xs, 0.75rem);
+  font-weight: var(--vf-fw-semibold, 600);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .vf-fin-pendencias__tabela td { vertical-align: top; }
 .vf-fin-pendencias__tabela td:nth-child(4) { min-width: 150px; }
 .vf-fin-pendencias__tabela .vf-fin-ajuste__campo { min-width: 112px; max-width: 132px; }
 .vf-fin-pendencias__tabela td:last-child { min-width: 150px; }
-.vf-fin-corrigir { min-width: 260px; max-width: 360px; }
+.vf-fin-corrigir { min-width: 260px; max-width: 380px; }
 
 /* Título de produto limitado a 2 linhas (o inteiro fica no tooltip). */
 .vf-fin-clamp {
@@ -635,9 +708,7 @@
 .vf-fin-leitura__item.is-danger > span { color: var(--vf-danger); }
 .vf-fin-leitura--alertas .vf-fin-leitura__item { color: var(--vf-text, #1d2130); }
 .vf-fin-leitura--contexto .vf-fin-leitura__item { font-size: var(--vf-fs-xs, 0.75rem); }
-.vf-fin-leitura-bloco .vf-fin-leitura { gap: var(--vf-sp-2, 8px); }
 
-.vf-fin-metricas { flex-wrap: wrap; }
 .vf-fin-incidente { gap: var(--vf-sp-2, 8px); }
 .vf-mono { font-family: var(--vf-font-mono, "IBM Plex Mono", monospace); }
 .vf-fin-valor.is-negativo { color: var(--vf-danger-strong, #9b1c1c); }
@@ -649,31 +720,14 @@
 .vf-fin-produtos__filtros { flex-wrap: wrap; }
 .vf-fin-produtos__contagem { font-variant-numeric: tabular-nums; opacity: 0.7; margin-left: 4px; }
 .vf-fin-produtos__busca { min-width: 220px; flex: 1 1 220px; max-width: 360px; }
-.vf-fin-produtos .vf-table-scroll { overflow-x: auto; }
+/* A tabela rola por dentro (altura limitada, cabeçalho fixo): ela é a
+   investigação, não deve dominar a página antes de o operador precisar dela. */
+.vf-fin-produtos .vf-table-scroll { overflow: auto; max-height: 620px; }
+.vf-fin-produtos .vf-table thead th { position: sticky; top: 0; z-index: 1; background: var(--vf-surface, #fff); }
 .vf-fin-produtos .vf-table td.is-numeric,
 .vf-fin-produtos .vf-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .vf-fin-produtos .vf-table td:first-child { min-width: 200px; }
 .vf-fin-status-linha { gap: 4px; flex-wrap: nowrap; white-space: nowrap; }
-
-/* ── Pendências de custo ──────────────────────────────────────────────── */
-.vf-fin-pendencias { border-left: 3px solid var(--vf-warning); }
-.vf-fin-pendencias .vf-table td.is-numeric,
-.vf-fin-pendencias .vf-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.vf-fin-corrigir { min-width: 260px; }
-.vf-fin-corrigir .vf-fin-ajuste__campo { max-width: 140px; }
-
-/* ── Reconciliação Shopee ─────────────────────────────────────────────── */
-.vf-fin-recon__fluxo { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-4, 16px); }
-.vf-fin-recon__fluxo > div { display: flex; flex-direction: column; gap: 2px; }
-.vf-fin-recon__fluxo strong { font-size: var(--vf-fs-lg, 1.125rem); font-variant-numeric: tabular-nums; }
-.vf-fin-recon__estados { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: var(--vf-sp-2, 8px); }
-.vf-fin-recon__estado { display: flex; flex-direction: column; gap: 2px; padding: var(--vf-sp-2, 8px) var(--vf-sp-3, 12px); border: 1px solid var(--vf-border); border-left-width: 3px; }
-.vf-fin-recon__estado.is-success { border-left-color: var(--vf-success); }
-.vf-fin-recon__estado.is-warning { border-left-color: var(--vf-warning); }
-.vf-fin-recon__estado.is-danger { border-left-color: var(--vf-danger); }
-.vf-fin-recon__estado.is-neutral { border-left-color: var(--vf-border-strong, #d6d9e4); }
-.vf-fin-recon__rotulo { font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-secondary); }
-.vf-fin-recon__valor { font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; }
 
 /* ── Entrega para o cliente ───────────────────────────────────────────── */
 .vf-fin-entrega__lista { border: 0; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); }
@@ -704,6 +758,12 @@
 
 /* ── Responsivo: o Shell lateral come largura; a página não pode esmagar ─ */
 @media (max-width: 1280px) {
+  /* Sem espaço para dois painéis: a leitura desce, ainda compacta. */
+  .vf-fin-topo { grid-template-columns: minmax(0, 1fr); }
+  .vf-fin-leitura-card { padding: var(--vf-sp-3, 12px) 0 0; border-left: none; border-top: 1px solid var(--vf-border); }
+  .vf-fin-fluxo { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 1000px) {
   .vf-fin-resumo__principal { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .vf-fin-kpi.is-destaque { grid-column: 1 / -1; }
   .vf-fin-kpi:nth-child(n + 3) { border-top: 1px solid var(--vf-border); }
@@ -714,3 +774,10 @@
   .vf-fin-resumo__principal { grid-template-columns: minmax(0, 1fr); }
   .vf-fin-kpi + .vf-fin-kpi { border-left: none; border-top: 1px solid var(--vf-border); }
 }
+
+.vf-fin-pendencias__tabela .vf-table td.is-numeric,
+.vf-fin-pendencias__tabela .vf-table th.is-numeric { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+/* Confirmação da correção: linha de largura total sob a pendência. */
+.vf-fin-pendencias__confirmacao > td { background: var(--vf-bg-2, #f6f7fb); padding: var(--vf-sp-3, 12px) var(--vf-sp-4, 16px); }
+.vf-fin-pendencias__confirmacao .vf-fin-corrigir { max-width: none; min-width: 0; }

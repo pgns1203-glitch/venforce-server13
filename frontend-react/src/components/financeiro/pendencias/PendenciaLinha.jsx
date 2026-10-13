@@ -15,7 +15,7 @@ import { parseMoedaBR } from "../../../utils/fechamentoPayload.js";
 import { formatarMoeda } from "../../../utils/currency.js";
 import { formatarValor } from "../shared/ValorFinanceiro.jsx";
 
-export function PendenciaLinha({ pendencia: p, base, padrao, registrado, onRegistrado }) {
+export function PendenciaLinha({ pendencia: p, base, padrao, registrado, onRegistrado, motivoSemCorrecao = null }) {
   const [valor, setValor] = useState("");
   const [fase, setFase] = useState("editando"); // editando | confirmando | enviando
   const [erro, setErro] = useState(null);
@@ -46,7 +46,9 @@ export function PendenciaLinha({ pendencia: p, base, padrao, registrado, onRegis
     celulaNovoCusto = <span className="vf-field__hint">—</span>;
     celulaAcao = (
       <span className="vf-field__hint">
-        {p.statusCusto === "ambiguo" ? "Custo ambíguo — resolver em Bases de Custo" : "Corrigir em Bases de Custo"}
+        {p.statusCusto === "ambiguo"
+          ? "Custo ambíguo — há custos diferentes para o mesmo produto; resolver em Bases de Custo"
+          : motivoSemCorrecao || "Corrigir em Bases de Custo"}
       </span>
     );
   } else {
@@ -74,47 +76,60 @@ export function PendenciaLinha({ pendencia: p, base, padrao, registrado, onRegis
           Salvar na base
         </button>
       ) : (
-        <div className="vf-fin-corrigir vf-stack vf-stack--sm" role="group" aria-label={`Confirmar custo de ${p.itemId}`}>
-          <p className="vf-field__hint">
-            Grava na base <strong>{base.nome || base.slug}</strong>: <strong className="vf-mono">produto_id = {p.itemId}</strong> com custo{" "}
-            <strong>{formatarMoeda(custo)}</strong>. Se o MLB já existe, só o custo é atualizado
-            {padrao
-              ? `; se não existe, é criado com o imposto padrão da base (${String(padrao.imposto_percentual).replace(".", ",")}%) e taxa fixa ${formatarMoeda(Number(padrao.taxa_fixa))}`
-              : ""}
-            .
-          </p>
-          <div className="vf-cluster">
-            <button type="button" className="vf-btn vf-btn--primary vf-btn--sm" disabled={fase === "enviando"} aria-busy={fase === "enviando" ? "true" : undefined} onClick={registrar}>
-              {fase === "enviando" ? "Registrando…" : "Confirmar e registrar"}
-            </button>
-            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" disabled={fase === "enviando"} onClick={() => setFase("editando")}>
-              Voltar
-            </button>
-          </div>
-        </div>
+        <span className="vf-field__hint">{fase === "enviando" ? "Registrando…" : "Confirmar abaixo"}</span>
       );
   }
 
+  const confirmando = registrado === null && corrigivel && fase !== "editando";
+
   return (
-    <tr data-pendencia={p.statusCusto} data-registrado={registrado !== null ? "true" : undefined}>
-      <td><span className="vf-fin-clamp" title={p.produto || undefined}>{p.produto || "—"}</span></td>
-      <td className="vf-mono">{p.itemId || "—"}</td>
-      <td className="vf-mono">{[p.sku, p.modelId].filter(Boolean).join(" · ") || "—"}</td>
-      <td>
-        {p.motivo}
-        {p.aguardandoFinanceiro && <span className="vf-field__hint"> · também aguardando financeiro</span>}
-      </td>
-      <td className="is-numeric">{formatarValor(p.receitaImpactada)}</td>
-      <td className="is-numeric">{formatarValor(p.custoAtual)}</td>
-      <td>{celulaNovoCusto}</td>
-      <td>
-        {celulaAcao}
-        {erro && (
-          <span className="vf-status is-danger" role="alert">
-            {erro}
-          </span>
-        )}
-      </td>
-    </tr>
+    <>
+      <tr data-pendencia={p.statusCusto} data-registrado={registrado !== null ? "true" : undefined}>
+        <td><span className="vf-fin-clamp" title={p.produto || undefined}>{p.produto || "—"}</span></td>
+        <td className="vf-mono">{p.itemId || "—"}</td>
+        <td className="vf-mono">{[p.sku, p.modelId].filter(Boolean).join(" · ") || "—"}</td>
+        <td>
+          {p.motivo}
+          {p.aguardandoFinanceiro && <span className="vf-field__hint"> · também aguardando financeiro</span>}
+        </td>
+        <td className="is-numeric">{formatarValor(p.receitaImpactada)}</td>
+        <td className="is-numeric">{formatarValor(p.custoAtual)}</td>
+        <td>{celulaNovoCusto}</td>
+        <td>{celulaAcao}</td>
+      </tr>
+      {/* Confirmação e erro numa linha PRÓPRIA, largura total: o texto do que
+          será gravado é longo e não cabe numa célula sem estourar a tabela. */}
+      {(confirmando || erro) && (
+        <tr className="vf-fin-pendencias__confirmacao" data-confirmacao={p.itemId}>
+          <td colSpan={8}>
+            {confirmando && (
+              <div className="vf-fin-corrigir vf-stack vf-stack--sm" role="group" aria-label={`Confirmar custo de ${p.itemId}`}>
+                <p className="vf-field__hint">
+                  Grava na base <strong>{base.nome || base.slug}</strong>: <strong className="vf-mono">produto_id = {p.itemId}</strong> com custo{" "}
+                  <strong>{formatarMoeda(custo)}</strong>. Se o MLB já existe, só o custo é atualizado
+                  {padrao
+                    ? `; se não existe, é criado com o imposto padrão da base (${String(padrao.imposto_percentual).replace(".", ",")}%) e taxa fixa ${formatarMoeda(Number(padrao.taxa_fixa))}`
+                    : ""}
+                  . O fechamento só muda depois de reprocessar.
+                </p>
+                <div className="vf-cluster">
+                  <button type="button" className="vf-btn vf-btn--primary vf-btn--sm" disabled={fase === "enviando"} aria-busy={fase === "enviando" ? "true" : undefined} onClick={registrar}>
+                    {fase === "enviando" ? "Registrando…" : "Confirmar e registrar"}
+                  </button>
+                  <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" disabled={fase === "enviando"} onClick={() => setFase("editando")}>
+                    Voltar
+                  </button>
+                </div>
+              </div>
+            )}
+            {erro && (
+              <span className="vf-status is-danger" role="alert">
+                {erro}
+              </span>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }

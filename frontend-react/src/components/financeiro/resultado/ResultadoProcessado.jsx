@@ -3,11 +3,11 @@
 // RESULTADO DO PROCESSAMENTO — nasce logo abaixo de Processar, no mesmo
 // fluxo. A ordem é a ordem das perguntas de quem fecha o mês:
 //
-//   1. Quanto fechou?            Resultado executivo (KPIs)
-//   2. Posso confiar?            Leitura do fechamento · Cobertura
-//   3. O que está errado?        Pendências (slot `pendencias`)
-//   4. Como está reconciliado?   Reconciliação (Shopee)
-//   5. Como se compõe?           Composição financeira
+//   1. Quanto fechou?            Faixa de topo: KPIs + (ao lado) Leitura discreta
+//   2. Posso confiar?            Cobertura
+//   3. Bate com o marketplace?   Reconciliação (Shopee)
+//   4. Como se compõe?           Composição financeira
+//   5. O que está errado?        Pendências (slot `pendencias`)
 //   6. Quero salvar/publicar?    Ações (slot `acoes`)
 //
 // Os produtos NÃO moram aqui: são a investigação detalhada e vêm por último,
@@ -107,10 +107,15 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, linha
           </div>
         )}
 
-        <ResumoKpis summary={summary} />
+        {/* Faixa de topo: os números à esquerda, a leitura como apoio à direita. */}
+        <div className="vf-fin-topo">
+          <div className="vf-fin-topo__numeros">
+            <ResumoKpis summary={summary} />
+            <MetricasSecundarias summary={summary} marketplace={marketplace} />
+          </div>
+          <LeituraFechamento processamento={processamento} marketplace={marketplace} />
+        </div>
       </SecaoFinanceira>
-
-      <LeituraFechamento processamento={processamento} marketplace={marketplace} />
 
       <SecaoFinanceira id="cobertura" titulo="Cobertura" descricao="O quanto do faturamento tem custo e financeiro identificados.">
         <CoberturaFechamento
@@ -118,16 +123,15 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, linha
           unmatchedIds={processamento.unmatchedIds}
           unmatchedCosts={processamento.unmatchedCosts}
         />
-        <MetricasSecundarias summary={summary} marketplace={marketplace} />
       </SecaoFinanceira>
-
-      {typeof pendencias === "function" ? pendencias({ linhas }) : pendencias}
 
       <ReconciliacaoShopee summary={summary} marketplace={marketplace} />
 
       <SecaoFinanceira id="composicao" titulo="Composição financeira" descricao="Como o resultado se forma: receitas, deduções, custos e investimentos.">
         <ComposicaoFinanceira summary={summary} marketplace={marketplace} />
       </SecaoFinanceira>
+
+      {typeof pendencias === "function" ? pendencias({ linhas }) : pendencias}
 
       {acoes}
     </section>

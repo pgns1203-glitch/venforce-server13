@@ -118,7 +118,7 @@ export default function FinanceiroPage() {
 
   return (
     <div className="vf-page-shell">
-      <div className="vf-page-container">
+      <div className="vf-page-container vf-page-container--wide">
         <header className="vf-page-header">
           <div className="vf-page-header__main">
             <p className="vf-page-header__eyebrow">Financeiro · V3</p>

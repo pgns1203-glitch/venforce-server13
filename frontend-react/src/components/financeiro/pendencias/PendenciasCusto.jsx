@@ -28,6 +28,7 @@ import { formatarValor } from "../shared/ValorFinanceiro.jsx";
 import { SecaoFinanceira } from "../shared/SecaoFinanceira.jsx";
 import { formatarMoeda } from "../../../utils/currency.js";
 import { PendenciaLinha } from "./PendenciaLinha.jsx";
+import { FluxoCorrecao } from "./FluxoCorrecao.jsx";
 
 // As maiores primeiro (ordenadas por receita impactada); o resto fica a um clique,
 // para a lista não empurrar reconciliação e composição para o fim da página.
@@ -85,6 +86,20 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
     baixarBlob(new Blob([bytes], { type: TIPO_XLSX }), nomeDaPlanilhaDePendencias({ marketplace, periodo: contexto.competencia }));
   }
 
+  // Por que a correção na linha NÃO está disponível — dito com todas as letras.
+  const motivoSemCorrecao =
+    marketplace !== "meli"
+      ? "no Shopee o custo pode estar no Item ou na Variação e a tela não escolhe o identificador sozinha."
+      : processamento?.costsSource !== "base"
+        ? "este processamento usou a planilha de custos enviada, não a base vinculada da conta — corrigir a base não mudaria nada."
+        : "a base usada no processamento não é a vinculada a esta operação.";
+  const motivoLinha =
+    marketplace !== "meli"
+      ? "Shopee: custo no Item ou na Variação — corrigir em Bases de Custo"
+      : !baseDaConta
+        ? "Custo vindo de planilha enviada — corrija a planilha"
+        : null;
+
   const resumo = pendencias.length
     ? `${pendencias.length} ${pendencias.length === 1 ? "produto precisa" : "produtos precisam"} de ação · ${formatarMoeda(Math.round(receitaTotal * 100) / 100)} de receita fora do LC/MC.`
     : "Diagnóstico da base sem produto associado — veja o detalhe abaixo.";
@@ -94,29 +109,17 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
       id="pendencias"
       titulo="Pendências de custo"
       descricao={resumo}
-      acoes={
-        <>
-          {pendencias.length > 0 && (
-            <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" onClick={baixarPlanilha}>
-              Baixar planilha (XLSX)
-            </button>
-          )}
-          <a className="vf-btn vf-btn--ghost vf-btn--sm" href="bases.html">
-            Abrir Bases de Custo
-          </a>
-          {onReprocessar && (
-            <button
-              type="button"
-              className={`vf-btn ${nRegistrados > 0 ? "vf-btn--primary" : "vf-btn--ghost"} vf-btn--sm`}
-              disabled={reprocessando}
-              onClick={onReprocessar}
-            >
-              {reprocessando ? "Reprocessando…" : "Reprocessar fechamento"}
-            </button>
-          )}
-        </>
-      }
     >
+      <FluxoCorrecao
+        aoVivo={!!baseDaConta}
+        motivoSemCorrecao={motivoSemCorrecao}
+        base={base}
+        nRegistrados={nRegistrados}
+        onBaixar={baixarPlanilha}
+        onReprocessar={onReprocessar}
+        reprocessando={reprocessando}
+      />
+
       {nRegistrados > 0 && (
         <div className="vf-banner is-success vf-banner--compact" role="status">
           <div className="vf-banner__content">
@@ -150,6 +153,7 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
                   pendencia={p}
                   base={baseDaConta}
                   padrao={padrao}
+                  motivoSemCorrecao={motivoLinha}
                   registrado={registrados[p.chave] ?? null}
                   onRegistrado={(valor) => setRegistrados((r) => ({ ...r, [p.chave]: valor }))}
                 />
@@ -162,19 +166,6 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
         <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => setVerTodas((v) => !v)}>
           {verTodas ? "Mostrar só as maiores" : `Ver todas as ${pendencias.length} pendências`}
         </button>
-      )}
-
-      {marketplace !== "meli" && pendencias.length > 0 && (
-        <p className="vf-field__hint">
-          No Shopee o custo pode estar no Item ou na Variação — a tela não escolhe o identificador. Baixe a planilha, preencha
-          o novo custo e importe em Bases de Custo (Atualizar por planilha); depois reprocesse.
-        </p>
-      )}
-      {marketplace === "meli" && !baseDaConta && pendencias.length > 0 && (
-        <p className="vf-field__hint">
-          Correção na linha indisponível: este processamento não usou a base vinculada da conta. Corrija a planilha de custos (ou
-          baixe a planilha de pendências) e reprocesse.
-        </p>
       )}
 
       {semLinha.length > 0 && (

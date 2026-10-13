@@ -1,12 +1,14 @@
 // frontend-react/src/components/financeiro/resultado/ResultadoProcessado.jsx
 //
 // RESULTADO DO PROCESSAMENTO — nasce logo abaixo de Processar, no mesmo
-// fluxo. A ordem é a ordem das perguntas de quem fecha o mês:
+// fluxo. A ordem segue o dashboard do Financeiro legado (a referência de
+// leitura pós-processamento), sem os banners grandes dele:
 //
-//   1. Quanto fechou?            Faixa de topo: KPIs + (ao lado) Leitura discreta
+//   1. Quanto fechou?            Grade de KPIs (Resultado, receitas, LC, MCs)
+//                                + Leitura numa faixa discreta logo abaixo
 //   2. Bate com o marketplace?   Reconciliação (Shopee)
-//   3. Como se compõe?           Composição financeira
-//   4. Posso confiar?            Cobertura (compacta — apoio, não protagonista)
+//   3. Como se compõe?           Composição: os 4 cartões do legado + eventos
+//   4. Posso confiar?            Cobertura (uma faixa — apoio, não protagonista)
 //   5. O que está errado?        Pendências (slot `pendencias`)
 //   6. Quero salvar/publicar?    Ações (slot `acoes`)
 //
@@ -61,7 +63,10 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, linha
         descricao={[
           modo,
           confianca ? `confiança ${confianca.toLowerCase()}` : null,
-          origemCustos ? `custos da base ${origemCustos.nome || origemCustos.slug}` : processamento.costsSource === "upload" ? "custos da planilha enviada" : null,
+          // A ORIGEM dos custos fica sempre à vista: é ela que explica a
+          // diferença para um processamento feito com outra fonte (o legado
+          // Shopee sempre usa a planilha enviada; a V3 usa a base vinculada).
+          origemCustos ? `custos: base vinculada ${origemCustos.nome || origemCustos.slug}` : processamento.costsSource === "upload" ? "custos: planilha enviada" : null,
         ]
           .filter(Boolean)
           .join(" · ")}
@@ -107,11 +112,11 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, linha
           </div>
         )}
 
-        {/* Faixa de topo: os números à esquerda, a leitura como apoio à direita. */}
+        {/* Topo: os números em largura total; a leitura vem logo abaixo, como
+            faixa de apoio (ao lado, ela espremia os KPIs). */}
         <div className="vf-fin-topo">
           <div className="vf-fin-topo__numeros">
             <ResumoKpis summary={summary} />
-            <MetricasSecundarias summary={summary} marketplace={marketplace} />
           </div>
           <LeituraFechamento processamento={processamento} marketplace={marketplace} />
         </div>
@@ -121,6 +126,8 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, linha
 
       <SecaoFinanceira id="composicao" titulo="Composição financeira" descricao="Como o resultado se forma: receitas, deduções, custos e investimentos.">
         <ComposicaoFinanceira summary={summary} marketplace={marketplace} />
+        {/* Eventos do período: a grade de KPIs secundários do legado. */}
+        <MetricasSecundarias summary={summary} marketplace={marketplace} />
       </SecaoFinanceira>
 
       <SecaoFinanceira id="cobertura" titulo="Cobertura" className="vf-fin-secao--compacta">

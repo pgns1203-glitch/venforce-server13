@@ -94,18 +94,28 @@ export function composicaoResultado(summary = {}) {
   };
 }
 
+// Os quatro cartões do detalhamento executivo, com as linhas do legado
+// (Portal/financeiro.html, .vf-fin-exec-grid): Receitas (com o financeiro
+// publicado e a cobertura da base), Deduções, Custos/Investimentos e Resultado
+// (com o status do fechamento). Linha cujo campo o motor não devolve não
+// aparece — o legado mostrava "100%" fixo para "Financeiro publicado" até no
+// Shopee, que nem tem esse eixo.
 export function blocosExecutivos(summary = {}, marketplace = "") {
   const s = summary || {};
   const shopee = marketplace === "shopee";
+  const aguardando = numOuNull(s.revenuePendingFinancial);
   return [
     {
       id: "receitas",
       titulo: "Receitas",
       itens: limpar([
-        item(s, "grossRevenueTotal", "Receita Bruta", "moeda"),
+        item(s, "grossRevenueTotal", "Receita Bruta Total", "moeda"),
         item(s, "paidRevenueTotal", "Receita Líquida", "moeda"),
+        item(s, "financialDataCoveragePercent", "Financeiro publicado", "pontos"),
+        aguardando !== null && aguardando > 0 ? item(s, "revenuePendingFinancial", "Aguardando financeiro", "moeda") : null,
         item(s, "revenueWithCost", "Receita com custo", "moeda"),
         item(s, "revenueWithoutCost", "Receita sem custo", "moeda"),
+        item(s, "calculatedCoveragePercent", "Cobertura da base", "pontos"),
       ]),
     },
     {
@@ -123,6 +133,7 @@ export function blocosExecutivos(summary = {}, marketplace = "") {
             ]
           : [
               item(s, "refundsTotal", "Cancelamentos e reembolsos", "moeda"),
+              item(s, "refundsCount", "Pedidos cancelados", "numero"),
               item(s, "lostRevenueTotal", "Faturamento perdido", "moeda"),
               item(s, "platformAdjustmentTotal", "Ajuste de plataforma", "moeda"),
               item(s, "excludedStatusRevenue", "Fora do LC por status", "moeda"),
@@ -145,7 +156,9 @@ export function blocosExecutivos(summary = {}, marketplace = "") {
         item(s, "tacos", "TACoS", "fracao"),
         item(s, "tacox", "TACoX", "fracao"),
       ]),
-      status: CONFIANCA_LABEL[s.financialConfidence] || null,
+      // "Status do fechamento" do legado: modo de cálculo · confiança.
+      status: [rotuloModo(s), CONFIANCA_LABEL[s.financialConfidence] || null].filter(Boolean).join(" · ") || null,
+      confianca: s.financialConfidence || null,
     },
   ].filter((b) => b.itens.length || b.status);
 }
@@ -295,18 +308,20 @@ export function reconciliacaoShopee(summary = {}) {
   const total = numOuNull(s.orderAllTotalCount);
   if (!total) return { disponivel: false };
   const estados = [
+    // Rótulos, textos de apoio e cores os MESMOS do legado.
     ["Concluídos", "Dinheiro consolidado", "orderAllCompletedCount", "orderAllCompletedRevenue", "success"],
-    ["Entregues", "Próximo de consolidar", "orderAllDeliveredCount", "orderAllDeliveredRevenue", "success"],
+    ["Entregues", "Dinheiro próximo de consolidar", "orderAllDeliveredCount", "orderAllDeliveredRevenue", "success"],
     ["Enviados", "Em trânsito", "orderAllShippedCount", "orderAllShippedRevenue", "warning"],
-    ["Em atenção", "A enviar, aguardando devolução ou intermediário", "orderAllIntermediateCount", "orderAllIntermediateRevenue", "warning"],
+    ["Em atenção", "Aguardando devolução, a enviar ou status intermediário", "orderAllIntermediateCount", "orderAllIntermediateRevenue", "warning"],
     ["Cancelados confirmados", "Perda confirmada", "orderAllCancelledConfirmedCount", "orderAllCancelledConfirmedRevenue", "danger"],
-    ["Não pagos", "Não viraram venda", "orderAllUnpaidCount", "orderAllUnpaidRevenue", "neutral"],
-    ["Devoluções / Reembolsos", "Separados dos cancelados", "orderAllReturnRefundCount", "orderAllReturnRefundRevenue", "danger"],
+    ["Não pagos", "Pedidos que não viraram venda", "orderAllUnpaidCount", "orderAllUnpaidRevenue", "warning"],
+    ["Devoluções / Reembolsos", "Impacto separado dos cancelados", "orderAllReturnRefundCount", "orderAllReturnRefundRevenue", "danger"],
   ].map(([rotulo, apoio, kc, kr, tom]) => ({ rotulo, apoio, pedidos: numOuNull(s[kc]), receita: numOuNull(s[kr]), tom }));
 
   return {
     disponivel: true,
-    performance: numOuNull(s.grossRevenueTotal),
+    // Mesmo campo do legado (grossRevenueTotal, senão paidRevenueTotal).
+    performance: numOuNull(s.grossRevenueTotal) ?? numOuNull(s.paidRevenueTotal),
     reconciliada: numOuNull(s.orderAllTotalRevenue),
     pedidos: total,
     estados,

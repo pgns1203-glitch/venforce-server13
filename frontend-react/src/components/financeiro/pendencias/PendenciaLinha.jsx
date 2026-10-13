@@ -25,7 +25,7 @@ import { formatarMoeda } from "../../../utils/currency.js";
 import { fracaoParaPontos, formatarPontos, identidadeDaPendencia, parsePontosBR, pontosParaFracao } from "../../../utils/financeiro/baseCustos.js";
 import { formatarValor } from "../shared/ValorFinanceiro.jsx";
 
-export function PendenciaLinha({ pendencia: p, marketplace, base, indice, padrao, registrado, onRegistrado }) {
+export function PendenciaLinha({ pendencia: p, marketplace, base, indice, padrao, registrado, onRegistrado, aviso = null }) {
   const identidade = useMemo(
     () => (base ? identidadeDaPendencia({ marketplace, pendencia: p, indice }) : null),
     [base, marketplace, p, indice]
@@ -109,7 +109,7 @@ export function PendenciaLinha({ pendencia: p, marketplace, base, indice, padrao
       </label>
     );
     celulaImposto = (
-      <label className="vf-fin-ajuste__campo">
+      <label className="vf-fin-ajuste__campo vf-fin-ajuste__campo--sem-prefixo">
         <span className="vf-visually-hidden">Imposto (%) de {p.itemId}</span>
         <input
           className="vf-input vf-input--sm"
@@ -143,6 +143,7 @@ export function PendenciaLinha({ pendencia: p, marketplace, base, indice, padrao
         <td>
           {p.motivo}
           {p.aguardandoFinanceiro && <span className="vf-field__hint"> · também aguardando financeiro</span>}
+          {aviso && <span className="vf-fin-pend-aviso" data-aviso="mesmo-item">{aviso}</span>}
         </td>
         <td className="is-numeric">{formatarValor(p.receitaImpactada)}</td>
         <td className="is-numeric">{formatarValor(custoAtual)}</td>

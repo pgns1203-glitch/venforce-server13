@@ -1,11 +1,12 @@
 // Leitura do fechamento — frases determinísticas sobre números do backend.
 // Explica POR QUE o fechamento é parcial; não usa IA nem cria interpretação.
 //
-// É APOIO, não protagonista: um painel discreto ao lado dos KPIs (na faixa de
-// topo do resultado), em texto pequeno. Só os ALERTAS (warning/danger) ficam
-// à vista; contexto (neutral/success) e as notas técnicas do motor ficam
-// recolhidos. Frases que só repetem o que o cabeçalho e os KPIs já dizem (modo,
-// Resultado Final) não aparecem aqui.
+// É APOIO, não protagonista. No legado ela vem logo abaixo dos KPIs, como um
+// banner grande; aqui fica no MESMO lugar, mas como uma faixa discreta de
+// texto pequeno, que não disputa largura com os números (ao lado, ela os
+// espremia). Só os ALERTAS (warning/danger) ficam à vista; contexto
+// (neutral/success) e as notas técnicas do motor ficam recolhidos. Frases que
+// só repetem o que os KPIs já dizem (modo, Resultado Final) não aparecem.
 import { leituraDoFechamento } from "../../../utils/financeiro/resumoFechamento.js";
 
 const MARCA = { success: "✓", warning: "!", danger: "×", neutral: "·" };
@@ -31,7 +32,7 @@ export function LeituraFechamento({ processamento, marketplace }) {
   const recolhido = alertasExtras.length + contexto.length + notas.length;
 
   return (
-    <aside className="vf-fin-leitura-card" aria-label="Leitura do fechamento" data-secao="leitura">
+    <aside className="vf-fin-leitura-faixa" aria-label="Leitura do fechamento" data-secao="leitura" data-tom={todosAlertas.length ? "alerta" : "ok"}>
       <h4 className="vf-fin-bloco__titulo">Leitura do fechamento</h4>
       {alertas.length > 0 ? (
         <ul className="vf-fin-leitura vf-fin-leitura--alertas" aria-label="Pontos de atenção">

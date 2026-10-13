@@ -111,8 +111,8 @@ export function identidadeDaPendencia({ marketplace, pendencia: p, indice }) {
       acao: null,
       produtoId: "",
       motivo: shopee
-        ? "Esta linha não traz o ID do Item (só SKU ou pedido). Sem o Item não dá para saber qual registro da base atualizar — use a planilha."
-        : "Esta linha não traz o MLB do anúncio.",
+        ? "Sem ID do Item nesta linha (só SKU/Model ou pedido): não dá para saber qual registro da base atualizar — nem aqui, nem pela planilha. Cadastre o custo em Bases de Custo pelo ID do Item."
+        : "Sem o MLB do anúncio nesta linha: não dá para saber qual registro da base atualizar. Cadastre o custo em Bases de Custo pelo MLB.",
     };
   }
 

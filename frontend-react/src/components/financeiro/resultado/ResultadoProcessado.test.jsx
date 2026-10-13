@@ -138,7 +138,7 @@ describe("composição financeira · LC → Resultado Final", () => {
 describe("hierarquia da página · ordem das seções", () => {
   const ordem = (container) => Array.from(container.querySelectorAll("[data-secao]")).map((e) => e.dataset.secao);
 
-  it("topo (KPIs + leitura ao lado) → reconciliação → composição → cobertura (compacta) → pendências → ações", () => {
+  it("topo (KPIs + leitura logo abaixo) → reconciliação → composição → cobertura (compacta) → pendências → ações", () => {
     const { container } = render(
       <ResultadoProcessado
         processamento={processamento({ summary: { ...SUMMARY_MELI, orderAllTotalCount: 10, orderAllTotalRevenue: 1000, orderAllCompletedCount: 10, orderAllCompletedRevenue: 1000 } })}
@@ -177,20 +177,33 @@ describe("hierarquia da página · ordem das seções", () => {
     expect(container.querySelector('[data-secao="produtos"]')).toBeNull();
   });
 
-  it("KPIs: Resultado Final e os três totais são a faixa principal; margens e índices são apoio", () => {
+  it("KPIs como no legado: Resultado Final, receitas, LC e as DUAS MCs na grade principal; TACoS/TACoX menores", () => {
     render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
     const raiz = screen.getByTestId("kpis-processamento");
     const principais = Array.from(raiz.querySelectorAll(".vf-fin-resumo__principal [data-kpi]")).map((e) => e.dataset.kpi);
     const apoio = Array.from(raiz.querySelectorAll(".vf-fin-resumo__apoio [data-kpi]")).map((e) => e.dataset.kpi);
-    expect(principais).toEqual(["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal"]);
-    expect(apoio).toEqual(["mcCalculada", "finalMarginCalculated", "tacos", "tacox"]);
+    expect(principais).toEqual(["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal", "mcCalculada", "finalMarginCalculated"]);
+    expect(apoio).toEqual(["tacos", "tacox"]);
+    expect(raiz.querySelector('[data-kpi="finalResult"]')).toHaveClass("is-destaque");
   });
 
-  it("Leitura é um painel de APOIO dentro da faixa de topo, ao lado dos KPIs — não uma seção própria", () => {
+  it("KPIs de resultado ganham cor pelo sinal; receita é neutra", () => {
+    render(<ResultadoProcessado processamento={processamento({ summary: { ...SUMMARY_MELI, finalResult: -50 } })} marketplace="meli" periodo="2026-10" />);
+    const raiz = screen.getByTestId("kpis-processamento");
+    expect(raiz.querySelector('[data-kpi="finalResult"]')).toHaveClass("is-negativo");
+    expect(raiz.querySelector('[data-kpi="mcCalculada"]')).toHaveClass("is-positivo");
+    expect(raiz.querySelector('[data-kpi="grossRevenueTotal"]')).toHaveClass("is-neutro");
+  });
+
+  it("Leitura é uma faixa de APOIO logo ABAIXO dos KPIs (não ao lado, não uma seção própria)", () => {
     const { container } = render(<ResultadoProcessado processamento={processamento({ unmatchedIds: ["A", "B"] })} marketplace="meli" periodo="2026-10" />);
     const topo = container.querySelector(".vf-fin-topo");
-    expect(topo.querySelector('[data-testid="kpis-processamento"]')).not.toBeNull();
-    expect(topo.querySelector('aside[data-secao="leitura"]')).not.toBeNull();
+    const kpis = topo.querySelector('[data-testid="kpis-processamento"]');
+    const leitura = topo.querySelector('aside[data-secao="leitura"]');
+    expect(kpis).not.toBeNull();
+    expect(leitura).not.toBeNull();
+    expect(kpis.compareDocumentPosition(leitura) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(leitura).toHaveAttribute("data-tom", "alerta");
     expect(container.querySelector('section[data-secao="leitura"]')).toBeNull();
   });
 
@@ -212,9 +225,10 @@ describe("hierarquia da página · ordem das seções", () => {
     expect(within(screen.getByRole("complementary", { name: "Leitura do fechamento" })).getByText("Nenhum ponto de atenção.")).toBeInTheDocument();
   });
 
-  it("eventos do período (cancelados/não pagos/devoluções) ficam na faixa de topo, junto dos KPIs", () => {
+  it("eventos do período (cancelados/não pagos/devoluções) ficam na composição, abaixo dos 4 cartões — como os KPIs secundários do legado", () => {
     const { container } = render(<ResultadoProcessado processamento={processamento({ summary: { ...SUMMARY_MELI, cancelledCount: 4, unpaidCount: 1 } })} marketplace="shopee" periodo="2026-10" />);
-    expect(container.querySelector('.vf-fin-topo__numeros [aria-label="Eventos do período"]')).not.toBeNull();
+    expect(container.querySelector('[data-secao="composicao"] [aria-label="Eventos do período"]')).not.toBeNull();
+    expect(container.querySelector('.vf-fin-topo [aria-label="Eventos do período"]')).toBeNull();
     expect(container.querySelector('[data-secao="cobertura"] [aria-label="Eventos do período"]')).toBeNull();
   });
 });
@@ -315,11 +329,33 @@ describe("paridade de dados · summary → tela", () => {
 
   it("revenueWithCost, revenueWithoutCost, coberturas e financeiro aparecem com o valor do backend", () => {
     render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
+    const receitas = screen.getByRole("region", { name: "Composição financeira" }).querySelector('[data-bloco="receitas"]');
+    expect(within(receitas).getByText("Receita com custo").nextSibling).toHaveTextContent("R$ 90.000,00");
+    expect(within(receitas).getByText("Receita sem custo").nextSibling).toHaveTextContent("R$ 10.000,00");
+    expect(within(receitas).getByText("Financeiro publicado").nextSibling).toHaveTextContent("95,0%");
+    expect(within(receitas).getByText("Aguardando financeiro").nextSibling).toHaveTextContent("R$ 5.000,00");
+    expect(within(receitas).getByText("Cobertura da base").nextSibling).toHaveTextContent("90,0%");
     const custo = screen.getByRole("region", { name: "Cobertura de custos" });
-    expect(within(custo).getByText("Receita com custo").nextSibling).toHaveTextContent("R$ 90.000,00");
     expect(within(custo).getByText("Receita sem custo").nextSibling).toHaveTextContent("R$ 10.000,00");
     const fin = screen.getByRole("region", { name: "Cobertura financeira" });
-    expect(within(fin).getByText("Receita com financeiro disponível").nextSibling).toHaveTextContent("R$ 95.000,00");
     expect(within(fin).getByText("Receita aguardando financeiro").nextSibling).toHaveTextContent("R$ 5.000,00");
+  });
+
+  it("composição tem as linhas do legado: Receitas com financeiro publicado e cobertura; Resultado com o status do fechamento", () => {
+    render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
+    const comp = screen.getByRole("region", { name: "Composição financeira" });
+    const rotulos = (id) => Array.from(comp.querySelectorAll(`[data-bloco="${id}"] dt`)).map((d) => d.textContent);
+    expect(rotulos("receitas")).toEqual(["Receita Bruta Total", "Receita Líquida", "Financeiro publicado", "Aguardando financeiro", "Receita com custo", "Receita sem custo", "Cobertura da base"]);
+    expect(rotulos("deducoes")).toContain("Pedidos cancelados");
+    expect(rotulos("resultado")).toEqual(["LC Total", "MC Calculada", "Resultado Final", "MC Final", "TACoS", "TACoX", "Status do fechamento"]);
+    expect(within(comp.querySelector('[data-bloco="resultado"]')).getByText("Status do fechamento").nextSibling).toHaveTextContent("Financeiro real · relatório de vendas ML · Parcial");
+  });
+
+  it("Shopee (motor sem eixo financeiro) não mostra 'Financeiro publicado' — o legado mostrava 100% fixo", () => {
+    const { revenueWithFinancialData, revenuePendingFinancial, financialDataCoveragePercent, salesPendingFinancialCount, ...shopee } = SUMMARY_MELI;
+    render(<ResultadoProcessado processamento={processamento({ summary: shopee })} marketplace="shopee" periodo="2026-10" />);
+    const receitas = screen.getByRole("region", { name: "Composição financeira" }).querySelector('[data-bloco="receitas"]');
+    expect(within(receitas).queryByText("Financeiro publicado")).not.toBeInTheDocument();
+    expect(within(receitas).queryByText("Aguardando financeiro")).not.toBeInTheDocument();
   });
 });

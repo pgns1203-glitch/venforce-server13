@@ -241,7 +241,7 @@ describe("NovoFechamento · validação e envio", () => {
     expect(form.get("marketplace")).toBe("meli");
     expect(form.get("costs")).toBeNull(); // base cobre — nada de upload
     expect(await screen.findByText(/Competência confere/)).toBeInTheDocument();
-    expect(screen.getByText(/custos da base Base Zenite/)).toBeInTheDocument();
+    expect(screen.getByText(/custos: base vinculada Base Zenite/)).toBeInTheDocument();
   });
 
   it("sem base: o upload de custos vai junto no multipart", async () => {
@@ -291,7 +291,7 @@ describe("NovoFechamento · caixa-preta (incidente FIN-xxx) + base vinculada", (
     expect(await screen.findByText("FIN-777")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Copiar código" })).toBeInTheDocument();
     // custos da base continuam visíveis no preview (as duas features juntas)
-    expect(screen.getByText(/custos da base Comprou_chegou_shopee1/)).toBeInTheDocument();
+    expect(screen.getByText(/custos: base vinculada Comprou_chegou_shopee1/)).toBeInTheDocument();
     // não-admin não vê o link de diagnóstico
     expect(screen.queryByRole("link", { name: "Abrir diagnóstico" })).not.toBeInTheDocument();
   });

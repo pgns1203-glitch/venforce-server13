@@ -1,13 +1,22 @@
 // Resultado executivo do processamento — direto do `summary` (kpisPrincipais).
 //
-// Hierarquia: o Resultado Final e os três totais que o explicam (Receita
-// Bruta, Receita Líquida, LC) são a FAIXA PRINCIPAL; as margens e os índices
-// (MC, MC Final, TACoS, TACoX) são leitura de apoio, em linha. Quatro números
-// grandes se escaneiam; oito do mesmo tamanho competem.
+// Mesma leitura do Financeiro legado (Portal/financeiro.html, .vf-fin-kpi-grid):
+// uma GRADE de cartões fortes — Resultado Final em destaque e, do mesmo
+// tamanho entre si, Receita Bruta, Receita Líquida, LC Total, MC Calculada e
+// MC Final. A margem não fica escondida numa linha de apoio. TACoS e TACoX
+// (índices sobre o faturamento) ficam numa faixa menor logo abaixo.
 import { kpisPrincipais } from "../../../utils/financeiro/resumoFechamento.js";
 import { formatarValor, tomDoValor } from "../shared/ValorFinanceiro.jsx";
 
-const PRIMARIOS = ["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal"];
+const PRIMARIOS = ["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal", "mcCalculada", "finalMarginCalculated"];
+// Só os números de RESULTADO ganham cor pelo sinal; receita é neutra.
+const COM_TOM = new Set(["finalResult", "contributionProfitTotal", "mcCalculada", "finalMarginCalculated"]);
+const APOIO = {
+  finalResult: "após ADS, Venforce, afiliados e demais custos",
+  contributionProfitTotal: "antes das despesas comerciais",
+  mcCalculada: "LC sobre a receita calculável",
+  finalMarginCalculated: "Resultado sobre a receita calculável",
+};
 
 export function ResumoKpis({ summary }) {
   const kpis = kpisPrincipais(summary);
@@ -18,7 +27,7 @@ export function ResumoKpis({ summary }) {
     <div className="vf-fin-resumo" data-testid="kpis-processamento">
       <div className="vf-fin-resumo__principal">
         {primarios.map((k) => {
-          const tom = k.tipo === "moeda" ? tomDoValor(k.valor) : "neutro";
+          const tom = COM_TOM.has(k.chave) ? tomDoValor(k.valor) : "neutro";
           return (
             <div
               key={k.chave}
@@ -28,7 +37,7 @@ export function ResumoKpis({ summary }) {
             >
               <span className="vf-fin-kpi__rotulo">{k.rotulo}</span>
               <span className="vf-fin-kpi__valor">{formatarValor(k.valor, k.tipo)}</span>
-              {k.chave === "finalResult" && <span className="vf-fin-kpi__apoio">Resultado após despesas comerciais</span>}
+              {APOIO[k.chave] && <span className="vf-fin-kpi__apoio">{APOIO[k.chave]}</span>}
             </div>
           );
         })}

@@ -43,13 +43,17 @@ beforeEach(() => {
   api.upsert.mockResolvedValue({ ok: true, acao: "criado" });
 });
 
-// A base é lida do servidor: o seletor de modo só aparece quando ela chegou.
+// A base é lida do servidor: os grupos só aparecem quando ela chegou.
 async function montar(props) {
   const utils = render(<PendenciasCusto processamento={processamentoBase} base={base} onReprocessar={vi.fn()} {...props} />);
-  await screen.findByRole("group", { name: "Como corrigir" });
+  await screen.findByRole("list", { name: "Resumo das pendências" });
   return utils;
 }
 const linhaDe = (texto) => screen.getByText(texto).closest("tr");
+// "1 corrigível agora · 0 por planilha · 2 bloqueadas" → [1, 0, 2]
+const contagens = () =>
+  Array.from(screen.getByRole("list", { name: "Resumo das pendências" }).querySelectorAll("li")).map((li) => [li.dataset.grupo, Number(li.querySelector("strong").textContent)]);
+const grupo = (id) => document.querySelector(`[data-grupo="${id}"].vf-fin-pend-grupo`);
 
 describe("agruparPendencias", () => {
   it("só linhas com custo não-ok, agrupadas por ID, com a receita somada; financeiro pendente COM custo não é pendência de custo", () => {
@@ -125,39 +129,57 @@ describe("planilha de pendências (XLSX)", () => {
   });
 });
 
-describe("decisão por VOLUME", () => {
+describe("três grupos com contagem (partição) · volume decide portal × planilha", () => {
   const muitas = (n) => normalizarLinhas(Array.from({ length: n }, (_, i) => ({ "# de anúncio": `MLB${100 + i}`, "Título do anúncio": `Item ${i}`, "Venda Total": 1000 - i, "Preço de custo": null, LC: null, MC: null, "Cobertura de custo": "sem custo" })));
 
-  it("poucas pendências: corrige individualmente por padrão (inputs na tela)", async () => {
-    await montar({ linhas: muitas(5), marketplace: "meli" });
-    expect(screen.getByRole("button", { name: "Corrigir individualmente" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("textbox", { name: "Novo custo unitário de MLB100" })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Correção em lote")).not.toBeInTheDocument();
-    expect(screen.getByText(/Poucas pendências \(5\)/)).toBeInTheDocument();
+  it("os três grupos aparecem SEMPRE, numerados e na ordem: agora → planilha → bloqueadas", async () => {
+    await montar({ linhas: muitas(2), marketplace: "meli" });
+    expect(Array.from(document.querySelectorAll(".vf-fin-pend-grupo")).map((g) => g.dataset.grupo)).toEqual(["agora", "planilha", "bloqueadas"]);
+    expect(screen.getByRole("region", { name: "Corrigir agora no portal" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Corrigir por planilha (importação)" })).toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "Bloqueadas / dependem de decisão" })).toBeInTheDocument();
   });
 
-  it("muitas pendências: o LOTE vem por padrão e a tabela individual fica atrás do seletor", async () => {
+  it("poucas pendências: todas no grupo 1 (inputs na tela), 0 por planilha, e a planilha fica a um clique", async () => {
+    await montar({ linhas: muitas(5), marketplace: "meli" });
+    expect(contagens()).toEqual([["agora", 5], ["planilha", 0], ["bloqueadas", 0]]);
+    expect(within(grupo("agora")).getByRole("textbox", { name: "Novo custo unitário de MLB100" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("Correção em lote")).not.toBeInTheDocument();
+    expect(within(grupo("planilha")).getByRole("button", { name: "Corrigir as 5 por planilha" })).toBeInTheDocument();
+  });
+
+  it("muitas pendências: todas no grupo 2 (planilha) por padrão; o grupo 1 explica e oferece voltar", async () => {
     const usuario = userEvent.setup();
     await montar({ linhas: muitas(30), marketplace: "meli" });
-    expect(screen.getByRole("button", { name: "Corrigir em lote (planilha)" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByLabelText("Correção em lote")).toBeInTheDocument();
-    expect(screen.queryByRole("table", { name: "Produtos com pendência de custo" })).not.toBeInTheDocument();
-    expect(screen.getByText(/Muitas pendências \(30\)/)).toBeInTheDocument();
-    await usuario.click(screen.getByRole("button", { name: "Corrigir individualmente" }));
-    expect(screen.getByRole("table", { name: "Produtos com pendência de custo" })).toBeInTheDocument();
+    expect(contagens()).toEqual([["agora", 0], ["planilha", 30], ["bloqueadas", 0]]);
+    expect(within(grupo("planilha")).getByLabelText("Correção em lote")).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "Pendências para corrigir agora" })).not.toBeInTheDocument();
+    expect(grupo("agora")).toHaveTextContent("30 pendências corrigíveis estão no grupo da planilha");
+    await usuario.click(screen.getByRole("button", { name: "Corrigir as 30 aqui no portal mesmo assim" }));
+    expect(screen.getByRole("table", { name: "Pendências para corrigir agora" })).toBeInTheDocument();
+    expect(contagens()).toEqual([["agora", 30], ["planilha", 0], ["bloqueadas", 0]]);
   });
 
-  it("o operador pode trocar de modo nos dois sentidos", async () => {
+  it("o operador pode levar as poucas para a planilha", async () => {
     const usuario = userEvent.setup();
     await montar({ linhas: muitas(3), marketplace: "meli" });
-    await usuario.click(screen.getByRole("button", { name: "Corrigir em lote (planilha)" }));
+    await usuario.click(screen.getByRole("button", { name: "Corrigir as 3 por planilha" }));
     expect(screen.getByLabelText("Correção em lote")).toBeInTheDocument();
+    expect(contagens()).toEqual([["agora", 0], ["planilha", 3], ["bloqueadas", 0]]);
   });
 
-  it("mostra só as 10 maiores e libera o resto sob demanda (modo individual)", async () => {
+  it("a soma dos grupos é SEMPRE o total — cada pendência está em um grupo só (MELI: ambíguo vai para bloqueadas)", async () => {
+    await montar({ linhas: linhasMeli, marketplace: "meli" });
+    expect(contagens()).toEqual([["agora", 1], ["planilha", 0], ["bloqueadas", 1]]);
+    expect(within(grupo("agora")).getByText("Calça")).toBeInTheDocument();
+    expect(within(grupo("bloqueadas")).getByText("Blusa")).toBeInTheDocument();
+    expect(within(grupo("agora")).queryByText("Blusa")).not.toBeInTheDocument();
+  });
+
+  it("mostra só as 10 maiores e libera o resto sob demanda (grupo 1)", async () => {
     const usuario = userEvent.setup();
     await montar({ linhas: muitas(40), marketplace: "meli" });
-    await usuario.click(screen.getByRole("button", { name: "Corrigir individualmente" }));
+    await usuario.click(screen.getByRole("button", { name: "Corrigir as 40 aqui no portal mesmo assim" }));
     expect(screen.getAllByRole("row")).toHaveLength(11);
     expect(screen.getByText("Item 0")).toBeInTheDocument();
     expect(screen.queryByText("Item 39")).not.toBeInTheDocument();
@@ -169,7 +191,16 @@ describe("decisão por VOLUME", () => {
 describe("correção individual · MELI", () => {
   it("colunas: produto, identificação, motivo, receita, custo atual, novo custo, imposto, ação", async () => {
     await montar({ linhas: linhasMeli, marketplace: "meli" });
-    expect(screen.getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["Produto", "Identificação", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Imposto %", "Ação"]);
+    const tabela = screen.getByRole("table", { name: "Pendências para corrigir agora" });
+    expect(within(tabela).getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["Produto", "Identificação", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Imposto %", "Ação"]);
+  });
+
+  it("bloqueada: tabela própria, com o motivo da pendência e POR QUE não dá para corrigir aqui", async () => {
+    await montar({ linhas: linhasMeli, marketplace: "meli" });
+    const tabela = screen.getByRole("table", { name: "Pendências bloqueadas" });
+    expect(within(tabela).getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["Produto", "Identificação", "Motivo da pendência", "Receita impactada", "Por que não dá para corrigir aqui"]);
+    expect(within(linhaDe("Blusa")).getByText(/Resolva em Bases de Custo/)).toBeInTheDocument();
+    expect(within(grupo("bloqueadas")).getByRole("link", { name: /Abrir Bases de Custo/ })).toBeInTheDocument();
   });
 
   it("custo atual vem do REGISTRO da base (R$ 0,00 real aparece; ausente é '—')", async () => {
@@ -362,14 +393,33 @@ describe("correção individual · Shopee (identidade real da base)", () => {
     expect(api.upsert.mock.calls[0][1].idModel).toBe("999000000999");
   });
 
-  it("INSUFICIENTE — sem ID do Item (só Model): bloqueada, com o motivo e o caminho (planilha)", async () => {
+  it("INSUFICIENTE — sem ID do Item (só Model): grupo 3, sem campos, e diz que nem a planilha resolve", async () => {
     const linhas = normalizarLinhas([{ Produto: "Kit", "ID Model": "555000000123", "Vendas (Pedido pago) (BRL)": 10, "Cobertura de custo": "sem custo" }]);
     await montar(shopeeProps(linhas));
     const linha = linhaDe("Kit");
     expect(linha).toHaveAttribute("data-identidade", "insuficiente");
+    expect(grupo("bloqueadas")).toContainElement(linha);
     expect(within(linha).queryByRole("textbox")).not.toBeInTheDocument();
-    expect(screen.getByText(/não traz o ID do Item/)).toBeInTheDocument();
-    expect(screen.getByText(/use a planilha/)).toBeInTheDocument();
+    expect(within(linha).getByText(/Sem ID do Item nesta linha/)).toBeInTheDocument();
+    expect(within(linha).getByText(/nem aqui, nem pela planilha/)).toBeInTheDocument();
+    expect(contagens()).toEqual([["agora", 0], ["planilha", 0], ["bloqueadas", 1]]);
+  });
+
+  it("Shopee misto: 1 segura (grupo 1), 1 conflito Item × Model (decisão) e 1 sem Item (bloqueada) — contagem 1 · 0 · 2", async () => {
+    const linhas = normalizarLinhas([
+      shopeeLinha({ Produto: "Kit Seguro", ID: "100", "ID Model": "1001" }),
+      shopeeLinha({ Produto: "Kit Conflito", ID: "200", "ID Model": "2001" }),
+      { Produto: "Kit Sem Item", "ID Model": "3001", "Vendas (Pedido pago) (BRL)": 10, "Cobertura de custo": "sem custo" },
+    ]);
+    await montar(shopeeProps(linhas, dadosBase({ produto_id: "200", id_model: "2999", custo_produto: 20 })));
+    expect(contagens()).toEqual([["agora", 1], ["planilha", 0], ["bloqueadas", 2]]);
+    expect(grupo("agora")).toContainElement(linhaDe("Kit Seguro"));
+    const decisao = grupo("bloqueadas").querySelector('[data-subgrupo="decisao"]');
+    expect(decisao).toHaveTextContent("Dependem de decisão (1)");
+    expect(decisao).toContainElement(linhaDe("Kit Conflito"));
+    const bloqueadas = grupo("bloqueadas").querySelector('[data-subgrupo="bloqueadas"]');
+    expect(bloqueadas).toHaveTextContent("Bloqueadas (1)");
+    expect(bloqueadas).toContainElement(linhaDe("Kit Sem Item"));
   });
 
   it("INSUFICIENTE — 2+ registros do Item na base: o servidor não escolhe, a tela também não", async () => {
@@ -389,11 +439,16 @@ describe("correção individual · Shopee (identidade real da base)", () => {
     const b = linhaDe("Kit B");
     expect(a).toHaveAttribute("data-identidade", "segura");
     expect(b).toHaveAttribute("data-identidade", "segura");
+    // antes de gravar, as duas avisam que são do MESMO Item
+    expect(within(a).getByText(/2 pendências deste mesmo Item/)).toBeInTheDocument();
     await usuario.type(within(a).getByRole("textbox", { name: "Novo custo unitário de 169417000123" }), "5");
     await usuario.click(within(a).getByRole("button", { name: "Salvar na base" }));
     await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
     await within(a).findByText("✓ Custo atualizado na base");
     await waitFor(() => expect(linhaDe("Kit B")).toHaveAttribute("data-identidade", "ambigua"));
+    // e passa para o grupo 3 (decisão); a gravada continua no grupo 1
+    expect(grupo("bloqueadas")).toContainElement(linhaDe("Kit B"));
+    expect(grupo("agora")).toContainElement(linhaDe("Kit A"));
   });
 });
 

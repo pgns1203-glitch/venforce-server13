@@ -5,9 +5,12 @@
 //   financeiro → o marketplace já publicou tarifas/repasse desta venda?
 // "Aguardando financeiro" não é "sem custo".
 //
-// Cada eixo é UMA linha: percentual + barra + os números que o explicam. Eixo
-// que NÃO se aplica ao motor (Shopee não separa financeiro disponível ×
-// pendente) vira uma nota de uma linha — não um card vazio.
+// Os dois eixos cabem numa FAIXA só (no legado, a cobertura era um banner
+// grande no topo): percentual + barra curta + só o que falta (receita sem
+// custo, produtos sem custo, aguardando financeiro). Receita com custo e
+// financeiro publicado já estão no cartão Receitas da composição. Eixo que NÃO
+// se aplica ao motor (Shopee não separa financeiro disponível × pendente) vira
+// uma nota curta — não um card vazio.
 import { coberturas } from "../../../utils/financeiro/resumoFechamento.js";
 import { formatarValor } from "../shared/ValorFinanceiro.jsx";
 
@@ -41,7 +44,6 @@ export function CoberturaFechamento({ summary, unmatchedIds, unmatchedCosts }) {
           <Barra pontos={custo.percentual} />
         </div>
         <dl className="vf-fin-cob__itens">
-          <Item rotulo="Receita com custo" valor={custo.receitaComCusto} />
           <Item rotulo="Receita sem custo" valor={custo.receitaSemCusto} />
           <Item rotulo="Produtos sem custo" valor={custo.produtosSemCusto} tipo="numero" />
           {custo.custosAmbiguos !== null && <Item rotulo="Custos ambíguos" valor={custo.custosAmbiguos} tipo="numero" />}
@@ -55,15 +57,13 @@ export function CoberturaFechamento({ summary, unmatchedIds, unmatchedCosts }) {
             <Barra pontos={financeiro.percentual} />
           </div>
           <dl className="vf-fin-cob__itens">
-            <Item rotulo="Receita com financeiro disponível" valor={financeiro.receitaComFinanceiro} />
             <Item rotulo="Receita aguardando financeiro" valor={financeiro.receitaAguardando} />
             <Item rotulo="Vendas aguardando financeiro" valor={financeiro.vendasAguardando} tipo="numero" />
           </dl>
         </section>
       ) : (
         <aside className="vf-fin-cobertura__nota" aria-label="Cobertura financeira" data-eixo="financeiro">
-          <strong>Cobertura financeira:</strong> este motor não separa financeiro disponível × pendente — as tarifas e o repasse
-          vêm da própria planilha processada.
+          <strong>Financeiro:</strong> este motor não separa financeiro disponível × pendente.
         </aside>
       )}
     </div>

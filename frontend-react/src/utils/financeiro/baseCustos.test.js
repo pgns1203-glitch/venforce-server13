@@ -102,7 +102,7 @@ describe("identidadeDaPendencia · Shopee", () => {
   it("INSUFICIENTE — sem ID do Item (só SKU/pedido)", () => {
     const r = idt("shopee", pend({ itemId: null, sku: "AB-1", modelId: null }));
     expect(r.classe).toBe("insuficiente");
-    expect(r.motivo).toMatch(/não traz o ID do Item/);
+    expect(r.motivo).toMatch(/Sem ID do Item nesta linha/);
   });
   it("INSUFICIENTE — 2+ registros do mesmo Item: o servidor não escolhe, a tela também não", () => {
     const r = idt("shopee", pend(), [item("169417000123", "1", { sku: "A" }), item("169417000123", "2", { sku: "B" })]);

@@ -123,6 +123,8 @@ function processamentoRicoShopee() {
     Custo: i % 25 === 0 ? null : 28, Imposto: 8, "LC POR ANÚNCIO": i % 25 === 0 ? null : 14, MC: i % 25 === 0 ? null : 16,
     "Cobertura de custo": i % 25 === 0 ? "sem custo" : "com custo",
   }));
+  // Uma pendência SEM ID do Item (só Model): vai para o grupo 3 (bloqueada).
+  detailedRows.push({ Produto: "Kit sem ID do Item", "ID Model": "555000009999", "Unidades (Pedido pago)": 1, "Vendas (Pedido pago) (BRL)": 50, Custo: null, Imposto: 8, "LC POR ANÚNCIO": null, MC: null, "Cobertura de custo": "sem custo" });
   return {
     ok: true, marketplace: "shopee", costsSource: "base", costsBase: { id: 9, slug: "base-n97-shopee", nome: "Base Shopee N97" },
     summary: {
@@ -1033,20 +1035,20 @@ async function run() {
       assert.ok(/Página 1 de 145/.test(texto), "a paginação deveria dizer Página 1 de 145");
     });
 
-    await check("UX — MELI: Resultado Final em destaque, 4 totais principais e 4 de apoio (margens/índices)", async () => {
+    await check("UX — MELI: KPIs como no legado — Resultado Final em destaque + receitas, LC e as DUAS MCs na grade; TACoS/TACoX menores", async () => {
       const kpi = await cdp.evaluate(`(function(){
         var r = document.querySelector('[data-testid="kpis-processamento"]');
         var ids = function(sel){ return Array.prototype.map.call(r.querySelectorAll(sel), function(e){ return e.dataset.kpi; }); };
         return { principais: ids('.vf-fin-resumo__principal [data-kpi]'), apoio: ids('.vf-fin-resumo__apoio [data-kpi]'), destaque: !!r.querySelector('[data-kpi="finalResult"].is-destaque') };
       })()`);
-      assert.deepStrictEqual(kpi.principais, ["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal"]);
-      assert.deepStrictEqual(kpi.apoio, ["mcCalculada", "finalMarginCalculated", "tacos", "tacox"]);
+      assert.deepStrictEqual(kpi.principais, ["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal", "mcCalculada", "finalMarginCalculated"]);
+      assert.deepStrictEqual(kpi.apoio, ["tacos", "tacox"]);
       assert.ok(kpi.destaque, "Resultado Final deve ter o destaque");
     });
 
     await check("UX — MELI: pendência corrigida NA LINHA (custo atual, novo custo, o que será gravado) e o fechamento NÃO é reprocessado sozinho", async () => {
       const PEND = `${PAINEL} [data-secao="pendencias"]`;
-      const cabecalhos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} th`)}), function(t){ return t.textContent; })`);
+      const cabecalhos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} table[aria-label="Pendências para corrigir agora"] th`)}), function(t){ return t.textContent; })`);
       assert.deepStrictEqual(cabecalhos, ["Produto", "Identificação", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Imposto %", "Ação"]);
       const antes = fechamentoRequestCount;
       const doc = await cdp.send("DOM.getDocument", { depth: -1 });
@@ -1069,34 +1071,37 @@ async function run() {
       assert.strictEqual(fechamentoRequestCount, antes + 1, "Reprocessar deveria chamar o motor UMA vez");
     });
 
-    await check("UX — MELI: o resultado usa a largura útil (sem teto de 860px) e a Leitura fica AO LADO dos KPIs em 1366/1920; empilha em 1200", async () => {
+    await check("UX — MELI: o resultado usa a largura útil (sem teto de 860px); os 6 KPIs não quebram valor; a Leitura fica ABAIXO dos KPIs (não os espreme)", async () => {
       const medir = () => cdp.evaluate(`(function(){
         var r = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="resultado"]`)});
         var k = r.querySelector('[data-testid="kpis-processamento"]').getBoundingClientRect();
         var l = r.querySelector('aside[data-secao="leitura"]').getBoundingClientRect();
         var main = document.querySelector('.vf-shell__main').getBoundingClientRect();
         var comp = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="composicao"]`)}).getBoundingClientRect();
-        return { largura: r.getBoundingClientRect().width, main: main.width, composicao: comp.width, lado: l.left >= k.right - 1 && Math.abs(l.top - k.top) < 40 };
+        var valores = Array.prototype.map.call(r.querySelectorAll('.vf-fin-resumo__principal .vf-fin-kpi__valor'), function(v){ return v.scrollWidth <= v.clientWidth + 1; });
+        return { largura: r.getBoundingClientRect().width, main: main.width, composicao: comp.width, abaixo: l.top >= k.bottom - 1, kpisLarguraToda: k.width >= r.getBoundingClientRect().width - 4, valoresInteiros: valores.every(Boolean) };
       })()`);
-      for (const [largura, aoLado] of [[1920, true], [1366, true], [1200, false]]) {
+      for (const largura of [1920, 1366, 1200]) {
         await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: 1000, deviceScaleFactor: 1, mobile: false });
         await sleep(300);
         const m = await medir();
         assert.ok(m.largura > 900 || largura === 1200, `o resultado ficou com ${m.largura}px em ${largura}px`);
         // largura útil = a do Shell (menos o respiro) até o teto do design system para telas largas (1560px)
         assert.ok(m.composicao >= Math.min(m.main - 100, 1560) - 4, `a composição deveria ocupar a largura útil (${m.composicao} de ${m.main}) em ${largura}px`);
-        assert.strictEqual(m.lado, aoLado, `Leitura ${aoLado ? "AO LADO" : "empilhada"} esperada em ${largura}px: ${JSON.stringify(m)}`);
+        assert.ok(m.abaixo && m.kpisLarguraToda, `Leitura deveria vir ABAIXO e os KPIs ocupar a largura toda em ${largura}px: ${JSON.stringify(m)}`);
+        assert.ok(m.valoresInteiros, `algum valor de KPI foi cortado em ${largura}px: ${JSON.stringify(m)}`);
       }
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
     });
 
-    await check("UX — MELI: poucas pendências → correção individual por padrão (com seletor para o lote); Bases abre em nova aba só quando não há base para atualizar", async () => {
+    await check("UX — MELI: poucas pendências → os 3 grupos com contagem (4 agora · 0 planilha · 0 bloqueadas) e a planilha a um clique", async () => {
       const PEND = `${PAINEL} [data-secao="pendencias"]`;
-      const txt = await textoDe(PEND);
-      assert.ok(/Corrigir individualmente/.test(txt) && /Corrigir em lote/.test(txt), "o seletor de modo deveria aparecer");
-      assert.ok(/Poucas pendências/.test(txt), "deveria dizer que são poucas pendências");
-      const pressionado = await cdp.evaluate(`(function(){ var b = Array.prototype.find.call(document.querySelectorAll(${JSON.stringify(`${PEND} button`)}), function(x){ return x.textContent.trim() === 'Corrigir individualmente'; }); return b && b.getAttribute('aria-pressed'); })()`);
-      assert.strictEqual(pressionado, "true");
+      const resumo = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} ul[aria-label="Resumo das pendências"] li`)}), function(li){ return [li.dataset.grupo, Number(li.querySelector('strong').textContent)]; })`);
+      assert.deepStrictEqual(resumo, [["agora", 4], ["planilha", 0], ["bloqueadas", 0]]);
+      const grupos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} .vf-fin-pend-grupo`)}), function(g){ return g.dataset.grupo; })`);
+      assert.deepStrictEqual(grupos, ["agora", "planilha", "bloqueadas"]);
+      const txt = await textoDe(`${PEND} [data-grupo="planilha"].vf-fin-pend-grupo`);
+      assert.ok(/Corrigir as 4 por planilha/.test(txt), `o grupo da planilha deveria oferecer o caminho: ${txt}`);
     });
 
     await check("UX — MELI: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200 (a tabela rola por dentro); screenshots gravadas", async () => {
@@ -1131,12 +1136,13 @@ async function run() {
       await sleep(300);
     }
 
-    await check("UX — Shopee: reconciliação (Order.all) vem ANTES da composição e dos produtos, agrupada por leitura", async () => {
+    await check("UX — Shopee: reconciliação logo depois do resultado, como no legado (Performance → Reconciliação + um cartão por status)", async () => {
       assert.deepStrictEqual(await secoesDaPagina(), ["resultado", "leitura", "reconciliacao", "composicao", "cobertura", "pendencias", "acoes", "produtos"]);
-      const grupos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="reconciliacao"] [data-grupo]`)}), function(e){ return e.dataset.grupo; })`);
-      assert.deepStrictEqual(grupos, ["consolidado", "andamento", "fora"]);
+      const estados = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="reconciliacao"] [data-estado]`)}), function(e){ return e.dataset.estado; })`);
+      assert.deepStrictEqual(estados, ["Concluídos", "Entregues", "Enviados", "Em atenção", "Cancelados confirmados", "Não pagos", "Devoluções / Reembolsos"]);
       const texto = await textoDe(`${PAINEL} [data-secao="reconciliacao"]`);
-      assert.ok(/Base do fechamento/.test(texto) && /Visão reconciliada/.test(texto), "o fluxo Base → Visão reconciliada deve aparecer");
+      assert.ok(/Performance \(pedidos pagos\)/i.test(texto) && /Reconciliação \(visão completa\)/i.test(texto), "o comparativo do legado deve aparecer");
+      assert.ok(/R\$\s?180\.400,20/.test(texto) && /R\$\s?183\.900,00/.test(texto), `os dois totais do comparativo deveriam aparecer: ${texto.slice(0, 300)}`);
     });
 
     await check("UX — Shopee: cobertura financeira indisponível vira nota compacta (sem card vazio)", async () => {
@@ -1146,11 +1152,16 @@ async function run() {
       assert.strictEqual(linhasCob, 1, "a cobertura compacta deveria ter só a linha de custos");
     });
 
-    await check("UX — Shopee: 72 pendências → CORREÇÃO EM LOTE por padrão, com os 5 passos; importa a planilha ali mesmo e atualiza a BASE", async () => {
+    await check("UX — Shopee: 73 pendências → 0 agora · 72 por planilha · 1 bloqueada; o lote (5 passos) importa a planilha ali mesmo e atualiza a BASE", async () => {
       const PEND = `${PAINEL} [data-secao="pendencias"]`;
+      const resumo = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} ul[aria-label="Resumo das pendências"] li`)}), function(li){ return [li.dataset.grupo, Number(li.querySelector('strong').textContent)]; })`);
+      assert.deepStrictEqual(resumo, [["agora", 0], ["planilha", 72], ["bloqueadas", 1]]);
+      const bloqueada = await textoDe(`${PEND} [data-grupo="bloqueadas"].vf-fin-pend-grupo`);
+      assert.ok(/Kit sem ID do Item/.test(bloqueada) && /nem pela planilha/.test(bloqueada), `a pendência sem Item deveria estar no grupo 3 com o motivo: ${bloqueada.slice(0, 300)}`);
       const passos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} [data-passo]`)}), function(e){ return e.dataset.passo; })`);
       assert.deepStrictEqual(passos, ["baixar", "preencher", "enviar", "importar", "reprocessar"]);
-      assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PEND} tbody input`)}).length`), 0, "no lote a tabela individual fica atrás do seletor");
+      assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PEND} [data-grupo="agora"] tbody input`)}).length`), 0, "no lote o grupo 1 não tem campos");
+      assert.strictEqual(await cdp.evaluate(`Array.prototype.filter.call(document.querySelectorAll(${JSON.stringify(`${PEND} button`)}), function(b){ return b.textContent.trim() === 'Reprocessar fechamento'; }).length`), 1, "um único Reprocessar (passo 5)");
 
       // planilha preenchida: 2 linhas gravaveis (Itens novos na base), 70 sem Novo custo
       previewPlanilhaFake = {
@@ -1179,9 +1190,9 @@ async function run() {
 
     await check("UX — Shopee: no modo individual, Item que NÃO está na base é identidade SEGURA (campos de custo e imposto liberados)", async () => {
       const PEND = `${PAINEL} [data-secao="pendencias"]`;
-      assert.ok(await clicarBotao(PEND, "Corrigir individualmente"), "seletor 'Corrigir individualmente' ausente");
+      assert.ok(await clicarBotao(PEND, "Corrigir as 72 aqui no portal mesmo assim"), "botão para levar as pendências ao portal ausente");
       await sleep(200);
-      const campos = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PEND} tbody tr[data-identidade="segura"] input`)}).length`);
+      const campos = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PEND} [data-grupo="agora"] tbody tr[data-identidade="segura"] input`)}).length`);
       assert.ok(campos >= 2, `deveria haver campos de custo/imposto nas linhas seguras, achei ${campos}`);
     });
 

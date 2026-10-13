@@ -125,6 +125,13 @@ function FechamentoSalvo({ resultado, conciliacao, carregando, entrega, marketpl
           </span>
         )}
       </div>
+      {temSalvo && (
+        <p className="vf-field__hint" data-estado-leitura="salvo">
+          É o fechamento GRAVADO ({dados.status === "publicado" ? "publicado" : "rascunho"}), não um processamento novo: os números são os
+          que foram salvos naquele dia, com os arquivos e a base de custos daquele momento. Processar de novo acima mostra o
+          resultado atual — e só substitui o gravado se você salvar.
+        </p>
+      )}
       {resultado.origemClientLevel && (
         <p className="vf-field__hint">
           Fechamento legado · operação não registrada — {resultado.origemClientLevel.motivo}

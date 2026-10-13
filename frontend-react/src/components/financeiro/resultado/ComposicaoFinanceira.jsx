@@ -1,12 +1,14 @@
-// Composição financeira: Receitas · Deduções · Custos/Investimentos ·
-// Resultado, lado a lado numa só moldura (quatro colunas, divisores leves) em
-// vez de quatro caixas com muito espaço vazio. Só os campos que o motor do
+// Composição financeira — os quatro cartões do detalhamento executivo do
+// legado (Receitas · Deduções · Custos/Investimentos · Resultado), cada um um
+// cartão de verdade, com linhas rótulo/valor separadas por divisor leve e o
+// Resultado Final como linha de total. Só os campos que o motor do
 // marketplace devolve; nenhum número é calculado aqui.
 //
 // Custos/Investimentos aparecem com sinal de menos: o backend devolve o total
-// positivo (adsTotal) e o desconta do LC no finalResult.
+// positivo (adsTotal) e o desconta do LC no finalResult. Zero não é despesa:
+// fica neutro, não vermelho.
 import { blocosExecutivos, numOuNull } from "../../../utils/financeiro/resumoFechamento.js";
-import { formatarValor } from "../shared/ValorFinanceiro.jsx";
+import { formatarValor, tomDoValor } from "../shared/ValorFinanceiro.jsx";
 
 function valorDoItem(bloco, item) {
   if (bloco.id !== "investimentos") return formatarValor(item.valor, item.tipo);
@@ -14,6 +16,9 @@ function valorDoItem(bloco, item) {
   if (n === null) return formatarValor(null);
   return n === 0 ? formatarValor(0) : formatarValor(-n, "moeda");
 }
+
+// Como no legado: resultado e margens pintados pelo sinal; o resto neutro.
+const COM_TOM = new Set(["contributionProfitTotal", "mcCalculada", "finalResult", "finalMarginCalculated"]);
 
 export function ComposicaoFinanceira({ summary, marketplace }) {
   const blocos = blocosExecutivos(summary, marketplace);
@@ -25,7 +30,7 @@ export function ComposicaoFinanceira({ summary, marketplace }) {
           <dl className="vf-fin-extrato">
             {b.itens.map((i) => (
               <div
-                className={`vf-fin-extrato__linha${b.id === "investimentos" ? " is-despesa" : ""}${i.chave === "finalResult" ? " is-total" : ""}`}
+                className={`vf-fin-extrato__linha${b.id === "investimentos" && numOuNull(i.valor) > 0 ? " is-despesa" : ""}${i.chave === "finalResult" ? " is-total" : ""}${COM_TOM.has(i.chave) ? ` is-${tomDoValor(i.valor)}` : ""}`}
                 key={i.chave}
                 data-despesa={b.id === "investimentos" ? i.chave : undefined}
               >
@@ -34,8 +39,8 @@ export function ComposicaoFinanceira({ summary, marketplace }) {
               </div>
             ))}
             {b.status && (
-              <div className="vf-fin-extrato__linha">
-                <dt>Confiança do fechamento</dt>
+              <div className={`vf-fin-extrato__linha is-status${b.confianca ? ` is-confianca-${b.confianca}` : ""}`}>
+                <dt>Status do fechamento</dt>
                 <dd>{b.status}</dd>
               </div>
             )}

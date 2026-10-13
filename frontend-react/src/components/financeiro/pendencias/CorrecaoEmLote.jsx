@@ -108,8 +108,7 @@ export function CorrecaoEmLote({ marketplace, base, itensBase, pendencias, plani
           <div className="vf-fin-lote__titulo"><strong>Baixar planilha</strong></div>
           <p className="vf-field__hint">
             {planilha.incluidas} {planilha.incluidas === 1 ? "pendência" : "pendências"} na planilha, no formato que o importador de Bases lê (ID como texto, Novo custo em branco).
-            {planilha.semId > 0 && <> {planilha.semId} sem ID do Item ficam de fora — não há como o importador saber qual registro atualizar.</>}
-            {planilha.ambiguas > 0 && <> {planilha.ambiguas} com custo ambíguo ficam de fora — resolva em Bases de Custo.</>}
+            {planilha.foraDoLote > 0 && <> As {planilha.foraDoLote} do grupo 3 ficam de fora — a planilha não as resolveria (veja o motivo de cada uma abaixo).</>}
           </p>
           <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" onClick={onBaixar} disabled={planilha.incluidas === 0}>
             Baixar XLSX

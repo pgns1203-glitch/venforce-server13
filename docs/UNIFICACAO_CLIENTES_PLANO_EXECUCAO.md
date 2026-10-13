@@ -189,7 +189,14 @@ não foram usados para interromper as partes independentes da execução.
 ## 10. Ordem recomendada
 
 Revisar PRs em ordem A resolvers → B OAuth → C consumidores → D inventário/
-planejamento. Nenhum foi mergeado por este trabalho. Após merge do #246,
+planejamento:
+
+- [PR A #251](https://github.com/venforcecompany-sudo/venforce-server/pull/251): base #246.
+- [PR B #252](https://github.com/venforcecompany-sudo/venforce-server/pull/252): base PR A.
+- [PR C #253](https://github.com/venforcecompany-sudo/venforce-server/pull/253): base PR B.
+- [PR D #254](https://github.com/venforcecompany-sudo/venforce-server/pull/254): base PR C.
+
+ Nenhum foi mergeado por este trabalho. Após merge do #246,
 rebase de todos os segmentos, testes, review e homologação. Depois: comprovar
 empresa por grupo, aprovar manifesto/ACL/preferências, implementar/testar
 lookup e executor em PR próprio, ensaiar ida/volta em cópia integral e só então

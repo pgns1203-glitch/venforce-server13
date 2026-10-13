@@ -11,21 +11,28 @@
 //   2. arquivos do fechamento (só os que ainda faltam)
 //   3. ajustes do período
 //   4. processar (com o motivo de bloqueio à vista)
-//   5. RESULTADO DO PROCESSAMENTO completo, no mesmo fluxo
-//   6. salvar entrega / reprocessar / editar arquivos
+//   5. RESULTADO DO PROCESSAMENTO completo, no mesmo fluxo, na ordem das
+//      perguntas: quanto fechou → posso confiar → o que está errado → como
+//      se compõe → salvar / reprocessar / editar arquivos
+//   6. (slot) painel da entrega desta competência
+//   7. PRODUTOS por último — a investigação detalhada, paginada
 //
 // O contexto (cliente, marketplace, conta, competência) fica no cabeçalho da
 // página. O que NÃO está aqui: seletor de Cliente/Conta/Período (vêm do
 // Shell), seletor de marketplace (é o da operação) e TikTok (segue no legado).
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { useFechamentoNativo } from "../../hooks/useFechamentoNativo.js";
 import { rotularCompetencia } from "../../utils/dates.js";
+import { normalizarLinhas } from "../../utils/financeiro/produtos.js";
 import { BaseCustosStatus } from "./fechamento/BaseCustosStatus.jsx";
 import { FechamentoFileCard } from "./fechamento/FechamentoFileCard.jsx";
 import { FechamentoAjustes } from "./fechamento/FechamentoAjustes.jsx";
 import { FechamentoAcao } from "./fechamento/FechamentoAcao.jsx";
+import { AcoesFechamento } from "./fechamento/AcoesFechamento.jsx";
 import { ResultadoProcessado } from "./resultado/ResultadoProcessado.jsx";
+import { ProdutosFechamento } from "./produtos/ProdutosFechamento.jsx";
+import { SecaoFinanceira } from "./shared/SecaoFinanceira.jsx";
 import { PendenciasCusto } from "./pendencias/PendenciasCusto.jsx";
 
 function avisoDoCampo(validacao, campo) {
@@ -33,7 +40,7 @@ function avisoDoCampo(validacao, campo) {
   return validacao.itens.find((i) => i.campo === campo)?.mensagem || null;
 }
 
-export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, contaNome, periodo, periodoLabel, onSalvo, onTrabalho }) {
+export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marketplace, contaNome, periodo, periodoLabel, onSalvo, onTrabalho, entregaSlot = null }) {
   const f = useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, marketplace, periodo, onSalvo });
 
   // A página precisa saber se há trabalho em andamento para não trocar de
@@ -43,6 +50,13 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
     onTrabalho?.({ temTrabalho, temResultado, processadoNaoSalvo });
   }, [onTrabalho, temTrabalho, temResultado, processadoNaoSalvo]);
   const legado = `financeiro.html?cliente=${encodeURIComponent(clienteSlug || "")}`;
+
+  // Linhas COMPLETAS do processamento, normalizadas uma vez: alimentam as
+  // pendências (no meio da página) e a tabela de produtos (no fim).
+  const linhas = useMemo(
+    () => normalizarLinhas(f.processamento?.detailedRows, { ambiguousIds: f.processamento?.summary?.ambiguousCostIds }),
+    [f.processamento]
+  );
 
   const processando = f.estado === "processando";
   // Reprocessar mantém o resultado anterior visível (ocupado) até o novo
@@ -66,6 +80,7 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
             </p>
           </div>
         </div>
+        {entregaSlot}
       </div>
     );
   }
@@ -139,24 +154,30 @@ export function NovoFechamento({ clienteSlug, clienteNome, clienteContaId, marke
       {comResultado && (
         <PreviewFechamento
           f={f}
+          linhas={linhas}
           periodo={periodo}
           periodoLabel={periodoLabel}
           legado={legado}
           contexto={{ cliente: clienteNome, clienteSlug, conta: contaNome || (clienteContaId ? `#${clienteContaId}` : null), competencia: periodo }}
         />
       )}
+
+      {/* Painel da entrega: SEMPRE neste mesmo lugar da árvore (entre o
+          preview e os produtos), com ou sem resultado — assim não é remontado
+          ao processar e o que o operador editou nele não se perde. */}
+      {entregaSlot}
+
+      {comResultado && <ProdutosFechamento linhas={linhas} />}
     </div>
   );
 }
 
-function PreviewFechamento({ f, periodo, periodoLabel, legado, contexto }) {
+function PreviewFechamento({ f, linhas, periodo, periodoLabel, legado, contexto }) {
   const comp = f.competencia || {};
-  const salvando = f.estado === "salvando";
-  const salvo = f.estado === "salvo";
   const reprocessando = f.estado === "processando";
 
   return (
-    <div className={`vf-stack${reprocessando ? " is-atualizando" : ""}`} aria-busy={reprocessando ? "true" : undefined}>
+    <div className={`vf-fin-pagina${reprocessando ? " is-atualizando" : ""}`} aria-busy={reprocessando ? "true" : undefined}>
       {/* ── Competência declarada pelo backend ─────────────────────────── */}
       {f.divergente ? (
         <div className="vf-banner is-warning" role="alert">
@@ -186,8 +207,12 @@ function PreviewFechamento({ f, periodo, periodoLabel, legado, contexto }) {
         </p>
       )}
 
-      <ResultadoProcessado processamento={f.processamento} marketplace={f.marketplace} periodo={periodo}>
-        {({ linhas }) => (
+      <ResultadoProcessado
+        processamento={f.processamento}
+        marketplace={f.marketplace}
+        periodo={periodo}
+        linhas={linhas}
+        pendencias={() => (
           <PendenciasCusto
             linhas={linhas}
             processamento={f.processamento}
@@ -198,67 +223,12 @@ function PreviewFechamento({ f, periodo, periodoLabel, legado, contexto }) {
             reprocessando={reprocessando}
           />
         )}
-      </ResultadoProcessado>
-
-      {/* ── Duplicidade (409) ───────────────────────────────────────────── */}
-      {f.duplicidade && (
-        <div className={`vf-banner ${f.duplicidade.publicado ? "is-danger" : "is-warning"}`} role="alert">
-          <div className="vf-banner__content">
-            <p className="vf-banner__title">
-              {f.duplicidade.publicado
-                ? `${periodoLabel} já tem um fechamento PUBLICADO para esta operação`
-                : `${periodoLabel} já tem um fechamento salvo para esta operação`}
-            </p>
-            <p className="vf-banner__description">
-              {f.duplicidade.publicado
-                ? "Substituir grava um novo fechamento desta competência. O link que já está com o cliente continua abrindo o fechamento antigo; o novo ganha um link próprio quando for publicado."
-                : "Substituir atualiza a entrega existente com o que acabou de ser processado."}
-            </p>
-            <div className="vf-cluster">
-              <button type="button" className="vf-btn vf-btn--danger vf-btn--sm" disabled={salvando} onClick={f.substituir}>
-                {salvando ? "Substituindo…" : "Substituir"}
-              </button>
-              <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={f.resetar}>
-                Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Ações ───────────────────────────────────────────────────────── */}
-      {salvo ? (
-        <div className="vf-cluster">
-          <span className="vf-status is-success" role="status">
-            Entrega salva. Edite a apresentação e publique em “Entrega para o cliente”, logo abaixo.
-          </span>
-          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={f.resetar}>
-            Processar outro
-          </button>
-        </div>
-      ) : !f.duplicidade ? (
-        <div className="vf-cluster vf-fin-acoes">
-          <button
-            type="button"
-            className="vf-btn vf-btn--primary"
-            disabled={salvando || reprocessando || (f.divergente && !f.confirmouDivergencia)}
-            aria-busy={salvando ? "true" : undefined}
-            onClick={() => f.salvar()}
-          >
-            {salvando ? "Salvando…" : "Salvar entrega"}
-          </button>
-          <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" disabled={salvando || reprocessando} onClick={f.reprocessar}>
-            {reprocessando ? "Reprocessando…" : "Reprocessar fechamento"}
-          </button>
-          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" disabled={salvando} onClick={f.voltarAoFormulario}>
-            Editar arquivos e ajustes
-          </button>
-        </div>
-      ) : null}
-
-      <p className="vf-field__hint">
-        Reprocessar pelo motor antigo continua possível no <a href={legado}>Financeiro (legado) →</a>
-      </p>
+        acoes={
+          <SecaoFinanceira id="acoes" titulo="Ações do fechamento">
+            <AcoesFechamento f={f} periodoLabel={periodoLabel} legado={legado} />
+          </SecaoFinanceira>
+        }
+      />
     </div>
   );
 }

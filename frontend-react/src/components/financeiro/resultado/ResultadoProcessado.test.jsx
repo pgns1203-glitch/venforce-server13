@@ -11,7 +11,7 @@ import { kpisPrincipais, coberturas, leituraDoFechamento, metricasSecundarias } 
 vi.mock("../../../services/apiClient.js", async (orig) => ({ ...(await orig()), ehAdmin: () => false }));
 
 function kpi(chave) {
-  return screen.getByTestId("kpis-processamento").querySelector(`[data-kpi="${chave}"] .vf-kpi__value`);
+  return screen.getByTestId("kpis-processamento").querySelector(`[data-kpi="${chave}"] .vf-fin-kpi__valor`);
 }
 
 const SUMMARY_MELI = {
@@ -90,29 +90,89 @@ describe("formatação · null ≠ 0", () => {
   });
 });
 
-describe("composição LC → Resultado Final", () => {
+describe("composição financeira · LC → Resultado Final", () => {
+  const bloco = (comp, id) => comp.querySelector(`[data-bloco="${id}"]`);
+
   it("mostra LC, despesas com sinal e o finalResult DO BACKEND", () => {
     render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
-    const comp = screen.getByRole("region", { name: "Composição do resultado" });
-    expect(within(comp).getByText("LC Total").nextSibling).toHaveTextContent("R$ 5.000,00");
+    const comp = screen.getByRole("region", { name: "Composição financeira" });
+    const resultado = bloco(comp, "resultado");
+    expect(within(resultado).getByText("LC Total").nextSibling).toHaveTextContent("R$ 5.000,00");
     expect(comp.querySelector('[data-despesa="adsTotal"] dd')).toHaveTextContent("−R$ 1.500,00");
     expect(comp.querySelector('[data-despesa="affiliatesTotal"] dd')).toHaveTextContent("−R$ 700,00");
     expect(comp.querySelector('[data-despesa="venforceTotal"] dd')).toHaveTextContent("−R$ 1.100,00");
-    expect(within(comp).getByText("Resultado após despesas comerciais").nextSibling).toHaveTextContent("R$ 1.700,00");
+    expect(within(resultado).getByText("Resultado Final").nextSibling).toHaveTextContent("R$ 1.700,00");
+  });
+
+  it("os quatro grupos aparecem lado a lado, na ordem Receitas · Deduções · Custos/Investimentos · Resultado", () => {
+    render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
+    const comp = screen.getByRole("region", { name: "Composição financeira" });
+    expect(Array.from(comp.querySelectorAll("[data-bloco]")).map((b) => b.dataset.bloco)).toEqual(["receitas", "deducoes", "investimentos", "resultado"]);
+    expect(within(bloco(comp, "receitas")).getByText("Receita sem custo").nextSibling).toHaveTextContent("R$ 10.000,00");
   });
 
   it("não recalcula: se o backend diz 1.234, a tela diz 1.234 (mesmo que as parcelas somem outra coisa)", () => {
     render(<ResultadoProcessado processamento={processamento({ summary: { ...SUMMARY_MELI, finalResult: 1234 } })} marketplace="meli" periodo="2026-10" />);
-    const comp = screen.getByRole("region", { name: "Composição do resultado" });
-    expect(within(comp).getByText("Resultado após despesas comerciais").nextSibling).toHaveTextContent("R$ 1.234,00");
+    const comp = screen.getByRole("region", { name: "Composição financeira" });
+    expect(within(bloco(comp, "resultado")).getByText("Resultado Final").nextSibling).toHaveTextContent("R$ 1.234,00");
+  });
+
+  it("despesa ausente é '—', zero real é R$ 0,00 (nunca o contrário)", () => {
+    const { adsTotal, ...semAds } = SUMMARY_MELI;
+    render(<ResultadoProcessado processamento={processamento({ summary: { ...semAds, venforceTotal: 0, affiliatesTotal: null } })} marketplace="meli" periodo="2026-10" />);
+    const comp = screen.getByRole("region", { name: "Composição financeira" });
+    expect(comp.querySelector('[data-despesa="adsTotal"]')).toBeNull();
+    expect(comp.querySelector('[data-despesa="venforceTotal"] dd')).toHaveTextContent("R$ 0,00");
+    expect(comp.querySelector('[data-despesa="affiliatesTotal"] dd')).toHaveTextContent("—");
   });
 
   it("Shopee não inventa FULL/custos adicionais (o motor não devolve)", () => {
     const { fullCostTotal, additionalCostsTotal, ...semFull } = SUMMARY_MELI;
     render(<ResultadoProcessado processamento={processamento({ summary: semFull })} marketplace="shopee" periodo="2026-10" />);
-    const comp = screen.getByRole("region", { name: "Composição do resultado" });
+    const comp = screen.getByRole("region", { name: "Composição financeira" });
     expect(comp.querySelector('[data-despesa="fullCostTotal"]')).toBeNull();
     expect(comp.querySelector('[data-despesa="additionalCostsTotal"]')).toBeNull();
+  });
+});
+
+describe("hierarquia da página · ordem das seções", () => {
+  const ordem = (container) => Array.from(container.querySelectorAll("[data-secao]")).map((e) => e.dataset.secao);
+
+  it("resultado → leitura → cobertura → pendências → reconciliação → composição → ações", () => {
+    const { container } = render(
+      <ResultadoProcessado
+        processamento={processamento({ summary: { ...SUMMARY_MELI, orderAllTotalCount: 10, orderAllTotalRevenue: 1000, orderAllCompletedCount: 10, orderAllCompletedRevenue: 1000 } })}
+        marketplace="shopee"
+        periodo="2026-10"
+        pendencias={() => <section data-secao="pendencias" />}
+        acoes={<section data-secao="acoes" />}
+      />
+    );
+    expect(ordem(container)).toEqual(["resultado", "leitura", "cobertura", "pendencias", "reconciliacao", "composicao", "acoes"]);
+  });
+
+  it("os produtos NÃO fazem parte do resultado: a tabela vem depois, fora dele", () => {
+    const { container } = render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
+    expect(container.querySelector("table")).toBeNull();
+    expect(container.querySelector('[data-secao="produtos"]')).toBeNull();
+  });
+
+  it("KPIs: Resultado Final e os três totais são a faixa principal; margens e índices são apoio", () => {
+    render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
+    const raiz = screen.getByTestId("kpis-processamento");
+    const principais = Array.from(raiz.querySelectorAll(".vf-fin-resumo__principal [data-kpi]")).map((e) => e.dataset.kpi);
+    const apoio = Array.from(raiz.querySelectorAll(".vf-fin-resumo__apoio [data-kpi]")).map((e) => e.dataset.kpi);
+    expect(principais).toEqual(["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal"]);
+    expect(apoio).toEqual(["mcCalculada", "finalMarginCalculated", "tacos", "tacox"]);
+  });
+
+  it("Leitura separa alertas de contexto e não repete modo/Resultado Final", () => {
+    render(<ResultadoProcessado processamento={processamento({ unmatchedIds: ["A", "B"] })} marketplace="meli" periodo="2026-10" />);
+    const leitura = screen.getByRole("region", { name: "Leitura do fechamento" });
+    const alertas = within(leitura).getByRole("list", { name: "Pontos de atenção" });
+    expect(alertas).toHaveTextContent("2 produtos sem custo identificado.");
+    expect(leitura).not.toHaveTextContent("Resultado Final positivo");
+    expect(leitura).not.toHaveTextContent("Fechamento em modo");
   });
 });
 
@@ -140,9 +200,11 @@ describe("coberturas · custo ≠ financeiro", () => {
   it("motor sem eixo financeiro (Shopee) diz que não se aplica, sem inventar 0%", () => {
     const { revenueWithFinancialData, revenuePendingFinancial, financialDataCoveragePercent, salesPendingFinancialCount, ...shopee } = SUMMARY_MELI;
     render(<ResultadoProcessado processamento={processamento({ summary: shopee })} marketplace="shopee" periodo="2026-10" />);
-    const fin = screen.getByRole("region", { name: "Cobertura financeira" });
-    expect(fin).toHaveTextContent("Este motor não separa financeiro disponível × pendente");
+    const fin = screen.getByRole("complementary", { name: "Cobertura financeira" });
+    expect(fin).toHaveTextContent("este motor não separa financeiro disponível × pendente");
     expect(fin).not.toHaveTextContent("0,0%");
+    // nota compacta, não um card do tamanho da cobertura de custo
+    expect(screen.queryByRole("region", { name: "Cobertura financeira" })).not.toBeInTheDocument();
   });
 });
 

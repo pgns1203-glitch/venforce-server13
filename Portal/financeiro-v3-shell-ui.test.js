@@ -16,7 +16,8 @@ const { URL } = require("url");
 
 const PORTAL_DIR = __dirname;
 const PROD_HOST = "venforce-server.onrender.com";
-const SHOTS_DIR = "/tmp/claude-1000/-home-user-Documentos-venforce-scanner-x1/ee1ec06e-7596-49c3-8e17-52302088a27f/scratchpad";
+// Screenshots do smoke: VF_SHOTS_DIR, senão uma pasta temporária do sistema.
+const SHOTS_DIR = process.env.VF_SHOTS_DIR || path.join(require("os").tmpdir(), "vf-fin-v3-shots");
 
 const N97 = { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };
 const PORTFOLIO = { ok: true, clientes: [N97] };
@@ -76,6 +77,78 @@ function payloadFeliz() {
     },
   };
 }
+
+/* UX pós-migração — processamento REALISTA e GRANDE (milhares de linhas) para
+   provar a hierarquia da página, a paginação e as pendências na linha. Shapes
+   confirmados em server/services/fechamentoFinanceiro/* (summary) e em
+   frontend-react/src/utils/financeiro/produtos.js (detailedRows). */
+function processamentoRicoMeli() {
+  const detailedRows = Array.from({ length: 3625 }, (_, i) => {
+    const semCusto = i < 4;
+    return {
+      "# de anúncio": `MLB${String(1000 + i)}`,
+      "Título do anúncio": `Produto ${i} com um título bem comprido para testar a quebra de linha da coluna de nome ${i}`,
+      Unidades: 1 + (i % 3), "Venda Total": 100 + (i % 50), "Total (BRL)": 80 + (i % 30),
+      "Preço de custo": semCusto ? null : 30, "Preço de custo total": semCusto ? null : 30,
+      Imposto: 10, LC: semCusto ? null : 12.5, MC: semCusto ? null : (i % 9 === 0 ? -3 : 18),
+      "Cobertura de custo": semCusto ? "sem custo" : (i % 40 === 0 ? "financeiro pendente" : "com custo"),
+    };
+  });
+  return {
+    ok: true,
+    marketplace: "meli",
+    costsSource: "base",
+    costsBase: { id: 9, slug: "base-n97-meli", nome: "Comprou_chegou_meli1" },
+    summary: {
+      marketplace: "meli", calculationMode: "real_meli_vendas", financialConfidence: "parcial",
+      grossRevenueTotal: 412880.5, paidRevenueTotal: 371200.1, revenueWithCost: 398000, revenueWithoutCost: 14880.5,
+      calculatedCoveragePercent: 96.4, revenueWithFinancialData: 390000, revenuePendingFinancial: 22880.5, financialDataCoveragePercent: 94.5,
+      salesPendingFinancialCount: 91, contributionProfitTotal: 61250.4, contributionMarginCalculated: 0.1539, averageContributionMargin: 0.15,
+      finalResult: 21400.2, finalMarginCalculated: 0.0538, tacos: 0.061, tacox: 0.092,
+      adsTotal: 25200, venforceTotal: 9800, affiliatesTotal: 4850.2, fullCostTotal: 0, additionalCostsTotal: 0,
+      refundsCount: 38, refundsTotal: -7120.4, lostRevenueTotal: 7120.4, excludedStatusCount: 12,
+      ambiguousCostIds: ["MLB9999"], executiveNotes: ["Mês com 12 itens fora do LC por status.", "ADS informado manualmente."],
+    },
+    competencia: { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false },
+    detailedRows,
+    unmatchedIds: ["MLB1000", "MLB1001", "MLB1002", "MLB1003"],
+    unmatchedCosts: [],
+  };
+}
+function processamentoRicoShopee() {
+  const detailedRows = Array.from({ length: 1800 }, (_, i) => ({
+    Produto: `Kit ${i} título longo de produto Shopee para validar a coluna de produto ${i}`,
+    ID: String(169417000000 + i), "ID Model": String(555000000000 + i),
+    "Unidades (Pedido pago)": 1 + (i % 4), "Vendas (Pedido pago) (BRL)": 90 + (i % 40),
+    Custo: i % 25 === 0 ? null : 28, Imposto: 8, "LC POR ANÚNCIO": i % 25 === 0 ? null : 14, MC: i % 25 === 0 ? null : 16,
+    "Cobertura de custo": i % 25 === 0 ? "sem custo" : "com custo",
+  }));
+  return {
+    ok: true, marketplace: "shopee", costsSource: "base", costsBase: { id: 9, slug: "base-n97-shopee", nome: "Base Shopee N97" },
+    summary: {
+      marketplace: "shopee", calculationMode: "real_financial", financialConfidence: "parcial",
+      grossRevenueTotal: 180400.2, paidRevenueTotal: 166100, revenueWithCost: 170000, revenueWithoutCost: 10400.2,
+      calculatedCoveragePercent: 94.2, contributionProfitTotal: 31200.7, contributionMarginCalculated: 0.1729,
+      finalResult: 9800.3, finalMarginCalculated: 0.054, tacos: 0.071, tacox: 0.088,
+      adsTotal: 12800, venforceTotal: 5200, affiliatesTotal: 3400.4,
+      cancellationsTotal: -4100, returnsTotal: -2200, marketplaceFeesTotal: -21300, shippingFeesTotal: -9800, taxValueTotal: -14400, cmvTotal: -88200,
+      cancelledCount: 40, cancelledLostRevenue: 4100, unpaidCount: 22, unpaidLostRevenue: 2050, returnRefundCount: 15, returnRefundRevenue: 2200,
+      orderAllTotalCount: 1540, orderAllTotalRevenue: 183900,
+      orderAllCompletedCount: 1100, orderAllCompletedRevenue: 130000, orderAllDeliveredCount: 180, orderAllDeliveredRevenue: 21000,
+      orderAllShippedCount: 120, orderAllShippedRevenue: 14000, orderAllIntermediateCount: 20, orderAllIntermediateRevenue: 2400,
+      orderAllCancelledConfirmedCount: 40, orderAllCancelledConfirmedRevenue: 4100, orderAllUnpaidCount: 22, orderAllUnpaidRevenue: 2050,
+      orderAllReturnRefundCount: 15, orderAllReturnRefundRevenue: 2200,
+      orderAllTopCancelledItems: [{ productName: "Kit 5", count: 4, revenue: 1600 }],
+      executiveNotes: ["Order.all cobre 100% do mês."],
+    },
+    competencia: { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false },
+    detailedRows,
+    unmatchedIds: Array.from({ length: 72 }, (_, i) => String(169417000000 + i * 25)),
+    unmatchedCosts: [{ type: "variation_id", value: "555000000000", reason: "cost_only_on_parent_item", parentItemId: "169417000000", blockedBy: "multiple_variations_in_performance" }],
+  };
+}
+let processamentoFake = null; // quando setado, POST /fechamentos/financeiro devolve isto
+let upsertsFake = [];
 
 // Sem fechamento gerado no período — shape real confirmado lendo
 // financeiroVisaoService.js: `resultado.disponivel` é FALSE quando não há
@@ -265,6 +338,7 @@ function wireFetchInterception(cdp) {
     // competência declarada; `competenciaFake` controla a divergência.
     if (url.includes("/fechamentos/financeiro")) {
       fechamentoRequestCount += 1;
+      if (processamentoFake) { await json(processamentoFake); return; }
       await json({
         ok: true,
         summary: { marketplace: "meli", grossRevenueTotal: 120000, paidRevenueTotal: 110000, contributionProfitTotal: 21000, averageContributionMargin: 0.19, finalResult: 15000, tacos: 0.04 },
@@ -298,6 +372,13 @@ function wireFetchInterception(cdp) {
       return;
     }
     if (url.includes("/base-vinculos")) { await json({ ok: true, bases: baseVinculosFake }); return; }
+    // Editor rápido de custo (mesmos endpoints de Bases): padrão + upsert.
+    if (/\/bases\/[^/]+\/custos\/padrao/.test(url)) { await json({ ok: true, padrao: { imposto_percentual: 8, taxa_fixa: 0 } }); return; }
+    if (/\/bases\/[^/]+\/custos\/upsert/.test(url) && req.method === "POST") {
+      upsertsFake.push(JSON.parse(req.postData || "{}"));
+      await json({ ok: true, acao: "criado" });
+      return;
+    }
     if (url.includes("/financeiro/")) { await json(financeiroPayload); return; }
 
     await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
@@ -872,6 +953,171 @@ async function run() {
       assert.strictEqual(alvo.publicado, false);
       assert.strictEqual(alvo.token_publico, null, "despublicar Shopee precisa revogar o token público também");
     });
+    N97_CONTAS[0].marketplace = "meli";
+    N97_CONTAS[0].nome = "Mercado Livre 1";
+
+    // ═══ 2d. UX pós-migração — a ORDEM da página é a ordem das perguntas de
+    // quem fecha o mês: quanto fechou → posso confiar → o que está errado →
+    // como se compõe → salvar → (só então) os milhares de produtos. ═══
+    // Processamento GRANDE (3.625 / 1.800 linhas): a tela pagina e nunca
+    // renderiza tudo. Larguras de notebook/desktop com o Shell ocupando a
+    // lateral: nada de scroll horizontal na PÁGINA (só dentro da tabela).
+    const ORDEM_COMPLETA = ["resultado", "leitura", "cobertura", "pendencias", "composicao", "acoes", "produtos"];
+    const secoesDaPagina = () => cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao]`)}), function(e){ return e.dataset.secao; })`);
+    async function fotografar(nome, largura) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: 1000, deviceScaleFactor: 1, mobile: false });
+      await sleep(250);
+      // O Shell pode rolar num contêiner interno: mede o maior scrollHeight.
+      const altura = await cdp.evaluate(`(function(){ var m = document.documentElement.scrollHeight; document.querySelectorAll('*').forEach(function(e){ var o = getComputedStyle(e).overflowY; if ((o === 'auto' || o === 'scroll') && e.scrollHeight > m) m = e.scrollHeight; }); return m; })()`);
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: Math.min(Math.max(altura, 1000), 9000), deviceScaleFactor: 1, mobile: false });
+      await sleep(350);
+      const png = await cdp.send("Page.captureScreenshot", { format: "png" });
+      const arquivo = path.join(SHOTS_DIR, `${nome}-${largura}.png`);
+      fs.writeFileSync(arquivo, Buffer.from(png.data, "base64"));
+      return arquivo;
+    }
+    const semScrollHorizontalNaPagina = () => cdp.evaluate(`(function(){ var d = document.documentElement; return d.scrollWidth <= window.innerWidth + 1 && document.body.scrollWidth <= window.innerWidth + 1; })()`);
+
+    resetEntregas();
+    entregasFake = [];
+    N97_CONTAS[0].marketplace = "meli";
+    N97_CONTAS[0].nome = "Mercado Livre 1";
+    baseVinculosFake = [
+      { id: 9, slug: "base-n97-meli", nome: "Comprou_chegou_meli1", ativo: true, vinculo: { cliente_slug: "n97", marketplace: "meli", cliente_conta_id: 42, conta_nome: "Mercado Livre 1" } },
+    ];
+    processamentoFake = processamentoRicoMeli();
+    upsertsFake = [];
+    fechamentoRequestCount = 0;
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=ux-meli`);
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (UX MELI)");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (UX MELI)");
+    await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "base vinculada MELI não reconhecida (UX MELI)");
+    {
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const vendas = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: vendas.nodeId });
+      await sleep(150);
+      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente (UX MELI)");
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "resultado MELI grande não apareceu");
+      await sleep(300);
+    }
+
+    await check("UX — MELI: resultado → leitura → cobertura → pendências → composição → ações → entrega → produtos (produtos POR ÚLTIMO)", async () => {
+      assert.deepStrictEqual(await secoesDaPagina(), ORDEM_COMPLETA);
+      // o painel "Entrega para o cliente" fica entre as ações e os produtos
+      const posicoes = await cdp.evaluate(`(function(){
+        var raiz = document.querySelector(${JSON.stringify(PAINEL)});
+        var acoes = raiz.querySelector('[data-secao="acoes"]'), prod = raiz.querySelector('[data-secao="produtos"]'), ent = raiz.querySelector(${JSON.stringify(ENTREGA)});
+        var antes = function(a, b){ return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING); };
+        return { entrega: !!ent, acoesAntesProdutos: antes(acoes, prod), entregaEntre: ent ? (antes(acoes, ent) && antes(ent, prod)) : null };
+      })()`);
+      assert.ok(posicoes.acoesAntesProdutos, "as ações vêm antes dos produtos");
+      if (posicoes.entrega) assert.ok(posicoes.entregaEntre, "a entrega deve ficar entre as ações e os produtos");
+    });
+
+    await check("UX — MELI: 3.625 linhas mas só uma página renderizada (paginação real), com total e faixa visíveis", async () => {
+      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="produtos"] tbody tr`)}).length`);
+      assert.strictEqual(linhas, 25, `esperadas 25 linhas na página, achei ${linhas}`);
+      const texto = await textoDe(`${PAINEL} [data-secao="produtos"]`);
+      assert.ok(/3\.625 linhas/.test(texto), `o total de linhas deveria aparecer: ${texto.slice(0, 200)}`);
+      assert.ok(/Página 1 de 145/.test(texto), "a paginação deveria dizer Página 1 de 145");
+    });
+
+    await check("UX — MELI: Resultado Final em destaque, 4 totais principais e 4 de apoio (margens/índices)", async () => {
+      const kpi = await cdp.evaluate(`(function(){
+        var r = document.querySelector('[data-testid="kpis-processamento"]');
+        var ids = function(sel){ return Array.prototype.map.call(r.querySelectorAll(sel), function(e){ return e.dataset.kpi; }); };
+        return { principais: ids('.vf-fin-resumo__principal [data-kpi]'), apoio: ids('.vf-fin-resumo__apoio [data-kpi]'), destaque: !!r.querySelector('[data-kpi="finalResult"].is-destaque') };
+      })()`);
+      assert.deepStrictEqual(kpi.principais, ["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal"]);
+      assert.deepStrictEqual(kpi.apoio, ["mcCalculada", "finalMarginCalculated", "tacos", "tacox"]);
+      assert.ok(kpi.destaque, "Resultado Final deve ter o destaque");
+    });
+
+    await check("UX — MELI: pendência corrigida NA LINHA (custo atual, novo custo, o que será gravado) e o fechamento NÃO é reprocessado sozinho", async () => {
+      const PEND = `${PAINEL} [data-secao="pendencias"]`;
+      const cabecalhos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} th`)}), function(t){ return t.textContent; })`);
+      assert.deepStrictEqual(cabecalhos, ["Produto", "ID", "SKU / Model", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Ação"]);
+      const antes = fechamentoRequestCount;
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const campo = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label="Novo custo unitário de MLB1000"]' });
+      assert.ok(campo.nodeId, "campo de Novo custo da primeira pendência ausente");
+      await cdp.send("DOM.focus", { nodeId: campo.nodeId });
+      await cdp.send("Input.insertText", { text: "12,50" });
+      await sleep(80);
+      const linha = `${PEND} tr:has(input[aria-label="Novo custo unitário de MLB1000"])`;
+      assert.ok(await clicarBotao(linha, "Salvar na base"), "botão Salvar na base ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(linha)}) || {innerText:''}).innerText.indexOf('produto_id = MLB1000') >= 0`, "a confirmação deveria nomear exatamente o registro que será gravado");
+      assert.strictEqual(upsertsFake.length, 0, "nada pode ser gravado antes da confirmação");
+      assert.ok(await clicarBotao(linha, "Confirmar e registrar"), "botão de confirmação ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(PEND)}) || {innerText:''}).innerText.indexOf('Registrado na base') >= 0`, "a linha deveria mostrar o sucesso");
+      assert.strictEqual(upsertsFake.length, 1);
+      assert.deepStrictEqual([upsertsFake[0].produto_id, upsertsFake[0].custo_produto], ["MLB1000", 12.5]);
+      assert.strictEqual(fechamentoRequestCount, antes, "corrigir custo não pode reprocessar sozinho");
+      assert.ok(await clicarBotao(PEND, "Reprocessar fechamento"), "Reprocessar fechamento ausente");
+      await sleep(400);
+      assert.strictEqual(fechamentoRequestCount, antes + 1, "Reprocessar deveria chamar o motor UMA vez");
+    });
+
+    await check("UX — MELI: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200 (a tabela rola por dentro); screenshots gravadas", async () => {
+      for (const largura of [1920, 1366, 1200]) {
+        const arquivo = await fotografar("financeiro-v3-meli", largura);
+        assert.ok(fs.statSync(arquivo).size > 5000, `screenshot ${largura} vazia`);
+        assert.ok(await semScrollHorizontalNaPagina(), `scroll horizontal na página em ${largura}px`);
+        console.log(`   screenshot: ${arquivo}`);
+      }
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
+    });
+
+    // Shopee com Order.all: a reconciliação vem ANTES da composição e dos produtos.
+    N97_CONTAS[0].marketplace = "shopee";
+    N97_CONTAS[0].nome = "Shopee 1";
+    baseVinculosFake = [
+      { id: 10, slug: "base-n97-shopee", nome: "Base Shopee N97", ativo: true, vinculo: { cliente_slug: "n97", marketplace: "shopee", cliente_conta_id: 42, conta_nome: "Shopee 1" } },
+    ];
+    processamentoFake = processamentoRicoShopee();
+    fechamentoRequestCount = 0;
+    await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=ux-shopee`);
+    await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (UX Shopee)");
+    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (UX Shopee)");
+    await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "base vinculada Shopee não reconhecida (UX Shopee)");
+    {
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const vendas = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
+      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: vendas.nodeId });
+      await sleep(150);
+      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente (UX Shopee)");
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "resultado Shopee grande não apareceu");
+      await sleep(300);
+    }
+
+    await check("UX — Shopee: reconciliação (Order.all) vem ANTES da composição e dos produtos, agrupada por leitura", async () => {
+      assert.deepStrictEqual(await secoesDaPagina(), ["resultado", "leitura", "cobertura", "pendencias", "reconciliacao", "composicao", "acoes", "produtos"]);
+      const grupos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="reconciliacao"] [data-grupo]`)}), function(e){ return e.dataset.grupo; })`);
+      assert.deepStrictEqual(grupos, ["consolidado", "andamento", "fora"]);
+      const texto = await textoDe(`${PAINEL} [data-secao="reconciliacao"]`);
+      assert.ok(/Base do fechamento/.test(texto) && /Visão reconciliada/.test(texto), "o fluxo Base → Visão reconciliada deve aparecer");
+    });
+
+    await check("UX — Shopee: cobertura financeira indisponível vira nota compacta (sem card vazio) e pendência NÃO oferece correção na linha", async () => {
+      const nota = await cdp.evaluate(`(function(){ var a = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="cobertura"] aside[data-eixo="financeiro"]`)}); return a ? a.getBoundingClientRect().height : null; })()`);
+      assert.ok(nota !== null && nota < 90, `a nota de cobertura financeira deveria ser compacta, altura ${nota}`);
+      const campos = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="pendencias"] input`)}).length`);
+      assert.strictEqual(campos, 0, "Shopee não pode oferecer campo de custo (não escolhe Item × Variação)");
+      const texto = await textoDe(`${PAINEL} [data-secao="pendencias"]`);
+      assert.ok(/Baixar planilha \(XLSX\)/.test(texto), "a planilha XLSX deveria ser oferecida");
+      assert.ok(/a tela não escolhe o identificador/.test(texto));
+    });
+
+    await check("UX — Shopee: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200; screenshots gravadas", async () => {
+      for (const largura of [1920, 1366, 1200]) {
+        const arquivo = await fotografar("financeiro-v3-shopee", largura);
+        assert.ok(await semScrollHorizontalNaPagina(), `scroll horizontal na página em ${largura}px`);
+        console.log(`   screenshot: ${arquivo}`);
+      }
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
+    });
+    processamentoFake = null;
     N97_CONTAS[0].marketplace = "meli";
     N97_CONTAS[0].nome = "Mercado Livre 1";
 

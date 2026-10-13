@@ -9,6 +9,8 @@
 // "Receita impactada" é a SOMA da receita das linhas da pendência — uma
 // agregação de exibição dos valores do backend, não uma fórmula financeira.
 
+import { gerarXlsx } from "./xlsxMinimo.js";
+
 // Rótulos do diagnóstico tipado Shopee — os MESMOS de Portal/financeiro.js
 // (SHOPEE_COST_GAP_*), para as duas telas falarem a mesma língua.
 export const GAP_TIPO_LABEL = {
@@ -88,6 +90,10 @@ export function agruparPendencias(linhas, { unmatchedCosts = [] } = {}) {
         statusCusto: l.statusCusto,
         motivo: l.statusCusto === "ambiguo" ? "Match ambíguo — custos diferentes para o mesmo produto" : motivoDoGap(gap),
         gap,
+        // Custo/imposto que a PRÓPRIA linha trouxe (null = a linha não trouxe;
+        // nunca vira 0). Servem à planilha e à tela, não a qualquer conta.
+        custoAtual: null,
+        impostoPercentual: null,
         receitaImpactada: 0,
         temReceita: false,
         linhas: 0,
@@ -96,6 +102,8 @@ export function agruparPendencias(linhas, { unmatchedCosts = [] } = {}) {
       grupos.set(chave, g);
     }
     g.linhas += 1;
+    if (g.custoAtual === null && l.custoUnitario !== null && l.custoUnitario !== undefined) g.custoAtual = l.custoUnitario;
+    if (g.impostoPercentual === null && l.impostoPercentual !== null && l.impostoPercentual !== undefined) g.impostoPercentual = l.impostoPercentual;
     if (l.receita !== null && l.receita !== undefined) {
       g.receitaImpactada += Number(l.receita);
       g.temReceita = true;
@@ -107,39 +115,75 @@ export function agruparPendencias(linhas, { unmatchedCosts = [] } = {}) {
     .sort((a, b) => (b.receitaImpactada ?? -Infinity) - (a.receitaImpactada ?? -Infinity));
 }
 
-// ── Planilha de pendências (CSV) ──────────────────────────────────────────
-// O frontend-react não tem dependência de XLSX; CSV com BOM + ";" abre
-// direto no Excel pt-BR. `novo_custo` vai vazio para quem for preencher.
-// `cliente` é o nome amigável (da carteira do Shell) e fica VAZIO quando ele
-// não existe — o slug tem coluna própria e nunca faz as vezes de nome.
+// ── Planilha de pendências (XLSX) ─────────────────────────────────────────
+// Escolhida no lugar do CSV porque o operador abre, preenche e REIMPORTA na
+// Base de Custos (Bases → "Atualizar por planilha", que lê .xlsx/.xls/.csv).
+// XLSX guarda ID como texto (CSV no Excel vira notação científica e perde
+// dígitos) e abre sem assistente de importação.
+//
+// Os cabeçalhos da aba 1 são o CONTRATO com o leitor de Bases
+// (server/services/bases/assistenteBaseService.js): "ID", "Model ID", "Novo
+// custo" e "Imposto (%)" são detectados sozinhos. Dois cuidados que já
+// custaram caro em teste:
+//   · "Produto" casa com o candidato "custo produto" do leitor e a coluna do
+//     NOME seria lida como CUSTO (tudo R$ 0) — por isso "Nome do produto";
+//   · "Custo atual" é excluído da detecção de custo (contém "atual"), então
+//     só "Novo custo" é lido como custo. Linha com "Novo custo" vazio é
+//     ignorada na reimportação: nada é zerado por omissão.
 
-const COLUNAS_CSV = [
-  "marketplace", "cliente", "cliente_slug", "conta", "competencia", "produto", "item_id", "variation_id",
-  "sku", "model_id", "motivo", "receita_impactada", "custo_atual", "novo_custo",
+export const COLUNAS_PLANILHA_PENDENCIAS = [
+  "Nome do produto", "ID", "SKU", "Model ID", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Imposto (%)",
 ];
 
-function celula(v) {
-  if (v === null || v === undefined) return "";
-  const s = typeof v === "number" ? v.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false }) : String(v);
-  return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+// Imposto vai como TEXTO com "%" ("10,5%"): sem o sinal, o leitor trata 0,5 como
+// fração (50%) e 10 como pontos — o "%" elimina a ambiguidade.
+function impostoComoTexto(pontos) {
+  if (pontos === null || pontos === undefined) return null;
+  const n = Number(pontos);
+  if (!Number.isFinite(n)) return null;
+  return `${n.toLocaleString("pt-BR", { maximumFractionDigits: 4, useGrouping: false })}%`;
 }
 
-export function montarCsvPendencias(pendencias, { marketplace, cliente, clienteSlug, conta, competencia } = {}) {
-  const linhas = [COLUNAS_CSV.join(";")];
-  for (const p of pendencias || []) {
-    const variation = p.gap?.type === "variation_id" ? p.gap.value : null;
-    linhas.push(
-      [
-        marketplace, cliente, clienteSlug, conta, competencia, p.produto, p.itemId, variation, p.sku, p.modelId,
-        p.motivo, p.receitaImpactada, null, null,
-      ].map(celula).join(";")
-    );
-  }
-  return `﻿${linhas.join("\r\n")}\r\n`;
+export function montarLinhasPlanilhaPendencias(pendencias) {
+  return (pendencias || []).map((p) => [
+    p.produto || null,
+    p.itemId || null,
+    p.sku || null,
+    p.modelId || null,
+    p.motivo,
+    p.receitaImpactada,
+    p.custoAtual,
+    null, // Novo custo: o operador preenche
+    impostoComoTexto(p.impostoPercentual),
+  ]);
+}
+
+// `contexto` vira a 2ª aba (informativa — a reimportação lê só a 1ª).
+export function montarPlanilhaPendencias(pendencias, { marketplace, cliente, clienteSlug, conta, competencia } = {}) {
+  return gerarXlsx([
+    {
+      nome: "Pendências de custo",
+      larguras: [38, 18, 16, 20, 46, 18, 14, 14, 14],
+      linhas: [COLUNAS_PLANILHA_PENDENCIAS, ...montarLinhasPlanilhaPendencias(pendencias)],
+    },
+    {
+      nome: "Contexto",
+      larguras: [24, 48],
+      linhas: [
+        ["Campo", "Valor"],
+        ["Marketplace", marketplace || null],
+        ["Cliente", cliente || null],
+        ["Cliente (slug)", clienteSlug || null],
+        ["Conta", conta || null],
+        ["Competência", competencia || null],
+        ["Como usar", "Preencha 'Novo custo' (e 'Imposto (%)' se quiser) e importe em Bases de Custo → Atualizar por planilha. Linhas com 'Novo custo' vazio são ignoradas."],
+      ],
+    },
+  ]);
 }
 
 export function nomeDaPlanilhaDePendencias({ marketplace, periodo }) {
-  return `pendencias-custo-${marketplace || "marketplace"}-${periodo || "sem-competencia"}.csv`;
+  return `pendencias-custo-${marketplace || "marketplace"}-${periodo || "sem-competencia"}.xlsx`;
 }
 
 // Diagnóstico tipado que não casou com nenhuma linha agrupada — exibido à

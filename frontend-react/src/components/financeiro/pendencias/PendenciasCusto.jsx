@@ -1,19 +1,37 @@
 // frontend-react/src/components/financeiro/pendencias/PendenciasCusto.jsx
 //
-// Pendências de custo como AÇÃO, não como uma caixa vermelha: cada produto
-// sem custo/ambíguo com o motivo, a receita impactada e o que fazer.
-//   A. Baixar planilha de pendências (CSV)
-//   B. Reprocessar o fechamento depois de corrigir a base
-//   C. Corrigir custo na hora — só MELI + base vinculada + sem custo
+// Pendências de custo como AÇÃO, não como uma caixa vermelha. Cada produto sem
+// custo/ambíguo aparece com o motivo, a receita que fica fora do LC/MC, o custo
+// que a linha tem hoje e — quando é seguro — o campo para corrigir ali mesmo:
+//
+//   Produto · ID · SKU/Model · Motivo · Receita impactada · Custo atual · Novo custo · Ação
+//
+//   A. Corrigir na linha  → só MELI + base vinculada USADA no processamento +
+//                           "sem custo" (nunca ambíguo). A chave da base é o
+//                           MLB, então o registro afetado é inequívoco. O
+//                           operador vê exatamente o que será gravado antes
+//                           de confirmar; sucesso/erro são POR LINHA.
+//   B. Baixar planilha    → XLSX para preencher e reimportar em Bases de Custo.
+//   C. Reprocessar        → depois de corrigir (na linha ou na base). O
+//                           reprocesso é um passo explícito, em lote: corrigir
+//                           10 produtos não dispara 10 processamentos.
+//
+// Shopee: o custo pode morar no Item ou na Variação e a tela NÃO escolhe — lá
+// a correção continua em Bases de Custo (ou pela planilha). Nenhum matching
+// novo existe aqui.
 
-import { useMemo, useState } from "react";
-import { agruparPendencias, gapsSemLinha, GAP_TIPO_LABEL, montarCsvPendencias, motivoDoGap, nomeDaPlanilhaDePendencias } from "../../../utils/financeiro/pendencias.js";
-import { baixarBlob } from "../../../utils/financeiro/arquivos.js";
+import { useEffect, useMemo, useState } from "react";
+import { agruparPendencias, gapsSemLinha, GAP_TIPO_LABEL, montarPlanilhaPendencias, motivoDoGap, nomeDaPlanilhaDePendencias } from "../../../utils/financeiro/pendencias.js";
+import { baixarBlob, TIPO_XLSX } from "../../../utils/financeiro/arquivos.js";
+import { obterPadraoCustoBase } from "../../../services/basesCustoApi.js";
 import { formatarValor } from "../shared/ValorFinanceiro.jsx";
+import { SecaoFinanceira } from "../shared/SecaoFinanceira.jsx";
 import { formatarMoeda } from "../../../utils/currency.js";
-import { CorrigirCustoMeli } from "./CorrigirCustoMeli.jsx";
+import { PendenciaLinha } from "./PendenciaLinha.jsx";
 
-const MAX_VISIVEIS = 25;
+// As maiores primeiro (ordenadas por receita impactada); o resto fica a um clique,
+// para a lista não empurrar reconciliação e composição para o fim da página.
+const MAX_VISIVEIS = 10;
 
 export function PendenciasCusto({ linhas, processamento, marketplace, contexto = {}, base = null, onReprocessar, reprocessando = false }) {
   const pendencias = useMemo(
@@ -21,13 +39,17 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
     [linhas, processamento]
   );
   const semLinha = useMemo(() => gapsSemLinha(pendencias, processamento?.unmatchedCosts), [pendencias, processamento]);
-  const [corrigindo, setCorrigindo] = useState(null);
-  const [registrados, setRegistrados] = useState([]);
+  const [registrados, setRegistrados] = useState({});
   const [verTodas, setVerTodas] = useState(false);
+  const [padrao, setPadrao] = useState(null);
 
-  if (!pendencias.length && !semLinha.length) return null;
+  // Cada processamento novo é um retrato novo: o que foi corrigido antes ou
+  // já saiu da lista (resolvido) ou continua pendente (a base não resolveu).
+  useEffect(() => {
+    setRegistrados({});
+  }, [processamento]);
 
-  // Correção rápida só quando o processamento USOU a base vinculada desta
+  // Correção na linha só quando o processamento USOU a base vinculada desta
   // conta — corrigir a base não muda nada se os custos vieram de upload.
   const baseDaConta =
     marketplace === "meli" &&
@@ -37,43 +59,77 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
       ? base
       : null;
 
+  // Imposto/taxa que um registro NOVO recebe — para o operador saber o que
+  // será criado. Uma leitura por base.
+  const slugBase = baseDaConta?.slug || null;
+  useEffect(() => {
+    if (!slugBase) {
+      setPadrao(null);
+      return undefined;
+    }
+    const controlador = new AbortController();
+    obterPadraoCustoBase(slugBase, { signal: controlador.signal })
+      .then((r) => setPadrao(r?.padrao || null))
+      .catch(() => setPadrao(null));
+    return () => controlador.abort();
+  }, [slugBase]);
+
+  if (!pendencias.length && !semLinha.length) return null;
+
   const receitaTotal = pendencias.reduce((s, p) => (p.receitaImpactada === null ? s : s + p.receitaImpactada), 0);
   const visiveis = verTodas ? pendencias : pendencias.slice(0, MAX_VISIVEIS);
+  const nRegistrados = Object.keys(registrados).length;
 
-  function baixarCsv() {
-    const csv = montarCsvPendencias(pendencias, { marketplace, ...contexto });
-    baixarBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), nomeDaPlanilhaDePendencias({ marketplace, periodo: contexto.competencia }));
+  function baixarPlanilha() {
+    const bytes = montarPlanilhaPendencias(pendencias, { marketplace, ...contexto });
+    baixarBlob(new Blob([bytes], { type: TIPO_XLSX }), nomeDaPlanilhaDePendencias({ marketplace, periodo: contexto.competencia }));
   }
 
+  const resumo = pendencias.length
+    ? `${pendencias.length} ${pendencias.length === 1 ? "produto precisa" : "produtos precisam"} de ação · ${formatarMoeda(Math.round(receitaTotal * 100) / 100)} de receita fora do LC/MC.`
+    : "Diagnóstico da base sem produto associado — veja o detalhe abaixo.";
+
   return (
-    <section className="vf-fin-bloco vf-fin-pendencias vf-stack vf-stack--sm" aria-label="Pendências de custo">
-      <div className="vf-cluster vf-cluster--between">
-        <div>
-          <h4 className="vf-fin-bloco__titulo">Pendências de custo</h4>
-          <p className="vf-field__hint">
-            {pendencias.length} {pendencias.length === 1 ? "produto precisa" : "produtos precisam"} de ação
-            {pendencias.length ? ` · ${formatarMoeda(Math.round(receitaTotal * 100) / 100)} de receita fora do LC/MC` : ""}.
-          </p>
-        </div>
-        <div className="vf-cluster">
+    <SecaoFinanceira
+      id="pendencias"
+      titulo="Pendências de custo"
+      descricao={resumo}
+      acoes={
+        <>
           {pendencias.length > 0 && (
-            <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" onClick={baixarCsv}>
-              Baixar planilha de pendências
+            <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" onClick={baixarPlanilha}>
+              Baixar planilha (XLSX)
             </button>
           )}
           <a className="vf-btn vf-btn--ghost vf-btn--sm" href="bases.html">
             Abrir Bases de Custo
           </a>
           {onReprocessar && (
-            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" disabled={reprocessando} onClick={onReprocessar}>
+            <button
+              type="button"
+              className={`vf-btn ${nRegistrados > 0 ? "vf-btn--primary" : "vf-btn--ghost"} vf-btn--sm`}
+              disabled={reprocessando}
+              onClick={onReprocessar}
+            >
               {reprocessando ? "Reprocessando…" : "Reprocessar fechamento"}
             </button>
           )}
+        </>
+      }
+    >
+      {nRegistrados > 0 && (
+        <div className="vf-banner is-success vf-banner--compact" role="status">
+          <div className="vf-banner__content">
+            <p className="vf-banner__description">
+              {nRegistrados === 1 ? "1 custo foi registrado" : `${nRegistrados} custos foram registrados`} na base. O fechamento só reflete
+              depois de <strong>reprocessar</strong>.
+            </p>
+          </div>
         </div>
-      </div>
+      )}
 
       {pendencias.length > 0 && (
-        <div className="vf-table-wrap vf-table-scroll">
+        <div className="vf-table-wrap vf-table-scroll vf-fin-pendencias__tabela">
           <table className="vf-table vf-table--compact" aria-label="Produtos com pendência de custo">
             <thead>
               <tr>
@@ -82,47 +138,22 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
                 <th>SKU / Model</th>
                 <th>Motivo</th>
                 <th className="is-numeric">Receita impactada</th>
+                <th className="is-numeric">Custo atual</th>
+                <th>Novo custo</th>
                 <th>Ação</th>
               </tr>
             </thead>
             <tbody>
-              {visiveis.map((p) => {
-                const podeCorrigir = baseDaConta && p.statusCusto === "sem_custo" && p.itemId && !registrados.includes(p.chave);
-                return (
-                  <tr key={p.chave} data-pendencia={p.statusCusto}>
-                    <td>{p.produto || "—"}</td>
-                    <td className="vf-mono">{p.itemId || "—"}</td>
-                    <td className="vf-mono">{[p.sku, p.modelId].filter(Boolean).join(" · ") || "—"}</td>
-                    <td>
-                      {p.motivo}
-                      {p.aguardandoFinanceiro && <span className="vf-field__hint"> · também aguardando financeiro</span>}
-                    </td>
-                    <td className="is-numeric">{formatarValor(p.receitaImpactada)}</td>
-                    <td>
-                      {registrados.includes(p.chave) ? (
-                        <span className="vf-status is-success">Custo registrado</span>
-                      ) : corrigindo === p.chave ? (
-                        <CorrigirCustoMeli
-                          pendencia={p}
-                          base={baseDaConta}
-                          onCancelar={() => setCorrigindo(null)}
-                          onRegistrado={() => {
-                            setRegistrados((r) => [...r, p.chave]);
-                            setCorrigindo(null);
-                            onReprocessar?.();
-                          }}
-                        />
-                      ) : podeCorrigir ? (
-                        <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => setCorrigindo(p.chave)}>
-                          Corrigir custo
-                        </button>
-                      ) : (
-                        <span className="vf-field__hint">Corrigir em Bases de Custo</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+              {visiveis.map((p) => (
+                <PendenciaLinha
+                  key={p.chave}
+                  pendencia={p}
+                  base={baseDaConta}
+                  padrao={padrao}
+                  registrado={registrados[p.chave] ?? null}
+                  onRegistrado={(valor) => setRegistrados((r) => ({ ...r, [p.chave]: valor }))}
+                />
+              ))}
             </tbody>
           </table>
         </div>
@@ -135,14 +166,14 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
 
       {marketplace !== "meli" && pendencias.length > 0 && (
         <p className="vf-field__hint">
-          No Shopee o custo pode estar no Item ou na Variação — a tela não escolhe o identificador. Corrija em Bases de Custo
-          (ou baixe a planilha de pendências) e reprocesse.
+          No Shopee o custo pode estar no Item ou na Variação — a tela não escolhe o identificador. Baixe a planilha, preencha
+          o novo custo e importe em Bases de Custo (Atualizar por planilha); depois reprocesse.
         </p>
       )}
       {marketplace === "meli" && !baseDaConta && pendencias.length > 0 && (
         <p className="vf-field__hint">
-          Correção rápida indisponível: este processamento não usou a base vinculada da conta. Corrija a planilha de custos e
-          reprocesse.
+          Correção na linha indisponível: este processamento não usou a base vinculada da conta. Corrija a planilha de custos (ou
+          baixe a planilha de pendências) e reprocesse.
         </p>
       )}
 
@@ -158,6 +189,6 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
           </ul>
         </details>
       )}
-    </section>
+    </SecaoFinanceira>
   );
 }

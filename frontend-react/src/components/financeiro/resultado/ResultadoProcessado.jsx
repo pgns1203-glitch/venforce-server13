@@ -1,31 +1,41 @@
 // frontend-react/src/components/financeiro/resultado/ResultadoProcessado.jsx
 //
 // RESULTADO DO PROCESSAMENTO — nasce logo abaixo de Processar, no mesmo
-// fluxo. Ordem de leitura: resumo → leitura/cobertura → composição →
-// métricas do marketplace. Tudo vem da resposta de POST /fechamentos/financeiro;
-// nada é recalculado aqui.
+// fluxo. A ordem é a ordem das perguntas de quem fecha o mês:
+//
+//   1. Quanto fechou?            Resultado executivo (KPIs)
+//   2. Posso confiar?            Leitura do fechamento · Cobertura
+//   3. O que está errado?        Pendências (slot `pendencias`)
+//   4. Como está reconciliado?   Reconciliação (Shopee)
+//   5. Como se compõe?           Composição financeira
+//   6. Quero salvar/publicar?    Ações (slot `acoes`)
+//
+// Os produtos NÃO moram aqui: são a investigação detalhada e vêm por último,
+// fora deste componente (NovoFechamento). Tudo vem da resposta de
+// POST /fechamentos/financeiro; nada é recalculado.
 
 import { useMemo } from "react";
 import { ehAdmin } from "../../../services/apiClient.js";
 import { normalizarLinhas } from "../../../utils/financeiro/produtos.js";
-import { ProdutosFinanceiroTable } from "../produtos/ProdutosFinanceiroTable.jsx";
 import { ReconciliacaoShopee } from "../shopee/ReconciliacaoShopee.jsx";
 import { rotuloModo, CONFIANCA_LABEL } from "../../../utils/financeiro/resumoFechamento.js";
 import { base64ParaBlob, baixarBlob, nomeDaPlanilhaProcessada, TIPO_XLSX } from "../../../utils/financeiro/arquivos.js";
+import { SecaoFinanceira } from "../shared/SecaoFinanceira.jsx";
 import { ResumoKpis } from "./ResumoKpis.jsx";
-import { ComposicaoResultado } from "./ComposicaoResultado.jsx";
-import { BlocosExecutivos } from "./BlocosExecutivos.jsx";
+import { ComposicaoFinanceira } from "./ComposicaoFinanceira.jsx";
 import { CoberturaFechamento } from "./CoberturaFechamento.jsx";
 import { LeituraFechamento } from "./LeituraFechamento.jsx";
 import { MetricasSecundarias } from "./MetricasSecundarias.jsx";
 
-export function ResultadoProcessado({ processamento, marketplace, periodo, children }) {
+export function ResultadoProcessado({ processamento, marketplace, periodo, linhas: linhasDoPai = null, pendencias = null, acoes = null }) {
   // Linhas COMPLETAS do processamento em memória, normalizadas uma vez — a
-  // mesma lista alimenta tabela, filtros e pendências.
-  const linhas = useMemo(
-    () => normalizarLinhas(processamento?.detailedRows, { ambiguousIds: processamento?.summary?.ambiguousCostIds }),
-    [processamento]
+  // mesma lista alimenta pendências e tabela de produtos. O pai pode entregar
+  // a lista pronta (para não normalizar duas vezes).
+  const linhasProprias = useMemo(
+    () => (linhasDoPai ? null : normalizarLinhas(processamento?.detailedRows, { ambiguousIds: processamento?.summary?.ambiguousCostIds })),
+    [linhasDoPai, processamento]
   );
+  const linhas = linhasDoPai || linhasProprias;
 
   if (!processamento) {
     return (
@@ -44,88 +54,82 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, child
   }
 
   return (
-    <section className="vf-fin-resultado vf-stack" aria-label="Resultado do processamento">
-      <header className="vf-cluster vf-cluster--between vf-fin-resultado__cabecalho">
-        <div className="vf-stack vf-stack--sm">
-          <h3 className="vf-fin-resultado__titulo">Resultado do processamento</h3>
-          <p className="vf-field__hint">
-            {[modo, confianca ? `confiança ${confianca.toLowerCase()}` : null,
-              origemCustos ? `custos da base ${origemCustos.nome || origemCustos.slug}` : processamento.costsSource === "upload" ? "custos da planilha enviada" : null]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-        </div>
-        <div className="vf-cluster">
-          {processamento.excelBase64 && (
+    <section className="vf-fin-resultado vf-fin-pagina" aria-label="Resultado do processamento">
+      <SecaoFinanceira
+        id="resultado"
+        titulo="Resultado do fechamento"
+        descricao={[
+          modo,
+          confianca ? `confiança ${confianca.toLowerCase()}` : null,
+          origemCustos ? `custos da base ${origemCustos.nome || origemCustos.slug}` : processamento.costsSource === "upload" ? "custos da planilha enviada" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+        acoes={
+          processamento.excelBase64 ? (
             <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" onClick={baixarPlanilha}>
               Baixar planilha processada
             </button>
-          )}
-        </div>
-      </header>
-
-      {processamento.emptySales && (
-        <div className="vf-banner is-info vf-banner--compact" role="status">
-          <div className="vf-banner__content">
-            <p className="vf-banner__description">Planilha válida sem vendas no período.</p>
+          ) : null
+        }
+      >
+        {processamento.emptySales && (
+          <div className="vf-banner is-info vf-banner--compact" role="status">
+            <div className="vf-banner__content">
+              <p className="vf-banner__description">Planilha válida sem vendas no período.</p>
+            </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Caixa-preta do fechamento: captura automática no backend. Só avisa
-          que já aconteceu — sem dado sensível na tela. */}
-      {processamento.incidente?.codigo && (
-        <div className="vf-cluster vf-fin-incidente" role="status">
-          <span className="vf-field__hint">
-            Ocorrência de suporte <strong className="vf-mono">{processamento.incidente.codigo}</strong> — arquivos
-            preservados temporariamente para diagnóstico.
-          </span>
-          <button
-            type="button"
-            className="vf-btn vf-btn--ghost vf-btn--sm"
-            onClick={() => navigator.clipboard?.writeText(processamento.incidente.codigo)}
-          >
-            Copiar código
-          </button>
-          {ehAdmin() && (
-            <a
+        {/* Caixa-preta do fechamento: captura automática no backend. Só avisa
+            que já aconteceu — sem dado sensível na tela. */}
+        {processamento.incidente?.codigo && (
+          <div className="vf-cluster vf-fin-incidente" role="status">
+            <span className="vf-field__hint">
+              Ocorrência de suporte <strong className="vf-mono">{processamento.incidente.codigo}</strong> — arquivos
+              preservados temporariamente para diagnóstico.
+            </span>
+            <button
+              type="button"
               className="vf-btn vf-btn--ghost vf-btn--sm"
-              href={`financeiro-debug.html?incidente=${encodeURIComponent(processamento.incidente.codigo)}`}
+              onClick={() => navigator.clipboard?.writeText(processamento.incidente.codigo)}
             >
-              Abrir diagnóstico
-            </a>
-          )}
-        </div>
-      )}
+              Copiar código
+            </button>
+            {ehAdmin() && (
+              <a
+                className="vf-btn vf-btn--ghost vf-btn--sm"
+                href={`financeiro-debug.html?incidente=${encodeURIComponent(processamento.incidente.codigo)}`}
+              >
+                Abrir diagnóstico
+              </a>
+            )}
+          </div>
+        )}
 
-      <ResumoKpis summary={summary} />
+        <ResumoKpis summary={summary} />
+      </SecaoFinanceira>
 
-      <div className="vf-fin-blocos vf-fin-blocos--2">
-        <LeituraFechamento processamento={processamento} marketplace={marketplace} />
-        <ComposicaoResultado summary={summary} />
-      </div>
+      <LeituraFechamento processamento={processamento} marketplace={marketplace} />
 
-      <CoberturaFechamento
-        summary={summary}
-        unmatchedIds={processamento.unmatchedIds}
-        unmatchedCosts={processamento.unmatchedCosts}
-      />
+      <SecaoFinanceira id="cobertura" titulo="Cobertura" descricao="O quanto do faturamento tem custo e financeiro identificados.">
+        <CoberturaFechamento
+          summary={summary}
+          unmatchedIds={processamento.unmatchedIds}
+          unmatchedCosts={processamento.unmatchedCosts}
+        />
+        <MetricasSecundarias summary={summary} marketplace={marketplace} />
+      </SecaoFinanceira>
 
-      <MetricasSecundarias summary={summary} marketplace={marketplace} />
-
-      {typeof children === "function" ? children({ linhas }) : children}
-
-      <section className="vf-stack vf-stack--sm" aria-label="Produtos">
-        <h4 className="vf-fin-bloco__titulo">Produtos do fechamento</h4>
-        <ProdutosFinanceiroTable linhas={linhas} />
-      </section>
+      {typeof pendencias === "function" ? pendencias({ linhas }) : pendencias}
 
       <ReconciliacaoShopee summary={summary} marketplace={marketplace} />
 
-      <details className="vf-fin-disclosure">
-        <summary>Receitas, deduções, investimentos e resultado</summary>
-        <BlocosExecutivos summary={summary} marketplace={marketplace} />
-      </details>
+      <SecaoFinanceira id="composicao" titulo="Composição financeira" descricao="Como o resultado se forma: receitas, deduções, custos e investimentos.">
+        <ComposicaoFinanceira summary={summary} marketplace={marketplace} />
+      </SecaoFinanceira>
+
+      {acoes}
     </section>
   );
 }

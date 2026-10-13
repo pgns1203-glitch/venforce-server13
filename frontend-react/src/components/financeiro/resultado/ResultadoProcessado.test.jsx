@@ -138,7 +138,7 @@ describe("composição financeira · LC → Resultado Final", () => {
 describe("hierarquia da página · ordem das seções", () => {
   const ordem = (container) => Array.from(container.querySelectorAll("[data-secao]")).map((e) => e.dataset.secao);
 
-  it("topo (KPIs + leitura ao lado) → cobertura → reconciliação → composição → pendências → ações", () => {
+  it("topo (KPIs + leitura ao lado) → reconciliação → composição → cobertura (compacta) → pendências → ações", () => {
     const { container } = render(
       <ResultadoProcessado
         processamento={processamento({ summary: { ...SUMMARY_MELI, orderAllTotalCount: 10, orderAllTotalRevenue: 1000, orderAllCompletedCount: 10, orderAllCompletedRevenue: 1000 } })}
@@ -148,7 +148,27 @@ describe("hierarquia da página · ordem das seções", () => {
         acoes={<section data-secao="acoes" />}
       />
     );
-    expect(ordem(container)).toEqual(["resultado", "leitura", "cobertura", "reconciliacao", "composicao", "pendencias", "acoes"]);
+    expect(ordem(container)).toEqual(["resultado", "leitura", "reconciliacao", "composicao", "cobertura", "pendencias", "acoes"]);
+  });
+
+  it("Cobertura é COMPACTA: uma linha por eixo, sem cartões altos", () => {
+    const { container } = render(<ResultadoProcessado processamento={processamento()} marketplace="meli" periodo="2026-10" />);
+    const cob = container.querySelector('[data-secao="cobertura"]');
+    expect(cob).toHaveClass("vf-fin-secao--compacta");
+    expect(cob.querySelectorAll(".vf-fin-cob__linha")).toHaveLength(2); // custo + financeiro, uma linha cada
+    expect(cob.querySelector(".vf-fin-bloco")).toBeNull(); // nada de card grande
+    expect(cob.querySelector(".vf-fin-cobertura__barra")).not.toBeNull();
+  });
+
+  it("Leitura: no máximo 3 alertas à vista; os demais ficam recolhidos", () => {
+    const summary = { ...SUMMARY_MELI, refundsCount: 38, refundsTotal: -7120.4, lostRevenueTotal: 7120.4 };
+    render(<ResultadoProcessado processamento={processamento({ summary, unmatchedIds: ["A", "B"] })} marketplace="meli" periodo="2026-10" />);
+    const leitura = screen.getByRole("complementary", { name: "Leitura do fechamento" });
+    const visiveis = within(within(leitura).getByRole("list", { name: "Pontos de atenção" })).getAllByRole("listitem");
+    expect(visiveis.length).toBeLessThanOrEqual(3);
+    const resumo = leitura.querySelector("details > summary");
+    expect(resumo).toHaveTextContent(/Mais \d+ alertas?/);
+    expect(leitura.querySelector("details").open).toBe(false);
   });
 
   it("os produtos NÃO fazem parte do resultado: a tabela vem depois, fora dele", () => {

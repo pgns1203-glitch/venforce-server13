@@ -4,9 +4,9 @@
 // fluxo. A ordem é a ordem das perguntas de quem fecha o mês:
 //
 //   1. Quanto fechou?            Faixa de topo: KPIs + (ao lado) Leitura discreta
-//   2. Posso confiar?            Cobertura
-//   3. Bate com o marketplace?   Reconciliação (Shopee)
-//   4. Como se compõe?           Composição financeira
+//   2. Bate com o marketplace?   Reconciliação (Shopee)
+//   3. Como se compõe?           Composição financeira
+//   4. Posso confiar?            Cobertura (compacta — apoio, não protagonista)
 //   5. O que está errado?        Pendências (slot `pendencias`)
 //   6. Quero salvar/publicar?    Ações (slot `acoes`)
 //
@@ -117,18 +117,18 @@ export function ResultadoProcessado({ processamento, marketplace, periodo, linha
         </div>
       </SecaoFinanceira>
 
-      <SecaoFinanceira id="cobertura" titulo="Cobertura" descricao="O quanto do faturamento tem custo e financeiro identificados.">
+      <ReconciliacaoShopee summary={summary} marketplace={marketplace} />
+
+      <SecaoFinanceira id="composicao" titulo="Composição financeira" descricao="Como o resultado se forma: receitas, deduções, custos e investimentos.">
+        <ComposicaoFinanceira summary={summary} marketplace={marketplace} />
+      </SecaoFinanceira>
+
+      <SecaoFinanceira id="cobertura" titulo="Cobertura" className="vf-fin-secao--compacta">
         <CoberturaFechamento
           summary={summary}
           unmatchedIds={processamento.unmatchedIds}
           unmatchedCosts={processamento.unmatchedCosts}
         />
-      </SecaoFinanceira>
-
-      <ReconciliacaoShopee summary={summary} marketplace={marketplace} />
-
-      <SecaoFinanceira id="composicao" titulo="Composição financeira" descricao="Como o resultado se forma: receitas, deduções, custos e investimentos.">
-        <ComposicaoFinanceira summary={summary} marketplace={marketplace} />
       </SecaoFinanceira>
 
       {typeof pendencias === "function" ? pendencias({ linhas }) : pendencias}

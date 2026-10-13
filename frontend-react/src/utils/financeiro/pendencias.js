@@ -10,6 +10,7 @@
 // agregação de exibição dos valores do backend, não uma fórmula financeira.
 
 import { gerarXlsx } from "./xlsxMinimo.js";
+import { fracaoParaPontos, normalizarId } from "./baseCustos.js";
 
 // Rótulos do diagnóstico tipado Shopee — os MESMOS de Portal/financeiro.js
 // (SHOPEE_COST_GAP_*), para as duas telas falarem a mesma língua.
@@ -136,7 +137,11 @@ export const COLUNAS_PLANILHA_PENDENCIAS = [
 ];
 
 // Imposto vai como TEXTO com "%" ("10,5%"): sem o sinal, o leitor trata 0,5 como
-// fração (50%) e 10 como pontos — o "%" elimina a ambiguidade.
+// fração (50%) e 10 como pontos — o "%" elimina a ambiguidade. O valor vem do
+// REGISTRO DA BASE (fração → pontos), nunca da linha de venda: a unidade do
+// "Imposto" das linhas varia por motor e uma conversão errada gravaria 0,08%
+// onde era 8%. Sem registro na base, a célula fica vazia e o importador usa o
+// padrão da base.
 function impostoComoTexto(pontos) {
   if (pontos === null || pontos === undefined) return null;
   const n = Number(pontos);
@@ -144,27 +149,48 @@ function impostoComoTexto(pontos) {
   return `${n.toLocaleString("pt-BR", { maximumFractionDigits: 4, useGrouping: false })}%`;
 }
 
-export function montarLinhasPlanilhaPendencias(pendencias) {
-  return (pendencias || []).map((p) => [
-    p.produto || null,
-    p.itemId || null,
-    p.sku || null,
-    p.modelId || null,
-    p.motivo,
-    p.receitaImpactada,
-    p.custoAtual,
-    null, // Novo custo: o operador preenche
-    impostoComoTexto(p.impostoPercentual),
-  ]);
+// Quais pendências VÃO para a planilha: precisam do ID que o importador usa
+// como chave (Item/MLB). Sem ele a linha seria ignorada na reimportação; custo
+// ambíguo não tem um único registro a corrigir. Quem fica de fora é contado —
+// a tela diz quantos e por quê.
+export function separarPendenciasParaPlanilha(pendencias, { marketplace = "meli" } = {}) {
+  const incluidas = [];
+  const semId = [];
+  const ambiguas = [];
+  for (const p of pendencias || []) {
+    if (p.statusCusto === "ambiguo") ambiguas.push(p);
+    else if (!normalizarId(marketplace, p.itemId)) semId.push(p);
+    else incluidas.push(p);
+  }
+  return { incluidas, semId, ambiguas };
+}
+
+export function montarLinhasPlanilhaPendencias(pendencias, { marketplace = "meli", indice = null } = {}) {
+  const { incluidas } = separarPendenciasParaPlanilha(pendencias, { marketplace });
+  return incluidas.map((p) => {
+    const produtoId = normalizarId(marketplace, p.itemId);
+    const registro = indice && indice.get(produtoId)?.length === 1 ? indice.get(produtoId)[0] : null;
+    return [
+      p.produto || null,
+      produtoId,
+      p.sku || null,
+      marketplace === "shopee" ? p.modelId || null : null,
+      p.motivo,
+      p.receitaImpactada,
+      registro && registro.custo !== null ? registro.custo : p.custoAtual,
+      null, // Novo custo: o operador preenche
+      registro ? impostoComoTexto(fracaoParaPontos(registro.imposto)) : null,
+    ];
+  });
 }
 
 // `contexto` vira a 2ª aba (informativa — a reimportação lê só a 1ª).
-export function montarPlanilhaPendencias(pendencias, { marketplace, cliente, clienteSlug, conta, competencia } = {}) {
+export function montarPlanilhaPendencias(pendencias, { marketplace, cliente, clienteSlug, conta, competencia, indice = null } = {}) {
   return gerarXlsx([
     {
       nome: "Pendências de custo",
       larguras: [38, 18, 16, 20, 46, 18, 14, 14, 14],
-      linhas: [COLUNAS_PLANILHA_PENDENCIAS, ...montarLinhasPlanilhaPendencias(pendencias)],
+      linhas: [COLUNAS_PLANILHA_PENDENCIAS, ...montarLinhasPlanilhaPendencias(pendencias, { marketplace: marketplace || "meli", indice })],
     },
     {
       nome: "Contexto",
@@ -176,7 +202,7 @@ export function montarPlanilhaPendencias(pendencias, { marketplace, cliente, cli
         ["Cliente (slug)", clienteSlug || null],
         ["Conta", conta || null],
         ["Competência", competencia || null],
-        ["Como usar", "Preencha 'Novo custo' (e 'Imposto (%)' se quiser) e importe em Bases de Custo → Atualizar por planilha. Linhas com 'Novo custo' vazio são ignoradas."],
+        ["Como usar", "Preencha 'Novo custo' (e 'Imposto (%)' se quiser) e envie no próprio Financeiro (Pendências → Correção em lote) ou em Bases de Custo → Atualizar por planilha. Linhas com 'Novo custo' vazio são ignoradas."],
       ],
     },
   ]);

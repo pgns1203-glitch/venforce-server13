@@ -10,6 +10,8 @@ import { leituraDoFechamento } from "../../../utils/financeiro/resumoFechamento.
 
 const MARCA = { success: "✓", warning: "!", danger: "×", neutral: "·" };
 const ehAlerta = (f) => f.tom === "warning" || f.tom === "danger";
+// Poucos alertas à vista: o resto está a um clique, sem parede de texto.
+const ALERTAS_VISIVEIS = 3;
 
 export function LeituraFechamento({ processamento, marketplace }) {
   const frases = leituraDoFechamento({
@@ -22,9 +24,11 @@ export function LeituraFechamento({ processamento, marketplace }) {
   const notas = Array.isArray(processamento?.summary?.executiveNotes) ? processamento.summary.executiveNotes.filter(Boolean) : [];
   if (!frases.length && !notas.length) return null;
 
-  const alertas = frases.filter(ehAlerta);
+  const todosAlertas = frases.filter(ehAlerta);
+  const alertas = todosAlertas.slice(0, ALERTAS_VISIVEIS);
+  const alertasExtras = todosAlertas.slice(ALERTAS_VISIVEIS);
   const contexto = frases.filter((f) => !ehAlerta(f));
-  const recolhido = contexto.length + notas.length;
+  const recolhido = alertasExtras.length + contexto.length + notas.length;
 
   return (
     <aside className="vf-fin-leitura-card" aria-label="Leitura do fechamento" data-secao="leitura">
@@ -42,7 +46,16 @@ export function LeituraFechamento({ processamento, marketplace }) {
       )}
       {recolhido > 0 && (
         <details className="vf-fin-disclosure vf-fin-disclosure--leve">
-          <summary>Contexto e notas técnicas ({recolhido})</summary>
+          <summary>{alertasExtras.length > 0 ? `Mais ${alertasExtras.length} ${alertasExtras.length === 1 ? "alerta" : "alertas"}, contexto e notas` : "Contexto e notas técnicas"} ({recolhido})</summary>
+          {alertasExtras.length > 0 && (
+            <ul className="vf-fin-leitura vf-fin-leitura--alertas" aria-label="Mais pontos de atenção">
+              {alertasExtras.map((f, i) => (
+                <li key={i} className={`vf-fin-leitura__item is-${f.tom}`}>
+                  <span aria-hidden="true">{MARCA[f.tom]}</span> {f.texto}
+                </li>
+              ))}
+            </ul>
+          )}
           {contexto.length > 0 && (
             <ul className="vf-fin-leitura vf-fin-leitura--contexto" aria-label="Contexto">
               {contexto.map((f, i) => (

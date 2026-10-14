@@ -31,6 +31,7 @@ const settlement = require("./adapters/settlementEvidenceAdapter");
 const { flagLigada } = require("./marginSnapshotConfig");
 const { redigirSegredos } = require("./marginSnapshotSanitize");
 const { logEvento } = require("./marginSnapshotLog");
+const { carregarRebatesAtivos, margemAtualComRebate } = require("./margemAtualRebate");
 const periodoRealizado = require("./marginRealizadoPeriodo");
 const { agregarKpisRealizados } = require("./marginRealizadoKpis");
 
@@ -312,7 +313,8 @@ function percentual(margin) {
 /**
  * Monta o item no mesmo contrato que a Central já consome (fields/quality/
  * projected/realized + aliases planos), com:
- *  - projected: EXATAMENTE os números da linha do snapshot (sem recálculo);
+ *  - projected: os números da linha do snapshot; a ÚNICA correção é o retorno
+ *    ML de promoção em andamento (margemAtualRebate), aplicado na leitura;
  *  - fields: evidências projetadas persistidas + evidências realizadas da
  *    Central de Vendas, resolvidas pelo núcleo (divergência previsto ×
  *    realizado incluída);
@@ -320,7 +322,7 @@ function percentual(margin) {
  *  - status/confiança: os do snapshot (classificação da PROJETADA —
  *    `statusBase: "projected"`).
  */
-function comporItem(row, realizada, deps = {}) {
+function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndisponivel = null) {
   const computeMargin = deps.computeMargin || core.computeMargin;
   const bag = core.createEvidenceBag();
 
@@ -355,10 +357,13 @@ function comporItem(row, realizada, deps = {}) {
   }
 
   const quality = row.quality || {};
+  // Margem atual com o retorno ML da promoção em andamento (mesmo módulo da
+  // tabela, do drawer e das Oportunidades). Sem rebate = a linha do snapshot.
+  const atual = margemAtualComRebate(row, rebateInfo, rebateIndisponivel);
   const projected = {
-    profit: row.profit,
-    margin: row.margin,
-    marginPercent: row.marginPercent,
+    profit: atual.profit,
+    margin: atual.margin,
+    marginPercent: atual.rebate === null ? row.marginPercent : percentual(atual.margin),
     computable: row.margin !== null,
     strict: (row.assumed || []).length === 0 && row.margin !== null,
     missing: row.missing || [],
@@ -391,9 +396,13 @@ function comporItem(row, realizada, deps = {}) {
     // Reembolso é conciliação: fica visível, nunca entra na margem.
     reembolso: reembolsoInfo ? { total: reembolsoInfo.reembolsoTotal, pedidos: reembolsoInfo.pedidos } : null,
   };
+  // O painel Projetado × Realizado compara COMPONENTES (preço, comissão, frete…)
+  // que não carregam o retorno ML: ele segue com a margem persistida, para a
+  // soma dos componentes fechar com o número exibido ali.
+  const projetadoPersistido = { ...projected, profit: row.profit, margin: row.margin, marginPercent: row.marginPercent };
   const projectedVsRealized = core.buildProjectedVsRealized({
     fields,
-    projected,
+    projected: projetadoPersistido,
     realized,
     sales,
     coverage: sales.cobertura,
@@ -416,7 +425,7 @@ function comporItem(row, realizada, deps = {}) {
       realized: realizedContrato,
       target: { marginTarget: quality.targetMargin ?? null },
       // Mesmo erro de projeção do Motor ao vivo (marginItem.margin.projectionError).
-      projectionError: core.compareMargins(projected.margin, realized.margin),
+      projectionError: core.compareMargins(projetadoPersistido.margin, realized.margin),
     },
     // Realizado indisponível: nada de "NO_SALES" (afirmaria que não vendeu).
     projectedVsRealized: realizadoMotivo ? null : projectedVsRealized,
@@ -470,6 +479,9 @@ function comporItem(row, realizada, deps = {}) {
       profit: projected.profit,
       estimated: projected.margin !== null && projected.assumed.length > 0,
       note: projected.assumed.length ? `Assumido 0 para: ${projected.assumed.join(", ")}.` : null,
+      // Retorno ML da promoção em andamento já somado à margem acima (null = nenhum).
+      rebate: atual.rebate,
+      rebateMotivo: atual.rebateMotivo,
     },
     realized: {
       margin: realizedContrato.margin,
@@ -484,6 +496,18 @@ function comporItem(row, realizada, deps = {}) {
 // ---------------------------------------------------------------------------
 // Lista paginada
 // ---------------------------------------------------------------------------
+
+// Seller ML da conta (identidade do Promo Snapshot = conta + seller). Sem
+// seller não há promoção conhecida: a margem fica a do snapshot.
+async function sellerDaConta(conta, deps, db) {
+  try {
+    const contas = deps.clienteContaService || require("../clienteContas/clienteContaService");
+    const completa = await contas.obterConta(conta.id, db);
+    return completa && completa.external_account_id ? String(completa.external_account_id) : null;
+  } catch (_) {
+    return null;
+  }
+}
 
 async function listarItens(params = {}, deps = {}) {
   const env = deps.env || process.env;
@@ -534,6 +558,17 @@ async function listarItens(params = {}, deps = {}) {
     deps
   );
 
+  // Retorno ML das promoções em andamento: UMA consulta para a página inteira.
+  const seller = await sellerDaConta(conta, deps, db);
+  const rebates = await carregarRebatesAtivos({
+    clienteContaId: conta.id,
+    sellerId: seller,
+    itemIds: linhas.map((row) => row.itemId),
+    db,
+    promoRepo: deps.promoRepository,
+    logger: deps.logger,
+  });
+
   return {
     ...base,
     periodo: periodoPublico(realizada),
@@ -553,7 +588,7 @@ async function listarItens(params = {}, deps = {}) {
       totalPaginas: Math.max(Math.ceil(contagem.total / pag.limit), 1),
     },
     ultimoCalculoEm: contagem.ultimoCalculoEm,
-    itens: linhas.map((row) => comporItem(row, realizada, deps)),
+    itens: linhas.map((row) => comporItem(row, realizada, deps, rebates.porItem.get(String(row.itemId)) || null, rebates.indisponivel)),
   };
 }
 
@@ -631,6 +666,7 @@ async function obterRealizado(params = {}, deps = {}) {
 }
 
 module.exports = {
+  sellerDaConta,
   obterRealizado,
   LIMIT_PADRAO,
   LIMIT_MAX,

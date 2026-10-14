@@ -675,6 +675,8 @@ function depsCentral(amb, extra = {}) {
       consultasDb.push({ sql, params });
       // Diagnóstico legado inexistente nesta instalação.
       if (/promocoes_diagnosticos/.test(sql)) { const e = new Error("relation does not exist"); e.code = "42P01"; throw e; }
+      // Retorno ML das promoções em andamento da PÁGINA (margem atual): UMA consulta em lote.
+      if (/FROM promo_snapshot_contas c/.test(sql)) return { rows: [] };
       throw new Error("SQL inesperado na Central: " + sql.slice(0, 80));
     },
   };
@@ -1393,7 +1395,9 @@ cenario("oportunidades paginadas no banco: catálogo de 2.000 → só `limit` li
   assert.strictEqual(amb.repo._linhasOportunidadesDevolvidas, 25, "só a página volta do banco");
   assert.deepStrictEqual([r.page, r.limit, r.total, r.hasNext, r.oportunidades.length], [7, 25, n, true, 25]);
   assert.strictEqual(amb.repo._chamadas.filter((c) => c === "listarOportunidadesPaginadas").length, 1, "UMA consulta paginada");
-  assert.strictEqual(deps.db.consultasDb.length, 0, "nenhuma consulta avulsa por item");
+  assert.strictEqual(deps.db.consultasDb.length, 1, "nenhuma consulta avulsa por item: só UMA, em lote (rebates da página)");
+  assert.ok(/FROM promo_snapshot_contas c/.test(deps.db.consultasDb[0].sql));
+  assert.strictEqual(deps.db.consultasDb[0].params[3].length, 25, "rebates só dos 25 anúncios da página");
   const ultima = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 80, limit: 25 }, deps);
   assert.deepStrictEqual([ultima.hasNext, ultima.oportunidades.length, ultima.total], [false, 25, n]);
   const alem = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 81, limit: 25 }, deps);

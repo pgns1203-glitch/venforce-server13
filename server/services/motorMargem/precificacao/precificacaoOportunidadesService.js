@@ -31,6 +31,7 @@
 
 const pool = require("../../../config/database");
 const { computeMargin } = require("../core/marginEngine");
+const { carregarRebatesAtivos, margemAtualComRebate } = require("../margemAtualRebate");
 const { sqlOportunidadesPaginadas, lerPagina } = require("./precificacaoOportunidadesSql");
 
 const FRESCO_MIN = 360; // 6h — mesmos limiares de promocoesDiagnosticoService
@@ -113,7 +114,7 @@ function motivoDa(linha) {
 
 // Uma candidata a partir de (promoção, snapshot de margem) — mesma régua para
 // as duas fontes. null = fora (sem margem calculável/positiva).
-function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false }) {
+function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false, rebateAtual = null, rebateIndisponivel = null }) {
   if (motivoForaDoRanking({ status: promocao && promocao.status, precoPromo, precoAtual: snap.price })) return null;
   const taxa = num(snap.commission_rate);
   const calc = computeMargin({
@@ -127,12 +128,23 @@ function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo
   });
   if (!calc.computable || calc.margin === null || calc.margin <= 0 || taxa === null || num(snap.tax_rate) === null) return null;
   const vendas = vendasPorMlb.get(itemId) || null;
+  const atual = margemAtualComRebate(
+    {
+      price: snap.price, cost: snap.cost, taxRate: snap.tax_rate, fixedFee: snap.fixed_fee,
+      commission: snap.commission, freight: snap.freight, margin: num(snap.margin), profit: num(snap.profit),
+    },
+    rebateAtual,
+    rebateIndisponivel
+  );
   const linha = {
     itemId,
     titulo: snap.titulo || titulo || itemId,
     imagem: snap.image_url || null,
     precoAtual: num(snap.price),
-    margemAtual: num(snap.margin),
+    // Mesma margem atual da tabela e do drawer: com o retorno ML da promoção
+    // em andamento do anúncio (margemAtualRebate), quando existe.
+    margemAtual: atual.margin,
+    margemAtualRebate: atual.rebate,
     promocao,
     precoPromocao: precoPromo,
     retornoMl: retornoMl || null,
@@ -200,7 +212,7 @@ const CRITERIO = "Promoção disponível (que o anúncio ainda não está partic
 
 // Linha da página (já filtrada/ordenada no banco) → oportunidade, com a
 // mesma régua de montarCandidata.
-function linhaDaPagina(r, promocao, vendasPorMlb, vendasIndisponivel = false) {
+function linhaDaPagina(r, promocao, vendasPorMlb, vendasIndisponivel = false, rebates = null) {
   return montarCandidata({
     itemId: String(r.item_id),
     promocao,
@@ -209,10 +221,26 @@ function linhaDaPagina(r, promocao, vendasPorMlb, vendasIndisponivel = false) {
     snap: {
       titulo: r.snap_titulo, image_url: r.image_url, price: r.price, cost: r.cost, tax_rate: r.tax_rate,
       fixed_fee: r.fixed_fee, commission_rate: r.commission_rate, freight: r.freight, margin: r.margin,
+      commission: r.snap_commission, profit: r.snap_profit,
     },
     titulo: r.fonte_titulo || null,
     vendasPorMlb,
     vendasIndisponivel,
+    rebateAtual: rebates ? rebates.porItem.get(String(r.item_id)) || null : null,
+    rebateIndisponivel: rebates ? rebates.indisponivel : null,
+  });
+}
+
+// Retorno ML das promoções EM ANDAMENTO dos anúncios da página — uma consulta
+// para a página inteira (margem atual igual à da tabela e do drawer).
+function rebatesDaPagina(d, conta, sellerId, rows, deps) {
+  return carregarRebatesAtivos({
+    clienteContaId: conta.id,
+    sellerId,
+    itemIds: rows.map((r) => r.item_id),
+    db: d.db,
+    promoRepo: deps.promoRepository,
+    logger: deps.logger,
   });
 }
 
@@ -222,6 +250,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
   const { total, rows } = await d.promo.listarPagina({
     clienteContaId: conta.id, sellerId, runId: estado.snapshotRunId, vendasPorMlb, page: pag.page, limit: pag.limit,
   });
+  const rebates = await rebatesDaPagina(d, conta, sellerId, rows, deps);
   const pagina = rows.map((r) => linhaDaPagina(r, {
     id: r.promo_id || null,
     nome: r.promo_nome || null,
@@ -233,7 +262,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
     // Leitura desta promoção falhou no último run: é a última leitura boa.
     herdada: r.promo_herdado === true,
     observadaEm: r.promo_observado_em || null,
-  }, vendasPorMlb, Boolean(indisponivel))).filter(Boolean);
+  }, vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
   const hasNext = pag.page * pag.limit < total;
   return {
     ok: true,
@@ -309,9 +338,10 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
     limit: pag.limit,
   });
   const { total, rows } = lerPagina(await d.db.query(sql, valores));
+  const rebates = await rebatesDaPagina(d, conta, sellerId, rows, deps);
   const pagina = rows.map((r) => linhaDaPagina(r, {
     id: r.promo_id || null, nome: r.promo_nome || null, tipo: r.promo_tipo || null, status: r.promo_status || null,
-  }, vendasPorMlb, Boolean(indisponivel))).filter(Boolean);
+  }, vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
   return { ...base, periodo: periodoPublico(periodo), ...vendasPublico(indisponivel), total, hasNext: pag.page * pag.limit < total, oportunidades: pagina };
 }
 

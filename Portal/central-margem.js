@@ -1749,7 +1749,7 @@
       "</tr></thead><tbody>" + o.oportunidades.map(function (op) {
         return "<tr data-opp=\"" + escapeHtml(op.itemId) + "\">" +
           "<td><strong>" + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + "</span></td>" +
-          '<td class="num">' + escapeHtml(formatMoney(op.precoAtual) || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.margemAtual === null ? "—" : formatPercent(op.margemAtual)) + "</span></td>" +
+          '<td class="num">' + escapeHtml(formatMoney(op.precoAtual) || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.margemAtual === null ? "—" : formatPercent(op.margemAtual) + (op.margemAtualRebate ? " (c/ retorno ML)" : "")) + "</span></td>" +
           "<td>" + escapeHtml(op.promocao.nome || op.promocao.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.promocao.tipo || "") + "</span>" + herdadaMeta(op.promocao) + "</td>" +
           '<td class="num">' + escapeHtml(formatMoney(op.precoPromocao) || "—") + "</td>" +
           '<td class="num"><strong class="' + marginClass(op.margemDepois, {}) + '">' + escapeHtml(formatPercent(op.margemDepois) || "—") + "</strong></td>" +
@@ -2109,6 +2109,18 @@
       "</span>";
   }
 
+  /** Retorno ML já somado à margem atual (promoção em andamento) — ou o porquê de não ter sido. */
+  function rebateNoteHtml(item) {
+    var p = item.projected || {};
+    if (p.rebate !== null && p.rebate !== undefined) {
+      return '<span class="cm-cell-sub"><span class="cm-cell-meta" data-cm-rebate="' + escapeHtml(String(p.rebate)) + '" title="Promoção em andamento com retorno do Mercado Livre: o retorno entra no lucro da margem atual.">inclui retorno ML ' + escapeHtml(formatMoney(p.rebate)) + "</span></span>";
+    }
+    if (p.rebateReason) {
+      return '<span class="cm-cell-sub"><span class="cm-cell-meta" data-cm-rebate-reason="' + escapeHtml(p.rebateReason) + '" title="O retorno ML da promoção em andamento não pôde ser somado à margem.">retorno ML não somado</span></span>';
+    }
+    return "";
+  }
+
   function opRowHtml(item) {
     var financial = contract.financialResult(item);
     var integrity = contract.dataIntegrity(item);
@@ -2126,7 +2138,8 @@
       '<td class="num">' + (projected === null || projected === undefined
         ? unavailable("Indisponível", item.problem || "Margem projetada não calculável.")
         : '<span class="cm-cell-value cm-mc-value ' + marginClass(projected, item) + '">' + escapeHtml(formatPercent(projected)) + "</span>" +
-          (item.projected.profit !== null && item.projected.profit !== undefined ? '<span class="cm-cell-sub"><span class="cm-cell-meta">LC ' + escapeHtml(formatMoney(item.projected.profit)) + "</span></span>" : "")) + "</td>" +
+          (item.projected.profit !== null && item.projected.profit !== undefined ? '<span class="cm-cell-sub"><span class="cm-cell-meta">LC ' + escapeHtml(formatMoney(item.projected.profit)) + "</span></span>" : "") +
+          rebateNoteHtml(item)) + "</td>" +
       '<td class="num">' + realizedCellHtml(item) + "</td>" +
       '<td class="num">' + driftCellHtml(item) + "</td>" +
       '<td class="num">' + opSalesCellHtml(item) + "</td>" +
@@ -2583,7 +2596,9 @@
     refs.drawerSummary.innerHTML =
       dsumCell("Preço atual", precoAtual === null ? unavailable("Indisponível") : escapeHtml(formatMoney(precoAtual)), precoFoot) +
       dsumCell("Margem projetada", item.projected && item.projected.margin !== null && item.projected.margin !== undefined
-        ? escapeHtml(formatPercent(item.projected.margin)) : unavailable("Indisponível"), null, marginClass(item.projected ? item.projected.margin : null, item)) +
+        ? escapeHtml(formatPercent(item.projected.margin)) : unavailable("Indisponível"),
+        item.projected && item.projected.rebate !== null && item.projected.rebate !== undefined ? "inclui retorno ML " + formatMoney(item.projected.rebate) : null,
+        marginClass(item.projected ? item.projected.margin : null, item)) +
       dsumCell("Margem realizada", realized, null) +
       dsumCell("Vendas", sales.units === null || sales.units === undefined ? unavailable("—") : escapeHtml(formatInt(sales.units) + " un."), periodShortLabel()) +
       dsumCell("Receita", sales.revenue === null || sales.revenue === undefined ? unavailable("—") : escapeHtml(formatMoney(sales.revenue)), periodShortLabel()) +

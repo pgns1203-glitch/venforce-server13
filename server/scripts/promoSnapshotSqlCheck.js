@@ -50,7 +50,7 @@ const BASE_DDL = `
   CREATE TABLE margin_projection_snapshots (
     id SERIAL PRIMARY KEY, cliente_conta_id INTEGER, marketplace TEXT, item_id TEXT, titulo TEXT, image_url TEXT,
     price NUMERIC, cost NUMERIC, tax_rate NUMERIC, fixed_fee NUMERIC, commission_rate NUMERIC, freight NUMERIC,
-    margin NUMERIC, catalog_missing_since TIMESTAMPTZ);
+    margin NUMERIC, commission NUMERIC, profit NUMERIC, catalog_missing_since TIMESTAMPTZ);
   INSERT INTO clientes (id, slug, nome) VALUES (3, 'loja-a', 'Loja A'), (4, 'loja-b', 'Loja B');
   INSERT INTO cliente_contas (id, cliente_id, marketplace, external_account_id) VALUES (7, 3, 'meli', '555'), (8, 3, 'meli', '666'), (9, 4, 'meli', '777');
   INSERT INTO ml_tokens (cliente_id, ml_user_id, access_token, refresh_token, token_status) VALUES (3, '555', 'a', 'r', 'valid'), (3, '666', 'a', 'r', 'valid'), (4, '777', 'a', 'r', 'revoked');
@@ -332,6 +332,33 @@ check("Oportunidades paginadas NO BANCO: 5.000 anúncios → a consulta devolve 
   const plano = (await pg.query(`EXPLAIN ${q.sql}`, q.params)).rows.map((x) => x["QUERY PLAN"]).join("\n");
   assert.ok(/Limit/.test(plano), plano);
   assert.ok(/idx_promo_snapshot_itens_oportunidades|uq_promo_snapshot_itens_run_item_promo|Index|Bitmap/.test(plano), plano);
+});
+
+check("rebates ativos (SQL real): UMA consulta; só started/active com subsídio > 0 do snapshot ATUAL; 2 promoções = ambíguo; outra conta/seller não entra", async ({ db }) => {
+  const { run } = await service.enqueuePromoSnapshotRun(ID7, { reason: "manual_sync" }, { db, repo, logger: silencioso });
+  const claimed = await repo.claimNextQueuedRun({}, db);
+  assert.strictEqual(claimed.id, run.id);
+  const com = (itemId, o) => ({ ...linha(itemId, o), subsidioMl: o.subsidio });
+  await repo.registrarTotal({ runId: run.id, itensTotal: 5 }, db);
+  await repo.registrarLote({
+    run: claimed, seq: 1, itemIds: ["MLB1", "MLB2", "MLB3", "MLB4", "MLB5"],
+    linhas: [
+      com("MLB1", { id: "A", status: "started", subsidio: 3.3 }),
+      com("MLB2", { id: "B", status: "active", subsidio: 2 }),
+      com("MLB2", { id: "C", tipo: "SMART", status: "started", subsidio: 4 }),
+      com("MLB3", { id: "D", status: "candidate", subsidio: 9 }),
+      com("MLB4", { id: "E", status: "started", subsidio: 0 }),
+      com("MLB5", { id: "F", status: "started", subsidio: null }),
+    ],
+  }, db);
+  await repo.finalizarRun({ runId: run.id, status: "completed", promover: true, freshMinutes: 360 }, db);
+
+  const mapa = await repo.mapRebatesAtivosPorItem({ clienteContaId: 7, sellerId: "555", itemIds: ["MLB1", "MLB2", "MLB3", "MLB4", "MLB5", "MLB6"] }, db);
+  assert.deepStrictEqual(mapa.get("MLB1"), { promocoes: 1, rebate: 3.3 });
+  assert.deepStrictEqual(mapa.get("MLB2"), { promocoes: 2, rebate: null }, "2 promoções em andamento com retorno = ambíguo");
+  for (const id of ["MLB3", "MLB4", "MLB5", "MLB6"]) assert.strictEqual(mapa.has(id), false, `${id}: sem promoção em andamento com retorno`);
+  assert.strictEqual((await repo.mapRebatesAtivosPorItem({ clienteContaId: 7, sellerId: "999", itemIds: ["MLB1"] }, db)).size, 0, "outro seller nunca");
+  assert.strictEqual((await repo.mapRebatesAtivosPorItem({ clienteContaId: 8, sellerId: "555", itemIds: ["MLB1"] }, db)).size, 0, "outra conta nunca");
 });
 
 // ─── Auditoria: achados 1, 2 e 6 contra Postgres real ───────────────────────

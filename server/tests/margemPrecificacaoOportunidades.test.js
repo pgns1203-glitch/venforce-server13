@@ -47,6 +47,8 @@ function fakeDb({ head = [{ id: 11, created_at: new Date().toISOString(), parcia
         if (head === "sem-tabela") { const e = new Error("relation does not exist"); e.code = "42P01"; throw e; }
         return { rows: head };
       }
+      // Retorno ML das promoções em andamento (margem atual): por padrão, nenhuma.
+      if (/FROM promo_snapshot_contas c/.test(sql)) return { rows: this.rebates || [] };
       if (/WITH promos AS/.test(sql) && /FROM promocoes_diagnostico_itens/.test(sql)) {
         const { vendasPorMlb, page, limit } = lerParametrosPagina(params, 1);
         const promos = itens
@@ -183,13 +185,15 @@ cenario("sem taxa de comissão ou imposto no snapshot: fica fora (nunca assume z
   assert.strictEqual(r.oportunidades.length, 0);
 });
 
-cenario("performance: 2 consultas ao banco para a conta inteira, página com LIMIT/OFFSET no banco, zero ML", async () => {
+cenario("performance: 3 consultas ao banco (cabeçalho, página, rebates em lote) para a conta inteira, página com LIMIT/OFFSET no banco, zero ML", async () => {
   const itens = Array.from({ length: 300 }, (_, i) => diagRow(`MLB${i + 1}`));
   const snaps = itens.map((r) => snapRow(r.item_id));
   const db = fakeDb({ itens, snaps });
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 3, limit: 20 }, deps(db));
-  assert.strictEqual(db.queries.length, 2, "cabeçalho do diagnóstico + UMA consulta paginada");
-  const pagina = db.queries[1];
+  assert.strictEqual(db.queries.length, 3, "cabeçalho do diagnóstico + UMA consulta paginada + UMA de rebates em lote (nunca por item)");
+  const pagina = db.queries.find((q) => /WITH promos AS/.test(q.sql));
+  const rebates = db.queries.find((q) => /FROM promo_snapshot_contas c/.test(q.sql));
+  assert.strictEqual(rebates.params[3].length, 20, "rebates só dos 20 anúncios da página");
   assert.ok(/LIMIT \$\d+ OFFSET \$\d+/.test(pagina.sql), "LIMIT/OFFSET na consulta");
   assert.deepStrictEqual(pagina.params.slice(-2), [20, 40], "limit 20, offset da página 3");
   assert.strictEqual(db.linhasDevolvidas, 20, "só a página volta do banco");

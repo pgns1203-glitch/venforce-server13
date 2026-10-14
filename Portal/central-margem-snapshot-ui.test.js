@@ -141,6 +141,10 @@ const MOCK_CLIENT = `
       // (−1,1309 = −113,09%); o custo é o que fecha a conta na Composição
       // (100 − 10 − 12 − 20 − 171,09 = −113,09 sobre preço 100).
       if (i === 12) { margin = -1.1309; custo = 171.09; }
+      // Anúncio em promoção com retorno ML de R$ 3,30: o backend já soma o
+      // retorno à margem atual (100 + 3,30 − 10 − 12 − 20 − 40 = 21,30 → 21,3%).
+      var rebate = null;
+      if (i === 15) { margin = 0.213; rebate = 3.3; }
       return {
         itemId: "C" + conta + "-MLB" + (100000 + i), title: "Produto " + i + " da conta " + conta, titulo: "Produto " + i + " da conta " + conta,
         sku: skuDe(i), status: status, confidence: "HIGH", marketplace: "meli", targetMargin: 0.1,
@@ -149,7 +153,7 @@ const MOCK_CLIENT = `
           taxRate: field(ev("VENFORCE_BASE", 0.1, "DECLARED")), fixedFee: field(ev("VENFORCE_BASE", 0, "DECLARED")),
           commission: field(ev("MELI_API", 12)), commissionRate: field(ev("MELI_API", 0.12)), freight: field(ev("MELI_API", 20)),
         },
-        projected: { margin: margin, profit: margin === null ? null : margin * 100, estimated: false },
+        projected: { margin: margin, profit: margin === null ? null : margin * 100, estimated: false, rebate: rebate },
         realized: { margin: null, profit: null, pending: true },
         quality: { confidence: "HIGH", confidenceByField: {}, reasons: [], divergences: [], statusReasons: ["status " + status] },
         diagnostico: { statusAnuncio: statusAnuncioDe(i) },
@@ -549,6 +553,25 @@ async function run() {
       await cdp.evaluate("document.querySelector('[data-view=\"operational\"]').click()");
       await waitFor(cdp, "document.querySelector('table.cm-table--op')", "visão Operacional não voltou");
       assert.deepStrictEqual(await st("s.data.items.filter(function(i){return i.id==='" + id + "';}).map(function(i){return i.projected.margin;})"), [-1.1309]);
+    });
+
+    await check("promoção em andamento com retorno ML: a MESMA margem atual na tabela, no drawer e na Composição, com o retorno explicado", async () => {
+      const id = "C900-MLB100015";
+      const celula = (seletor) => cdp.evaluate(`(function(){var e=document.querySelector('tr[data-item-id="${id}"] ${seletor}');return e?e.textContent.trim():null;})()`);
+      assert.strictEqual(await celula(".cm-mc-value"), "21,3%", "tabela (Operacional)");
+      assert.ok((await celula("[data-cm-rebate]")).includes("inclui retorno ML"), "a linha explica o retorno somado");
+
+      await cdp.evaluate("window.VFCentralMargemUi.openDrawer('" + id + "', 'evidence')");
+      await waitFor(cdp, "document.getElementById('cm-drawer-summary').textContent.indexOf('Margem projetada') !== -1", "resumo do drawer não abriu");
+      const resumo = (await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent")).replace(/\u00a0/g, " ");
+      assert.ok(resumo.includes("21,3%") && resumo.includes("inclui retorno ML"), `drawer: ${resumo}`);
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+
+      await cdp.evaluate("document.querySelector('[data-view=\"composition\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--comp')", "visão Composição não abriu");
+      assert.strictEqual(await celula(".cm-mc-value"), "21,3%", "Composição (fórmula local com o retorno ML do backend)");
+      await cdp.evaluate("document.querySelector('[data-view=\"operational\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--op')", "visão Operacional não voltou");
     });
 
     await check("trocar o período relê itens e realizado com periodo=YYYY-MM (Shell) e NÃO pede refresh do snapshot", async () => {

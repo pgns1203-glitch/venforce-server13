@@ -45,7 +45,8 @@ function sqlOportunidadesPaginadas({ fonteSql, paramsFonte = [], clienteContaId,
     ),
     calc AS (
       SELECT pr.*, s.titulo AS snap_titulo, s.image_url, s.price, s.cost, s.tax_rate, s.fixed_fee,
-             s.commission_rate, s.freight, s.margin, COALESCE(v.unidades, 0) AS unidades,
+             s.commission_rate, s.freight, s.margin, s.commission AS snap_commission, s.profit AS snap_profit,
+             COALESCE(v.unidades, 0) AS unidades,
              (pr.preco_promo - pr.preco_promo * s.tax_rate - ROUND(pr.preco_promo * s.commission_rate, 2)
                - COALESCE(s.freight, 0) - COALESCE(s.fixed_fee, 0) - s.cost + COALESCE(pr.retorno, 0)) AS lucro
         FROM promos pr

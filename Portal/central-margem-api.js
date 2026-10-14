@@ -732,6 +732,10 @@
         profit: numberOrNull(firstValue(projectedBlock.profit, projectedBlock.lucro, raw.projectedProfit, raw.lucroProjetado)),
         estimated: projectedBlock.estimated === true,
         note: firstValue(projectedBlock.note, projectedBlock.explicacao),
+        // Retorno ML da promoção em andamento, já somado à margem pelo backend
+        // (margemAtualRebate). A tela só o exibe e o repassa à Composição.
+        rebate: numberOrNull(projectedBlock.rebate),
+        rebateReason: firstValue(projectedBlock.rebateMotivo, null),
       },
       realized: {
         margin: realizedMargin,
@@ -1379,7 +1383,8 @@
       return { computable: false, profit: null, margin: null, missing: missing, assumed: assumed, strict: false, values: resolved };
     }
 
-    var profit = resolved.price
+    var rebate = numberOrNull(input.rebate) || 0;
+    var profit = resolved.price + rebate
       - resolved.price * (resolved.tax === null ? 0 : resolved.tax)
       - (resolved.commission === null ? 0 : resolved.commission)
       - (resolved.freight === null ? 0 : resolved.freight)
@@ -1416,6 +1421,12 @@
       values[variableKey] = entry ? entry.value : null;
       if (!entry || entry.value === null) unavailable.push(variableKey);
     });
+    // Retorno ML da promoção em andamento: só acompanha o preço PROJETADO (o
+    // preço atual já é o promocional). Preço de pedido/DOM não leva rebate.
+    var rebate = (chosen.price || PRESETS.projected.price) === PRESETS.projected.price && item && item.projected
+      ? numberOrNull(item.projected.rebate)
+      : null;
+    values.rebate = rebate;
     var result = computeMargin(values);
     return {
       selection: chosen,
@@ -1454,6 +1465,9 @@
       entries[variableKey] = entry;
       if (manual || source !== baseline.selection[variableKey]) changed.push(variableKey);
     });
+    // O retorno ML acompanha o preço atual; trocar o preço no cenário o descarta.
+    var priceChanged = (overrides.price || {}).manual === true || values.price !== baseline.values.price;
+    values.rebate = priceChanged ? null : baseline.values.rebate;
     var result = computeMargin(values);
     var raw = result.raw || { profit: null, margin: null };
     var deltaProfit = raw.profit === null || baseline.raw.profit === null ? null : round(raw.profit - baseline.raw.profit, 2);

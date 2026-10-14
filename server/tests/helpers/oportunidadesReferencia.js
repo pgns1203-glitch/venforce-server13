@@ -36,7 +36,7 @@ function paginaReferencia({ promos, snapPorItem, vendasPorMlb = new Map(), page,
     ...c.promocao,
     snap_titulo: c._snap.titulo, image_url: c._snap.image_url, price: c._snap.price, cost: c._snap.cost,
     tax_rate: c._snap.tax_rate, fixed_fee: c._snap.fixed_fee, commission_rate: c._snap.commission_rate,
-    freight: c._snap.freight, margin: c._snap.margin, unidades: c.unidades, margem_depois: c.margemDepois,
+    freight: c._snap.freight, margin: c._snap.margin, snap_commission: c._snap.commission, snap_profit: c._snap.profit, unidades: c.unidades, margem_depois: c.margemDepois,
     total_oportunidades: total,
   }));
   return { rows: rows.length ? rows : [{ total_oportunidades: total, item_id: null }] };

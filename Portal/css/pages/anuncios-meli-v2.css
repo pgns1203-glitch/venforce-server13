@@ -3567,6 +3567,10 @@
 }
 
 /* Barra acima da lista: ação "Editar custos" / faixa do modo / seleção. */
+.vf-page-anuncios-meli .am-custos-acoes-slot:empty {
+  display: none;
+}
+
 .vf-page-anuncios-meli .am-custos-barra:empty {
   display: none;
 }

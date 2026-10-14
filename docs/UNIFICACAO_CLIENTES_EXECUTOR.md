@@ -1,5 +1,8 @@
 # Unificação de Clientes — executor backend v1
 
+PR de revisão: [#260](https://github.com/venforcecompany-sudo/venforce-server/pull/260),
+base stacked #254.
+
 Implementação para revisão e homologação; não habilitada em produção. Sem UI,
 merge, deploy ou acesso ao banco de produção nesta etapa. A migration foi
 aplicada apenas em PostgreSQL **local descartável com dados sintéticos**.

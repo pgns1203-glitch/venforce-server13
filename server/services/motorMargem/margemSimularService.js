@@ -27,7 +27,8 @@ const { carregarRebatesAtivos, margemAtualComRebate, MOTIVO_REBATE } = require("
 const MAX_CENARIOS = 20;
 const MAX_PROMOS_POR_ITEM = 60;
 const MAX_COTACOES_POR_REQUISICAO = 40;
-const TIPOS = new Set(["preco", "promo", "todas_promos", "insumos"]);
+const TIPOS = new Set(["preco", "promo", "todas_promos", "insumos", "preco_alvo"]);
+const MAX_ITERACOES_PRECO_ALVO = 8;
 const CAMPOS_INSUMOS = ["preco", "custo", "aliquota", "taxa_fixa", "comissao", "frete", "rebate"];
 
 function erroHttp(statusCode, codigo, motivo, extra = {}) {
@@ -143,6 +144,14 @@ function validarCorpo(body) {
       return { tipo, promotion_id: id };
     }
     if (tipo === "insumos") return { tipo, insumos: validarInsumos(c.insumos, i) };
+    if (tipo === "preco_alvo") {
+      if (c.margem_alvo === undefined || c.margem_alvo === null) return { tipo, margem_alvo: null };
+      const meta = Number(c.margem_alvo);
+      if (!Number.isFinite(meta) || meta <= 0 || meta >= 1) {
+        throw erroHttp(400, "MARGEM_ALVO_INVALIDA", `cenarios[${i}].margem_alvo precisa ser uma fração entre 0 e 1 (ex.: 0,10 = 10%).`);
+      }
+      return { tipo, margem_alvo: meta };
+    }
     return { tipo };
   });
   return { contaId, mlb, cenarios };
@@ -251,6 +260,8 @@ function montarTarefas(pedidos, promocoes) {
       tarefas.push({ tipo: "preco", entrada: { preco: pedido.preco }, preco: pedido.preco, rebate: 0 });
     } else if (pedido.tipo === "insumos") {
       tarefas.push({ tipo: "insumos", entrada: { insumos: pedido.insumos }, insumos: pedido.insumos });
+    } else if (pedido.tipo === "preco_alvo") {
+      tarefas.push({ tipo: "preco_alvo", entrada: { margem_alvo: pedido.margem_alvo }, margem_alvo: pedido.margem_alvo });
     } else if (pedido.tipo === "promo") {
       const entrada = { promotion_id: pedido.promotion_id };
       if (!promocoes.disponivel) { bloqueio("promo", entrada, core.MOTIVOS.SEM_SNAPSHOT_PROMOCOES); continue; }
@@ -285,7 +296,7 @@ function tarefaDePromocao(linha, entrada) {
 // Promoção que o núcleo já responde sem cotação (já ativa, ou P' ≥ preço atual):
 // não gasta consulta ao ML à toa.
 function deveCotar(tarefa, atual) {
-  if (tarefa.bloqueio || tarefa.tipo === "insumos") return false;
+  if (tarefa.bloqueio || tarefa.tipo === "insumos" || tarefa.tipo === "preco_alvo") return false;
   if (!(tarefa.preco !== null && tarefa.preco > 0)) return false;
   if (tarefa.tipo !== "promo") return true;
   if (core.STATUS_PROMOCAO_ATIVA.includes(String(tarefa.status_promocao || "").toLowerCase())) return false;
@@ -354,6 +365,86 @@ function calcularTarefa(tarefa, ctx) {
   // Sem a atualidade da composição de hoje, a faixa de frete seria só uma
   // comparação sem data: ela vem sempre acompanhada de `evidencia.atual`.
   return { ...saidaBase, ...resultado, evidencia, _rebateAtual: rebateAtual };
+}
+
+const ceil2 = (v) => Math.ceil(v * 100 - 1e-9) / 100;
+
+/**
+ * "Subir p/ R$ X": o MENOR preço que atinge a margem alvo, com a cotação REAL
+ * (comissão e frete do Mercado Livre em cada preço tentado). Iteração de ponto
+ * fixo sobre o `core.proximoPrecoAlvo` (a conta é a do computeTargetPrice) até o
+ * preço parar de subir; cada preço tentado é UMA cotação (cache por requisição,
+ * dentro do teto). Sem preço que atinja a meta em até 8 passos, meta inviável ou
+ * dado ausente: `sem_preco_viavel` — nunca um chute. O preço também DESCE quando
+ * a cotação mostra que há folga (frete que cai de faixa): devolve o menor preço
+ * viável encontrado, sem garantia de mínimo global através de saltos de faixa.
+ */
+async function resolverPrecoAlvo(tarefa, ctx) {
+  const { atual, flags, meta, cotador, evidenciaBase } = ctx;
+  const metaAlvo = tarefa.margem_alvo === null || tarefa.margem_alvo === undefined ? meta.margem_alvo : tarefa.margem_alvo;
+  const metaUsada = { ...meta, margem_alvo: metaAlvo };
+  const saida = { tipo: "preco_alvo", entrada: tarefa.entrada };
+  const precosTentados = [];
+  const semPreco = (motivo, extra = {}) => ({
+    ...saida,
+    ...core.resultadoBloqueado(motivo, { flags, meta: metaUsada }),
+    preco_alvo: { encontrado: false, preco: null, motivo, margem_alvo: metaAlvo, iteracoes: precosTentados.length, precos_tentados: precosTentados.slice(), ...extra },
+    evidencia: null,
+  });
+
+  const atualCalc = core.calcularAtual({ atual, frete_aplicavel: ctx.freteAplicavel });
+  if (atualCalc.bloqueios.length) return semPreco(atualCalc.bloqueios[0]);
+  if (flags.rebate_ambiguo || flags.rebate_atual_indisponivel) {
+    return semPreco(flags.rebate_ambiguo ? core.MOTIVOS.REBATE_AMBIGUO : core.MOTIVOS.REBATE_ATUAL_INDISPONIVEL);
+  }
+  const insumos = { custo: atual.custo, taxa_fixa: atual.taxa_fixa, aliquota: atual.aliquota, margem_alvo: metaAlvo };
+  let passo = core.proximoPrecoAlvo({ ...insumos, preco: atual.preco, comissao: atual.comissao, frete: atual.frete === null || atual.frete === undefined ? 0 : atual.frete });
+  if (!passo.ok) return semPreco(core.MOTIVOS.SEM_PRECO_VIAVEL, { causa: passo.motivo });
+  let preco = ceil2(passo.preco);
+  const inicial = preco;
+  let melhor = null;
+
+  for (let i = 1; i <= MAX_ITERACOES_PRECO_ALVO; i += 1) {
+    precosTentados.push(preco);
+    const cotacao = await cotador.cotar(preco);
+    const cen = core.calcularCenario({
+      atual,
+      cenario: { tipo: "preco", preco },
+      cotacao: cotacaoParaNucleo(cotacao),
+      meta: metaUsada,
+      flags,
+    });
+    // Cotação que falta (ou teto de cotações): o motivo é o dela, sem estimar.
+    if (cen.cenario.margem_ratio === null) {
+      if (melhor) break;
+      return { ...saida, ...cen, atual: undefined, preco_alvo: { encontrado: false, preco: null, motivo: cen.motivo, margem_alvo: metaAlvo, iteracoes: i, precos_tentados: precosTentados.slice(), inicial }, evidencia: evidenciaDaCotacao(cotacao) };
+    }
+    const viavel = cen.cenario.margem_ratio >= metaAlvo && cen.cenario.lc > 0;
+    if (viavel && (!melhor || preco < melhor.preco)) melhor = { preco, cen, cotacao, iteracoes: i };
+    passo = core.proximoPrecoAlvo({ ...insumos, preco, comissao: cotacao.comissao, frete: cotacao.frete === null ? 0 : cotacao.frete });
+    if (!passo.ok) { if (melhor) break; return semPreco(core.MOTIVOS.SEM_PRECO_VIAVEL, { causa: passo.motivo }); }
+    const alvoDaCotacao = ceil2(passo.preco);
+    let proximo;
+    if (viavel) {
+      // Há folga? Só desce se a cotação deste preço indica um preço menor e ainda não tentado.
+      if (alvoDaCotacao >= preco - 0.005) break;
+      proximo = alvoDaCotacao;
+    } else {
+      // A margem ficou abaixo da meta: sempre sobe.
+      proximo = Math.max(alvoDaCotacao, Math.round((preco + 0.01) * 100) / 100);
+    }
+    if (precosTentados.includes(proximo)) break;
+    preco = proximo;
+  }
+  if (!melhor) return semPreco(core.MOTIVOS.SEM_PRECO_VIAVEL, { causa: "sem_convergencia", inicial });
+  const resultado = {
+    ...saida,
+    ...melhor.cen,
+    preco_alvo: { encontrado: true, preco: melhor.preco, motivo: null, margem_alvo: metaAlvo, iteracoes: precosTentados.length, precos_tentados: precosTentados.slice(), inicial },
+    evidencia: { ...evidenciaBase, ...(evidenciaDaCotacao(melhor.cotacao) || {}), preco: { fonte: "busca_preco_alvo", meta_fonte: meta.fonte } },
+  };
+  delete resultado.atual;
+  return resultado;
 }
 
 /**
@@ -440,14 +531,16 @@ async function simular({ user, body } = {}, deps = {}) {
         taxa_fixa: { fonte: "margin_snapshot", calculado_em: iso(snapshot.calculatedAt), base_id: snapshot.baseId },
       };
 
-  const ctx = { atual, flags, meta, cotacoes, evidenciaBase, freteAplicavel: cotador.freteAplicavel, rebateAtual: atualRebate };
-  const cenarios = tarefas.map((t) => {
-    const r = calcularTarefa(t, ctx);
+  const ctx = { atual, flags, meta, cotacoes, evidenciaBase, freteAplicavel: cotador.freteAplicavel, rebateAtual: atualRebate, cotador };
+  const cenarios = [];
+  for (const t of tarefas) {
+    // preco_alvo itera (cada passo depende da cotação do anterior); os demais já têm a cotação em mãos.
+    const r = t.tipo === "preco_alvo" ? await resolverPrecoAlvo(t, ctx) : calcularTarefa(t, ctx);
     delete r._rebateAtual;
     // A composição de hoje vai uma vez na raiz, não repetida em cada cenário.
     delete r.atual;
-    return r;
-  });
+    cenarios.push(r);
+  }
 
   const atualCalc = core.calcularAtual({ atual, frete_aplicavel: cotador.freteAplicavel });
   const estatisticas = cotador.estatisticas();
@@ -547,4 +640,5 @@ module.exports = {
   MAX_CENARIOS,
   MAX_PROMOS_POR_ITEM,
   MAX_COTACOES_POR_REQUISICAO,
+  MAX_ITERACOES_PRECO_ALVO,
 };

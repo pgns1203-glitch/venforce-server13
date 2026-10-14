@@ -27,7 +27,7 @@
 //                   não baixa o preço): o motivo explica, nenhum número é
 //                   estimado
 
-const { computeMargin, round2, round6 } = require("./marginEngine");
+const { computeMargin, computeTargetPrice, round2, round6 } = require("./marginEngine");
 
 const VEREDITOS = Object.freeze({
   ENTRAR: "entrar",
@@ -61,6 +61,7 @@ const MOTIVOS = Object.freeze({
   PROMOCAO_AMBIGUA: "promocao_ambigua",
   PROMOCAO_SEM_PRECO: "promocao_sem_preco",
   LIMITE_DE_COTACOES: "limite_de_cotacoes_excedido",
+  SEM_PRECO_VIAVEL: "sem_preco_viavel",
 });
 
 // Promoção em andamento no Mercado Livre (status BRUTO do ML).
@@ -90,6 +91,7 @@ const PRECEDENCIA_MOTIVOS = [
   MOTIVOS.PROMOCAO_NAO_ENCONTRADA,
   MOTIVOS.PROMOCAO_AMBIGUA,
   MOTIVOS.PROMOCAO_SEM_PRECO,
+  MOTIVOS.SEM_PRECO_VIAVEL,
   MOTIVOS.PROMOCAO_ATIVA,
   MOTIVOS.SEM_DESCONTO_EFETIVO,
   MOTIVOS.PRECO_IGUAL_AO_ATUAL,
@@ -397,6 +399,28 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
 }
 
 /**
+ * Um passo da busca do preço que atinge a margem alvo. A conta é a do
+ * computeTargetPrice do núcleo — preço = (custo + taxa fixa + frete) /
+ * (1 − imposto − comissão% − meta) —, só que com a comissão% e o frete
+ * COTADOS no preço corrente (a tarifa tem faixa e o frete muda de faixa).
+ * Quem busca (serviço) repete o passo com a cotação do novo preço até o preço
+ * parar de mudar; aqui não há I/O.
+ *
+ * @returns {{ ok:true, preco:number } | { ok:false, motivo:'meta_inviavel'|'dados_ausentes' }}
+ */
+function proximoPrecoAlvo({ preco, custo, taxa_fixa, aliquota, margem_alvo, comissao, frete }) {
+  const p = num(preco);
+  const c = num(comissao);
+  const taxaComissao = p !== null && p > 0 && c !== null ? c / p : null;
+  const r = computeTargetPrice({
+    cost: num(custo), fixedFee: num(taxa_fixa), freight: num(frete), taxRate: num(aliquota),
+    commissionRate: taxaComissao, targetMargin: num(margem_alvo),
+  });
+  if (r.computable) return { ok: true, preco: r.price };
+  return { ok: false, motivo: r.reason === "MARGEM_ALVO_INVIAVEL" ? "meta_inviavel" : "dados_ausentes" };
+}
+
+/**
  * Resultado `bloqueado` de um cenário que nem chega ao cálculo (promoção que
  * não existe, sem Promo Snapshot…). Mesmo formato do calcularCenario: todo
  * número é null — nenhum é estimado.
@@ -433,5 +457,6 @@ module.exports = {
   calcularCenario,
   calcularComposicao,
   calcularAtual,
+  proximoPrecoAlvo,
   resultadoBloqueado,
 };

@@ -503,6 +503,105 @@ cenario("margens e alíquota na resposta são frações 0–1; a promoção sai 
   assert.ok(!("margem_percent" in r.atual));
 });
 
+// ── Preço-alvo ("Subir p/ R$ X"): busca com a cotação real ───────────────────
+
+function linhaPrejuizo(extra = {}) {
+  const m = core.computeMargin({ price: 94.9, cost: 80, taxRate: 0.06, fixedFee: 0, commission: 13.29, freight: 10 });
+  return { ...LINHA_BASE, cost: 80, profit: m.profit, margin: m.margin, status: "LOSS", ...extra };
+}
+
+cenario("preco_alvo: o menor preço que atinge a meta, com a cotação REAL; a conta do passo é a do computeTargetPrice", async () => {
+  const w = mundo({ snapshots: new Map([["5:MLB100", linhaPrejuizo()]]) });
+  const r = await rodar(w, pedido([{ tipo: "preco_alvo" }]));
+  const c = r.cenarios[0];
+  assert.strictEqual(c.tipo, "preco_alvo");
+  assert.strictEqual(c.preco_alvo.encontrado, true);
+  // (custo 80 + frete 10) / (1 − 0,06 − 0,14 − 0,10) = 128,5714… → 128,58
+  assert.strictEqual(c.preco_alvo.preco, 128.58);
+  assert.strictEqual(c.preco_alvo.margem_alvo, 0.1);
+  assert.ok(c.cenario.margem_ratio >= 0.1, `margem' ${c.cenario.margem_ratio}`);
+  assert.strictEqual(c.cenario.preco, 128.58);
+  assert.strictEqual(c.cenario.comissao, 18);
+  assert.strictEqual(c.cenario.frete, 10);
+  assert.ok(c.delta_lc > 0);
+  assert.strictEqual(c.evidencia.preco.fonte, "busca_preco_alvo");
+  assert.strictEqual(c.evidencia.comissao.fonte, "ml_listing_prices");
+  // cada preço tentado foi UMA cotação real
+  assert.deepStrictEqual(w.cotacoes, c.preco_alvo.precos_tentados);
+  assert.ok(!("atual" in c));
+  // 1 centavo abaixo não atinge a meta: o preço devolvido é o mínimo (a 1 centavo de resolução)
+  const abaixo = core.computeMargin({ price: 128.57, cost: 80, taxRate: 0.06, fixedFee: 0, commission: cotacaoFalsa(128.57).comissaoValor, freight: 10 });
+  assert.ok(abaixo.margin < 0.1, `a 128,57 a margem seria ${abaixo.margin}`);
+});
+
+cenario("preco_alvo: a faixa de frete entra na busca — subir o preço cruza o limiar e o frete cotado muda o preço-alvo", async () => {
+  // Hoje a R$ 70 (frete 0, abaixo de R$ 79) com custo 60: prejuízo. Com o frete de hoje o alvo seria 60/0,70 = 85,71 …
+  const m = core.computeMargin({ price: 70, cost: 60, taxRate: 0.06, fixedFee: 0, commission: 9.8, freight: 0 });
+  const w = mundo({ snapshots: new Map([["5:MLB100", linhaPrejuizo({ price: 70, cost: 60, commission: 9.8, freight: 0, profit: m.profit, margin: m.margin })]]) });
+  const r = await rodar(w, pedido([{ tipo: "preco_alvo" }]));
+  const c = r.cenarios[0];
+  assert.ok(m.margin < 0, "premissa: prejuízo hoje");
+  // … mas a R$ 85,71 o frete passa a ser R$ 10: o alvo real é (60+10)/0,70 = 100,00.
+  assert.strictEqual(c.preco_alvo.encontrado, true);
+  assert.strictEqual(c.preco_alvo.preco, 100);
+  assert.strictEqual(c.cenario.frete, 10);
+  assert.strictEqual(c.flags.mudou_faixa_frete, true);
+  assert.deepStrictEqual(c.preco_alvo.precos_tentados, [85.71, 100]);
+  assert.deepStrictEqual(w.cotacoes, [85.71, 100], "uma cotação real por preço tentado");
+  assert.ok(c.cenario.margem_ratio >= 0.1);
+});
+
+cenario("preco_alvo: meta inviável (imposto + comissão + meta ≥ 100%) ou custo ausente → sem_preco_viavel, sem estimar", async () => {
+  const w = mundo({ snapshots: new Map([["5:MLB100", linhaPrejuizo({ quality: { targetMargin: 0.9 } })]]) });
+  const r = await rodar(w, pedido([{ tipo: "preco_alvo" }]));
+  assert.strictEqual(r.cenarios[0].veredito, "bloqueado");
+  assert.strictEqual(r.cenarios[0].motivo, "sem_preco_viavel");
+  assert.strictEqual(r.cenarios[0].preco_alvo.encontrado, false);
+  assert.strictEqual(r.cenarios[0].preco_alvo.preco, null);
+  assert.strictEqual(r.cenarios[0].preco_alvo.causa, "meta_inviavel");
+  assert.deepStrictEqual(w.cotacoes, [], "nem chega a cotar");
+  const semCusto = mundo({ snapshots: new Map([["5:MLB100", linhaPrejuizo({ cost: null })]]) });
+  const r2 = await rodar(semCusto, pedido([{ tipo: "preco_alvo" }]));
+  assert.strictEqual(r2.cenarios[0].motivo, "custo_ausente");
+  assert.strictEqual(r2.cenarios[0].preco_alvo.encontrado, false);
+});
+
+cenario("preco_alvo: cotação falhando → bloqueado com o motivo da cotação (não devolve preço)", async () => {
+  const w = mundo({ snapshots: new Map([["5:MLB100", linhaPrejuizo()]]), buscar: async () => ({ comissaoValor: null, fretePrevisto: null }) });
+  const r = await rodar(w, pedido([{ tipo: "preco_alvo" }]));
+  const c = r.cenarios[0];
+  assert.strictEqual(c.veredito, "bloqueado");
+  assert.strictEqual(c.motivo, "comissao_indisponivel");
+  assert.strictEqual(c.preco_alvo.encontrado, false);
+  assert.strictEqual(c.preco_alvo.preco, null);
+  assert.strictEqual(c.evidencia.comissao.motivo, "ml_indisponivel");
+});
+
+cenario("preco_alvo: cotação que torna a meta inalcançável (comissão cotada 95%) → sem_preco_viavel, dentro do teto de cotações", async () => {
+  const w = mundo({
+    snapshots: new Map([["5:MLB100", linhaPrejuizo()]]),
+    buscar: async (args) => { w.cotacoes.push(args.precoEfetivo); return { comissaoValor: Math.round(args.precoEfetivo * 0.95 * 100) / 100, fretePrevisto: 10 }; },
+  });
+  const r = await rodar(w, pedido([{ tipo: "preco_alvo" }]));
+  const c = r.cenarios[0];
+  assert.strictEqual(c.motivo, "sem_preco_viavel");
+  assert.strictEqual(c.preco_alvo.encontrado, false);
+  assert.strictEqual(c.preco_alvo.preco, null);
+  assert.strictEqual(c.preco_alvo.causa, "meta_inviavel");
+  assert.ok(w.cotacoes.length >= 1 && w.cotacoes.length <= service.MAX_ITERACOES_PRECO_ALVO, `${w.cotacoes.length} cotações`);
+});
+
+cenario("preco_alvo: margem_alvo do pedido substitui a meta (validada em 0–1); coexiste com outros cenários no teto de cotações", async () => {
+  const w = mundo({ snapshots: new Map([["5:MLB100", linhaPrejuizo()]]) });
+  const r = await rodar(w, pedido([{ tipo: "preco_alvo", margem_alvo: 0.2 }, { tipo: "preco", preco: 100 }]));
+  assert.strictEqual(r.cenarios[0].preco_alvo.margem_alvo, 0.2);
+  assert.strictEqual(r.cenarios[0].preco_alvo.preco, 150, "(80+10)/(1−0,06−0,14−0,20) = 150");
+  assert.ok(r.cenarios[0].cenario.margem_ratio >= 0.2);
+  assert.strictEqual(r.cenarios[1].tipo, "preco");
+  await recusa(rodar(w, pedido([{ tipo: "preco_alvo", margem_alvo: 20 }])), 400, "MARGEM_ALVO_INVALIDA");
+  await recusa(rodar(w, pedido([{ tipo: "preco_alvo", margem_alvo: 0 }])), 400, "MARGEM_ALVO_INVALIDA");
+});
+
 // ── Insumos hipotéticos (simulação avançada) e composição em lote ───────────
 
 cenario("cenário `insumos`: hipótese do operador, sem recotar nem tocar no ML", async () => {

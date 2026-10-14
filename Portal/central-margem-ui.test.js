@@ -458,12 +458,11 @@ async function run() {
       assert.ok((await cdp.evaluate("document.getElementById('cm-page-state').innerText")).includes("Leitura parcial"));
       assert.strictEqual(await cdp.evaluate("window.VFCentralMargemUi.getState().view"), "operational");
       const heads = await cdp.evaluate("Array.from(document.querySelectorAll('#cm-table-host thead th')).map(function(th){return th.textContent.trim().toLowerCase()})");
-      assert.strictEqual(heads.length, 8, "8 colunas operacionais: " + heads.join(" | "));
-      for (const h of ["produto", "preço", "margem proj.", "margem real.", "δ margem", "vendas / receita", "status"]) {
-        assert.ok(heads.includes(h), "falta coluna " + h + ": " + heads.join(" | "));
-      }
+      assert.deepStrictEqual(heads, ["produto", "preço", "lc/un", "margem", "próxima ação", "abrir produto"], "worklist: " + heads.join(" | "));
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host thead [data-source-select]').length"), 0, "composição técnica não domina a visão cotidiana");
-      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host tbody [data-open-item]').length"), 50, "cada linha tem a affordance Precificar");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host tbody [data-open-item]').length"), 0, "sem botão Precificar por linha");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host tbody .cm-next-chip').length"), 50, "uma próxima ação clicável por linha");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host tbody td.cm-go').length"), 50, "› no fim de cada linha");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-compbar').hidden"), true);
     });
 
@@ -484,10 +483,16 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-compbar').hidden"), false, "presets aparecem só na Composição");
     });
 
-    await check("topo compacto: margem/receita/lucro + prejuízo/margem baixa clicáveis; saúde dos dados recolhida", async () => {
+    await check("topo: quatro KPIs de decisão (prejuízo, abaixo da meta, promos com +LC, dado suspeito); saúde dos dados recolhida", async () => {
       const top = (await cdp.evaluate("document.getElementById('cm-kpis-top').innerText")).toLowerCase();
-      for (const t of ["margem realizada", "receita", "lucro", "produtos com venda", "prejuízo", "margem baixa"]) assert.ok(top.includes(t), top);
+      for (const t of ["em prejuízo", "abaixo da meta", "promos com +lc", "dado suspeito"]) assert.ok(top.includes(t), top);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-kpis-top .cm-topk').length"), 4, "sempre quatro");
+      for (const velho of ["margem realizada", "receita 30d", "lucro 30d", "produtos com venda"]) assert.ok(!top.includes(velho), `KPI de realizado no topo: ${velho}`);
       assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-kpis-top [data-financial-filter=LOSS] .cm-topk__value').textContent"), "1");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-kpis-top [data-financial-filter=LOW_MARGIN]') !== null"), true);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-kpis-top [data-integrity-filter=SUSPECT]') !== null"), true);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-kpis-top .cm-topk__value').textContent.trim() !== ''"), true);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-top-realized').hidden"), true, "realizado só aparece na leitura persistida");
       assert.ok((await cdp.evaluate("document.getElementById('cm-summary-line').innerText")).includes("51 de 51 carregados"));
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-health').hidden"), true, "saúde é secundária: fechada por padrão");
       assert.ok(await cdp.evaluate("document.getElementById('cm-health-dot').classList.contains('is-warn')"), "há não validados/suspeitos: ponto de atenção");
@@ -706,18 +711,32 @@ async function run() {
       assert.strictEqual(await callCount(), calls, "trocar o tamanho da página visual não pode chamar o backend");
     });
 
-    await check("linha operacional: link de divergências abre o produto já em Evidências na variável", async () => {
+    await check("worklist: a próxima ação de dado suspeito ('Revisar dados') abre o produto já em Evidências na variável", async () => {
       await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
-      const link = await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] [data-open-evidence]').textContent");
-      assert.ok(/1 divergência/.test(link), link);
-      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] [data-open-evidence]').click()");
+      const chip = await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] .cm-next-chip').textContent");
+      assert.strictEqual(chip, "Revisar dados");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] .cm-next-chip').click()");
       const state = await cdp.evaluate("({tab:window.VFCentralMargemUi.getState().drawerTab,variable:window.VFCentralMargemUi.getState().evidenceVariable,item:window.VFCentralMargemUi.getState().selectedItemId})");
       assert.deepStrictEqual(state, { tab: "evidence", variable: "freight", item: "MLB-SUSPECT" });
       await cdp.evaluate("document.getElementById('cm-drawer-close').click()");
     });
 
+    await check("Diagnóstico: divergências acima da Composição, só nessa aba; 'Evidências' abre o produto na variável", async () => {
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-divergences').hidden"), true, "fora do Diagnóstico a fila não aparece");
+      await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-divergences').hidden"), false);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-divergences').closest('.cm-sheet') !== null"), true, "dentro do cartão da aba");
+      await cdp.evaluate("document.getElementById('cm-divergences-toggle').click()");
+      assert.ok(await cdp.evaluate("document.querySelectorAll('#cm-divergences-host [data-evidence-item]').length >= 1"));
+      await cdp.evaluate("document.querySelector('#cm-divergences-host [data-evidence-item=\"MLB-SUSPECT\"]').click()");
+      assert.strictEqual(await cdp.evaluate("window.VFCentralMargemUi.getState().drawerTab"), "evidence");
+      await cdp.evaluate("document.getElementById('cm-drawer-close').click()");
+      await cdp.evaluate("document.getElementById('cm-divergences-toggle').click()");
+      await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
+    });
+
     await check("drawer abre em PRECIFICAR com resumo fixo e 3 abas (Precificar · Evidências · Histórico)", async () => {
-      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"] [data-open-item]').click()");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-SUSPECT\"]').click()");
       await sleep(150);
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-drawer-tabs [data-tab]').length"), 3);
       assert.strictEqual(await cdp.evaluate("window.VFCentralMargemUi.getState().drawerTab"), "pricing");

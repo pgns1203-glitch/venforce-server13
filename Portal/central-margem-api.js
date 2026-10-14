@@ -720,6 +720,9 @@
       confidence: confidence,
       problem: firstValue(raw.problem, raw.problema, raw.mainProblem, raw.problemaPrincipal, invalidFields.length ? invalidFields[0].reason : null, arrayOf(quality.statusReasons)[0], divergences.length ? "Fontes divergentes" : null),
       targetMargin: checkedRatio(firstValue(raw.targetMargin, raw.margemAlvo), "target", "Meta de margem", invalidFields),
+      // Preço que atinge a meta, ESTIMADO pelo Motor com a taxa de comissão e o frete do snapshot
+      // (a Bancada confirma com cotação real). null quando o Motor não consegue calcular.
+      targetPrice: marginBlock.target && marginBlock.target.computable !== false ? numberOrNull(marginBlock.target.price) : null,
       invalidFields: invalidFields,
       // Problema de dado detectado pelo Motor (ex.: "custo_suspeito"). Não é
       // recalculado aqui: a tela só exibe o código e o motivo que o backend mandou.
@@ -1584,6 +1587,8 @@
           paused: numberOrNull(kpis.anuncios && kpis.anuncios.pausados) || 0,
         },
         withMargin: numberOrNull(kpis.comMargem) || 0,
+        // LC/un somado dos anúncios em Prejuízo (calculado pelo Motor; null = o servidor não informou).
+        lossLc: numberOrNull(kpis.lcPrejuizo),
       } : null,
       activeRun: snapshotRun(refresh.runAtivo),
       lastRun: snapshotRun(refresh.ultimoRun),

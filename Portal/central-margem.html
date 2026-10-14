@@ -11,6 +11,7 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/central-margem-v2.css">
+  <link rel="stylesheet" href="css/pages/central-margem-layout.css">
   <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%235A2A8F'/><text x='16' y='22' font-size='18' fill='white' text-anchor='middle' font-family='sans-serif' font-weight='bold'>V</text></svg>">
 </head>
@@ -50,6 +51,8 @@
               </div>
             </div>
             <div class="cm-top__kpis" id="cm-kpis-top" aria-live="polite"></div>
+            <!-- Realizado: uma linha quando disponível; senão UM aviso ("Realizado indisponível · motivo"). -->
+            <p class="cm-top__realized" id="cm-top-realized" aria-live="polite" hidden></p>
             <p class="cm-top__line" id="cm-summary-line" aria-live="polite"></p>
           </section>
 
@@ -158,6 +161,22 @@
                 </div>
               </div>
 
+              <!-- ── Diagnóstico: divergências (resumo recolhido) acima da Composição ── -->
+              <section class="cm-section cm-divs" id="cm-divergences" aria-labelledby="cm-divergences-title">
+                <div class="cm-divs__bar">
+                  <h2 class="cm-divs__title" id="cm-divergences-title">Divergências</h2>
+                  <span class="cm-divs__summary" id="cm-divergence-count"></span>
+                  <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-divergences-toggle" aria-expanded="false" aria-controls="cm-divergences-body">Ver divergências</button>
+                </div>
+                <div class="vf-card cm-div-card" id="cm-divergences-body" hidden>
+                  <div class="cm-div-banner">
+                    <span>Selecionada × alternativa. “Evidências” abre o produto já na variável.</span>
+                    <button class="vf-btn vf-btn--sm" type="button" id="cm-critical-only" aria-pressed="false">Somente críticas</button>
+                  </div>
+                  <div id="cm-divergences-host"></div>
+                </div>
+              </section>
+
               <!-- Composição: fontes por variável + presets. Só na visão
                    Composição — a visão operacional prioriza a decisão. -->
               <div class="cm-compbar" id="cm-compbar" hidden>
@@ -202,22 +221,6 @@
             </div>
 
             <nav class="vf-pagination" id="cm-pagination" aria-label="Paginação dos produtos" hidden></nav>
-          </section>
-
-          <!-- ── Divergências: resumo recolhido, capacidade técnica preservada ── -->
-          <section class="cm-section cm-divs" id="cm-divergences" aria-labelledby="cm-divergences-title">
-            <div class="cm-divs__bar">
-              <h2 class="cm-divs__title" id="cm-divergences-title">Divergências</h2>
-              <span class="cm-divs__summary" id="cm-divergence-count"></span>
-              <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-divergences-toggle" aria-expanded="false" aria-controls="cm-divergences-body">Ver divergências</button>
-            </div>
-            <div class="vf-card cm-div-card" id="cm-divergences-body" hidden>
-              <div class="cm-div-banner">
-                <span>Selecionada × alternativa. “Evidências” abre o produto já na variável.</span>
-                <button class="vf-btn vf-btn--sm" type="button" id="cm-critical-only" aria-pressed="false">Somente críticas</button>
-              </div>
-              <div id="cm-divergences-host"></div>
-            </div>
           </section>
 
         </div>

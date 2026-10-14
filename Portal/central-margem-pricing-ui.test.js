@@ -141,6 +141,7 @@ const MOCK_CLIENT = `
         quality: { confidence: "HIGH", confidenceByField: {}, reasons: [], divergences: [], statusReasons: [] },
         diagnostico: { statusAnuncio: "active" },
         snapshot: { refreshStatus: "fresh", calculatedAt: "2026-09-29T11:52:00Z" },
+        margin: it.id === "MLB1003" ? { target: { marginTarget: 0.1, price: 79.9, computable: true } } : undefined,
         sales: { hasOrders: true, unidades: 21, pedidos: 20, receita: 2333, precoMedio: 111.1 },
         settlement: { available: false },
       };
@@ -314,6 +315,13 @@ const MOCK_CLIENT = `
         window.__pc.calls.opps.push(params.clienteContaId);
         (window.__pc.calls.oppsParams = window.__pc.calls.oppsParams || []).push({ conta: params.clienteContaId, page: params.page, limit: params.limit, cotacao: params.cotacao, veredito: params.veredito, tipo: params.tipo });
         var viva = params.cotacao === "viva";
+        // Resumo para o KPI "Promos com +LC" e os chips da worklist: só os anúncios que valem entrar.
+        if (params.veredito === "entrar" && params.limit === 50 && !viva) {
+          return Promise.resolve({ ok: true, disponivel: true, page: 1, limit: 50, total: 2, hasNext: false,
+            fonte: { tipo: "promo_snapshot", geradoEm: "2026-09-29T08:00:00Z", frescor: "atual" },
+            resumo: { entrar: 2, impacto_lc: 123.4, com_historico: 1, sem_historico: 1 }, tipos: [{ tipo: "DEAL", total: 2 }], cotacao: { modo: "estimada" },
+            oportunidades: [{ itemId: "MLB1001", titulo: "Produto X", promocao: { id: "P-DEAL", nome: "Oferta MLB1001", tipo: "DEAL", status: "candidate" }, veredito: "entrar", delta_lc: 1.9, flags: {}, estimado: true, atual: {}, cenario: {}, opcoes_total: 1, opcoes: [] }] });
+        }
         function opp(itemId, titulo, over) {
           return Object.assign({
             itemId: itemId, titulo: titulo, imagem: null, precoAtual: 149.9, margemAtual: 0.248, margemAtualRebate: null,
@@ -378,6 +386,7 @@ const MOCK_CLIENT = `
           fonte: { tipo: stale ? "promo_snapshot" : undefined, geradoEm: "2026-09-29T08:00:00Z", frescor: stale ? "atencao" : "atual" },
           sync: stale ? { state: "stale", autoTrigger: "enfileirado" } : undefined,
           criterio: "Promoção disponível avaliada pelo mesmo cálculo do simulador.", tipos: [{ tipo: "DEAL", total: 5 }, { tipo: "SMART", total: 2 }],
+          resumo: { entrar: 2, impacto_lc: 123.4, com_historico: 1, sem_historico: 1 },
           cotacao: { modo: viva ? "viva" : "estimada" }, oportunidades: lista });
       },
     };
@@ -474,12 +483,22 @@ async function run() {
       throw err;
     }
 
-    await check("topo compacto usa o realizado da CONTA; zero chamadas de promoção ao carregar a tabela (sem N+1)", async () => {
-      await waitFor(cdp, "window.VFCentralMargemUi.getState().realizado", "realizado não carregou");
+    await check("topo: 4 KPIs de decisão + realizado da CONTA numa linha; chips de próxima ação; zero chamadas de promoção por linha (sem N+1)", async () => {
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().realizado && window.VFCentralMargemUi.getState().promoSummary && window.VFCentralMargemUi.getState().promoSummary.status === 'ok'", "realizado/resumo de promoções não carregaram");
       const top = await cdp.evaluate("document.getElementById('cm-kpis-top').innerText");
-      assert.ok(top.includes("22,32%"), top);
-      assert.ok(/R\$\s24\.883/.test(top) && /R\$\s5\.452/.test(top), top);
-      assert.ok(top.includes("45"), top);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-kpis-top .cm-topk').length"), 4);
+      assert.ok(/EM PREJUÍZO\s*1/i.test(top.replace(/\n/g, " ")) || /em prejuízo/i.test(top), top);
+      assert.ok(/PROMOS COM \+LC\s*2/i.test(top.replace(/\n/g, " ")), `KPI de promos: ${top}`);
+      assert.ok(/impacto R\$\s*123/.test(top) && /1 sem histórico/.test(top), `impacto/sem histórico: ${top}`);
+      assert.ok(!top.includes("22,32%"), "o realizado saiu dos KPIs");
+      const realizado = await cdp.evaluate("document.getElementById('cm-top-realized').innerText");
+      assert.ok(realizado.includes("22,32%") && /R\$\s24\.883/.test(realizado) && /R\$\s5\.452/.test(realizado) && realizado.includes("45"), realizado);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-top-realized').hasAttribute('data-cm-realized-unavailable')"), false);
+      // Próxima ação por linha (uma só): promoção que vale entrar · ok · preço-alvo estimado pelo Motor
+      const chips = JSON.parse(await cdp.evaluate("JSON.stringify(Array.prototype.reduce.call(document.querySelectorAll('#cm-table-host tbody tr[data-item-id]'), function (m, tr) { m[tr.getAttribute('data-item-id')] = tr.querySelector('.cm-next-chip').textContent.trim().replace(/\\s+/g, ' '); return m; }, {}))"));
+      assert.ok(/^Promo Oferta MLB1001 \+R\$\s1,90$/.test(chips.MLB1001), chips.MLB1001);
+      assert.strictEqual(chips.MLB1002, "Ok");
+      assert.ok(/^Subir p\/ R\$\s79,90$/.test(chips.MLB1003), chips.MLB1003);
       assert.ok((await cdp.evaluate("document.getElementById('cm-summary-line').innerText")).includes("3 anúncios · 3 ativos · 0 pausados"));
       assert.strictEqual(await calls("promos"), 0, "a tabela nunca consulta promoções por linha");
       assert.strictEqual(await calls("sim"), 0);
@@ -495,9 +514,30 @@ async function run() {
       await shot("10-pricing-page");
     });
 
+    await check("chip de próxima ação: 'Subir p/ R$ X' abre o drawer com o preço já simulado; 'Promo …' abre a promoção já simulada; sem botão 'Precificar' por linha", async () => {
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host [data-open-item]').length"), 0);
+      // Subir p/ R$ 79,90 (preço-alvo estimado pelo Motor) → ajuste manual preenchido e simulado pelo backend
+      await cdp.evaluate("window.__pc.calls.sim.length = 0");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"] .cm-next-chip').click()");
+      assert.strictEqual(await st("s.selectedItemId"), "MLB1003");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-new-price').value"), "79,90");
+      await waitFor(cdp, "window.__pc.calls.sim.some(function (c) { return c.tipo === 'PRICE' && c.novoPreco === 79.9 && c.itemId === 'MLB1003'; })", "o preço sugerido não foi simulado pelo backend");
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+      // Promo Oferta MLB1001 +R$ 1,90 → promoção P-DEAL simulada ao abrir
+      await cdp.evaluate("window.__pc.calls.sim.length = 0");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"] .cm-next-chip').click()");
+      assert.strictEqual(await st("s.selectedItemId"), "MLB1001");
+      await waitFor(cdp, "window.__pc.calls.sim.some(function (c) { return c.tipo === 'PROMOTION' && c.promotionId === 'P-DEAL' && c.itemId === 'MLB1001'; })", "a promoção do chip não foi simulada");
+      assert.strictEqual(await st("s.pendingPromoId"), null);
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+      // clicar no chip não abre duas vezes (nem dispara o clique da linha)
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer').classList.contains('is-open')"), false);
+    });
+
     await check("aba Promoções: fonte bulk da conta, sem ML por linha; estimativa primeiro, depois a página cotada ao vivo", async () => {
-      // A aba só lê a lista quando é aberta (nenhuma leitura de promoções ao carregar a Central).
-      assert.deepStrictEqual(await cdp.evaluate("window.__pc.calls.opps"), [], "Precificar não lê promoções");
+      // Ao carregar a Central só roda o RESUMO (KPI + chips): uma leitura estimada dos 50 melhores, nunca a lista paginada.
+      const resumoCalls = JSON.parse(await cdp.evaluate("JSON.stringify(window.__pc.calls.oppsParams)"));
+      assert.deepStrictEqual(resumoCalls.map((c) => [c.conta, c.page, c.limit, c.veredito, c.cotacao]), [[10, 1, 50, "entrar", "estimada"]], "Precificar só lê o resumo das promoções");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-promos').hidden"), true);
       await cdp.evaluate("document.querySelector('[data-view=promotions]').click()");
       assert.strictEqual(await st("s.view"), "promotions");
@@ -507,7 +547,7 @@ async function run() {
       await waitFor(cdp, "document.querySelector('#cm-opps-host tr[data-opp]')", "promoções não apareceram");
       // duas leituras da MESMA página: estimada e, em seguida, viva
       await waitFor(cdp, "document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'", "a cotação ao vivo não terminou");
-      const modos = JSON.parse(await cdp.evaluate("JSON.stringify(window.__pc.calls.oppsParams.map(function (x) { return [x.conta, x.page, x.cotacao]; }))"));
+      const modos = JSON.parse(await cdp.evaluate("JSON.stringify(window.__pc.calls.oppsParams.filter(function (x) { return x.limit === 20; }).map(function (x) { return [x.conta, x.page, x.cotacao]; }))"));
       assert.deepStrictEqual(modos, [[10, 1, "estimada"], [10, 1, "viva"]]);
       const txt = await cdp.evaluate("document.getElementById('cm-opps-host').innerText");
       assert.ok(txt.includes("Produto Y") && txt.includes("Oferta Y"), txt);
@@ -581,8 +621,9 @@ async function run() {
     });
 
     await check("drawer abre IMEDIATAMENTE em Precificar enquanto as promoções carregam em paralelo", async () => {
+      await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
       await cdp.evaluate("window.__pc.holdPromos['MLB1001'] = true");
-      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"] [data-open-item]').click()");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer').classList.contains('is-open')"), true);
       assert.strictEqual(await st("s.drawerTab"), "pricing");
       await waitFor(cdp, "document.querySelector('[data-cm-promos=\"loading\"]')", "estado de carregamento das promoções ausente");
@@ -832,7 +873,7 @@ async function run() {
 
     await check("troca rápida de item: promoções do item anterior que chegam tarde nunca aparecem no novo", async () => {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.holdPromos['MLB1001'] = true");
-      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"] [data-open-item]').click()");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
       await waitFor(cdp, "typeof window.__pc.resolvePromos['MLB1001'] === 'function'");
       await cdp.evaluate("document.getElementById('cm-drawer-next').click()");
       await waitFor(cdp, "window.VFCentralMargemUi.getState().selectedItemId === 'MLB1002' && document.querySelector('[data-cm-promos=\"list\"]')", "item B não carregou suas promoções");
@@ -845,7 +886,7 @@ async function run() {
 
     await check("preço mudou no ML desde a leitura da tabela: a tela mostra o vivo, avisa e usa-o como precoVisto", async () => {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.livePrice['MLB1003'] = 62");
-      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"] [data-open-item]').click()");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"]').click()");
       await waitFor(cdp, "document.querySelector('[data-cm-live-price]')", "aviso de preço vivo diferente ausente");
       const aviso = (await cdp.evaluate("document.querySelector('[data-cm-live-price]').textContent")).replace(/\u00a0/g, " ");
       assert.ok(aviso.includes("R$ 59,90") && aviso.includes("R$ 62,00"), aviso);
@@ -859,7 +900,7 @@ async function run() {
 
     await check("troca de conta fecha o drawer e descarta promoções em voo da conta anterior", async () => {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.holdPromos['MLB1003'] = true");
-      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"] [data-open-item]').click()");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"]').click()");
       await waitFor(cdp, "typeof window.__pc.resolvePromos['MLB1003'] === 'function'");
       await cdp.evaluate("window.VF.context.setConta(11)");
       await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 11", "conta 11 não entrou");
@@ -871,6 +912,7 @@ async function run() {
     });
 
     await check("oportunidades pelo Promo Snapshot: sincronizando mostra o estado (sem mandar para a tela antiga); stale serve a lista e avisa", async () => {
+      await cdp.evaluate("document.querySelector('[data-view=promotions]').click()");
       await cdp.evaluate("window.__pc.oppsModo = 'syncing'; window.VF.context.setConta(10)");
       await waitFor(cdp, "document.querySelector('[data-cm-opps=\"indisponivel\"][data-cm-opps-sync=\"syncing\"]')", "estado de sincronização não apareceu");
       const host = await cdp.evaluate("document.getElementById('cm-promos').innerText");

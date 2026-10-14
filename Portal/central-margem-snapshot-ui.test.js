@@ -511,13 +511,16 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-period-wrap').hidden"), false, "seletor de período visível no modo persistido");
     });
 
-    await check("linha operacional mostra vendas, margem projetada × realizada e Δ do Motor; sem venda e realizado indisponível são explícitos", async () => {
+    await check("Diagnóstico mostra vendas, margem projetada × realizada e Δ do Motor; sem venda e realizado indisponível são explícitos (a worklist só decide)", async () => {
+      // A worklist de Precificar não carrega colunas de realizado: tudo isso mora no Diagnóstico.
+      const colunas = await cdp.evaluate("Array.from(document.querySelectorAll('#cm-table-host thead th')).map(function (th) { return th.textContent.trim().toLowerCase(); })");
+      assert.deepStrictEqual(colunas, ["produto", "preço", "lc/un", "margem", "próxima ação", "abrir produto"]);
+      await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
       const vendido = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"]').innerText");
       assert.ok(vendido.includes("73 un") && vendido.includes("62 ped."), vendido);
       const real = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-cmp]').textContent");
       assert.ok(/16,8%/.test(real), `margem realizada ausente: ${real}`);
-      const delta = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-drift]').textContent");
-      assert.ok(/-3,2 pp/.test(delta), `Δ margem ausente: ${delta}`);
+      assert.ok(/-3,2 pp/.test(real), `Δ margem ausente: ${real}`);
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-coverage-partial]'))"), "cobertura parcial sinalizada");
       const semVenda = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100001\"]').innerText");
       assert.ok(semVenda.includes("sem venda no período"), semVenda);
@@ -589,20 +592,24 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("window.VF.context.getPeriodoParam()"), null);
     });
 
-    await check("Central de Vendas falhando: nenhum KPI de realizado mostra R$ 0 nem 0 — tudo 'Indisponível' com o motivo, e as linhas não dizem 'sem venda'", async () => {
+    await check("Central de Vendas falhando: UM aviso 'Realizado indisponível · motivo' (nenhum R$ 0 nem 0), bloco detalhado oculto, e as linhas não dizem 'sem venda'", async () => {
       await cdp.evaluate("window.__cmRealizadoFalha = true");
       await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='2026-07';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "document.querySelector('[data-cm-realized-unavailable]') && !window.VFCentralMargemUi.getState().loading && !window.VFCentralMargemUi.getState().realizadoLoading", "estado indisponível do realizado não apareceu");
-      const bloco = await cdp.evaluate("document.getElementById('cm-realized').textContent");
-      assert.ok(bloco.includes("Indisponível"), bloco);
-      assert.ok(bloco.includes("nenhum valor foi zerado"), bloco);
-      assert.ok(!/R\$\s*0[,\s]/.test(bloco), `R$ 0 no bloco do realizado: ${bloco}`);
-      assert.ok(!/(Pedidos|Unidades|Produtos com venda)\s*0(?![\d,.])/.test(bloco.replace(/\s+/g, " ")), `contagem 0 no bloco: ${bloco}`);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('[data-cm-realized-unavailable]').length"), 1, "aviso ÚNICO");
+      const aviso = await cdp.evaluate("document.getElementById('cm-top-realized').textContent");
+      assert.ok(aviso.startsWith("Realizado indisponível ·"), aviso);
+      assert.ok(aviso.includes("nenhum valor foi zerado"), aviso);
+      assert.ok(!/R\$\s*0[,\s]/.test(aviso), `R$ 0 no aviso: ${aviso}`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-realized').hidden"), true, "o bloco detalhado do realizado some (não repete 'Indisponível' em cada KPI)");
       const topo = await cdp.evaluate("document.getElementById('cm-kpis-top').textContent");
       assert.ok(!/R\$\s*0[,\s]/.test(topo), `R$ 0 no topo: ${topo}`);
+      // O realizado por produto mora no Diagnóstico (a worklist de Precificar só decide).
+      await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
       const linha = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"]').textContent");
-      assert.ok(linha.includes("Indisponível"), linha);
+      assert.ok(/indisponível/i.test(linha), linha);
       assert.ok(!/sem venda/i.test(linha), `linha afirma 'sem venda' sem saber: ${linha}`);
+      await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
 
       await cdp.evaluate("window.__cmRealizadoFalha = false");
       await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='';s.dispatchEvent(new Event('change'));})()");

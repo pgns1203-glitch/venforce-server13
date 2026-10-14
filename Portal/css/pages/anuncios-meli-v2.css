@@ -495,6 +495,42 @@
   border-bottom: 1px solid var(--vf-border);
 }
 
+/* "Expandir todos" no cabeçalho, ao lado do rótulo Anúncio: ação de texto
+   discreta, sem caixa, para não engrossar a linha do cabeçalho. */
+.vf-page-anuncios-meli .am-listagem__head-anuncio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-anuncios-meli .am-listagem__head-rotulo {
+  font-weight: inherit;
+}
+
+.vf-page-anuncios-meli .am-expandir-todos {
+  padding: 0;
+  text-transform: none;
+  letter-spacing: normal;
+  border: 0;
+  background: none;
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-expandir-todos:hover {
+  text-decoration: underline;
+}
+
+.vf-page-anuncios-meli .am-expandir-todos:focus-visible {
+  outline: 2px solid var(--vf-primary);
+  outline-offset: 2px;
+  border-radius: var(--vf-radius-sm);
+}
+
 .vf-page-anuncios-meli .am-listagem__head span {
   white-space: nowrap;
   font-size: var(--vf-fs-2xs);

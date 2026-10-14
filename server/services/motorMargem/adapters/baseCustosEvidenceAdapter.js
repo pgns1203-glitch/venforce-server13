@@ -26,14 +26,23 @@ function numOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
-// Convenção herdada de `custos`: imposto trafega como DECIMAL (0.12 = 12%),
-// mas linhas antigas podem ter sido gravadas em escala 0–100. A mesma defesa
-// existe em precificacaoService e centralVendasSyncService; replicada aqui para
-// não depender da ordem de importação da base.
+// Convenção de `custos`: imposto trafega como DECIMAL (0.12 = 12%). Valor fora
+// de [0, 1] NÃO é convertido (nem "12 → 0.12") nem descartado em silêncio: vira
+// insumo INVÁLIDO com motivo `aliquota_fora_da_faixa` e o item cai em
+// UNVALIDATED (ver createEvidenceBag().invalid e classifyStatus). A escala
+// errada se corrige na Base, não aqui.
+const MOTIVO_ALIQUOTA_FORA_DA_FAIXA = "aliquota_fora_da_faixa";
+
+/** Alíquota válida ([0, 1]) ou null. Não converte escala. */
 function normalizarAliquota(value) {
   const n = numOrNull(value);
-  if (n === null || n < 0) return null;
-  return n > 1 ? n / 100 : n;
+  return n !== null && n >= 0 && n <= 1 ? n : null;
+}
+
+/** true quando HÁ valor mas ele está fora de [0, 1]. */
+function aliquotaInvalida(value) {
+  const n = numOrNull(value);
+  return n !== null && (n < 0 || n > 1);
 }
 
 /**
@@ -51,6 +60,8 @@ function buildCostIndex(rows) {
       produtoId: id,
       cost: numOrNull(row.custo_produto),
       taxRate: normalizarAliquota(row.imposto_percentual),
+      // Valor bruto da Base quando fora de [0, 1] (senão null).
+      taxRateInvalido: aliquotaInvalida(row.imposto_percentual) ? numOrNull(row.imposto_percentual) : null,
       fixedFee: numOrNull(row.taxa_fixa),
       produtoNome: row.produto_nome || null,
       observedAt: row.updated_at || null,
@@ -112,6 +123,15 @@ function aplicarEvidenciasDeCusto(bag, { itemId, index, baseSlug }) {
   bag.add(FIELDS.COST, { ...comum, value: entry.cost });
   bag.add(FIELDS.TAX_RATE, { ...comum, value: entry.taxRate });
   bag.add(FIELDS.FIXED_FEE, { ...comum, value: entry.fixedFee });
+  if (entry.taxRateInvalido !== null && entry.taxRateInvalido !== undefined && typeof bag.invalid === "function") {
+    bag.invalid(FIELDS.TAX_RATE, {
+      code: MOTIVO_ALIQUOTA_FORA_DA_FAIXA,
+      source: SOURCES.VENFORCE_BASE,
+      raw: entry.taxRateInvalido,
+      observedAt: entry.observedAt,
+      reason: `Alíquota de imposto da Base fora da faixa [0 a 1] (valor ${entry.taxRateInvalido}, ${MOTIVO_ALIQUOTA_FORA_DA_FAIXA}): corrija a Base antes de calcular a margem.`,
+    });
+  }
 
   return true;
 }
@@ -127,5 +147,7 @@ module.exports = {
   lookupCost,
   aplicarEvidenciasDeCusto,
   normalizarAliquota,
+  aliquotaInvalida,
+  MOTIVO_ALIQUOTA_FORA_DA_FAIXA,
   marketplaceSuportado,
 };

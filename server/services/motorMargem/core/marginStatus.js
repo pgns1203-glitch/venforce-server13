@@ -91,6 +91,7 @@ function detectIntegrityIssue({ price = null, cost = null } = {}) {
  *  - settlementPending venda sem conciliação financeira confirmada
  *  - targetMargin      meta de margem (fração)
  *  - integrityIssue    resultado de detectIntegrityIssue (ou null)
+ *  - invalidInputs     [{field, code, reason}] insumos entregues porém inutilizáveis
  * @returns {{status:string, severity:string, label:string, reasons:string[], integrityCode:string|null}}
  */
 function classifyStatus(input = {}) {
@@ -104,9 +105,18 @@ function classifyStatus(input = {}) {
     settlementPending = false,
     targetMargin = DEFAULT_TARGET_MARGIN,
     integrityIssue = null,
+    invalidInputs = [],
   } = input;
 
   const reasons = [];
+
+  // 0. UNVALIDATED por insumo INVÁLIDO — a fonte entregou o valor, mas ele não
+  // pode ser usado (ex.: alíquota fora de [0, 1]). Vale mesmo que haja outra
+  // margem calculável: o dado da Base precisa ser corrigido antes.
+  if (invalidInputs.length) {
+    for (const entry of invalidInputs) reasons.push(entry.reason);
+    return finish(STATUS.UNVALIDATED, reasons, invalidInputs[0].code);
+  }
 
   // 1. UNVALIDATED — falta insumo obrigatório. Nem margem ruim, nem boa: nenhuma.
   if (!computable || margin === null) {

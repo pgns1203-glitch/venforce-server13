@@ -191,10 +191,32 @@
     return Math.round((number + Number.EPSILON) * factor) / factor;
   }
 
-  function marginFraction(value) {
+  /*
+   * Razões (margem, meta, imposto, comissão) trafegam SEMPRE como fração
+   * (0,12 = 12%), em todas as fontes do backend. Nenhuma conversão de escala
+   * acontece aqui: valor fora da faixa vira null + motivo (`sink`), nunca um
+   * número "corrigido" em silêncio. Margem não tem piso — prejuízo de 113%
+   * (−1,1309) é um valor legítimo quando o custo supera o preço.
+   */
+  var RATIO_RANGES = {
+    margin: { min: -Infinity, max: 1, expected: "fração menor ou igual a 1" },
+    target: { min: 0, max: 1, expected: "fração entre 0 e 1" },
+    rate: { min: 0, max: 1, expected: "fração entre 0 e 1" },
+  };
+
+  function checkedRatio(value, kind, label, sink) {
     var number = numberOrNull(value);
     if (number === null) return null;
-    return Math.abs(number) > 1 ? number / 100 : number;
+    var range = RATIO_RANGES[kind];
+    if (number >= range.min && number <= range.max) return number;
+    if (sink) {
+      sink.push({
+        field: label,
+        value: number,
+        reason: label + " fora da faixa esperada (" + range.expected + "): o backend enviou " + number + ".",
+      });
+    }
+    return null;
   }
 
   function firstValue() {
@@ -588,8 +610,9 @@
 
     var projectedBlock = raw.projected || raw.projetada || raw.projection || {};
     var realizedBlock = raw.realized || raw.realizada || raw.actual || {};
-    var projectedMargin = marginFraction(firstValue(projectedBlock.margin, projectedBlock.margem, raw.projectedMargin, raw.margemProjetada));
-    var realizedMargin = marginFraction(firstValue(realizedBlock.margin, realizedBlock.margem, raw.realizedMargin, raw.margemRealizada));
+    var invalidFields = [];
+    var projectedMargin = checkedRatio(firstValue(projectedBlock.margin, projectedBlock.margem, raw.projectedMargin, raw.margemProjetada), "margin", "Margem projetada", invalidFields);
+    var realizedMargin = checkedRatio(firstValue(realizedBlock.margin, realizedBlock.margem, raw.realizedMargin, raw.margemRealizada), "margin", "Margem realizada", invalidFields);
     var overallReasons = arrayOf(firstValue(quality.reasons, quality.motivos, [])).map(function (reason) {
       return typeof reason === "string" ? reason : firstValue(reason.message, reason.mensagem, reason.code, reason.codigo);
     }).filter(Boolean);
@@ -620,8 +643,9 @@
       mercadoPago: variableFromCanonical(fields.mercadoPago || receiptField, { format: "money", evidence: receiptRealized, confidence: confidenceFor("netReceipt") }),
     };
 
-    if (variables.tax.value !== null && Math.abs(variables.tax.value) > 1) variables.tax.value /= 100;
-    if (variables.commission.rate !== null && Math.abs(variables.commission.rate) > 1) variables.commission.rate /= 100;
+    variables.tax.value = checkedRatio(variables.tax.value, "rate", "Alíquota de imposto", invalidFields);
+    variables.tax.available = variables.tax.value !== null;
+    variables.commission.rate = checkedRatio(variables.commission.rate, "rate", "Taxa de comissão", invalidFields);
 
     // Simulação de preço é PROSPECTIVA: usa sempre o momento projetado (Base
     // de hoje). `variables.cost/tax` seguem a escolha do Motor (realizado tem
@@ -632,7 +656,7 @@
     }
     var fixedFeeField = fields.fixedFee || fields.taxaFixa || null;
     var projectedTax = projectedValueOf(taxField);
-    if (projectedTax !== null && Math.abs(projectedTax) > 1) projectedTax /= 100;
+    projectedTax = checkedRatio(projectedTax, "rate", "Alíquota de imposto (projetada)", invalidFields);
     var projectedCost = projectedValueOf(costField);
     var projectedFixedFee = fixedFeeField && typeof fixedFeeField === "object"
       ? projectedValueOf(fixedFeeField)
@@ -693,8 +717,9 @@
       statusAnuncio: firstValue(raw.statusAnuncio, raw.diagnostico && raw.diagnostico.statusAnuncio),
       status: status,
       confidence: confidence,
-      problem: firstValue(raw.problem, raw.problema, raw.mainProblem, raw.problemaPrincipal, arrayOf(quality.statusReasons)[0], divergences.length ? "Fontes divergentes" : null),
-      targetMargin: marginFraction(firstValue(raw.targetMargin, raw.margemAlvo)),
+      problem: firstValue(raw.problem, raw.problema, raw.mainProblem, raw.problemaPrincipal, invalidFields.length ? invalidFields[0].reason : null, arrayOf(quality.statusReasons)[0], divergences.length ? "Fontes divergentes" : null),
+      targetMargin: checkedRatio(firstValue(raw.targetMargin, raw.margemAlvo), "target", "Meta de margem", invalidFields),
+      invalidFields: invalidFields,
       projected: {
         margin: projectedMargin,
         profit: numberOrNull(firstValue(projectedBlock.profit, projectedBlock.lucro, raw.projectedProfit, raw.lucroProjetado)),
@@ -1038,8 +1063,8 @@
     var soldValue = aggregate && aggregate.soldValuePresent ? aggregate.soldValue : null;
     var cost = numberOrNull(base.custo);
     if (cost === null && aggregate && aggregate.costPresent && units) cost = aggregate.costTotal / units;
-    var taxRate = numberOrNull(base.imposto);
-    if (taxRate !== null && Math.abs(taxRate) > 1) taxRate /= 100;
+    var legacyInvalid = [];
+    var taxRate = checkedRatio(base.imposto, "rate", "Alíquota de imposto (Base)", legacyInvalid);
     if (taxRate === null && aggregate && aggregate.taxPresent && soldValue) taxRate = aggregate.taxTotal / soldValue;
     var commissionRate = aggregate && aggregate.commissionPresent && soldValue ? aggregate.commissionTotal / soldValue : null;
     var commissionRealized = aggregate && aggregate.commissionPresent && units ? aggregate.commissionTotal / units : null;
@@ -1072,7 +1097,8 @@
       marketplace: context.marketplace || "meli",
       status: "UNVALIDATED",
       confidence: confidence,
-      problem: null,
+      problem: legacyInvalid.length ? legacyInvalid[0].reason : null,
+      invalidFields: legacyInvalid,
       targetMargin: null,
       projected: {
         margin: round(projectedMargin, 6),
@@ -1577,6 +1603,11 @@
         origin: "backend",
         reason: item.problem || "Estado de qualidade informado pelo Motor.",
       };
+    }
+    // Campo numérico fora da faixa esperada: o valor foi descartado (null),
+    // então o dado é suspeito — nunca "confiável com campo ausente".
+    if (item.invalidFields && item.invalidFields.length) {
+      return { key: "SUSPECT", label: INTEGRITY_STATES.SUSPECT.label, tone: INTEGRITY_STATES.SUSPECT.tone, origin: "derived", reason: item.invalidFields[0].reason };
     }
     // Status canônico financeiro: a integridade é derivada das mesmas
     // evidências que o Motor expôs, sem inventar sinal novo.
@@ -2430,6 +2461,6 @@
     normalizeComparison: normalizeComparison,
     createClient: createClient,
     numberOrNull: numberOrNull,
-    marginFraction: marginFraction,
+    checkedRatio: checkedRatio,
   };
 });

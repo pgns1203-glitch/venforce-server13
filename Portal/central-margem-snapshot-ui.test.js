@@ -136,11 +136,16 @@ const MOCK_CLIENT = `
     function rawItem(conta, i) {
       var status = STATUS[i % 5];
       var margin = MARGEM[i % 5];
+      var custo = 40;
+      // Item de custo acima do preço: o backend manda a margem como FRAÇÃO
+      // (−1,1309 = −113,09%); o custo é o que fecha a conta na Composição
+      // (100 − 10 − 12 − 20 − 171,09 = −113,09 sobre preço 100).
+      if (i === 12) { margin = -1.1309; custo = 171.09; }
       return {
         itemId: "C" + conta + "-MLB" + (100000 + i), title: "Produto " + i + " da conta " + conta, titulo: "Produto " + i + " da conta " + conta,
         sku: skuDe(i), status: status, confidence: "HIGH", marketplace: "meli", targetMargin: 0.1,
         fields: {
-          price: field(ev("MELI_API", 100)), cost: field(status === "UNVALIDATED" ? null : ev("VENFORCE_BASE", 40, "DECLARED")),
+          price: field(ev("MELI_API", 100)), cost: field(status === "UNVALIDATED" ? null : ev("VENFORCE_BASE", custo, "DECLARED")),
           taxRate: field(ev("VENFORCE_BASE", 0.1, "DECLARED")), fixedFee: field(ev("VENFORCE_BASE", 0, "DECLARED")),
           commission: field(ev("MELI_API", 12)), commissionRate: field(ev("MELI_API", 0.12)), freight: field(ev("MELI_API", 20)),
         },
@@ -514,6 +519,26 @@ async function run() {
         assert.ok(painel.toLowerCase().includes(trecho.toLowerCase()), `falta "${trecho}" no painel: ${painel}`);
       }
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+    });
+
+    await check("margem −1,1309 do backend (fração) aparece −113,09% na tabela, no drawer e na Composição; nunca −1,13%", async () => {
+      const id = "C900-MLB100012";
+      const celula = (seletor) => cdp.evaluate(`(function(){var e=document.querySelector('tr[data-item-id="${id}"] ${seletor}');return e?e.textContent.trim():null;})()`);
+      assert.strictEqual(await celula(".cm-mc-value"), "-113,09%", "visão Operacional (coluna Margem Proj.)");
+
+      await cdp.evaluate("window.VFCentralMargemUi.openDrawer('" + id + "', 'evidence')");
+      await waitFor(cdp, "document.getElementById('cm-drawer-summary').textContent.indexOf('Margem projetada') !== -1", "resumo do drawer não abriu");
+      const resumo = await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent");
+      assert.ok(resumo.includes("-113,09%"), `drawer: ${resumo}`);
+      assert.ok(!resumo.includes("-1,13%"), `drawer converteu a fração em silêncio: ${resumo}`);
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+
+      await cdp.evaluate("document.querySelector('[data-view=\"composition\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--comp')", "visão Composição não abriu");
+      assert.strictEqual(await celula(".cm-mc-value"), "-113,09%", "visão Composição");
+      await cdp.evaluate("document.querySelector('[data-view=\"operational\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--op')", "visão Operacional não voltou");
+      assert.deepStrictEqual(await st("s.data.items.filter(function(i){return i.id==='" + id + "';}).map(function(i){return i.projected.margin;})"), [-1.1309]);
     });
 
     await check("trocar o período relê itens e realizado com periodo=YYYY-MM (Shell) e NÃO pede refresh do snapshot", async () => {

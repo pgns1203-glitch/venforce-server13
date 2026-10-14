@@ -935,6 +935,41 @@ async function run() {
     assert.ok(calls[0].includes("dateTo=" + iso), `${calls[0]} deveria terminar em ${iso}`);
   });
 
+  await test("razões não têm heurística de escala: fração passa intacta, fora da faixa vira null + motivo", () => {
+    const sink = [];
+    assert.strictEqual(api.checkedRatio(-1.1309, "margin", "Margem projetada", sink), -1.1309, "prejuízo > 100% é válido, não é percentual");
+    assert.strictEqual(api.checkedRatio(0.0425, "margin", "Margem projetada", sink), 0.0425);
+    assert.strictEqual(api.checkedRatio(0.15, "rate", "Alíquota", sink), 0.15);
+    assert.strictEqual(api.checkedRatio(null, "rate", "Alíquota", sink), null);
+    assert.deepStrictEqual(sink, []);
+    assert.strictEqual(api.checkedRatio(15, "rate", "Alíquota de imposto", sink), null, "15 NÃO vira 0,15 em silêncio");
+    assert.strictEqual(api.checkedRatio(12, "target", "Meta de margem", sink), null);
+    assert.strictEqual(api.checkedRatio(113.09, "margin", "Margem projetada", sink), null);
+    assert.strictEqual(sink.length, 3);
+    assert.ok(/Alíquota de imposto fora da faixa esperada.*15/.test(sink[0].reason), sink[0].reason);
+  });
+
+  await test("item: margem −1,1309 do backend chega intacta; alíquota 15 invalida o campo, rebaixa a integridade e explica o motivo", () => {
+    const ok = normalizedItem({ projected: { margin: -1.1309, profit: -113.09 } });
+    assert.strictEqual(ok.projected.margin, -1.1309);
+    assert.deepStrictEqual(ok.invalidFields, []);
+
+    const ruim = normalizedItem({
+      projected: { margin: 150, profit: 1 },
+      targetMargin: 12,
+      fields: Object.assign({}, canonicalItem().fields, {
+        taxRate: canonicalField([evidence("VENFORCE_BASE", "PROJECTED", 15, "2026-06-01T00:00:00Z")]),
+      }),
+    });
+    assert.strictEqual(ruim.projected.margin, null);
+    assert.strictEqual(ruim.targetMargin, null);
+    assert.strictEqual(ruim.variables.tax.value, null);
+    assert.strictEqual(ruim.variables.tax.available, false);
+    assert.ok(ruim.invalidFields.length >= 3, JSON.stringify(ruim.invalidFields));
+    assert.ok(ruim.problem && ruim.problem.includes("fora da faixa"), ruim.problem);
+    assert.strictEqual(api.dataIntegrity(ruim).key, "SUSPECT");
+  });
+
   console.log(`# ${passed} testes concluídos`);
 }
 

@@ -534,6 +534,16 @@ cenario("composicao em lote: mesma conta do núcleo, carteira respeitada, teto d
   assert.strictEqual(r.itens[1].computavel, false);
   assert.strictEqual(r.itens[1].margem_ratio, null);
   assert.deepStrictEqual(r.itens[1].faltando, ["cost"]);
+  // Δ contra a base e contra a meta: o núcleo calcula, em lote.
+  const base = { preco: 100, custo: 40, aliquota: 0.06, taxa_fixa: 0, comissao: 16.5, frete: 23.4 };
+  const comDelta = await service.calcularComposicoes({
+    user: USER_A,
+    body: { cliente_conta_id: 5, itens: [{ id: "0", insumos: { ...base, frete: 18.7 }, base_insumos: base, meta_margem: 0.12 }, { id: "1", insumos: base }] },
+  }, w.deps);
+  assert.deepStrictEqual([comDelta.itens[0].delta_lc, comDelta.itens[0].delta_margem_pp, comDelta.itens[0].delta_meta_pp], [4.7, 4.7, 6.8]);
+  assert.deepStrictEqual([comDelta.itens[1].delta_lc, comDelta.itens[1].delta_margem_pp, comDelta.itens[1].delta_meta_pp], [null, null, null]);
+  await recusa(service.calcularComposicoes({ user: USER_A, body: { cliente_conta_id: 5, itens: [{ id: "0", insumos: base, meta_margem: "x" }] } }, w.deps), 400, "META_MARGEM_INVALIDA");
+  await recusa(service.calcularComposicoes({ user: USER_A, body: { cliente_conta_id: 5, itens: [{ id: "0", insumos: base, base_insumos: { magia: 1 } }] } }, w.deps), 400, "INSUMOS_CAMPO_DESCONHECIDO");
   await recusa(service.calcularComposicoes({ user: USER_B, body }, w.deps), 403);
   await recusa(service.calcularComposicoes({ user: USER_A, body: { cliente_conta_id: 5, itens: [] } }, w.deps), 400, "ITENS_OBRIGATORIOS");
   await recusa(service.calcularComposicoes({ user: USER_A, body: { cliente_conta_id: 5, itens: Array.from({ length: 201 }, (_, i) => ({ id: String(i), insumos: {} })) } }, w.deps), 400, "ITENS_DEMAIS");

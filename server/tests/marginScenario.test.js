@@ -341,6 +341,25 @@ cenario("calcularAtual: a mesma composição do bloco `atual` do cenário, com o
   assert.strictEqual(sem.atual.lc, null);
 });
 
+cenario("calcularComposicao com base e meta: ΔLC, Δ margem e Δ meta em pp vêm do núcleo", () => {
+  const base = { preco: 100, custo: 40, aliquota: 0.06, taxa_fixa: 0, comissao: 16.5, freight: undefined, frete: 23.4 };
+  const alt = { ...base, frete: 18.7 };
+  const r = calcularComposicao(alt, { base, meta_margem: 0.12 });
+  // Frete menor melhora a MC: (23,40 − 18,70) / 100 = +4,7 pp; ΔLC = +4,70.
+  assert.strictEqual(r.delta_lc, 4.7);
+  assert.strictEqual(r.delta_margem_pp, 4.7);
+  // margem' = 18,8% contra meta 12% → +6,8 pp
+  assert.strictEqual(r.delta_meta_pp, 6.8);
+  const semBase = calcularComposicao(alt);
+  assert.strictEqual(semBase.delta_lc, null);
+  assert.strictEqual(semBase.delta_margem_pp, null);
+  assert.strictEqual(semBase.delta_meta_pp, null);
+  // meta fora da faixa nunca vira número; base incompleta idem
+  assert.strictEqual(calcularComposicao(alt, { base, meta_margem: 12 }).delta_meta_pp, null);
+  assert.strictEqual(calcularComposicao(alt, { base: { preco: 100 } }).delta_lc, null);
+  assert.strictEqual(calcularComposicao({ preco: 100 }, { base }).delta_lc, null);
+});
+
 (async () => {
   let falhas = 0;
   for (const { nome, fn } of casos) {

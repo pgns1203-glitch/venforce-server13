@@ -516,8 +516,11 @@ const MAX_ITENS_COMPOSICAO = 200;
 
 /**
  * POST /api/margem/composicao — LC e margem de VÁRIOS jogos de insumos de uma
- * conta (a "Composição" da tabela com fontes personalizadas). Cálculo puro do
- * núcleo: nada é buscado no ML nem no banco além da autorização por carteira.
+ * conta (a "Composição" da tabela com fontes personalizadas, a simulação
+ * avançada e o impacto das divergências). Cálculo puro do núcleo: nada é
+ * buscado no ML nem no banco além da autorização por carteira. Cada item pode
+ * trazer `base_insumos` (Δ LC e Δ margem em pp contra ela) e `meta_margem`
+ * (Δ em pp contra a meta, fração 0–1).
  */
 async function calcularComposicoes({ user, body } = {}, deps = {}) {
   const d = defaults(deps);
@@ -533,13 +536,20 @@ async function calcularComposicoes({ user, body } = {}, deps = {}) {
     if (!it || typeof it !== "object") throw erroHttp(400, "ITEM_INVALIDO", `itens[${i}] precisa ser um objeto.`);
     const id = String(it.id ?? "").trim();
     if (!id || id.length > 80) throw erroHttp(400, "ITEM_ID_OBRIGATORIO", `itens[${i}].id é obrigatório.`);
-    return { id, insumos: validarInsumos(it.insumos, i) };
+    const saida = { id, insumos: validarInsumos(it.insumos, i) };
+    if (it.base_insumos !== undefined && it.base_insumos !== null) saida.base = validarInsumos(it.base_insumos, i);
+    if (it.meta_margem !== undefined && it.meta_margem !== null) {
+      const meta = Number(it.meta_margem);
+      if (!Number.isFinite(meta)) throw erroHttp(400, "META_MARGEM_INVALIDA", `itens[${i}].meta_margem precisa ser um número (fração).`);
+      saida.meta_margem = meta;
+    }
+    return saida;
   });
   const { conta } = await autorizarConta(user, contaId, d);
   return {
     ok: true,
     cliente_conta_id: Number(conta.id),
-    itens: itens.map((it) => ({ id: it.id, ...core.calcularComposicao(it.insumos) })),
+    itens: itens.map((it) => ({ id: it.id, ...core.calcularComposicao(it.insumos, { base: it.base || null, meta_margem: it.meta_margem ?? null }) })),
   };
 }
 

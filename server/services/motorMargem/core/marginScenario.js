@@ -161,7 +161,7 @@ function composicao({ preco, custo, aliquota, taxaFixa, comissao, frete, rebate 
  *
  * @returns {{ computavel, lc, margem_ratio, faltando:string[], assumido:string[], estrito:boolean, componentes }}
  */
-function calcularComposicao(insumos = {}) {
+function calcularComposicao(insumos = {}, { base = null, meta_margem = null } = {}) {
   const calc = computeMargin({
     price: num(insumos.preco),
     cost: num(insumos.custo),
@@ -173,13 +173,32 @@ function calcularComposicao(insumos = {}) {
   });
   const aliquota = num(insumos.aliquota);
   const preco = num(insumos.preco);
+  const lc = calc.computable ? calc.profit : null;
+  const margem = calc.computable ? calc.margin : null;
+
+  // Diferenças contra uma composição-base e contra a meta. Pontos percentuais
+  // (pp) = diferença de FRAÇÕES × 100, só para exibição; as margens seguem 0–1.
+  let deltaLc = null;
+  let deltaMargemPp = null;
+  if (base) {
+    const b = calcularComposicao(base);
+    if (lc !== null && b.lc !== null) deltaLc = round2(lc - b.lc);
+    if (margem !== null && b.margem_ratio !== null) deltaMargemPp = round2((margem - b.margem_ratio) * 100);
+  }
+  const meta = num(meta_margem);
+  const metaValida = meta !== null && meta > 0 && meta < 1;
+  const deltaMetaPp = margem !== null && metaValida ? round2((margem - meta) * 100) : null;
+
   return {
     computavel: calc.computable,
-    lc: calc.computable ? calc.profit : null,
-    margem_ratio: calc.computable ? calc.margin : null,
+    lc,
+    margem_ratio: margem,
     faltando: calc.missing,
     assumido: calc.assumed,
     estrito: calc.strict,
+    delta_lc: deltaLc,
+    delta_margem_pp: deltaMargemPp,
+    delta_meta_pp: deltaMetaPp,
     componentes: {
       preco: preco === null ? null : round2(preco),
       imposto: preco === null || aliquota === null ? null : round2(preco * aliquota),

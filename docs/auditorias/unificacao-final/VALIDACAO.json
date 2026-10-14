@@ -1,0 +1,324 @@
+{
+  "checkedAtUtc": "2026-10-14T20:19:56.880852+00:00",
+  "baseMainSha": "3dc3732432aa8782882f1d573dc43dedb650aa94",
+  "stackTopSha": "cac51f205d8b091b4f844756fba158ab17039118",
+  "integrationMergeSha": "82903028da68e003e09641d75642e603bd5c061c",
+  "finalBranch": "release/clientes-unificacao-final",
+  "sources": [
+    {
+      "pr": 246,
+      "branch": "fix/account-context-foundation",
+      "sha": "d220e2713fe6537a2900bfa3472b54ead3d053d2",
+      "included": true
+    },
+    {
+      "pr": 251,
+      "branch": "feat/unificacao-clientes-resolvers-stacked",
+      "sha": "15bc33d2c93e0d001ab7f69858d7ad11b44c5e6d",
+      "included": true
+    },
+    {
+      "pr": 252,
+      "branch": "feat/unificacao-clientes-oauth-stacked",
+      "sha": "bb3950601c8874243839d5aaaf2499589fdbe23f",
+      "included": true
+    },
+    {
+      "pr": 253,
+      "branch": "feat/unificacao-clientes-consumidores-stacked",
+      "sha": "da3061d85b71c7bf44ed7a7d0728e8dad7feadd0",
+      "included": true
+    },
+    {
+      "pr": 254,
+      "branch": "feat/unificacao-clientes-fase2-stacked",
+      "sha": "fe100d97d8b331e4f55bbf633120d679c21dd7a7",
+      "included": true
+    },
+    {
+      "pr": 260,
+      "branch": "feat/clientes-unificacao-executor-stacked",
+      "sha": "cac51f205d8b091b4f844756fba158ab17039118",
+      "included": true
+    },
+    {
+      "pr": 263,
+      "branch": "feat/clientes-unificacao-ui-stacked",
+      "sha": "0d4c4164fc4ba1a3cc18648b531fcbafbca54706",
+      "included": true
+    }
+  ],
+  "uiPresentBeforeIntegration": true,
+  "textConflicts": [],
+  "integrationChanges": [
+    {
+      "file": "Portal/ui-ux-wave1-convergence.test.js",
+      "reason": "Explicit readonly GET /config fixture with all flags OFF; strict unknown-request assertion retained.",
+      "retestedChecksPassed": 32
+    }
+  ],
+  "backend": {
+    "main": {
+      "total": 330,
+      "passed": 327,
+      "failures": [
+        {
+          "file": "designStudioWorkspace.test.js",
+          "exit": 1,
+          "seconds": 0.13
+        },
+        {
+          "file": "meliAnunciosOrdenacaoGlobal.test.js",
+          "exit": 1,
+          "seconds": 0.36
+        },
+        {
+          "file": "mlTokenService.test.js",
+          "exit": 1,
+          "seconds": 0.1
+        }
+      ]
+    },
+    "final": {
+      "total": 339,
+      "passed": 336,
+      "failures": [
+        {
+          "file": "designStudioWorkspace.test.js",
+          "exit": 1,
+          "seconds": 0.07
+        },
+        {
+          "file": "meliAnunciosOrdenacaoGlobal.test.js",
+          "exit": 1,
+          "seconds": 0.29
+        },
+        {
+          "file": "mlTokenService.test.js",
+          "exit": 1,
+          "seconds": 0.1
+        }
+      ]
+    },
+    "newFailures": [],
+    "matchedFailures": [
+      {
+        "file": "designStudioWorkspace.test.js",
+        "normalizedLogIdentical": true,
+        "sha256": "5969d6d4f450b2e8fad31b62fdc0ec1a86dcfc676a72ef9779fb56f99147fd14"
+      },
+      {
+        "file": "meliAnunciosOrdenacaoGlobal.test.js",
+        "normalizedLogIdentical": true,
+        "sha256": "03a21413c9465b5c94cdd98bc7f8d2f630f20d39b7679825b135b589f9a8b1c3"
+      },
+      {
+        "file": "mlTokenService.test.js",
+        "normalizedLogIdentical": true,
+        "sha256": "70449c1e8452c984acef2a466c2257710b09be01f5c4073900438fb3aa7cabe5"
+      }
+    ]
+  },
+  "directedBackend": {
+    "files": 186,
+    "passed": 185,
+    "failures": [
+      "mlTokenService.test.js"
+    ],
+    "executedWithinCompleteSuite": true
+  },
+  "portal": {
+    "main": {
+      "total": 34,
+      "passed": 27,
+      "failures": [
+        {
+          "file": "anuncios-meli-detalhe-modal-ui.test.js",
+          "exit": 1,
+          "seconds": 32.72
+        },
+        {
+          "file": "anuncios-meli-listagem-unificada-ui.test.js",
+          "exit": 1,
+          "seconds": 1.39
+        },
+        {
+          "file": "central-margem-ui.test.js",
+          "exit": 1,
+          "seconds": 1.69
+        },
+        {
+          "file": "diagnostico-inicial-shell-ui.test.js",
+          "exit": 1,
+          "seconds": 0.5
+        },
+        {
+          "file": "financeiro-v3-shell-ui.test.js",
+          "exit": 1,
+          "seconds": 8.89
+        },
+        {
+          "file": "vf-shell-ui.test.js",
+          "exit": 1,
+          "seconds": 1.03
+        },
+        {
+          "file": "visao-shell-ui.test.js",
+          "exit": 1,
+          "seconds": 8.99
+        }
+      ]
+    },
+    "finalEffective": {
+      "total": 35,
+      "passed": 30,
+      "failures": [
+        {
+          "file": "anuncios-meli-detalhe-modal-ui.test.js",
+          "exit": 1,
+          "seconds": 33.38
+        },
+        {
+          "file": "central-margem-ui.test.js",
+          "exit": 1,
+          "seconds": 1.59
+        },
+        {
+          "file": "financeiro-v3-shell-ui.test.js",
+          "exit": 1,
+          "seconds": 8.96
+        },
+        {
+          "file": "vf-shell-ui.test.js",
+          "exit": 1,
+          "seconds": 0.84
+        },
+        {
+          "file": "visao-shell-ui.test.js",
+          "exit": 1,
+          "seconds": 9.45
+        }
+      ]
+    },
+    "comparison": {
+      "newFailures": [],
+      "matchedFailures": [
+        {
+          "file": "anuncios-meli-detalhe-modal-ui.test.js",
+          "normalizedLogIdentical": true,
+          "sha256Final": "19a7d84db8b043f9f1fd7f6ff7bc76e2dc4bc9f12edaefc26ed22c10287ade2d"
+        },
+        {
+          "file": "central-margem-ui.test.js",
+          "normalizedLogIdentical": true,
+          "sha256Final": "8794df24610c3e52f64af03ed448e6406c14458375f2bb044c037f39a9ae7166"
+        },
+        {
+          "file": "financeiro-v3-shell-ui.test.js",
+          "normalizedLogIdentical": true,
+          "sha256Final": "eed0d66763ed0e0cace2890bb8c2be2ba21f98408705c339d9a559f2742ba940"
+        },
+        {
+          "file": "vf-shell-ui.test.js",
+          "normalizedLogIdentical": true,
+          "sha256Final": "9b42370a66ffd1466597c59544591f91904d8f5ebbc0e3f184a333f913ab9e20"
+        },
+        {
+          "file": "visao-shell-ui.test.js",
+          "normalizedLogIdentical": true,
+          "sha256Final": "2146d9d666c6cca29e21feedfa2699591862b8f8addab0ac12bfd77ef262afa0"
+        }
+      ],
+      "mainOnlyFailures": [
+        "anuncios-meli-listagem-unificada-ui.test.js",
+        "diagnostico-inicial-shell-ui.test.js"
+      ]
+    },
+    "note": "Complete run plus targeted retest of integration fixture; no skips."
+  },
+  "react": {
+    "mainAndFinal": {
+      "suites": 41,
+      "passedSuites": 38,
+      "failedSuites": [
+        "src/pages/Cliente360Page.test.jsx",
+        "src/pages/VisaoPage.test.jsx",
+        "src/components/cliente360/DataTable.test.jsx"
+      ],
+      "passedTests": 581,
+      "failureCause": "Missing ./VFButton/index.js in existing components/ui/index.js"
+    },
+    "sourceUnchangedFromMain": true,
+    "newFailures": []
+  },
+  "featureTests": {
+    "uiChrome": 41,
+    "uiPostgres": 7,
+    "backendPostgres": 39,
+    "apiAuthChecks": 65,
+    "unificationDomain": 41,
+    "accountFoundation": 29,
+    "strictContext": 17,
+    "oauthAtomic": 13,
+    "consumers": 5,
+    "offlinePlannerChecks": 43,
+    "cliAndReadonlyCollector": "PASS"
+  },
+  "protectedPathsUnchangedFromCurrentMain": [
+    "server/services/centralVendas",
+    "server/jobs",
+    "server/config/database.js",
+    "server/config/databaseConexao.js",
+    "server/services/painelContas",
+    "server/services/promoSnapshot",
+    "server/services/motorMargem/marginSnapshotApiService.js",
+    "server/services/motorMargem/marginSnapshotProcessor.js",
+    "server/controllers/fechamentosFinanceiroController.js",
+    "server/tests/marginSnapshotProcessor.test.js",
+    "frontend-react"
+  ],
+  "flagsDefaultOff": [
+    "CLIENTES_UNIFICACAO_UI_ENABLED",
+    "CLIENTES_UNIFICACAO_EXECUTE_ENABLED",
+    "CLIENTES_UNIFICACAO_ROLLBACK_ENABLED"
+  ],
+  "migration": {
+    "present": true,
+    "appliedInProduction": false,
+    "appliedByVersionedStartup": false,
+    "renderExternalPreDeployInspected": false,
+    "tests": "Applied automatically only by isolated local disposable harnesses"
+  },
+  "security": {
+    "productionAccessed": false,
+    "productionWritten": false,
+    "renderModified": false,
+    "renderFlagsChanged": false,
+    "githubMergePerformed": false,
+    "deploymentPerformed": false,
+    "oldBranchesModified": false,
+    "secretScan": {
+      "addedLinesScanned": 13907,
+      "patterns": [
+        "jwt_literal",
+        "private_key",
+        "render_credential",
+        "authenticated_remote_database"
+      ],
+      "findings": [],
+      "note": "Identifiers access_token/refresh_token and synthetic fixtures are not real credentials."
+    },
+    "adminRoutesPublic": false
+  },
+  "staticSmoke": {
+    "jsSyntax": "PASS",
+    "htmlAssets": "PASS",
+    "newImports": "PASS",
+    "routeRegistration": "PASS",
+    "adminMiddleware": "PASS",
+    "diffCheck": "PASS"
+  },
+  "readyForTechnicalReview": true,
+  "allTestsGreen": false,
+  "readyUnderAllGreenMergeCriterion": false
+}

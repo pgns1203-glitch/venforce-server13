@@ -76,6 +76,7 @@ async function main() {
     });
   }
   const endpoints = [
+    ["GET", "/config", "config"],
     ["POST", "/preview", "preview"],
     ["POST", "/execute", "execute"],
     ["POST", "/1/rollback", "rollback"],
@@ -114,9 +115,20 @@ async function main() {
     for (const [method, path, key] of endpoints) {
       const r = await request(method, path, token);
       assert.equal(r.status, 200);
-      assert.equal((r.body.operation || r.body).marker, key);
+      if (key === "config") {
+        assert.equal(r.body.uiEnabled, false);
+        assert.deepEqual(r.body.actor, { id: 5, role: "admin" });
+        assert.ok(!JSON.stringify(r.body).includes("SECRET"));
+      } else assert.equal((r.body.operation || r.body).marker, key);
       count++;
     }
+    for (const raw of [undefined, "false", "0", "on", "invalid", "true"]) {
+      if (raw === undefined) delete process.env.CLIENTES_UNIFICACAO_UI_ENABLED;
+      else process.env.CLIENTES_UNIFICACAO_UI_ENABLED = raw;
+      assert.equal((await request("GET", "/config", token)).body.uiEnabled, raw === "true");
+      count++;
+    }
+    delete process.env.CLIENTES_UNIFICACAO_UI_ENABLED;
     service.execute = async () => {
       throw Object.assign(new Error("RAW_SQL_SECRET_MUST_NOT_LEAK"), {
         code: "MERGE_PLAN_CHANGED",

@@ -128,6 +128,7 @@ function createService({
       bases: (snapshot.tables.bases || [])
         .filter((r) => basesIds.has(String(r.id)))
         .map(safe),
+      baseVinculos: selected("base_cliente_vinculos").map(safe),
       squad: selected("cliente_squad_history")
         .filter((r) => r.fim_em == null)
         .map(safe),

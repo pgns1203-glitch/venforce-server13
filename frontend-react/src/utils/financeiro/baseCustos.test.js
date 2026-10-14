@@ -79,33 +79,42 @@ describe("identidadeDaPendencia · Shopee", () => {
   it("SEGURA — pendência de item (sem Model) e registro sem Model", () => {
     expect(idt("shopee", pend({ modelId: null }), [item("169417000123", null)]).classe).toBe("segura");
   });
-  it("AMBÍGUA — o Item tem registro de OUTRA variação: mostra o registro real e a escolha explícita", () => {
+  // FIN-508: a base guarda uma linha por VARIAÇÃO (Item + Model).
+  it("SEGURA — o Item tem registro de OUTRA variação: cria esta variação, a outra não muda", () => {
     const r = idt("shopee", pend(), [item("169417000123", "999000000999", { custo: 20 })]);
-    expect(r.classe).toBe("ambigua");
-    expect(r.registro.idModel).toBe("999000000999");
-    expect(r.candidatos.map((c) => c.id)).toEqual(["registro", "variacao"]);
-    // escolher "registro" preserva o Model existente; "variacao" grava o Model da pendência
-    expect(r.candidatos[0].idModel).toBe("999000000999");
-    expect(r.candidatos[1].idModel).toBe("555000000123");
-    expect(r.candidatos[1].descricao).toMatch(/um registro por Item/);
+    expect(r).toMatchObject({ classe: "segura", acao: "criar", produtoId: "169417000123", idModel: "555000000123", registro: null });
   });
-  it("AMBÍGUA — pendência de variação e registro só do item pai", () => {
-    const r = idt("shopee", pend(), [item("169417000123", null)]);
-    expect(r.classe).toBe("ambigua");
-    expect(r.candidatos[0].rotulo).toMatch(/item pai/);
+  it("SEGURA — pendência de variação e registro só do item pai: cria a variação (o pai continua)", () => {
+    expect(idt("shopee", pend(), [item("169417000123", null)])).toMatchObject({ classe: "segura", acao: "criar", idModel: "555000000123" });
   });
-  it("AMBÍGUA — pendência sem Model e registro de uma variação: só o registro existente é candidato", () => {
+  it("SEGURA — várias variações na base: atualiza EXATAMENTE a do Model da pendência", () => {
+    const r = idt("shopee", pend(), [item("169417000123", "1"), item("169417000123", "555000000123", { custo: 7 }), item("169417000123", "3")]);
+    expect(r).toMatchObject({ classe: "segura", acao: "atualizar", idModel: "555000000123" });
+    expect(r.registro.custo).toBe(7);
+  });
+  it("SEGURA — pendência sem Model, base com o pai e variações: atualiza o pai", () => {
+    const r = idt("shopee", pend({ modelId: null }), [item("169417000123", null, { custo: 4 }), item("169417000123", "1")]);
+    expect(r).toMatchObject({ classe: "segura", acao: "atualizar", idModel: null });
+    expect(r.registro.custo).toBe(4);
+  });
+  it("AMBÍGUA — pendência sem Model e o Item tem UMA variação: só ela é candidata, gravando o Model dela", () => {
     const r = idt("shopee", pend({ modelId: null }), [item("169417000123", "999000000999")]);
     expect(r.classe).toBe("ambigua");
     expect(r.candidatos.map((c) => c.id)).toEqual(["registro"]);
+    expect(r.candidatos[0].idModel).toBe("999000000999");
+  });
+  it("INSUFICIENTE — pendência sem Model e o Item tem várias variações: não escolhe nenhuma", () => {
+    const r = idt("shopee", pend({ modelId: null }), [item("169417000123", "1"), item("169417000123", "2")]);
+    expect(r.classe).toBe("insuficiente");
+    expect(r.motivo).toMatch(/2 variações na base e esta venda não diz qual/);
   });
   it("INSUFICIENTE — sem ID do Item (só SKU/pedido)", () => {
     const r = idt("shopee", pend({ itemId: null, sku: "AB-1", modelId: null }));
     expect(r.classe).toBe("insuficiente");
     expect(r.motivo).toMatch(/Sem ID do Item nesta linha/);
   });
-  it("INSUFICIENTE — 2+ registros do mesmo Item: o servidor não escolhe, a tela também não", () => {
-    const r = idt("shopee", pend(), [item("169417000123", "1", { sku: "A" }), item("169417000123", "2", { sku: "B" })]);
+  it("INSUFICIENTE — 2+ registros da MESMA variação (legado por SKU): o servidor não escolhe, a tela também não", () => {
+    const r = idt("shopee", pend(), [item("169417000123", "555000000123", { sku: "A" }), item("169417000123", "555000000123", { sku: "B" })]);
     expect(r.classe).toBe("insuficiente");
     expect(r.motivo).toMatch(/2 registros/);
   });
@@ -130,22 +139,34 @@ describe("classificarLinhasPlanilha", () => {
     expect(diferentes.linhas).toHaveLength(1);
     expect(diferentes.linhas[0].acao).toBe("ambigua");
   });
-  it("Shopee: Item existente com OUTRO Model é ambíguo (sobrescreveria); mesmo Model atualiza; Item novo adiciona", () => {
+  it("Shopee: identidade Item + Model — mesmo Model atualiza, outro Model do mesmo Item adiciona, Item novo adiciona", () => {
     const itens = [item("111", "A"), item("222", "B")];
-    const { linhas } = classificarLinhasPlanilha({
+    const { linhas, resumo } = classificarLinhasPlanilha({
       marketplace: "shopee",
-      dados: [{ id: "111", id_model: "A", custo: 1 }, { id: "222", id_model: "OUTRO", custo: 2 }, { id: "333", id_model: "C", custo: 3 }, { id: "222", id_model: null, custo: 2 }],
+      dados: [{ id: "111", id_model: "A", custo: 1 }, { id: "222", id_model: "OUTRO", custo: 2 }, { id: "333", id_model: "C", custo: 3 }],
       itensBase: itens,
     });
-    const por = Object.fromEntries(linhas.map((l) => [l.produtoId, l.acao]));
-    expect(por["111"]).toBe("atualizar");
-    expect(por["333"]).toBe("adicionar");
-    expect(por["222"]).toBe("ambigua"); // duas versões diferentes do mesmo Item na planilha
+    expect(linhas.map((l) => [l.produtoId, l.idModel, l.acao])).toEqual([["111", "A", "atualizar"], ["222", "OUTRO", "adicionar"], ["333", "C", "adicionar"]]);
+    expect(resumo).toMatchObject({ atualizar: 1, adicionar: 2, ambiguas: 0 });
   });
-  it("Shopee: registro do Item sem Model e linha com Model → ambígua", () => {
-    const { linhas } = classificarLinhasPlanilha({ marketplace: "shopee", dados: [{ id: "111", id_model: "A", custo: 1 }], itensBase: [item("111", null)] });
+  it("Shopee: Models diferentes do MESMO Item na planilha não são repetição", () => {
+    const { linhas, resumo } = classificarLinhasPlanilha({ marketplace: "shopee", dados: [{ id: "111", id_model: "A", custo: 1 }, { id: "111", id_model: "B", custo: 9 }], itensBase: [] });
+    expect(linhas.map((l) => l.acao)).toEqual(["adicionar", "adicionar"]);
+    expect(resumo.repetidasIguais).toBe(0);
+  });
+  it("Shopee: a MESMA variação repetida com valores diferentes é ambígua e não grava", () => {
+    const { linhas } = classificarLinhasPlanilha({ marketplace: "shopee", dados: [{ id: "111", id_model: "A", custo: 1 }, { id: "111", id_model: "A", custo: 2 }], itensBase: [] });
+    expect(linhas).toHaveLength(1);
     expect(linhas[0].acao).toBe("ambigua");
-    expect(linhas[0].motivo).toMatch(/sobrescreveria/);
+  });
+  it("Shopee: linha sem Model para Item que só tem variações na base → ambígua (preencha o Model)", () => {
+    const { linhas } = classificarLinhasPlanilha({ marketplace: "shopee", dados: [{ id: "222", id_model: null, custo: 2 }], itensBase: [item("222", "B")] });
+    expect(linhas[0].acao).toBe("ambigua");
+    expect(linhas[0].motivo).toMatch(/não traz o Model/);
+  });
+  it("Shopee: registro do Item sem Model e linha com Model → adiciona a variação (o pai continua)", () => {
+    const { linhas } = classificarLinhasPlanilha({ marketplace: "shopee", dados: [{ id: "111", id_model: "A", custo: 1 }], itensBase: [item("111", null)] });
+    expect(linhas[0].acao).toBe("adicionar");
   });
   it("2+ registros do ID na base → ambígua", () => {
     const { linhas } = classificarLinhasPlanilha({ marketplace: "meli", dados: [{ id: "MLB1", custo: 5 }], itensBase: [item("MLB1", null, { sku: "A" }), item("MLB1", null, { sku: "B" })] });

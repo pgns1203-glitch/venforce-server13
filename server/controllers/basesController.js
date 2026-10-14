@@ -94,7 +94,11 @@ async function upsertCustoBaseController(req, res) {
     const taxaFixaOpt = isTikTok
       ? { tem: true, numero: 0 }
       : validarNumeroOpcional(body.taxa_fixa, "taxa_fixa");
-    const idModel = base.marketplace === "shopee" ? (body.id_model || null) : null;
+    // Shopee (FIN-508): o id_model é a identidade da variação — mesma limpeza
+    // do importador (aspas, ".0", notação científica). Omitido = linha "pai".
+    const idModel = base.marketplace === "shopee"
+      ? (normalizarProdutoIdShopee(body.id_model == null ? "" : String(body.id_model)) || null)
+      : null;
 
     const resultado = await upsertCustoBase({
       baseId: base.id,
@@ -117,6 +121,7 @@ async function upsertCustoBaseController(req, res) {
           base_slug: base.slug,
           produto_id: produtoIdNorm,
           ...(isTikTok ? { sku_id: skuIdNorm } : {}),
+          ...(base.marketplace === "shopee" ? { id_model: idModel } : {}),
           acao: resultado.acao,
           custo_produto: Number(resultado.custo?.custo_produto),
           imposto_percentual: Number(resultado.custo?.imposto_percentual),

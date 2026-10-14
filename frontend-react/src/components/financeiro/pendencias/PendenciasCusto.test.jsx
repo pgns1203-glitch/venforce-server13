@@ -360,37 +360,38 @@ describe("correção individual · Shopee (identidade real da base)", () => {
     expect(api.upsert.mock.calls[0][1]).toMatchObject({ produtoId: "169417000123", idModel: "555000000123" });
   });
 
-  it("AMBÍGUA — o Item tem registro de OUTRA variação: mostra o registro real e SÓ libera o custo depois de escolher", async () => {
+  // FIN-508: a base guarda uma linha por VARIAÇÃO (Item + Model).
+  it("SEGURA — o Item tem registro de OUTRA variação: grava ESTA variação sem pedir escolha (a outra não muda)", async () => {
     const usuario = userEvent.setup();
     await montar(shopeeProps(linhasShopee(), dadosBase({ produto_id: "169417000123", id_model: "999000000999", custo_produto: 20, imposto_percentual: 0.1 })));
     const linha = linhaDe("Kit");
-    expect(linha).toHaveAttribute("data-identidade", "ambigua");
-    const escolha = screen.getByRole("group", { name: /Encontramos 1 registro possível/ });
-    expect(escolha).toHaveTextContent("Item 169417000123 · Model 999000000999");
-    expect(escolha).toHaveTextContent("Variação 555000000123");
-    expect(escolha).toHaveTextContent("Registro atual: custo R$ 20,00 · imposto 10%");
-    const campo = within(linha).getByRole("textbox", { name: "Novo custo unitário de 169417000123" });
-    expect(campo).toBeDisabled(); // nada é liberado antes da escolha
-    expect(within(linha).getByRole("button", { name: "Atualizar registro selecionado" })).toBeDisabled();
-
-    await usuario.click(within(escolha).getByRole("radio", { name: /Variação 555000000123/ }));
-    expect(campo).toBeEnabled();
-    await usuario.type(campo, "15");
-    await usuario.click(within(linha).getByRole("button", { name: "Atualizar registro selecionado" }));
+    expect(linha).toHaveAttribute("data-identidade", "segura");
+    expect(screen.queryByRole("group", { name: /Encontramos 1 registro possível/ })).not.toBeInTheDocument();
+    await usuario.type(within(linha).getByRole("textbox", { name: "Novo custo unitário de 169417000123" }), "15");
+    await usuario.click(within(linha).getByRole("button", { name: "Salvar na base" }));
+    expect(screen.getByRole("group", { name: "Confirmar custo de 169417000123" })).toHaveTextContent("registro NOVO");
     expect(screen.getByRole("group", { name: "Confirmar custo de 169417000123" })).toHaveTextContent("id_model = 555000000123");
     await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
     expect(api.upsert.mock.calls[0][1]).toMatchObject({ produtoId: "169417000123", idModel: "555000000123", custoProduto: 15 });
   });
 
-  it("AMBÍGUA — escolher o REGISTRO EXISTENTE preserva o Model dele (não sobrescreve)", async () => {
+  it("AMBÍGUA — a venda não traz o Model e o Item tem UMA variação na base: mostra o registro real e SÓ libera depois de escolher", async () => {
     const usuario = userEvent.setup();
-    await montar(shopeeProps(linhasShopee(), dadosBase({ produto_id: "169417000123", id_model: "999000000999", custo_produto: 20 })));
+    await montar(shopeeProps(linhasShopee({ "ID Model": null }), dadosBase({ produto_id: "169417000123", id_model: "999000000999", custo_produto: 20, imposto_percentual: 0.1 })));
     const linha = linhaDe("Kit");
-    await usuario.click(within(screen.getByRole("group", { name: /Encontramos 1 registro possível/ })).getByRole("radio", { name: /Item 169417000123 · Model 999000000999/ }));
-    await usuario.type(within(linha).getByRole("textbox", { name: "Novo custo unitário de 169417000123" }), "18");
+    expect(linha).toHaveAttribute("data-identidade", "ambigua");
+    const escolha = screen.getByRole("group", { name: /Encontramos 1 registro possível/ });
+    expect(escolha).toHaveTextContent("Item 169417000123 · Model 999000000999");
+    expect(escolha).toHaveTextContent("Registro atual: custo R$ 20,00 · imposto 10%");
+    const campo = within(linha).getByRole("textbox", { name: "Novo custo unitário de 169417000123" });
+    expect(campo).toBeDisabled(); // nada é liberado antes da escolha
+    await usuario.click(within(escolha).getByRole("radio", { name: /Item 169417000123 · Model 999000000999/ }));
+    expect(campo).toBeEnabled();
+    await usuario.type(campo, "18");
     await usuario.click(within(linha).getByRole("button", { name: "Atualizar registro selecionado" }));
     await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
-    expect(api.upsert.mock.calls[0][1].idModel).toBe("999000000999");
+    // grava a variação escolhida — com o Model DELA, nunca como linha pai
+    expect(api.upsert.mock.calls[0][1]).toMatchObject({ produtoId: "169417000123", idModel: "999000000999", custoProduto: 18 });
   });
 
   it("INSUFICIENTE — sem ID do Item (só Model): grupo 3, sem campos, e diz que nem a planilha resolve", async () => {
@@ -405,10 +406,10 @@ describe("correção individual · Shopee (identidade real da base)", () => {
     expect(contagens()).toEqual([["agora", 0], ["planilha", 0], ["bloqueadas", 1]]);
   });
 
-  it("Shopee misto: 1 segura (grupo 1), 1 conflito Item × Model (decisão) e 1 sem Item (bloqueada) — contagem 1 · 0 · 2", async () => {
+  it("Shopee misto: 1 segura (grupo 1), 1 venda sem Model para Item com variação (decisão) e 1 sem Item (bloqueada) — contagem 1 · 0 · 2", async () => {
     const linhas = normalizarLinhas([
       shopeeLinha({ Produto: "Kit Seguro", ID: "100", "ID Model": "1001" }),
-      shopeeLinha({ Produto: "Kit Conflito", ID: "200", "ID Model": "2001" }),
+      shopeeLinha({ Produto: "Kit Conflito", ID: "200", "ID Model": null }),
       { Produto: "Kit Sem Item", "ID Model": "3001", "Vendas (Pedido pago) (BRL)": 10, "Cobertura de custo": "sem custo" },
     ]);
     await montar(shopeeProps(linhas, dadosBase({ produto_id: "200", id_model: "2999", custo_produto: 20 })));
@@ -422,13 +423,13 @@ describe("correção individual · Shopee (identidade real da base)", () => {
     expect(bloqueadas).toContainElement(linhaDe("Kit Sem Item"));
   });
 
-  it("INSUFICIENTE — 2+ registros do Item na base: o servidor não escolhe, a tela também não", async () => {
-    await montar(shopeeProps(linhasShopee(), dadosBase({ produto_id: "169417000123", id_model: "1", sku: "A" }, { produto_id: "169417000123", id_model: "2", sku: "B" })));
+  it("INSUFICIENTE — venda sem Model e o Item tem 2 variações na base: o servidor não escolhe, a tela também não", async () => {
+    await montar(shopeeProps(linhasShopee({ "ID Model": null }), dadosBase({ produto_id: "169417000123", id_model: "1" }, { produto_id: "169417000123", id_model: "2" })));
     expect(linhaDe("Kit")).toHaveAttribute("data-identidade", "insuficiente");
-    expect(screen.getByText(/2 registros/)).toBeInTheDocument();
+    expect(screen.getByText(/2 variações na base e esta venda não diz qual/)).toBeInTheDocument();
   });
 
-  it("depois de gravar a 1ª variação de um Item, a 2ª vira AMBÍGUA (a tela enxerga o que acabou de gravar)", async () => {
+  it("duas variações do MESMO Item são registros próprios: gravar a 1ª não bloqueia nem substitui a 2ª", async () => {
     const usuario = userEvent.setup();
     const linhas = normalizarLinhas([
       shopeeLinha({ Produto: "Kit A", "ID Model": "111" }),
@@ -436,20 +437,24 @@ describe("correção individual · Shopee (identidade real da base)", () => {
     ]);
     await montar(shopeeProps(linhas));
     const a = linhaDe("Kit A");
-    const b = linhaDe("Kit B");
     expect(a).toHaveAttribute("data-identidade", "segura");
-    expect(b).toHaveAttribute("data-identidade", "segura");
-    // antes de gravar, as duas avisam que são do MESMO Item
-    expect(within(a).getByText(/2 pendências deste mesmo Item/)).toBeInTheDocument();
+    expect(linhaDe("Kit B")).toHaveAttribute("data-identidade", "segura");
+    // Models diferentes: nenhum aviso de "mesmo registro"
+    expect(within(a).queryByText(/mesmo registro da base/)).not.toBeInTheDocument();
     await usuario.type(within(a).getByRole("textbox", { name: "Novo custo unitário de 169417000123" }), "5");
     await usuario.click(within(a).getByRole("button", { name: "Salvar na base" }));
     await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
     await within(a).findByText("✓ Custo atualizado na base");
-    await waitFor(() => expect(linhaDe("Kit B")).toHaveAttribute("data-identidade", "ambigua"));
-    // e passa para o grupo 3 (decisão); a gravada continua no grupo 1
-    expect(grupo("bloqueadas")).toContainElement(linhaDe("Kit B"));
-    expect(grupo("agora")).toContainElement(linhaDe("Kit A"));
+    // a 2ª variação continua segura e grava o SEU Model
+    const b = linhaDe("Kit B");
+    expect(b).toHaveAttribute("data-identidade", "segura");
+    await usuario.type(within(b).getByRole("textbox", { name: "Novo custo unitário de 169417000123" }), "9");
+    await usuario.click(within(b).getByRole("button", { name: "Salvar na base" }));
+    await usuario.click(screen.getByRole("button", { name: "Confirmar e registrar" }));
+    await within(b).findByText("✓ Custo atualizado na base");
+    expect(api.upsert.mock.calls.map((c) => [c[1].idModel, c[1].custoProduto])).toEqual([["111", 5], ["222", 9]]);
   });
+
 });
 
 describe("correção em lote · importação dentro do Financeiro", () => {
@@ -538,16 +543,27 @@ describe("correção em lote · importação dentro do Financeiro", () => {
     expect(screen.getByText(/✓ 1 custo atualizado na base/)).toBeInTheDocument();
   });
 
-  it("Shopee: linha cujo Item existe na base com OUTRO Model é ambígua — não grava e diz por quê", async () => {
+  it("Shopee: linha SEM Model para Item que só tem variações na base é ambígua — não grava e diz por quê", async () => {
     api.base.mockResolvedValue(dadosBase({ produto_id: "169417000123", id_model: "999", custo_produto: 20 }));
-    api.preview.mockResolvedValue(previa([{ id: "169417000123", id_model: "555", custo: 5 }]));
+    api.preview.mockResolvedValue(previa([{ id: "169417000123", id_model: null, custo: 5 }]));
     const usuario = await abrirLote({ linhas: normalizarLinhas(Array.from({ length: 20 }, (_, i) => shopeeLinha({ Produto: `Kit ${i}`, ID: String(169417000100 + i), "ID Model": String(555000 + i) }))), marketplace: "shopee" });
     await usuario.upload(screen.getByLabelText("Planilha de custos preenchida"), planilha());
     await screen.findByText(/1 ambíguas/);
     expect(screen.getByRole("button", { name: "Importar e atualizar base" })).toBeDisabled(); // nada gravável
     await usuario.click(screen.getByText(/Ver as 1 linhas ambíguas/));
-    expect(screen.getByText(/sobrescreveria esse registro/)).toBeInTheDocument();
+    expect(screen.getByText(/não traz o Model/)).toBeInTheDocument();
     expect(api.upsert).not.toHaveBeenCalled();
+  });
+
+  it("Shopee: outro Model do mesmo Item é ADICIONADO como variação, sem tocar a existente", async () => {
+    api.base.mockResolvedValue(dadosBase({ produto_id: "169417000123", id_model: "999", custo_produto: 20 }));
+    api.preview.mockResolvedValue(previa([{ id: "169417000123", id_model: "555", custo: 5 }, { id: "169417000123", id_model: "999", custo: 21 }]));
+    const usuario = await abrirLote({ linhas: normalizarLinhas(Array.from({ length: 20 }, (_, i) => shopeeLinha({ Produto: `Kit ${i}`, ID: String(169417000100 + i), "ID Model": String(555000 + i) }))), marketplace: "shopee" });
+    await usuario.upload(screen.getByLabelText("Planilha de custos preenchida"), planilha());
+    await screen.findByText(/0 ambíguas/);
+    await usuario.click(screen.getByRole("button", { name: "Importar e atualizar base" }));
+    await waitFor(() => expect(api.upsert).toHaveBeenCalledTimes(2));
+    expect(api.upsert.mock.calls.map((c) => [c[1].idModel, c[1].custoProduto])).toEqual([["555", 5], ["999", 21]]);
   });
 
   it("planilha com cabeçalho não reconhecido: o erro do leitor real aparece e bloqueia a importação", async () => {

@@ -114,6 +114,10 @@ class MockDb {
       return { rows: [] };
     }
 
+    if (q.startsWith("SELECT COUNT(*)::int AS total FROM custos WHERE base_id = $1")) {
+      return { rows: [{ total: this.custos.filter((c) => c.base_id === params[0]).length }] };
+    }
+
     if (q.startsWith("SELECT * FROM cliente_contas WHERE id = $1")) {
       return { rows: this.contas.filter((c) => c.id === Number(params[0])) };
     }

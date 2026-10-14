@@ -130,10 +130,10 @@ router.get("/base/:baseSlug", requireExternalApiKey, async (req, res) => {
     const base = baseResult.rows[0];
 
     const custosResult = await pool.query(
-      `SELECT produto_id, custo_produto, imposto_percentual, taxa_fixa
+      `SELECT produto_id, id_model, custo_produto, imposto_percentual, taxa_fixa
        FROM custos
        WHERE base_id = $1
-       ORDER BY produto_id ASC
+       ORDER BY produto_id ASC, id_model ASC NULLS FIRST
        LIMIT $2 OFFSET $3`,
       [base.id, limit, offset]
     );
@@ -153,6 +153,8 @@ router.get("/base/:baseSlug", requireExternalApiKey, async (req, res) => {
       nextUrl,
       data: custosResult.rows.map((row) => ({
         produto_id: row.produto_id,
+        // FIN-508: a variação Shopee (várias linhas por Item). null no MELI.
+        id_model: row.id_model || null,
         custo_produto: parseFloat(row.custo_produto),
         imposto_percentual: parseFloat(row.imposto_percentual),
         taxa_fixa: parseFloat(row.taxa_fixa),

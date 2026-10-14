@@ -360,7 +360,10 @@ function normalizarIdPorMarketplace(marketplace, valor) {
   return normalizarIdBase(valor);
 }
 
-function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
+// Texto de ID em notação científica ("2.39435E+11"): o Excel já perdeu dígitos.
+const ID_CIENTIFICO = /^\d+(?:[.,]\d+)?[eE][+-]?\d+$/;
+
+function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace, rowsCrus = null) {
   const idxId      = mapeamento.id      ? letraParaIndice(mapeamento.id)      : -1;
   const idxSkuId   = mapeamento.sku_id  ? letraParaIndice(mapeamento.sku_id)  : -1;
   const idxCusto   = mapeamento.custo   ? letraParaIndice(mapeamento.custo)   : -1;
@@ -369,9 +372,17 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
   const idxProduto = mapeamento.produto_nome  ? letraParaIndice(mapeamento.produto_nome)  : -1;
   const idxVariacao = mapeamento.variacao_nome ? letraParaIndice(mapeamento.variacao_nome) : -1;
   const isTikTok = marketplace === "tiktok";
+  const isShopee = marketplace === "shopee";
 
   const todas = [];
   const dataRows = rowsAsArrays.slice(linhaHeader + 1);
+  // Shopee: ID/Model pelo valor cru quando ele é um inteiro exato.
+  const celulaId = (i, row, idx) => {
+    if (idx < 0) return "";
+    const cru = rowsCrus ? (rowsCrus[linhaHeader + 1 + i] || [])[idx] : undefined;
+    if (typeof cru === "number" && Number.isSafeInteger(cru)) return String(cru);
+    return row[idx];
+  };
 
   for (let i = 0; i < dataRows.length; i++) {
     const row = dataRows[i] || [];
@@ -379,7 +390,8 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
     if (!hasContent) continue;
 
     const linhaOriginal = linhaHeader + 2 + i; // 1-based, considera header
-    const idBruto = idxId >= 0 ? row[idxId] : "";
+    const idBruto = isShopee ? celulaId(i, row, idxId) : (idxId >= 0 ? row[idxId] : "");
+    const idModelBruto = isShopee ? celulaId(i, row, idxIdModel) : "";
     const skuIdBruto = idxSkuId >= 0 ? row[idxSkuId] : "";
 
     todas.push({
@@ -390,8 +402,8 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
       custo:   normalizarCustoBase(idxCusto   >= 0 ? row[idxCusto]   : ""),
       imposto: normalizarImpostoBase(idxImposto >= 0 ? row[idxImposto] : ""),
       // id_model é conceito de variação da Shopee — TikTok usa sku_id.
-      id_model: (marketplace === "shopee" && idxIdModel >= 0)
-        ? normalizarIdShopee(row[idxIdModel])
+      id_model: (isShopee && idxIdModel >= 0)
+        ? normalizarIdShopee(idModelBruto)
         : null,
       produto_nome:  idxProduto  >= 0 ? normalizarTextoCelula(row[idxProduto])  : null,
       variacao_nome: idxVariacao >= 0 ? normalizarTextoCelula(row[idxVariacao]) : null,
@@ -400,6 +412,11 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
             id_cientifico:
               ehIdTikTokCientifico(idBruto) || ehIdTikTokCientifico(skuIdBruto),
           }
+        : {}),
+      // Shopee: ID/Model que só existe como texto científico não é
+      // recuperável — a linha não é importada (gravaria a variação errada).
+      ...(isShopee
+        ? { id_cientifico: ID_CIENTIFICO.test(String(idBruto ?? "").trim()) || ID_CIENTIFICO.test(String(idModelBruto ?? "").trim()) }
         : {}),
     });
   }
@@ -411,9 +428,14 @@ function processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace) {
 
 // TikTok: a identidade da linha é o sku_id (ID DO SKU). O ID do produto repete
 // entre variações de propósito e NÃO conta como duplicidade.
-// MELI/Shopee: identidade é o ID, como sempre.
+// Shopee (FIN-508): identidade é Item + Model — o mesmo Item com Models
+// diferentes é uma variação por linha, não duplicidade. Sem Model, a linha é
+// o "pai" do Item.
+// MELI: identidade é o ID, como sempre.
 function chaveIdentidadeLinha(linha, marketplace) {
-  return marketplace === "tiktok" ? linha.sku_id : linha.id;
+  if (marketplace === "tiktok") return linha.sku_id;
+  if (marketplace === "shopee") return linha.id ? `${linha.id}|${linha.id_model || ""}` : "";
+  return linha.id;
 }
 
 function calcularResumo(linhas, marketplace) {
@@ -432,9 +454,11 @@ function calcularResumo(linhas, marketplace) {
     const chave = chaveIdentidadeLinha(l, marketplace);
     if (!chave) continue;
     idCounts[chave] = (idCounts[chave] || 0) + 1;
+    // Shopee: conflito é a MESMA variação com custo OU imposto diferentes.
+    const valor = marketplace === "shopee" ? `${l.custo}|${l.imposto}` : l.custo;
     if (!(chave in idParaCusto)) {
-      idParaCusto[chave] = l.custo;
-    } else if (idParaCusto[chave] !== l.custo) {
+      idParaCusto[chave] = valor;
+    } else if (idParaCusto[chave] !== valor) {
       conflitos++;
     }
   }
@@ -479,7 +503,8 @@ function gerarAlertas(linhas, mapeamento, resumo, marketplace) {
     alertas.push({ tipo: "sem_coluna_imposto", nivel: "aviso", mensagem: "Coluna de imposto não detectada. Use 0 ou selecione manualmente." });
   }
 
-  const rotuloIdentidade = isTikTok ? "ID DO SKU" : "ID";
+  const isShopee = marketplace === "shopee";
+  const rotuloIdentidade = isTikTok ? "ID DO SKU" : isShopee ? "variações (Item + Model)" : "ID";
   if (resumo.duplicados > 0) {
     alertas.push({
       tipo: "duplicidade",
@@ -490,10 +515,14 @@ function gerarAlertas(linhas, mapeamento, resumo, marketplace) {
   if (resumo.conflitos > 0) {
     alertas.push({
       tipo: "conflito_custo",
-      nivel: isTikTok ? "erro" : "warning",
+      // Shopee: a importação recusa a mesma variação com custos diferentes
+      // (FIN-508) — o assistente avisa como erro, igual ao TikTok.
+      nivel: isTikTok || isShopee ? "erro" : "warning",
       mensagem: isTikTok
         ? `${resumo.conflitos} ID DO SKU com custos diferentes em linhas repetidas. Corrija a planilha: cada variação só pode ter um custo.`
-        : `${resumo.conflitos} IDs com custos diferentes em linhas duplicadas.`,
+        : isShopee
+          ? `${resumo.conflitos} variação(ões) (mesmo Item + Model) com custo ou imposto diferentes em linhas repetidas. Corrija a planilha: cada variação só pode ter um custo.`
+          : `${resumo.conflitos} IDs com custos diferentes em linhas duplicadas.`,
     });
   }
 
@@ -507,13 +536,16 @@ function gerarAlertas(linhas, mapeamento, resumo, marketplace) {
   }
 
   // TikTok: ID em notação científica não é recuperável — o Excel já perdeu
-  // dígitos. Vale para as duas colunas (ID e ID DO SKU).
+  // dígitos. Vale para as duas colunas (ID e ID DO SKU). Shopee: o mesmo vale
+  // para ID e ID Model quando a planilha só tem o texto (ex.: CSV).
   const idsCientificos = linhas.filter((l) => l.id_cientifico).length;
   if (idsCientificos > 0) {
     alertas.push({
       tipo: "id_notacao_cientifica",
       nivel: "erro",
-      mensagem: `${idsCientificos} linha(s) com ID TikTok (ID ou ID DO SKU) em notação científica. Formate a coluna como texto antes de importar.`,
+      mensagem: marketplace === "shopee"
+        ? `${idsCientificos} linha(s) com ID ou ID Model Shopee em notação científica — não foram importadas. Formate as colunas como texto ou número inteiro antes de importar.`
+        : `${idsCientificos} linha(s) com ID TikTok (ID ou ID DO SKU) em notação científica. Formate a coluna como texto antes de importar.`,
     });
   }
 
@@ -573,6 +605,13 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
   repairWorksheetRef(sheet);
   const rowsAsArrays = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: false });
   if (!rowsAsArrays.length) throw criarErro(400, "A planilha está vazia.");
+  // Shopee (FIN-508): com raw:false um Model de 12 dígitos numa célula
+  // numérica "Geral" chega como "2.39435E+11" — os dígitos finais já se foram e
+  // todas as variações do Item virariam o MESMO Model. O valor cru da célula
+  // ainda é o inteiro exato; é ele que identifica ID e Model.
+  const rowsCrus = marketplace === "shopee"
+    ? XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "", raw: true })
+    : null;
 
   // Linha de cabeçalho
   const linhaHeader = config.linhaCabecalho !== undefined
@@ -615,13 +654,14 @@ async function analisarPlanilhaBase(buffer, originalname, config) {
     variacao_nome: colunasFinais.variacao_nome ? colunasFinais.variacao_nome.coluna : null,
   };
 
-  const todasLinhas     = processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace);
+  const todasLinhas     = processarLinhas(rowsAsArrays, linhaHeader, mapeamento, marketplace, rowsCrus);
   const resumo          = calcularResumo(todasLinhas, marketplace);
   const alertas         = gerarAlertas(todasLinhas, mapeamento, resumo, marketplace);
   const dadosImportacao = todasLinhas
     // TikTok: a linha só é importável com ID DO SKU (chave de custo). O ID do
     // produto é opcional. Demais marketplaces seguem exigindo o ID.
     .filter((l) => chaveIdentidadeLinha(l, marketplace) && l.custo !== null)
+    .filter((l) => !(marketplace === "shopee" && l.id_cientifico))
     .map((l) => ({
       id:       l.id,
       ...(marketplace === "tiktok" ? { sku_id: l.sku_id } : {}),

@@ -38,9 +38,16 @@ describe("classificarPendencias · partição em três grupos", () => {
     expect(planilha.contagem).toEqual({ agora: 0, planilha: 2, bloqueadas: 0 });
   });
 
-  it("Shopee: Item com registro de OUTRA variação depende de decisão (não é bloqueio cego, nem gravação silenciosa)", () => {
+  it("Shopee (FIN-508): Item com registro de OUTRA variação é corrigível — a variação nova tem registro próprio", () => {
     const indice = indexarPorProduto([{ produtoId: "200", idModel: "2999", sku: null, custo: 20, imposto: 0.1 }]);
     const g = classificarPendencias({ pendencias: [pend("200", { modelId: "2001" })], marketplace: "shopee", indice });
+    expect(g.agora).toHaveLength(1);
+    expect(g.contagem).toEqual({ agora: 1, planilha: 0, bloqueadas: 0 });
+  });
+
+  it("Shopee: venda sem Model e Item com UMA variação na base depende de decisão (não é bloqueio cego, nem gravação silenciosa)", () => {
+    const indice = indexarPorProduto([{ produtoId: "200", idModel: "2999", sku: null, custo: 20, imposto: 0.1 }]);
+    const g = classificarPendencias({ pendencias: [pend("200", { modelId: null })], marketplace: "shopee", indice });
     expect(g.decisao).toHaveLength(1);
     expect(g.contagem).toEqual({ agora: 0, planilha: 0, bloqueadas: 1 });
   });
@@ -53,12 +60,23 @@ describe("classificarPendencias · partição em três grupos", () => {
     expect(g.decisao).toHaveLength(0);
   });
 
-  it("pendências seguras do MESMO Item são marcadas (a base guarda um registro por Item)", () => {
+  it("pendências seguras do MESMO registro são marcadas (Shopee: mesmo Item E mesmo Model)", () => {
     const g = classificarPendencias({
-      pendencias: [pend("A", { itemId: "300", modelId: "1" }), pend("B", { itemId: "300", modelId: "2" }), pend("C", { itemId: "400" })],
+      pendencias: [
+        pend("A", { itemId: "300", modelId: "1" }),
+        pend("B", { itemId: "300", modelId: "2" }),
+        pend("A2", { itemId: "300", modelId: "1" }),
+        pend("C", { itemId: "400" }),
+      ],
       marketplace: "shopee",
       indice: new Map(),
     });
-    expect(g.mesmoItem).toEqual({ A: 2, B: 2 });
+    // Models 1 e 2 do Item 300 são registros diferentes — só A e A2 colidem.
+    expect(g.mesmoItem).toEqual({ A: 2, A2: 2 });
+  });
+
+  it("MELI: o mesmo MLB em duas pendências continua marcado", () => {
+    const g = classificarPendencias({ pendencias: [pend("X", { itemId: "MLB1" }), pend("Y", { itemId: "MLB1" })], marketplace: "meli", indice: new Map() });
+    expect(g.mesmoItem).toEqual({ X: 2, Y: 2 });
   });
 });

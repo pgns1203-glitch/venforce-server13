@@ -435,6 +435,22 @@ const MIGRATIONS_INVENTARIO = [
       "diagnóstico legado)",
     nota: "Sem backfill: promocoes_diagnosticos não tem cliente_conta_id. Cada conta nasce vazia.",
   },
+  {
+    arquivo: "20261014_custos_shopee_item_model.sql",
+    descricao:
+      "FIN-508: troca a unicidade de custos MELI/Shopee (base_id, produto_id, sku) por " +
+      "(base_id, produto_id, sku, COALESCE(id_model,'')) — as variações Shopee do mesmo Item " +
+      "coexistem. Índice novo é mais permissivo que o antigo; não cria nem altera linhas.",
+    tipo: "estrutural (índice)",
+    auto: true,
+    runner: "baseCustosService.ensureColunasCustos",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito: "20260810_add_sku_id_tiktok.sql (colunas sku/sku_id)",
+    rollback:
+      "recriar uq_custos_base_produto_sku_legado — só possível enquanto nenhuma base Shopee " +
+      "tiver 2+ Models do mesmo Item (senão o índice antigo falha por duplicidade)",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por

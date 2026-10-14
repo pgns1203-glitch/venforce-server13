@@ -550,6 +550,10 @@
     document.addEventListener("vf:context", aplicarContextoDoShell);
     bindCustos(el("am-catalogo-container"));
     bindBarrasCustos();
+    // O botão mora no cabeçalho da lista, que é recriado a cada render.
+    el("am-catalogo-container").addEventListener("click", function (e) {
+      if (e.target.closest("#am-expandir-todos")) alternarTodosGrupos();
+    });
     el("am-busca").addEventListener("input", function (e) {
       AM.filtros.q = e.target.value;
       atualizarIndicadorFiltros();
@@ -732,6 +736,7 @@
 
     AM.carregandoCatalogo = true;
     box.innerHTML = estadoHtml("loading", "Carregando anúncios…");
+    atualizarBotaoExpandir();
 
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
              "&page=" + AM.paginacao.page + "&limit=" + AM.paginacao.limit;
@@ -816,11 +821,18 @@
       return;
     }
 
+    // Os rótulos são decorativos (aria-hidden); o botão "Expandir todos" no
+    // cabeçalho, não — por isso o aria-hidden fica em cada rótulo.
+    var temGrupo = AM.anuncios.some(function (l) { return l.tipo === "familia"; });
     var html = '<div class="am-listagem" aria-label="Lista de anúncios">' +
-      '<div class="am-listagem__head" aria-hidden="true">' +
-        "<span></span><span>Anúncio</span><span>Status</span><span>Preço</span>" +
-        "<span>Estoque</span><span>Vendidos</span><span>Faturamento</span><span>Métricas 7 dias</span>" +
-        "<span>Margem</span><span>Score VenForce</span><span></span>" +
+      '<div class="am-listagem__head">' +
+        '<span aria-hidden="true"></span>' +
+        '<span class="am-listagem__head-anuncio"><b class="am-listagem__head-rotulo" aria-hidden="true">Anúncio</b>' +
+          (temGrupo ? '<button type="button" class="am-expandir-todos" id="am-expandir-todos" aria-pressed="false">Expandir todos</button>' : "") +
+        "</span>" +
+        ["Status", "Preço", "Estoque", "Vendidos", "Faturamento", "Métricas 7 dias", "Margem", "Score VenForce", ""].map(function (r) {
+          return '<span aria-hidden="true">' + r + "</span>";
+        }).join("") +
       "</div>";
     // Mesma grade, mesmas colunas, mesma densidade para os dois tipos de
     // linha. O que muda é só o que existe embaixo: um agrupador abre, um
@@ -841,6 +853,7 @@
         if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(row); }
       });
     });
+    atualizarBotaoExpandir();
 
     bindPaginacao("am-pag", AM.paginacao, function (pagina) {
       irParaPaginaComCustos(pagina, function (p) {
@@ -1156,6 +1169,7 @@
     linha.setAttribute("aria-expanded", abrindo ? "true" : "false");
     linha.classList.toggle("is-aberta", abrindo);
     painel.hidden = !abrindo;
+    atualizarBotaoExpandir();
     if (!abrindo) return;
 
     var cache = AM.state.familyCache[familyId];
@@ -1169,6 +1183,36 @@
     }
     if (painel.getAttribute("data-carregando") === "1") return; // já tem um clique em voo
     carregarFamiliaDetalhe(familyId, painel);
+  }
+
+  // "Expandir agrupadores": abre (ou fecha) TODAS as famílias da página pelo
+  // mesmo alternarGrupo do clique — mesmo cache, mesma Promise em voo, nenhuma
+  // requisição duplicada. Abre quando há alguma fechada; fecha quando todas
+  // já estão abertas.
+  function linhasDeGrupo() {
+    return Array.prototype.slice.call(document.querySelectorAll("#am-catalogo-container .am-row--grupo[data-familia]"));
+  }
+
+  function atualizarBotaoExpandir() {
+    var btn = el("am-expandir-todos");
+    if (!btn) return;
+    var grupos = linhasDeGrupo();
+    btn.hidden = !grupos.length;
+    if (!grupos.length) return;
+    var todasAbertas = grupos.every(function (g) { return g.getAttribute("aria-expanded") === "true"; });
+    btn.textContent = todasAbertas ? "Recolher todos" : "Expandir todos";
+    btn.setAttribute("aria-pressed", todasAbertas ? "true" : "false");
+  }
+
+  function alternarTodosGrupos() {
+    var grupos = linhasDeGrupo();
+    if (!grupos.length) return;
+    var abrir = grupos.some(function (g) { return g.getAttribute("aria-expanded") !== "true"; });
+    grupos.forEach(function (g) {
+      var aberta = g.getAttribute("aria-expanded") === "true";
+      if (aberta !== abrir) alternarGrupo(g);
+    });
+    atualizarBotaoExpandir();
   }
 
   function carregarFamiliaDetalhe(familyId, painel) {

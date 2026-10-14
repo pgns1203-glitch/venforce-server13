@@ -651,6 +651,31 @@ async function run() {
     });
     await foto(cdp, "07b-importar-base-custo");
 
+    // ── Expandir agrupadores ─────────────────────────────────────────────────
+    await check("X1 — 'Expandir todos' no cabeçalho abre todas as famílias; depois vira 'Recolher todos' e fecha todas", async () => {
+      const grupos = `Array.from(document.querySelectorAll("#am-catalogo-container .am-row--grupo[data-familia]"))`;
+      assert.ok(await cdp.evaluate(`${grupos}.length >= 2`), "a página do teste tem 2 famílias");
+      // O botão não pode mudar a contagem de colunas do cabeçalho: os testes
+      // de alinhamento leem ".am-listagem__head span" por posição.
+      assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(".am-listagem__head span").length`), 11);
+      assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(".am-listagem__head > span").length`), 11);
+      assert.ok(await cdp.evaluate(`!!document.querySelector(".am-listagem__head-anuncio #am-expandir-todos")`), "botão fica ao lado de 'Anúncio'");
+      assert.strictEqual(await cdp.evaluate(`document.getElementById("am-expandir-todos").hidden`), false);
+      // Começa com tudo recolhido (checks anteriores podem ter aberto famílias).
+      for (let i = 0; i < 2 && await cdp.evaluate(`${grupos}.some(g => g.getAttribute("aria-expanded") === "true")`); i += 1) {
+        await cdp.evaluate(`document.getElementById("am-expandir-todos").click()`);
+      }
+      await cdp.evaluate(`document.querySelector('.am-row--grupo[data-familia="FAM-1"]').click()`); // uma aberta, outra fechada
+      assert.strictEqual(await cdp.evaluate(texto("#am-expandir-todos")), "Expandir todos");
+      await cdp.evaluate(`document.getElementById("am-expandir-todos").click()`);
+      await waitFor(cdp, `${grupos}.every(g => g.getAttribute("aria-expanded") === "true" && !g.nextElementSibling.hidden)`, "nem todas abriram");
+      assert.strictEqual(await cdp.evaluate(texto("#am-expandir-todos")), "Recolher todos");
+      assert.strictEqual(await cdp.evaluate(`!!document.getElementById("am-det-modal")`), false);
+      await cdp.evaluate(`document.getElementById("am-expandir-todos").click()`);
+      assert.strictEqual(await cdp.evaluate(`${grupos}.every(g => g.getAttribute("aria-expanded") === "false" && g.nextElementSibling.hidden)`), true);
+      assert.strictEqual(await cdp.evaluate(texto("#am-expandir-todos")), "Expandir todos");
+    });
+
     // ── Sem Base ───────────────────────────────────────────────────────────
     await check("B1 — sem Base vinculada: aviso com 'Vincular base', sem '+ Custo' nem 'Editar custos'", async () => {
       SERVIDOR.base = null;

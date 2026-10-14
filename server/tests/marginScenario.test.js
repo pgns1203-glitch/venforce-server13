@@ -300,6 +300,47 @@ cenario("margens e alíquota saem sempre como fração 0–1 (nunca percentual)"
   assert.ok(Math.abs(r.delta_margem_ratio) < 1);
 });
 
+cenario("promoção sem preço sugerido pelo ML: promocao_sem_preco, nunca preço inventado", () => {
+  const r = promo({ cenario: { tipo: "promo", preco: null, rebate: 0, status_promocao: "candidate" } });
+  assert.strictEqual(r.veredito, VEREDITOS.BLOQUEADO);
+  assert.strictEqual(r.motivo, MOTIVOS.PROMOCAO_SEM_PRECO);
+  assert.strictEqual(r.cenario.lc, null);
+});
+
+cenario("limite de cotações por requisição: bloqueado com limite_de_cotacoes_excedido (não estima)", () => {
+  const r = promo({ cotacao: { comissao: null, frete: null, limite_excedido: true } });
+  assert.strictEqual(r.veredito, VEREDITOS.BLOQUEADO);
+  assert.strictEqual(r.motivo, MOTIVOS.LIMITE_DE_COTACOES);
+});
+
+cenario("resultadoBloqueado: mesmo formato do cálculo, todo número null", () => {
+  const r = core.resultadoBloqueado(MOTIVOS.SEM_SNAPSHOT_PROMOCOES);
+  assert.strictEqual(r.veredito, VEREDITOS.BLOQUEADO);
+  assert.strictEqual(r.motivo, "sem_snapshot_promocoes");
+  assert.deepStrictEqual(r.motivos, ["sem_snapshot_promocoes"]);
+  assert.strictEqual(r.cenario.lc, null);
+  assert.strictEqual(r.delta_lc, null);
+  assert.strictEqual(r.empate_volume, null);
+  assert.strictEqual(r.flags.mudou_faixa_frete, null);
+  assert.deepStrictEqual(Object.keys(r).sort(), Object.keys(promo()).sort());
+});
+
+cenario("calcularAtual: a mesma composição do bloco `atual` do cenário, com o retorno ML em andamento", () => {
+  const a = core.calcularAtual({ atual: { ...ATUAL, preco: 89.77, comissao: 12.57, rebate: 3.3 } });
+  const esperado = computeMargin({ price: 89.77, cost: 21.35, taxRate: 0.06, fixedFee: 0, commission: 12.57, freight: 10, rebate: 3.3 });
+  assert.strictEqual(a.atual.lc, esperado.profit);
+  assert.strictEqual(a.atual.margem_ratio, esperado.margin);
+  assert.deepStrictEqual(a.bloqueios, []);
+  const dentro = calcularCenario({
+    atual: { ...ATUAL, preco: 89.77, comissao: 12.57, rebate: 3.3 },
+    cenario: { tipo: "preco", preco: 84.9 }, cotacao: { comissao: 11.9, frete: 10 }, meta: META,
+  });
+  assert.deepStrictEqual(dentro.atual, a.atual);
+  const sem = core.calcularAtual({ atual: { ...ATUAL, custo: null } });
+  assert.deepStrictEqual(sem.bloqueios, [MOTIVOS.CUSTO_AUSENTE]);
+  assert.strictEqual(sem.atual.lc, null);
+});
+
 (async () => {
   let falhas = 0;
   for (const { nome, fn } of casos) {

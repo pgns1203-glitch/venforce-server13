@@ -55,6 +55,12 @@ const MOTIVOS = Object.freeze({
   REBATE_AMBIGUO: "rebate_ambiguo",
   REBATE_ATUAL_INDISPONIVEL: "rebate_atual_indisponivel",
   REBATE_INVALIDO: "rebate_invalido",
+  // Decididos antes do cálculo, por quem monta o cenário (promoção/cotação).
+  SEM_SNAPSHOT_PROMOCOES: "sem_snapshot_promocoes",
+  PROMOCAO_NAO_ENCONTRADA: "promocao_nao_encontrada",
+  PROMOCAO_AMBIGUA: "promocao_ambigua",
+  PROMOCAO_SEM_PRECO: "promocao_sem_preco",
+  LIMITE_DE_COTACOES: "limite_de_cotacoes_excedido",
 });
 
 // Promoção em andamento no Mercado Livre (status BRUTO do ML).
@@ -79,6 +85,15 @@ function fracaoValida(v) {
 
 // Ordem de precedência do `motivo` principal quando há mais de um.
 const PRECEDENCIA_MOTIVOS = [
+  // Decisivos por si: a promoção em si já responde, haja ou não cotação.
+  MOTIVOS.SEM_SNAPSHOT_PROMOCOES,
+  MOTIVOS.PROMOCAO_NAO_ENCONTRADA,
+  MOTIVOS.PROMOCAO_AMBIGUA,
+  MOTIVOS.PROMOCAO_SEM_PRECO,
+  MOTIVOS.PROMOCAO_ATIVA,
+  MOTIVOS.SEM_DESCONTO_EFETIVO,
+  MOTIVOS.PRECO_IGUAL_AO_ATUAL,
+  // Dado que falta, da composição de hoje e do cenário.
   MOTIVOS.SEM_SNAPSHOT_MARGEM,
   MOTIVOS.PRECO_ATUAL_AUSENTE,
   MOTIVOS.CUSTO_AUSENTE,
@@ -87,6 +102,7 @@ const PRECEDENCIA_MOTIVOS = [
   MOTIVOS.COMISSAO_ATUAL_AUSENTE,
   MOTIVOS.FRETE_ATUAL_AUSENTE,
   MOTIVOS.PRECO_CENARIO_INVALIDO,
+  MOTIVOS.LIMITE_DE_COTACOES,
   MOTIVOS.COMISSAO_INDISPONIVEL,
   MOTIVOS.FRETE_INDISPONIVEL,
   MOTIVOS.META_INVALIDA,
@@ -94,9 +110,6 @@ const PRECEDENCIA_MOTIVOS = [
   MOTIVOS.REBATE_INVALIDO,
   MOTIVOS.REBATE_AMBIGUO,
   MOTIVOS.REBATE_ATUAL_INDISPONIVEL,
-  MOTIVOS.PROMOCAO_ATIVA,
-  MOTIVOS.SEM_DESCONTO_EFETIVO,
-  MOTIVOS.PRECO_IGUAL_AO_ATUAL,
 ];
 
 function motivoPrincipal(motivos) {
@@ -180,6 +193,53 @@ function calcularComposicao(insumos = {}) {
 }
 
 /**
+ * Composição de HOJE e o que impede de calculá-la. Parte comum ao cenário e
+ * ao bloco `atual` da resposta (mesma regra nos dois lugares).
+ *
+ * @returns {{ valores:object, linha:object, calc:object, faltando:string[] }}
+ */
+function lerAtual(atual = {}, freteAplicavel = true) {
+  const faltando = [];
+  const precoAtual = num(atual.preco);
+  const custo = num(atual.custo);
+  const aliquota = num(atual.aliquota);
+  const taxaFixa = num(atual.taxa_fixa);
+  const comissao = num(atual.comissao);
+  // Logística sem frete previsto pelo ML: zero DECLARADO (frete_aplicavel:false), não ausência.
+  const frete = freteAplicavel ? num(atual.frete) : (num(atual.frete) ?? 0);
+  const rebate = num(atual.rebate) ?? 0;
+
+  if (atual.sem_snapshot === true) {
+    // Sem a linha do Margin Snapshot não há composição de hoje: um motivo só,
+    // em vez de uma lista de campos que nunca existiram.
+    faltando.push(MOTIVOS.SEM_SNAPSHOT_MARGEM);
+  } else {
+    if (precoAtual === null || precoAtual <= 0) faltando.push(MOTIVOS.PRECO_ATUAL_AUSENTE);
+    if (custo === null) faltando.push(MOTIVOS.CUSTO_AUSENTE);
+    if (aliquota === null) faltando.push(MOTIVOS.ALIQUOTA_AUSENTE);
+    else if (!fracaoValida(aliquota)) faltando.push(MOTIVOS.ALIQUOTA_FORA_DA_FAIXA);
+    if (comissao === null) faltando.push(MOTIVOS.COMISSAO_ATUAL_AUSENTE);
+    if (frete === null) faltando.push(MOTIVOS.FRETE_ATUAL_AUSENTE);
+  }
+
+  const comp = composicao({
+    preco: precoAtual, custo, aliquota: fracaoValida(aliquota) ? aliquota : null, taxaFixa, comissao, frete, rebate,
+  });
+  // Componente ausente: nenhum LC/margem — a linha mostra só o que é conhecido.
+  const linha = faltando.length ? { ...comp.linha, lc: null, margem_ratio: null } : comp.linha;
+  return { valores: { precoAtual, custo, aliquota, taxaFixa, comissao, frete, rebate }, linha, calc: comp.calc, faltando };
+}
+
+/**
+ * Bloco `atual` da resposta: composição de hoje (com o retorno ML da promoção
+ * em andamento, quando há) e os motivos de não calcular — sem cenário.
+ */
+function calcularAtual({ atual = {}, frete_aplicavel = true } = {}) {
+  const lido = lerAtual(atual, frete_aplicavel !== false);
+  return { atual: lido.linha, bloqueios: lido.faltando, assumido: lido.calc.assumed || [] };
+}
+
+/**
  * @param {object} p
  * @param {object} p.atual     { preco, custo, aliquota, taxa_fixa, comissao, frete, rebate }  — composição de hoje
  * @param {object} p.cenario   { tipo: 'preco'|'promo'|'insumos', preco: P', rebate?: R$, status_promocao?: string,
@@ -192,15 +252,9 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   const motivos = [];
   const bloquear = (m) => { if (!motivos.includes(m)) motivos.push(m); };
 
-  const precoAtual = num(atual.preco);
-  const custo = num(atual.custo);
-  const aliquota = num(atual.aliquota);
-  const taxaFixa = num(atual.taxa_fixa);
-  const comissaoAtual = num(atual.comissao);
   const freteAplicavel = cotacao.frete_aplicavel !== false;
-  // Logística sem frete previsto pelo ML: zero DECLARADO (frete_aplicavel:false), não ausência.
-  const freteAtual = freteAplicavel ? num(atual.frete) : (num(atual.frete) ?? 0);
-  const rebateAtual = num(atual.rebate) ?? 0;
+  const lido = lerAtual(atual, freteAplicavel);
+  const { precoAtual, custo, aliquota, taxaFixa, frete: freteAtual } = lido.valores;
 
   const precoNovo = num(cenario.preco);
   const rebateNovoBruto = cenario.rebate === undefined || cenario.rebate === null ? 0 : num(cenario.rebate);
@@ -220,15 +274,12 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   const bloquearAtual = (m) => { faltaAtual.push(m); bloquear(m); };
   const bloquearCenario = (m) => { faltaCenario.push(m); bloquear(m); };
 
-  if (atual.sem_snapshot === true) bloquearAtual(MOTIVOS.SEM_SNAPSHOT_MARGEM);
-  if (precoAtual === null || precoAtual <= 0) bloquearAtual(MOTIVOS.PRECO_ATUAL_AUSENTE);
-  if (custo === null) bloquearAtual(MOTIVOS.CUSTO_AUSENTE);
-  if (aliquota === null) bloquearAtual(MOTIVOS.ALIQUOTA_AUSENTE);
-  else if (!fracaoValida(aliquota)) bloquearAtual(MOTIVOS.ALIQUOTA_FORA_DA_FAIXA);
-  if (comissaoAtual === null) bloquearAtual(MOTIVOS.COMISSAO_ATUAL_AUSENTE);
-  if (freteAtual === null) bloquearAtual(MOTIVOS.FRETE_ATUAL_AUSENTE);
+  for (const m of lido.faltando) bloquearAtual(m);
 
-  if (precoNovo === null || precoNovo <= 0) bloquearCenario(MOTIVOS.PRECO_CENARIO_INVALIDO);
+  if (precoNovo === null || precoNovo <= 0) {
+    // Promoção sem preço sugerido pelo ML: o motivo é a promoção, não a digitação.
+    bloquearCenario(tipo === "promo" && precoNovo === null ? MOTIVOS.PROMOCAO_SEM_PRECO : MOTIVOS.PRECO_CENARIO_INVALIDO);
+  }
   if (custoNovo === null) bloquearCenario(MOTIVOS.CUSTO_AUSENTE);
   if (aliquotaNova === null) bloquearCenario(MOTIVOS.ALIQUOTA_AUSENTE);
   else if (!fracaoValida(aliquotaNova)) bloquearCenario(MOTIVOS.ALIQUOTA_FORA_DA_FAIXA);
@@ -237,6 +288,7 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
 
   const comissaoNova = num(cotacao.comissao);
   const freteNovo = freteAplicavel ? num(cotacao.frete) : (num(cotacao.frete) ?? 0);
+  if (cotacao.limite_excedido === true) bloquearCenario(MOTIVOS.LIMITE_DE_COTACOES);
   if (comissaoNova === null) bloquearCenario(MOTIVOS.COMISSAO_INDISPONIVEL);
   if (freteNovo === null) bloquearCenario(MOTIVOS.FRETE_INDISPONIVEL);
 
@@ -257,10 +309,6 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   if (precoIgual) bloquear(MOTIVOS.PRECO_IGUAL_AO_ATUAL);
 
   // ── Números ────────────────────────────────────────────────────────────────
-  const atualCalc = composicao({
-    preco: precoAtual, custo, aliquota: fracaoValida(aliquota) ? aliquota : null, taxaFixa,
-    comissao: comissaoAtual, frete: freteAtual, rebate: rebateAtual,
-  });
   const cenarioComp = composicao({
     preco: precoNovo !== null && precoNovo > 0 ? precoNovo : null,
     custo: custoNovo, aliquota: fracaoValida(aliquotaNova) ? aliquotaNova : null, taxaFixa: taxaFixaNova,
@@ -268,7 +316,7 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   });
 
   // Componentes ausentes: nenhum LC/margem — a linha mostra só o que é conhecido.
-  const atualLinha = faltaAtual.length ? { ...atualCalc.linha, lc: null, margem_ratio: null } : atualCalc.linha;
+  const atualLinha = lido.linha;
   const cenarioLinha = faltaCenario.length ? { ...cenarioComp.linha, lc: null, margem_ratio: null } : cenarioComp.linha;
 
   const lcAtual = atualLinha.lc;
@@ -325,7 +373,36 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
       margem_alvo: margemAlvo === null ? null : round6(margemAlvo),
       margem_minima: margemMinima === null ? null : round6(margemMinima),
     },
-    assumido: Array.from(new Set([...(atualCalc.calc.assumed || []), ...(cenarioComp.calc.assumed || [])])),
+    assumido: Array.from(new Set([...(lido.calc.assumed || []), ...(cenarioComp.calc.assumed || [])])),
+  };
+}
+
+/**
+ * Resultado `bloqueado` de um cenário que nem chega ao cálculo (promoção que
+ * não existe, sem Promo Snapshot…). Mesmo formato do calcularCenario: todo
+ * número é null — nenhum é estimado.
+ */
+function resultadoBloqueado(motivo, { flags = {}, meta = {} } = {}) {
+  return {
+    veredito: VEREDITOS.BLOQUEADO,
+    motivo,
+    motivos: [motivo],
+    flags: {
+      ativa: flags.ativa === true,
+      sem_desconto_efetivo: flags.sem_desconto_efetivo === true,
+      mudou_faixa_frete: null,
+      rebate_ambiguo: flags.rebate_ambiguo === true,
+    },
+    atual: linhaVazia(null),
+    cenario: linhaVazia(null),
+    desconto: null,
+    ml_banca: null,
+    seller_banca: null,
+    delta_lc: null,
+    delta_margem_ratio: null,
+    empate_volume: null,
+    meta: { margem_alvo: num(meta.margem_alvo), margem_minima: num(meta.margem_minima) },
+    assumido: [],
   };
 }
 
@@ -336,4 +413,6 @@ module.exports = {
   TOLERANCIA_VALOR,
   calcularCenario,
   calcularComposicao,
+  calcularAtual,
+  resultadoBloqueado,
 };

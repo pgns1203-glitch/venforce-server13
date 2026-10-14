@@ -3590,6 +3590,25 @@
   justify-content: flex-end;
 }
 
+/* Aviso "N sem custo nesta página": mesma caixa (altura, borda, raio,
+   fonte) dos campos de busca e ordenação, no tom de atenção. */
+.vf-page-anuncios-meli .am-custos-acoes__aviso {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  height: var(--vf-control-h);
+  padding: 0 var(--vf-sp-3);
+  border: 1px solid var(--vf-warning-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-warning-bg);
+  color: var(--vf-warning-strong);
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-control-fs);
+  font-weight: var(--vf-fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
 .vf-page-anuncios-meli .am-custos-aviso {
   display: flex;
   flex-wrap: wrap;

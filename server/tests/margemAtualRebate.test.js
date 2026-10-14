@@ -12,7 +12,7 @@ const read = require("../services/motorMargem/marginSnapshotReadService");
 const { margemAtualComRebate, carregarRebatesAtivos, reclassificarStatus, MOTIVO_REBATE } = require("../services/motorMargem/margemAtualRebate");
 const promoRepo = require("../services/promoSnapshot/promoSnapshotRepository");
 const { listarOportunidades } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
-const { paginaReferencia, lerParametrosPagina } = require("./helpers/oportunidadesReferencia");
+const { elegiveisReferencia } = require("./helpers/oportunidadesReferencia");
 const snapshotRepository = require("../services/motorMargem/marginSnapshotRepository");
 const runRepository = require("../services/motorMargem/marginSnapshotRunRepository");
 const runService = require("../services/motorMargem/marginSnapshotRunService");
@@ -118,10 +118,9 @@ cenario("promo started com subsídio 3,30: tabela, drawer e Oportunidades têm a
       if (/FROM promocoes_diagnosticos\b/.test(sql)) return { rows: [{ id: 11, created_at: new Date().toISOString(), parcial: false, itens_scaneados: 1 }] };
       if (/FROM promo_snapshot_contas c/.test(sql)) return { rows: [{ item_id: "MLB1", promocoes: 1, subsidio: "3.30" }] };
       if (/WITH promos AS/.test(sql)) {
-        const { vendasPorMlb, page, limit } = lerParametrosPagina(params, 1);
         // Candidata: outra promoção, ainda não ativa, com preço menor que o atual (89,77).
         const promos = [{ item_id: "MLB1", chave: "000001", preco_promo: 80, retorno: 0, promo_status: "candidate", promo_id: "P2" }];
-        return paginaReferencia({ promos, snapPorItem: new Map([["MLB1", snapRow]]), vendasPorMlb, page, limit });
+        return elegiveisReferencia({ promos, snapPorItem: new Map([["MLB1", snapRow]]) });
       }
       throw new Error("SQL inesperado: " + sql);
     },

@@ -234,7 +234,9 @@ check("oportunidades: SQL real + índice idx_promo_diag_conta_concluido usado pe
   await pg.exec(`
     CREATE TABLE margin_projection_snapshots (id BIGSERIAL PRIMARY KEY, cliente_conta_id BIGINT, marketplace TEXT, item_id TEXT, titulo TEXT, image_url TEXT,
       price NUMERIC(14,2), cost NUMERIC(14,2), tax_rate NUMERIC(10,4), fixed_fee NUMERIC(14,2), commission_rate NUMERIC(10,4), freight NUMERIC(14,2),
-      margin NUMERIC(10,4), status TEXT, quality_json JSONB DEFAULT '{}'::jsonb, catalog_missing_since TIMESTAMPTZ);
+      margin NUMERIC(10,4), commission NUMERIC(14,2), profit NUMERIC(14,2), calculated_at TIMESTAMPTZ,
+      status TEXT, quality_json JSONB DEFAULT '{}'::jsonb, catalog_missing_since TIMESTAMPTZ);
+    CREATE TABLE meli_anuncios (cliente_id INTEGER NOT NULL, item_id TEXT NOT NULL, logistic_type TEXT, UNIQUE (cliente_id, item_id));
     -- Volume: 300 clientes × 4 contas × ~50 diagnósticos, 3 status.
     INSERT INTO promocoes_diagnosticos (cliente_id, cliente_slug, base_slug, seller_id, status, created_at)
       SELECT (g % 300) + 1, 'c' || (g % 300), 'b', (1000 + (g % 1200))::text,
@@ -253,8 +255,8 @@ check("oportunidades: SQL real + índice idx_promo_diag_conta_concluido usado pe
      VALUES ($1, 'MLB1', 'C1', 'P1', 'DEAL', 100, 90, 3, '{"status":"candidate"}'), ($2, 'MLB2', 'C2', 'P2', 'DEAL', 100, 90, 3, '{"status":"candidate"}')`,
     [idConta, idOutra]
   );
-  await pg.exec(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin, status)
-      VALUES (7, 'meli', 'MLB1', 'P1', 100, 40, 0.1, 0, 0.12, 15, 0.2, 'HEALTHY'), (7, 'meli', 'MLB2', 'P2', 100, 40, 0.1, 0, 0.12, 15, 0.2, 'HEALTHY');`);
+  await pg.exec(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, commission, freight, margin, status)
+      VALUES (7, 'meli', 'MLB1', 'P1', 100, 40, 0.1, 0, 0.12, 12, 15, 0.2, 'HEALTHY'), (7, 'meli', 'MLB2', 'P2', 100, 40, 0.1, 0, 0.12, 12, 15, 0.2, 'HEALTHY');`);
 
   const consulta = `SELECT id, created_at, parcial, itens_scaneados FROM promocoes_diagnosticos
       WHERE cliente_id = $1 AND seller_id = $2 AND status = 'concluido' ORDER BY created_at DESC, id DESC LIMIT 1`;

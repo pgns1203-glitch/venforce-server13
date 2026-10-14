@@ -37,7 +37,7 @@ const { resolvePromoSnapshotConfig } = require("../services/promoSnapshot/promoS
 const { createRateLimiter } = require("../services/motorMargem/marginSnapshotRateLimiter");
 const { listarOportunidades } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
 const F = require("../tests/helpers/promoSnapshotFakes");
-const { paginaReferencia } = require("../tests/helpers/oportunidadesReferencia");
+const { elegiveisReferencia } = require("../tests/helpers/oportunidadesReferencia");
 
 const BASE_DDL = `
   CREATE TABLE clientes (id SERIAL PRIMARY KEY, slug TEXT UNIQUE, nome TEXT, ativo BOOLEAN NOT NULL DEFAULT true);
@@ -50,7 +50,9 @@ const BASE_DDL = `
   CREATE TABLE margin_projection_snapshots (
     id SERIAL PRIMARY KEY, cliente_conta_id INTEGER, marketplace TEXT, item_id TEXT, titulo TEXT, image_url TEXT,
     price NUMERIC, cost NUMERIC, tax_rate NUMERIC, fixed_fee NUMERIC, commission_rate NUMERIC, freight NUMERIC,
-    margin NUMERIC, commission NUMERIC, profit NUMERIC, catalog_missing_since TIMESTAMPTZ);
+    margin NUMERIC, commission NUMERIC, profit NUMERIC, catalog_missing_since TIMESTAMPTZ,
+    quality_json JSONB, calculated_at TIMESTAMPTZ);
+  CREATE TABLE meli_anuncios (cliente_id INTEGER NOT NULL, item_id TEXT NOT NULL, logistic_type TEXT, UNIQUE (cliente_id, item_id));
   INSERT INTO clientes (id, slug, nome) VALUES (3, 'loja-a', 'Loja A'), (4, 'loja-b', 'Loja B');
   INSERT INTO cliente_contas (id, cliente_id, marketplace, external_account_id) VALUES (7, 3, 'meli', '555'), (8, 3, 'meli', '666'), (9, 4, 'meli', '777');
   INSERT INTO ml_tokens (cliente_id, ml_user_id, access_token, refresh_token, token_status) VALUES (3, '555', 'a', 'r', 'valid'), (3, '666', 'a', 'r', 'valid'), (4, '777', 'a', 'r', 'revoked');
@@ -272,23 +274,29 @@ async function montarCatalogoOportunidades(db, pg, n) {
     await repo.registrarLote({ run: claimed, seq, itemIds: ids, linhas }, db);
   }
   await repo.finalizarRun({ runId: run.id, status: "completed", promover: true, freshMinutes: 360 }, db);
-  await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin)
+  await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, commission, freight, margin, quality_json)
                   SELECT 7, 'meli', 'MLB' || g, 'T' || g, 100, 30 + (g % 40), CASE WHEN g % 29 = 0 THEN NULL ELSE 0.08 + (g % 5) / 100.0 END,
-                         g % 3, 0.12 + (g % 4) / 100.0, CASE WHEN g % 11 = 0 THEN NULL ELSE 8 + g % 9 END, 0.2
+                         g % 3, 0.12 + (g % 4) / 100.0, ROUND(100 * (0.12 + (g % 4) / 100.0), 2), CASE WHEN g % 11 = 0 THEN NULL ELSE 8 + g % 9 END, 0.2,
+                         CASE WHEN g % 6 = 0 THEN '{"targetMargin": 0.15}'::jsonb ELSE '{}'::jsonb END
                     FROM generate_series(1, $1::int) g`, [n]);
+  // Cadastro de anúncios: logística combinável em parte; o MESMO MLB de outro cliente nunca entra no join.
+  await pg.query(`INSERT INTO meli_anuncios (cliente_id, item_id, logistic_type)
+                  SELECT 3, 'MLB' || g, CASE WHEN g % 4 = 0 THEN 'custom' WHEN g % 4 = 1 THEN 'xd_drop_off' ELSE NULL END
+                    FROM generate_series(1, $1::int) g WHERE g % 5 <> 0`, [n]);
+  await pg.query(`INSERT INTO meli_anuncios (cliente_id, item_id, logistic_type) SELECT 4, 'MLB' || g, 'not_specified' FROM generate_series(1, 50) g`);
   await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin)
                   VALUES (8, 'meli', 'MLB1', 'outra conta', 1, 1, 0, 0, 0, 0, 0)`);
   await pg.query("ANALYZE");
   return run.id;
 }
 
-check("Oportunidades paginadas NO BANCO: 5.000 anúncios → a consulta devolve só `limit` linhas; ordem/filtro/total idênticos à régua JS em todas as páginas", async ({ db, pg }) => {
+check("Oportunidades (SQL real): 5.000 anúncios → UMA consulta de ELEGÍVEIS idêntica à referência JS, sem fórmula; o serviço rankeia igual sobre o banco e sobre a referência", async ({ db, pg }) => {
   const n = 5000;
   const runId = await montarCatalogoOportunidades(db, pg, n);
   const vendas = new Map();
   for (let i = 1; i <= n; i += 13) vendas.set(`MLB${i}`, { unidades: (i % 7) + 1 });
 
-  // Referência JS: todas as promoções disponíveis + snapshots, régua de montarCandidata.
+  // Referência JS: todas as promoções disponíveis + snapshots + cadastro de anúncios do cliente 3.
   const todas = await pg.query(
     `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.herdado AS promo_herdado,
             p.status AS promo_status
@@ -296,41 +304,62 @@ check("Oportunidades paginadas NO BANCO: 5.000 anúncios → a consulta devolve 
       WHERE p.run_id = $1 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`, [runId]);
   const snaps = await pg.query(`SELECT * FROM margin_projection_snapshots WHERE cliente_conta_id = 7`);
   const snapPorItem = new Map(snaps.rows.map((s) => [s.item_id, s]));
-  const limit = 50;
-  const ref1 = paginaReferencia({ promos: todas.rows, snapPorItem, vendasPorMlb: vendas, page: 1, limit });
-  const totalRef = Number(ref1.rows[0].total_oportunidades);
-  assert.ok(totalRef > 2000 && totalRef < n, `total de referência plausível (${totalRef})`);
+  const anuncios = await pg.query(`SELECT item_id, logistic_type FROM meli_anuncios WHERE cliente_id = 3`);
+  const anuncioPorItem = new Map(anuncios.rows.map((a) => [a.item_id, a]));
+  const ref = elegiveisReferencia({ promos: todas.rows, snapPorItem, anuncioPorItem });
+  assert.ok(ref.rows.length > 2000 && ref.rows.length < todas.rows.length, `elegíveis de referência plausíveis (${ref.rows.length} de ${todas.rows.length})`);
 
-  const paginas = Math.ceil(totalRef / limit);
-  const vistos = new Set();
-  for (let page = 1; page <= paginas + 1; page += 1) {
-    const sqlPg = await repo.listarOportunidadesPaginadas({ clienteContaId: 7, sellerId: "555", runId, vendasPorMlb: vendas, page, limit }, db);
-    const ref = paginaReferencia({ promos: todas.rows, snapPorItem, vendasPorMlb: vendas, page, limit });
-    assert.strictEqual(sqlPg.total, totalRef, `total na página ${page}`);
-    assert.ok(sqlPg.rows.length <= limit, "nunca mais que `limit` linhas saem do banco");
-    assert.ok(
-      sqlPg.rows.every((r) => !["started", "active"].includes(String(r.promo_status).toLowerCase()) && Number(r.preco_promo) < Number(r.price)),
-      "nenhuma promoção em andamento nem com P' >= preço atual no ranking"
-    );
-    const esperado = ref.rows.filter((r) => r.item_id).map((r) => `${r.item_id}|${r.chave}|${Number(r.margem_depois)}`);
-    const obtido = sqlPg.rows.map((r) => `${r.item_id}|${r.chave}|${Number(r.margem_depois)}`);
-    assert.deepStrictEqual(obtido, esperado, `página ${page} idêntica à régua JS`);
-    for (const r of sqlPg.rows) { assert.ok(!vistos.has(r.item_id), "1 linha por anúncio em todo o conjunto"); vistos.add(r.item_id); }
+  const sqlRes = await repo.listarOportunidadesElegiveis({ clienteId: 3, clienteContaId: 7, sellerId: "555", runId }, db);
+  const chave = (r) => `${r.item_id}|${r.chave}|${Number(r.preco_promo)}|${r.anuncio_logistic_type}|${r.snap_target_margin}`;
+  assert.deepStrictEqual(sqlRes.rows.map(chave).sort(), ref.rows.map(chave).sort(), "mesma seleção que a referência (a ordem do banco não importa: o serviço ordena)");
+  assert.strictEqual(new Set(sqlRes.rows.map((r) => `${r.item_id}|${r.chave}`)).size, sqlRes.rows.length, "o join com meli_anuncios não duplica linhas");
+  assert.ok(
+    sqlRes.rows.every((r) => !["started", "active"].includes(String(r.promo_status).toLowerCase()) && Number(r.preco_promo) < Number(r.price)),
+    "nenhuma promoção em andamento nem com P' >= preço atual"
+  );
+  assert.ok(sqlRes.rows.every((r) => r.snap_titulo !== "outra conta"), "nada de outra conta");
+  assert.ok(sqlRes.rows.some((r) => r.anuncio_logistic_type === "custom") && sqlRes.rows.some((r) => r.anuncio_logistic_type === null), "logística vem do cadastro do cliente; sem cadastro = null");
+  assert.ok(sqlRes.rows.every((r) => r.anuncio_logistic_type !== "not_specified"), "o anúncio de OUTRO cliente nunca entra no join");
+  assert.ok(sqlRes.rows.some((r) => r.snap_target_margin === "0.15"), "meta de margem do snapshot acompanha a linha");
+
+  // O serviço sobre o banco real == sobre a referência: mesmo ranking, mesmos vereditos, mesmas páginas.
+  const baseDeps = {
+    resolverContaDoCliente: async () => ({ cliente: { id: 3, slug: "loja-a" }, conta: { id: 7, nome: "A" } }),
+    obterConta: async () => ({ id: 7, external_account_id: "555" }),
+    carregarRealizada: async () => ({ porMlb: vendas, periodo: null }),
+    logger: silencioso, kick() {},
+  };
+  const noBanco = { db, repo, env: {}, ...baseDeps };
+  const naReferencia = {
+    ...noBanco,
+    promo: {
+      estadoComAutoTrigger: (identidade, opts) => require("../services/promoSnapshot/promoSnapshotReadService").estadoComAutoTrigger(identidade, opts, noBanco),
+      syncPublico: (e, g) => require("../services/promoSnapshot/promoSnapshotReadService").syncPublico(e, g),
+      listarElegiveis: async () => ref,
+    },
+  };
+  for (const veredito of [undefined, "todos"]) {
+    for (const page of [1, 2, 9]) {
+      const a = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page, limit: 50, veredito, autoTrigger: false }, noBanco);
+      const b = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page, limit: 50, veredito, autoTrigger: false }, naReferencia);
+      const resumo = (r) => r.oportunidades.map((o) => [o.itemId, o.promocao.chave, o.veredito, o.delta_lc, o.impacto_lc, o.opcoes_total]);
+      assert.deepStrictEqual(resumo(a), resumo(b), `página ${page} (${veredito || "padrão"}) igual sobre banco e referência`);
+      assert.deepStrictEqual([a.total, a.hasNext, a.contagem], [b.total, b.hasNext, b.contagem]);
+    }
   }
-  assert.strictEqual(vistos.size, totalRef);
+  const todos = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 1, limit: 50, veredito: "todos", autoTrigger: false }, noBanco);
+  assert.ok(todos.contagem.bloqueado > 0 && todos.contagem.nao_entrar > 0 && (todos.contagem.entrar + todos.contagem.entrar_se_girar) > 0, JSON.stringify(todos.contagem));
+  assert.strictEqual(todos.total, todos.contagem.entrar + todos.contagem.entrar_se_girar + todos.contagem.nao_entrar + todos.contagem.bloqueado);
 
-  // Plano: LIMIT aplicado na consulta; nada de outra conta.
-  const { sqlOportunidadesPaginadas } = require("../services/motorMargem/precificacao/precificacaoOportunidadesSql");
-  const pg3 = await repo.listarOportunidadesPaginadas({ clienteContaId: 7, sellerId: "555", runId, vendasPorMlb: vendas, page: 3, limit: 20 }, db);
-  assert.strictEqual(pg3.rows.length, 20);
-  assert.ok(pg3.rows.every((r) => r.snap_titulo !== "outra conta"));
-  const q = sqlOportunidadesPaginadas({
+  // Plano: a consulta é de seleção (sem LIMIT/fórmula) e usa índice nas promoções.
+  const { sqlOportunidadesElegiveis } = require("../services/motorMargem/precificacao/precificacaoOportunidadesSql");
+  const q = sqlOportunidadesElegiveis({
     fonteSql: `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.status AS promo_status FROM promo_snapshot_itens p
                 WHERE p.run_id = $1 AND p.cliente_conta_id = $2 AND p.seller_id = $3 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
-    paramsFonte: [runId, 7, "555"], clienteContaId: 7, vendasPorMlb: vendas, page: 3, limit: 20,
+    paramsFonte: [runId, 7, "555"], clienteContaId: 7, clienteId: 3,
   });
+  assert.ok(!/LIMIT|OFFSET|ROUND\(|lucro|margem_depois/i.test(q.sql), "o SQL não tem página nem fórmula financeira");
   const plano = (await pg.query(`EXPLAIN ${q.sql}`, q.params)).rows.map((x) => x["QUERY PLAN"]).join("\n");
-  assert.ok(/Limit/.test(plano), plano);
   assert.ok(/idx_promo_snapshot_itens_oportunidades|uq_promo_snapshot_itens_run_item_promo|Index|Bitmap/.test(plano), plano);
 });
 
@@ -513,8 +542,8 @@ check("pipeline completo com SQL real: worker + processor + repositório; 2 cont
   assert.strictEqual(ml.escritas().length, 0);
   assert.ok(ml.chamadas.every((c) => c.method === "GET"));
   assert.ok(ml.chamadas.filter((c) => /MLBB/.test(c.path)).every((c) => c.mlUserId === "666"));
-  await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin)
-                  VALUES (7, 'meli', 'MLBA1', 'A1', 100, 40, 0.1, 0, 0.12, 10, 0.2)`);
+  await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, commission, freight, margin)
+                  VALUES (7, 'meli', 'MLBA1', 'A1', 100, 40, 0.1, 0, 0.12, 12, 10, 0.2)`);
   const op = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, {
     db, repo, env, logger: silencioso, kick() {},
     resolverContaDoCliente: async () => ({ cliente: { id: 3, slug: "loja-a" }, conta: { id: 7, nome: "A" } }),

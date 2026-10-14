@@ -164,8 +164,8 @@ cenario("cliente com 2 contas: cada run usa o token DA SUA conta e grava só os 
 
 cenario("conta A não vê B: snapshot, status e oportunidades da conta A nunca trazem linha da conta B", async () => {
   const snaps = new Map([
-    ["7:MLBA0001", { titulo: "A1", image_url: null, price: 100, cost: 40, tax_rate: 0.1, fixed_fee: 0, commission_rate: 0.12, freight: 10, margin: 0.2 }],
-    ["8:MLBB0001", { titulo: "B1", image_url: null, price: 100, cost: 40, tax_rate: 0.1, fixed_fee: 0, commission_rate: 0.12, freight: 10, margin: 0.2 }],
+    ["7:MLBA0001", { titulo: "A1", image_url: null, price: 100, cost: 40, tax_rate: 0.1, fixed_fee: 0, commission_rate: 0.12, commission: 12, freight: 10, margin: 0.2 }],
+    ["8:MLBB0001", { titulo: "B1", image_url: null, price: 100, cost: 40, tax_rate: 0.1, fixed_fee: 0, commission_rate: 0.12, commission: 12, freight: 10, margin: 0.2 }],
   ]);
   const amb = ambiente({ marginSnaps: snaps });
   await amb.rodar(7);
@@ -698,7 +698,7 @@ cenario("Central sem snapshot: responde na hora, sem ML, indisponível com o est
 function snapsPara(contaId, prefixo, n) {
   const m = new Map();
   for (let i = 1; i <= n; i += 1) {
-    m.set(`${contaId}:MLB${prefixo}${String(i).padStart(4, "0")}`, { titulo: `P${i}`, image_url: null, price: 100, cost: 40, tax_rate: 0.1, fixed_fee: 0, commission_rate: 0.12, freight: 10, margin: 0.2 });
+    m.set(`${contaId}:MLB${prefixo}${String(i).padStart(4, "0")}`, { titulo: `P${i}`, image_url: null, price: 100, cost: 40, tax_rate: 0.1, fixed_fee: 0, commission_rate: 0.12, commission: 12, freight: 10, margin: 0.2 });
   }
   return m;
 }
@@ -1385,19 +1385,19 @@ cenario("processor entrega ao limiter o sleep que renova heartbeat durante a res
 // Auditoria — achado 5: oportunidades paginadas no banco
 // ─────────────────────────────────────────────────────────────────────────────
 
-cenario("oportunidades paginadas no banco: catálogo de 2.000 → só `limit` linhas saem do repositório; total/hasNext corretos", async () => {
+cenario("oportunidades: catálogo de 2.000 → UMA consulta de elegíveis e UMA de rebates da conta (nunca por item); página e total do serviço", async () => {
   const n = 2000;
   const amb = ambiente({ sellers: { 555: { itens: catalogo("A", n) } }, marginSnaps: snapsPara(7, "A", n), env: { PROMO_SNAPSHOT_BATCH_SIZE: "100" } });
   await amb.rodar(7);
   amb.repo._chamadas.length = 0;
   const deps = depsCentral(amb);
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 7, limit: 25 }, deps);
-  assert.strictEqual(amb.repo._linhasOportunidadesDevolvidas, 25, "só a página volta do banco");
+  assert.strictEqual(amb.repo._linhasOportunidadesDevolvidas, n, "o banco só seleciona as elegíveis; a ordem depende do cálculo do núcleo");
   assert.deepStrictEqual([r.page, r.limit, r.total, r.hasNext, r.oportunidades.length], [7, 25, n, true, 25]);
-  assert.strictEqual(amb.repo._chamadas.filter((c) => c === "listarOportunidadesPaginadas").length, 1, "UMA consulta paginada");
-  assert.strictEqual(deps.db.consultasDb.length, 1, "nenhuma consulta avulsa por item: só UMA, em lote (rebates da página)");
+  assert.strictEqual(amb.repo._chamadas.filter((c) => c === "listarOportunidadesElegiveis").length, 1, "UMA consulta de elegíveis");
+  assert.strictEqual(deps.db.consultasDb.length, 1, "nenhuma consulta avulsa por item: só UMA, em lote (rebates da conta)");
   assert.ok(/FROM promo_snapshot_contas c/.test(deps.db.consultasDb[0].sql));
-  assert.strictEqual(deps.db.consultasDb[0].params[3].length, 25, "rebates só dos 25 anúncios da página");
+  assert.strictEqual(deps.db.consultasDb[0].params[3], null, "rebates da conta inteira, numa consulta só");
   const ultima = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 80, limit: 25 }, deps);
   assert.deepStrictEqual([ultima.hasNext, ultima.oportunidades.length, ultima.total], [false, 25, n]);
   const alem = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, page: 81, limit: 25 }, deps);

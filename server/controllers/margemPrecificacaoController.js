@@ -117,6 +117,7 @@ function createMargemPrecificacaoController({ service = defaultService, oportuni
       clienteSlug,
       clienteContaId: req.query.clienteContaId,
       periodo: req.query.periodo,
+      veredito: req.query.veredito,
       page: req.query.page,
       limit: req.query.limit,
     }));

@@ -852,15 +852,15 @@ async function lerRebatesAtivos({ clienteContaId, marketplace, sellerId, itemIds
 }
 
 /**
- * Oportunidades do snapshot atual — UMA consulta, paginada NO BANCO: casa as
- * promoções disponíveis com o Margin Snapshot da MESMA conta e as vendas do
- * período, filtra margem pós-promoção positiva, deixa 1 linha por anúncio,
- * ordena e devolve só `limit` linhas + o total (precificacaoOportunidadesSql).
+ * Promoções ELEGÍVEIS do snapshot atual, casadas com o Margin Snapshot da
+ * mesma conta — UMA consulta para a conta inteira (precificacaoOportunidadesSql).
+ * O banco só seleciona (elegibilidade); LC', ΔLC, veredito, ordem e página saem
+ * do `core.calcularCenario` no serviço — uma fórmula só.
  */
-async function listarOportunidadesPaginadas({ clienteContaId, sellerId, runId, vendasPorMlb, page, limit }, db = pool) {
-  if (!sellerId) throw new Error("listarOportunidadesPaginadas: sellerId é obrigatório.");
-  const { sqlOportunidadesPaginadas, lerPagina } = require("../motorMargem/precificacao/precificacaoOportunidadesSql");
-  const { sql, params } = sqlOportunidadesPaginadas({
+async function listarOportunidadesElegiveis({ clienteId, clienteContaId, sellerId, runId }, db = pool) {
+  if (!sellerId) throw new Error("listarOportunidadesElegiveis: sellerId é obrigatório.");
+  const { sqlOportunidadesElegiveis, lerLinhas } = require("../motorMargem/precificacao/precificacaoOportunidadesSql");
+  const { sql, params } = sqlOportunidadesElegiveis({
     fonteSql: `
       SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno,
              NULL::text AS fonte_titulo, p.nome AS promo_nome, p.promotion_id AS promo_id,
@@ -872,11 +872,9 @@ async function listarOportunidadesPaginadas({ clienteContaId, sellerId, runId, v
          AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
     paramsFonte: [runId, clienteContaId, String(sellerId)],
     clienteContaId,
-    vendasPorMlb,
-    page,
-    limit,
+    clienteId,
   });
-  return lerPagina(await db.query(sql, params));
+  return { rows: lerLinhas(await db.query(sql, params)) };
 }
 
 /**
@@ -950,7 +948,7 @@ module.exports = {
   reconcileStaleRunningRuns,
   obterConta,
   listarLinhasSnapshot,
-  listarOportunidadesPaginadas,
+  listarOportunidadesElegiveis,
   mapRebatesAtivosPorItem,
   mapRebatesAtivosDaConta,
   listarContasElegiveis,

@@ -1,6 +1,8 @@
 // server/services/bases/baseCustosService.js
 // Regras e operações de custos por base (editor rápido).
 
+const fs = require("fs");
+const path = require("path");
 const pool = require("../../config/database");
 const {
   MARKETPLACES_SUPORTADOS,
@@ -345,7 +347,8 @@ async function upsertCustoBase({
 
 // Colunas novas de `custos` + índices de unicidade. Idempotente: roda no boot e
 // na rota /setup sem quebrar bases já existentes. Espelha a migration
-// 20260810_add_sku_id_tiktok.sql — as duas precisam continuar equivalentes.
+// 20260810_add_sku_id_tiktok.sql (colunas/índice TikTok) e aplica a
+// 20261014_custos_shopee_item_model.sql (FIN-508) — precisam continuar equivalentes.
 async function ensureColunasCustos() {
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS produto_nome TEXT`);
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS variacao_nome TEXT`);
@@ -370,11 +373,28 @@ async function ensureColunasCustos() {
     `CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
        ON custos (base_id, sku_id) WHERE sku_id <> ''`
   );
-  // MELI/Shopee (e linhas TikTok legadas sem sku_id): identidade histórica.
-  await pool.query(
-    `CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku_legado
-       ON custos (base_id, produto_id, sku) WHERE sku_id = ''`
-  );
+  // MELI/Shopee (e linhas TikTok legadas sem sku_id): FIN-508 — a identidade
+  // inclui o Model ID, para as variações Shopee do mesmo Item coexistirem. O
+  // ensure aplica o PRÓPRIO arquivo da migration (uma fonte só); ele troca o
+  // antigo uq_custos_base_produto_sku_legado, que achatava as variações.
+  await aplicarMigrationCustosItemModel();
+}
+
+const MIGRATION_CUSTOS_ITEM_MODEL = path.join(
+  __dirname, "..", "..", "sql", "migrations", "20261014_custos_shopee_item_model.sql"
+);
+
+async function aplicarMigrationCustosItemModel() {
+  const sql = fs.readFileSync(MIGRATION_CUSTOS_ITEM_MODEL, "utf8");
+  const client = await pool.connect();
+  try {
+    await client.query(sql);
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 // Marca a base como atualizada agora sempre que um custo é criado/alterado.

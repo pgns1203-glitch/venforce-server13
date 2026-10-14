@@ -728,9 +728,11 @@ function testeSchemaSkuId() {
     "import TikTok resolve conflito por (base_id, sku_id)",
     /ON CONFLICT \(base_id, sku_id\) WHERE sku_id <> ''/.test(baseImportSrc)
   );
+  // FIN-508: MELI/Shopee resolvem por (base, produto_id, sku, Model) — as
+  // variações Shopee do mesmo Item coexistem; MELI (sem Model) é o histórico.
   ok(
-    "import MELI/Shopee mantém o conflito histórico",
-    /ON CONFLICT \(base_id, produto_id, sku\) WHERE sku_id = ''/.test(baseImportSrc)
+    "import MELI/Shopee resolve conflito por Item + Model",
+    /ON CONFLICT \(base_id, produto_id, sku, \(COALESCE\(id_model, ''\)\)\) WHERE sku_id = ''/.test(baseImportSrc)
   );
 }
 

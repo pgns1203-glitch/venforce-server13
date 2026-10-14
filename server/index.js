@@ -461,7 +461,48 @@ function parsePlanilha(buffer, originalName, marketplace) {
       produto_nome: null,
       variacao_nome: null,
       tem_custo: true,
+      ...(isShopee ? { _linha: linhaPlanilhaAtual } : {}),
     });
+  }
+
+  if (isShopee) {
+    // FIN-508 — Shopee: a identidade da linha é Item + Model (a variação). O
+    // mesmo Item com Models diferentes é o ESPERADO (cada variação tem o seu
+    // custo). O que não pode é a MESMA variação duas vezes:
+    //   · valores idênticos  → duplicidade inofensiva, mantém uma linha;
+    //   · valores divergentes → 422. Nunca escolher um custo arbitrário.
+    // Linha sem Model é a linha "pai" do Item (legado): uma por Item.
+    const porVariacao = new Map();
+    const unicas = [];
+    const mesmoValor = (a, b, casas) => Math.round(a * 10 ** casas) === Math.round(b * 10 ** casas);
+    for (const linha of resultado) {
+      const chave = `${linha.produto_id}|${linha.id_model || ""}`;
+      const anterior = porVariacao.get(chave);
+      if (!anterior) {
+        porVariacao.set(chave, linha);
+        unicas.push(linha);
+        continue;
+      }
+      const igual =
+        mesmoValor(anterior.custo_produto, linha.custo_produto, 2) &&
+        mesmoValor(anterior.imposto_percentual, linha.imposto_percentual, 6) &&
+        mesmoValor(anterior.taxa_fixa, linha.taxa_fixa, 2);
+      if (!igual) {
+        const variacao = linha.id_model ? `Item ${linha.produto_id} / Model ${linha.id_model}` : `Item ${linha.produto_id} (sem Model)`;
+        const erroLinha = new Error(
+          `${variacao} aparece em mais de uma linha com custo ou imposto diferentes ` +
+          `(linhas ${anterior._linha} e ${linha._linha}). Corrija a planilha: cada variação só pode ter um custo.`
+        );
+        erroLinha.statusCode = 422;
+        erroLinha.payload = { ok: false, code: "SHOPEE_VARIACAO_DUPLICADA", erro: erroLinha.message };
+        throw erroLinha;
+      }
+    }
+    resultado.length = 0;
+    for (const linha of unicas) {
+      delete linha._linha;
+      resultado.push(linha);
+    }
   }
 
   if (isTikTok) {
@@ -746,10 +787,10 @@ CREATE TABLE IF NOT EXISTS callbacks (
   CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
     ON custos (base_id, sku_id) WHERE sku_id <> '';
 `);
-    await pool.query(`
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku_legado
-    ON custos (base_id, produto_id, sku) WHERE sku_id = '';
-`);
+    // MELI/Shopee: identidade com o Model ID (FIN-508). Mesmo caminho do boot —
+    // nunca recriar aqui o antigo uq_custos_base_produto_sku_legado, que
+    // achatava as variações Shopee do mesmo Item.
+    await ensureColunasCustos();
 
     await pool.query(`
       ALTER TABLE ml_tokens ADD COLUMN IF NOT EXISTS cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE;

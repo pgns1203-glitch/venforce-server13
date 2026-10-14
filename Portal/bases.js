@@ -3032,6 +3032,16 @@ function asstGerarCsv(linhas, marketplace) {
   }
 
   const rows = linhas.filter(r => r.id != null && String(r.id).trim() !== "");
+  // Shopee (FIN-508): o Model ID é a identidade da variação — sem a coluna, o
+  // /importar-base gravaria cada Item uma vez só e perderia as variações.
+  if (marketplace === "shopee") {
+    const lines = rows.map(r => {
+      const custo   = r.custo   != null ? Number(r.custo).toFixed(2)   : "";
+      const imposto = r.imposto != null ? Number(r.imposto).toFixed(6)  : "";
+      return `${csvTexto(r.id)},${csvTexto(r.id_model ?? "")},${custo},${imposto}`;
+    });
+    return "ID,ID Model,Custo,Imposto\n" + lines.join("\n");
+  }
   const lines = rows.map(r => {
     const custo   = r.custo   != null ? Number(r.custo).toFixed(2)   : "";
     const imposto = r.imposto != null ? Number(r.imposto).toFixed(6)  : "";

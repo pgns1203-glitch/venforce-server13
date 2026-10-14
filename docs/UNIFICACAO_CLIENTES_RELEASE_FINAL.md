@@ -2,11 +2,11 @@
 
 ## Resultado e limites
 
-Branch final `release/clientes-unificacao-final`, criada a partir de `origin/main` **3dc3732432aa8782882f1d573dc43dedb650aa94**. A stack foi incorporada em um merge local com histórico preservado, usando o topo **cac51f205d8b091b4f844756fba158ab17039118** de `origin/feat/clientes-unificacao-executor-stacked`. Esse topo já contém o commit da UI #263 e seu merge; não foi necessário incorporar a UI uma segunda vez.
+Branch final `release/clientes-unificacao-final`, criada a partir de `origin/main` **3dc3732432aa8782882f1d573dc43dedb650aa94** (main no início da execução). A stack foi incorporada em um merge local com histórico preservado, usando o topo **cac51f205d8b091b4f844756fba158ab17039118** de `origin/feat/clientes-unificacao-executor-stacked`. Esse topo já contém o commit da UI #263 e seu merge; não foi necessário incorporar a UI uma segunda vez.
 
-O merge de integração `82903028da68e003e09641d75642e603bd5c061c` tem os dois SHAs acima como pais, nessa ordem. Não houve conflito textual. `server/index.js` foi mesclado automaticamente e o diff contra main contém apenas o import e o registro das rotas administrativas.
+O merge de integração `82903028da68e003e09641d75642e603bd5c061c` tem os dois SHAs acima como pais, nessa ordem. Durante a validação, a main recebeu o PR #265 (favicon), passando a **ef46e5f71dd978e9e9dc72fa1ad587198762de52**. Essa main atual foi incorporada pelo merge local `65687b6718b205f42e965cba93b0a7a36c7ec72e`, também sem conflitos; os testes de Portal e backend foram repetidos contra uma cópia desse SHA. O ponto de criação inicial continua sendo o SHA 3dc37324, sem reescrever a história. A main avançou novamente com o PR #266 (Central de Margem), para **47d91e589be4131cbfb2ccb7d0fa94333fed43bd**. A branch final incorporou esse SHA pelo merge local `9833a981a53c46c31c66042e6f6c7f4f412f92b1`, sem conflitos, e repetiu as baterias contra uma nova cópia imutável dessa main. As rodadas intermediárias em andamento foram interrompidas e não são usadas como evidência final. Por fim, o PR #267 atualizou a main para **bdcda19685924a3af8dd365db0f795dd5ebbce6e**; ela foi incorporada sem conflitos pelo merge `2b2d1b3c74a7ccdb867a5d024f044ae99f318804`. Backend completo foi repetido nos dois lados; no Portal, o único teste alterado pelo #267 foi reexecutado em ambos. Este é o SHA final de comparação. Não houve conflito textual. `server/index.js` foi mesclado automaticamente e o diff contra main contém apenas o import e o registro das rotas administrativas.
 
-**Sem falhas novas pendentes. A bateria global NÃO está 100% verde:** três testes backend, cinco testes Portal e três suítes React ainda falham e foram reproduzidos na main atual. O resultado não equivale a uma liberação irrestrita de produção. A funcionalidade nova passou nos testes dedicados, inclusive com PostgreSQL local, mas as falhas herdadas continuam explícitas neste relatório e no PR.
+**Sem falhas novas pendentes. A bateria global NÃO está 100% verde:** três testes backend, quatro testes Portal e três suítes React ainda falham e foram reproduzidos na main atual. O resultado não equivale a uma liberação irrestrita de produção. A funcionalidade nova passou nos testes dedicados, inclusive com PostgreSQL local, mas as falhas herdadas continuam explícitas neste relatório e no PR.
 
 Não houve conexão de produção nesta execução, escrita em produção, aplicação manual de migration em produção, mudança de variável no Render, deploy, merge no GitHub, alteração de bases ou push nas branches antigas. O merge local é apenas a integração solicitada na branch final, não o merge do PR final em main.
 
@@ -51,6 +51,8 @@ Prefixo administrativo autenticado: `/admin/clientes-unificacao`. O router regis
 
 A página `Portal/clientes-unificacao.html` usa Shell V3, tokens/componentes V2, `vf-api` e assets locais. O fluxo cobre candidatos, busca com debounce/abort, seleção explícita de canônico/múltiplos legados, preview com Contas/Grants/Bases/origem/impacto, blockers/warnings/info, decisões, confirmação, execução, resultado, histórico, detalhe e rollback elegível.
 
+O preview usa snapshot em transação read-only, mas registra auditoria no backend após essa leitura; UI/preview sem execução não significa ausência absoluta de escrita em logs. Nada disso foi chamado em produção nesta execução.
+
 O frontend não calcula regra de unificação ou planHash. Alterar decisões ou solicitar novo preview retira a confirmação anterior. Repetir uma tentativa de resposta incerta mantém sua chave; status pendente não vira sucesso. Flag OFF e hash stale têm mensagens próprias. Rollback só aparece no detalhe se o backend e a flag permitirem. Conteúdo externo é escapado; snapshots brutos e segredos não são a UX principal.
 
 Os contratos e limites já documentados em `UNIFICACAO_CLIENTES_UI.md` e `UNIFICACAO_CLIENTES_EXECUTOR.md` foram preservados. Esses documentos descrevem suas etapas históricas; este arquivo é a evidência da integração sobre a main atual.
@@ -61,11 +63,11 @@ Conflitos textuais: **0**. Não houve resolução por aceitar indiscriminadament
 
 O inventário completo por arquivo e área está em `docs/auditorias/unificacao-final/DIFF_FINAL.csv`. As áreas são account-context, OAuth, consumidores, plan/validate, executor, migration, API, UI e docs/tests. O CSV de fallbacks da stack é inventário estático de código; não é uma exportação de credenciais ou dados de clientes.
 
-Os arquivos de produto incorporados são idênticos ao topo da stack, exceto `server/index.js`, cuja mesclagem manteve a main e acrescentou as duas linhas de registro. Nenhum arquivo alheio foi trazido da branch de trabalho original do usuário. Não há planilha, dump, `.env` real, lockfile ou build de frontend no diff.
+Os arquivos novos da unificação são idênticos ao topo da stack. As mesclagens também preservam a main em `server/index.js` (duas linhas de registro da unificação) e no serviço de Margem (uma linha de propagação de Conta). Nenhum arquivo alheio foi trazido da branch de trabalho original do usuário. Não há planilha, dump, `.env` real, lockfile ou build de frontend no diff.
 
-A integração mantém idênticos à main os diretórios/arquivos de Central de Vendas, jobs, pool/databaseConexao, Painel, Promo snapshot, controller financeiro e frontend React. Também preserva o hardening `dd69fd67506178bd51b743ec5c9b0c69840c639b` do #264 em `marginSnapshotProcessor.js` e seu teste. As mudanças em Ads/Margem/Visão são as de identidade já contidas na stack, sem alterar fórmulas.
+A integração preserva também o favicon e as páginas atualizados pelo #265, bem como as rotas, fórmulas, cenários, snapshot e novo layout da Central trazidos pelo #266, e mantém idênticos à main os diretórios/arquivos de Central de Vendas, jobs, pool/databaseConexao, Painel, Promo snapshot, controller financeiro e frontend React. Também preserva o hardening `dd69fd67506178bd51b743ec5c9b0c69840c639b` do #264 em `marginSnapshotProcessor.js` e seu teste. As mudanças em Ads/Margem/Visão são as de identidade já contidas na stack, sem alterar fórmulas.
 
-Única correção de integração adicional ao merge: a fixture de `Portal/ui-ux-wave1-convergence.test.js` agora responde explicitamente ao **GET** administrativo `/config` com todas as flags OFF. A asserção que recusa rotas desconhecidas não foi removida ou relaxada. O teste passa com suas 32 verificações. Não houve alteração adicional de código de produto.
+Correções de integração adicionais aos merges, somente nos testes: a fixture de `Portal/ui-ux-wave1-convergence.test.js` agora responde explicitamente ao **GET** administrativo `/config` com todas as flags OFF. A asserção que recusa rotas desconhecidas não foi removida ou relaxada. O teste passa com suas 32 verificações. O teste visual recém-chegado da Central também passou a aceitar a Conta única já resolvida em READY, além do estado transitório de seleção. O diagnóstico comprovou READY/Conta #10 e UI em snapshot carregado; as seis asserções finais de dados/layout continuam obrigatórias e passaram. Não houve alteração adicional de código de produto.
 
 ## Flags e segurança
 
@@ -99,9 +101,9 @@ Todos os `server/tests/*.test.js` foram executados sem `TEST_SKIP`, em subproces
 
 | Bateria | Main atual | Branch final | Resultado |
 | --- | --- | --- | --- |
-| Backend completo | 327/330 arquivos | 336/339 arquivos | Mesmas três falhas, logs normalizados idênticos; nove arquivos adicionais aprovados. |
-| Direcionados backend (subset da rodada completa) | — | 185/186 arquivos | Única falha: `mlTokenService.test.js`, idêntica à main. |
-| Portal completo | 27/34 arquivos | 30/35 arquivos | Cinco falhas finais idênticas às da main; duas falhas adicionais ocorreram só na main nessa rodada. |
+| Backend completo | 332/335 arquivos | 341/344 arquivos | Mesmas três falhas, logs normalizados idênticos; nove arquivos adicionais aprovados. |
+| Direcionados backend (subset da rodada completa) | — | 190/191 arquivos | Única falha: `mlTokenService.test.js`, idêntica à main. |
+| Portal completo | 29/35 arquivos | 32/36 arquivos | Quatro falhas finais idênticas às da main; duas falhas adicionais ocorreram só na main na rodada de referência. |
 | React/Vitest | 38/41 suítes; 581 testes passaram | 38/41 suítes; 581 testes passaram | Mesmas três suítes sem import; frontend React não alterado. |
 | Unificação UI/Chrome | não existe | 41 cenários | Todos aprovados, incluindo flags/admin/XSS/responsividade. |
 | Unificação UI + PostgreSQL | não existe | 7 cenários | Todos aprovados; escrita e reversão reais só em banco sintético descartável. |
@@ -111,7 +113,7 @@ Todos os `server/tests/*.test.js` foram executados sem `TEST_SKIP`, em subproces
 | Fundação/strict/OAuth/consumidores | não existe | 29/17/13/5 cenários | Todos aprovados. |
 | Planner/CLI offline | não existe | 43 verificações + contrato CLI v1 | Aprovados; coletor read-only também aprovado com driver/rede simulados. |
 
-O total efetivo do Portal considera a rodada completa mais o reteste **apenas** da fixture corrigida (`ui-ux-wave1-convergence`: 32 verificações). Nenhum teste foi marcado skip ou excluído para produzir o resultado. As listas de arquivos e hashes de logs estão em `VALIDACAO.json`.
+O total efetivo do Portal considera a rodada completa mais os retestes direcionados das fixtures corrigidas (`ui-ux-wave1-convergence`: 32 verificações; `central-margem-visual`: 6) e do teste de listagem alterado pelo #267 (98 verificações na final). Nenhum teste foi marcado skip ou excluído para produzir o resultado. As listas de arquivos e hashes de logs estão em `VALIDACAO.json`.
 
 Falhas backend herdadas, com logs idênticos à main após substituir o caminho da cópia de teste:
 
@@ -123,11 +125,10 @@ Falhas Portal finais, também com logs idênticos à main:
 
 - `anuncios-meli-detalhe-modal-ui.test.js` — ação `descartar` ausente na asserção do teste;
 - `central-margem-ui.test.js` — thumbnail esperada versus `undefined`;
-- `financeiro-v3-shell-ui.test.js` — navegação `about:blank` não conclui no harness;
 - `vf-shell-ui.test.js` — expectativa histórica de contagem de módulos Shopee;
 - `visao-shell-ui.test.js` — os seis blocos esperados não renderizam no harness.
 
-Na rodada da main também falharam `anuncios-meli-listagem-unificada-ui.test.js` (asserção de nova leitura/cache) e `diagnostico-inicial-shell-ui.test.js` (target CDP navegou/fechou). Ambos passaram na branch final; não foram usados para esconder uma falha nova.
+Na rodada de referência da main também falharam `anuncios-meli-listagem-unificada-ui.test.js` (asserção de nova leitura/cache) e `financeiro-v3-shell-ui.test.js` (navegação do harness). Ambos passaram na final, inclusive com 98 verificações da listagem após o #267. Não foram usados para esconder uma falha nova.
 
 React: `Cliente360Page.test.jsx`, `VisaoPage.test.jsx` e `components/cliente360/DataTable.test.jsx` falham, na main e na final, ao resolver `./VFButton/index.js` em `components/ui/index.js`. Essa árvore não foi alterada. A checagem estática dos **imports novos da unificação** passou; não se declara que a árvore histórica inteira já não tinha imports quebrados.
 

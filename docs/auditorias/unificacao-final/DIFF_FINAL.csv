@@ -1,5 +1,6 @@
 arquivo,area
 .env.example,executor
+Portal/central-margem-visual.test.js,docs/tests
 Portal/clientes-unificacao-access.js,UI
 Portal/clientes-unificacao-ui.test.js,docs/tests
 Portal/clientes-unificacao.html,UI

@@ -1,6 +1,6 @@
 {
-  "checkedAtUtc": "2026-10-14T20:19:56.880852+00:00",
-  "baseMainSha": "3dc3732432aa8782882f1d573dc43dedb650aa94",
+  "checkedAtUtc": "2026-10-14T20:29:09.888621+00:00",
+  "baseMainSha": "bdcda19685924a3af8dd365db0f795dd5ebbce6e",
   "stackTopSha": "cac51f205d8b091b4f844756fba158ab17039118",
   "integrationMergeSha": "82903028da68e003e09641d75642e603bd5c061c",
   "finalBranch": "release/clientes-unificacao-final",
@@ -55,48 +55,53 @@
       "file": "Portal/ui-ux-wave1-convergence.test.js",
       "reason": "Explicit readonly GET /config fixture with all flags OFF; strict unknown-request assertion retained.",
       "retestedChecksPassed": 32
+    },
+    {
+      "file": "Portal/central-margem-visual.test.js",
+      "reason": "Single-account context can already be READY; wait accepts READY with Conta #10 as well as the transient selection state. All 6 final visual/data assertions preserved and passed.",
+      "retestedChecksPassed": 6
     }
   ],
   "backend": {
     "main": {
-      "total": 330,
-      "passed": 327,
+      "total": 335,
+      "passed": 332,
       "failures": [
         {
           "file": "designStudioWorkspace.test.js",
           "exit": 1,
-          "seconds": 0.13
+          "seconds": 0.08
         },
         {
           "file": "meliAnunciosOrdenacaoGlobal.test.js",
           "exit": 1,
-          "seconds": 0.36
+          "seconds": 0.38
         },
         {
           "file": "mlTokenService.test.js",
           "exit": 1,
-          "seconds": 0.1
+          "seconds": 0.08
         }
       ]
     },
     "final": {
-      "total": 339,
-      "passed": 336,
+      "total": 344,
+      "passed": 341,
       "failures": [
         {
           "file": "designStudioWorkspace.test.js",
           "exit": 1,
-          "seconds": 0.07
+          "seconds": 0.08
         },
         {
           "file": "meliAnunciosOrdenacaoGlobal.test.js",
           "exit": 1,
-          "seconds": 0.29
+          "seconds": 0.38
         },
         {
           "file": "mlTokenService.test.js",
           "exit": 1,
-          "seconds": 0.1
+          "seconds": 0.09
         }
       ]
     },
@@ -110,7 +115,7 @@
       {
         "file": "meliAnunciosOrdenacaoGlobal.test.js",
         "normalizedLogIdentical": true,
-        "sha256": "03a21413c9465b5c94cdd98bc7f8d2f630f20d39b7679825b135b589f9a8b1c3"
+        "sha256": "b0ab637fde1dcb59951b3e4aecd0b1d998656e4c2b902b63e62d9c9196f3bffe"
       },
       {
         "file": "mlTokenService.test.js",
@@ -120,8 +125,8 @@
     ]
   },
   "directedBackend": {
-    "files": 186,
-    "passed": 185,
+    "files": 191,
+    "passed": 190,
     "failures": [
       "mlTokenService.test.js"
     ],
@@ -129,28 +134,23 @@
   },
   "portal": {
     "main": {
-      "total": 34,
-      "passed": 27,
+      "total": 35,
+      "passed": 29,
       "failures": [
         {
           "file": "anuncios-meli-detalhe-modal-ui.test.js",
           "exit": 1,
-          "seconds": 32.72
+          "seconds": 38.89
         },
         {
           "file": "anuncios-meli-listagem-unificada-ui.test.js",
           "exit": 1,
-          "seconds": 1.39
+          "seconds": 1.27
         },
         {
           "file": "central-margem-ui.test.js",
           "exit": 1,
-          "seconds": 1.69
-        },
-        {
-          "file": "diagnostico-inicial-shell-ui.test.js",
-          "exit": 1,
-          "seconds": 0.5
+          "seconds": 2.68
         },
         {
           "file": "financeiro-v3-shell-ui.test.js",
@@ -160,43 +160,38 @@
         {
           "file": "vf-shell-ui.test.js",
           "exit": 1,
-          "seconds": 1.03
+          "seconds": 0.75
         },
         {
           "file": "visao-shell-ui.test.js",
           "exit": 1,
-          "seconds": 8.99
+          "seconds": 8.86
         }
       ]
     },
     "finalEffective": {
-      "total": 35,
-      "passed": 30,
+      "total": 36,
+      "passed": 32,
       "failures": [
         {
           "file": "anuncios-meli-detalhe-modal-ui.test.js",
           "exit": 1,
-          "seconds": 33.38
+          "seconds": 39.42
         },
         {
           "file": "central-margem-ui.test.js",
           "exit": 1,
-          "seconds": 1.59
-        },
-        {
-          "file": "financeiro-v3-shell-ui.test.js",
-          "exit": 1,
-          "seconds": 8.96
+          "seconds": 2.73
         },
         {
           "file": "vf-shell-ui.test.js",
           "exit": 1,
-          "seconds": 0.84
+          "seconds": 0.74
         },
         {
           "file": "visao-shell-ui.test.js",
           "exit": 1,
-          "seconds": 9.45
+          "seconds": 8.9
         }
       ]
     },
@@ -211,12 +206,7 @@
         {
           "file": "central-margem-ui.test.js",
           "normalizedLogIdentical": true,
-          "sha256Final": "8794df24610c3e52f64af03ed448e6406c14458375f2bb044c037f39a9ae7166"
-        },
-        {
-          "file": "financeiro-v3-shell-ui.test.js",
-          "normalizedLogIdentical": true,
-          "sha256Final": "eed0d66763ed0e0cace2890bb8c2be2ba21f98408705c339d9a559f2742ba940"
+          "sha256Final": "2b5df7a9cd71069e3bc593355c0fd522340d9cd277ecb2d37dc53f8e6ea95945"
         },
         {
           "file": "vf-shell-ui.test.js",
@@ -231,10 +221,10 @@
       ],
       "mainOnlyFailures": [
         "anuncios-meli-listagem-unificada-ui.test.js",
-        "diagnostico-inicial-shell-ui.test.js"
+        "financeiro-v3-shell-ui.test.js"
       ]
     },
-    "note": "Complete run plus targeted retest of integration fixture; no skips."
+    "note": "Full Portal runs at #266; after #267 only its changed Portal test was rerun on both bases. Visual test timing fixture retested explicitly; no skips."
   },
   "react": {
     "mainAndFinal": {
@@ -249,7 +239,8 @@
       "failureCause": "Missing ./VFButton/index.js in existing components/ui/index.js"
     },
     "sourceUnchangedFromMain": true,
-    "newFailures": []
+    "newFailures": [],
+    "note": "Repeated at #265; #266/#267 do not change any frontend-react source/config. Tree equality verified."
   },
   "featureTests": {
     "uiChrome": 41,
@@ -298,7 +289,7 @@
     "deploymentPerformed": false,
     "oldBranchesModified": false,
     "secretScan": {
-      "addedLinesScanned": 13907,
+      "addedLinesScanned": 14485,
       "patterns": [
         "jwt_literal",
         "private_key",
@@ -320,5 +311,24 @@
   },
   "readyForTechnicalReview": true,
   "allTestsGreen": false,
-  "readyUnderAllGreenMergeCriterion": false
+  "readyUnderAllGreenMergeCriterion": false,
+  "initialMainSha": "3dc3732432aa8782882f1d573dc43dedb650aa94",
+  "mainSynchronizations": [
+    {
+      "pr": 265,
+      "mainSha": "ef46e5f71dd978e9e9dc72fa1ad587198762de52",
+      "integrationSha": "65687b6718b205f42e965cba93b0a7a36c7ec72e"
+    },
+    {
+      "pr": 266,
+      "mainSha": "47d91e589be4131cbfb2ccb7d0fa94333fed43bd",
+      "integrationSha": "9833a981a53c46c31c66042e6f6c7f4f412f92b1"
+    },
+    {
+      "pr": 267,
+      "mainSha": "bdcda19685924a3af8dd365db0f795dd5ebbce6e",
+      "integrationSha": "2b2d1b3c74a7ccdb867a5d024f044ae99f318804"
+    }
+  ],
+  "localPgValidatedCodeUnchangedAcrossMainSynchronizations": true
 }

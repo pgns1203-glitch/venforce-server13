@@ -23,6 +23,16 @@ Mais três caminhos perdiam as variações:
 - **CSV do Assistente e "Baixar base" (Portal):** não tinham a coluna ID Model.
 - **Upsert:** localizava por `produto_id` e trocava o `id_model` da linha
   existente.
+- **Upload direto no fechamento** (`POST /fechamentos/financeiro`, campo
+  `costs`, e o Debug Financeiro): `parseSpreadsheet` lê com `raw:false`, então
+  o Model também chegava como `2.39435E+11`. Red Fish real: 0% de cobertura
+  pelo upload contra 100% pela base vinculada, com a mesma planilha. A base
+  Shopee enviada agora passa por `parseShopeeCostSpreadsheet`
+  (`server/utils/excelUtils.js`), que usa o inteiro exato da célula só quando
+  ele tem provadamente mais dígitos que o texto. Num CSV com `2.39435E+11` os
+  dígitos já se perderam: o texto fica como veio e o motor avisa
+  (`COST_BASE_QUALITY`), sem inventar ID. `parseSpreadsheet` não mudou
+  (MELI, TikTok e os outros arquivos).
 
 ### Histórico
 
@@ -120,4 +130,5 @@ npm install --no-save @electric-sql/pglite@0.3
 node scripts/custosShopeeItemModelSqlCheck.js                 # 43 verificações (PGlite)
 node scripts/shopeeBaseItemModelAudit.js "<base shopee.xlsx>" # matriz do arquivo × banco
 node tests/basesShopeeItemModel.test.js
+node tests/fechamentoFinanceiroShopeeCustoUploadPrecisao.test.js   # upload direto = base vinculada
 ```

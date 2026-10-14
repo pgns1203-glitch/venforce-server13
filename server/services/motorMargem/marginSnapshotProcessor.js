@@ -164,6 +164,8 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
       statusLabel: item.quality.statusLabel,
       statusSeverity: item.quality.statusSeverity,
       statusReasons: item.quality.statusReasons,
+      integrityCode: item.quality.integrityCode || null,
+      integrityReason: item.quality.integrityReason || null,
       // Meta usada na classificação — a leitura precisa saber com qual meta
       // o status projetado foi julgado.
       targetMargin: item.margin.target ? item.margin.target.marginTarget : null,

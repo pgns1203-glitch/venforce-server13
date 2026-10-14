@@ -970,6 +970,20 @@ async function run() {
     assert.strictEqual(api.dataIntegrity(ruim).key, "SUSPECT");
   });
 
+  await test("integridade custo_suspeito vem do Motor: mesmo com status LOSS persistido, a integridade é SUSPECT com código e motivo", () => {
+    const item = normalizedItem({
+      status: "LOSS",
+      projected: { margin: -1.1309, profit: -113.09 },
+      quality: { confidence: "HIGH", confidenceByField: {}, integrityCode: "custo_suspeito", integrityReason: "Custo (R$ 171.09) igual ou acima do preço (R$ 100.00)." },
+    });
+    const integridade = api.dataIntegrity(item);
+    assert.strictEqual(integridade.key, "SUSPECT");
+    assert.strictEqual(integridade.code, "custo_suspeito");
+    assert.ok(integridade.reason.includes("171.09"), integridade.reason);
+    assert.strictEqual(item.projected.margin, -1.1309);
+    assert.strictEqual(api.dataIntegrity(normalizedItem({ status: "LOSS" })).code, undefined, "sem código do Motor não inventa custo_suspeito");
+  });
+
   console.log(`# ${passed} testes concluídos`);
 }
 

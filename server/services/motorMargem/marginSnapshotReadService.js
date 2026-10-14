@@ -344,6 +344,12 @@ function comporItem(row, realizada, deps = {}) {
     coverage: sales.cobertura,
   });
 
+  // Integridade do dado lida da linha (preço × custo PROJETADOS) pela mesma
+  // regra do núcleo — vale também para linhas calculadas antes da regra
+  // existir, sem reprocessar o snapshot. O STATUS persistido só muda no
+  // próximo cálculo; a integridade já aparece.
+  const integrity = core.detectIntegrityIssue({ price: row.price, cost: row.cost });
+
   return {
     identity: {
       clienteSlug: null, marketplace: row.marketplace, itemId: row.itemId,
@@ -369,6 +375,8 @@ function comporItem(row, realizada, deps = {}) {
       statusLabel: quality.statusLabel || null,
       statusSeverity: quality.statusSeverity || null,
       statusReasons: quality.statusReasons || [],
+      integrityCode: integrity ? integrity.code : null,
+      integrityReason: integrity ? integrity.reason : null,
     },
     statusBase: "projected",
     sales,
@@ -397,7 +405,7 @@ function comporItem(row, realizada, deps = {}) {
     status: row.status,
     confidence: row.confidenceLevel,
     confianca: row.confidenceLevel,
-    problema: (quality.statusReasons || [])[0] || null,
+    problema: (integrity && integrity.reason) || (quality.statusReasons || [])[0] || null,
     targetMargin: quality.targetMargin ?? null,
     projected: {
       margin: projected.margin,

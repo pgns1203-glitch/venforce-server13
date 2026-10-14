@@ -720,6 +720,10 @@
       problem: firstValue(raw.problem, raw.problema, raw.mainProblem, raw.problemaPrincipal, invalidFields.length ? invalidFields[0].reason : null, arrayOf(quality.statusReasons)[0], divergences.length ? "Fontes divergentes" : null),
       targetMargin: checkedRatio(firstValue(raw.targetMargin, raw.margemAlvo), "target", "Meta de margem", invalidFields),
       invalidFields: invalidFields,
+      // Problema de dado detectado pelo Motor (ex.: "custo_suspeito"). Não é
+      // recalculado aqui: a tela só exibe o código e o motivo que o backend mandou.
+      integrityCode: firstValue(quality.integrityCode, raw.integrityCode),
+      integrityReason: firstValue(quality.integrityReason, raw.integrityReason),
       projected: {
         margin: projectedMargin,
         profit: numberOrNull(firstValue(projectedBlock.profit, projectedBlock.lucro, raw.projectedProfit, raw.lucroProjetado)),
@@ -1593,6 +1597,18 @@
 
   function dataIntegrity(item) {
     if (!item) return { key: "MISSING", label: INTEGRITY_STATES.MISSING.label, tone: INTEGRITY_STATES.MISSING.tone, origin: "derived", reason: "Item indisponível." };
+    // Código de integridade do Motor: vale mesmo quando o status persistido
+    // ainda é o anterior à regra (o snapshot só reclassifica no próximo cálculo).
+    if (item.integrityCode) {
+      return {
+        key: "SUSPECT",
+        code: item.integrityCode,
+        label: INTEGRITY_STATES.SUSPECT.label,
+        tone: INTEGRITY_STATES.SUSPECT.tone,
+        origin: "backend",
+        reason: item.integrityReason || item.problem || "Dado suspeito informado pelo Motor.",
+      };
+    }
     var map = { UNVALIDATED: "MISSING", SUSPECT_DATA: "SUSPECT", RECONCILING: "RECONCILING" };
     if (QUALITY_STATUSES.indexOf(item.status) !== -1) {
       var key = map[item.status];

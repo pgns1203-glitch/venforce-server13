@@ -18,7 +18,7 @@ const {
   round2,
 } = require("./marginEngine");
 const { buildConfidenceReport, LEVELS } = require("./marginConfidence");
-const { classifyStatus, DEFAULT_TARGET_MARGIN } = require("./marginStatus");
+const { classifyStatus, detectIntegrityIssue, DEFAULT_TARGET_MARGIN } = require("./marginStatus");
 const { buildProjectedVsRealized } = require("./marginComparison");
 
 // REQUISITO FINANCEIRO CRÍTICO: o realizado NUNCA cai para o projetado/Base
@@ -156,7 +156,14 @@ function buildMarginItem(params = {}) {
   }
 
   // ── Estado ────────────────────────────────────────────────────────────────
+  // Integridade avaliada sobre os mesmos insumos da margem exibida (realizada
+  // quando existe, senão projetada).
+  const integrityIssue = detectIntegrityIssue({
+    price: displayed.inputs ? displayed.inputs[FIELDS.PRICE] : null,
+    cost: displayed.inputs ? displayed.inputs[FIELDS.COST] : null,
+  });
   const status = classifyStatus({
+    integrityIssue,
     margin: displayed.margin,
     computable: displayed.computable,
     missing: displayed.missing,
@@ -287,6 +294,9 @@ function buildMarginItem(params = {}) {
       statusLabel: status.label,
       statusSeverity: status.severity,
       statusReasons: status.reasons,
+      // Problema de dado independente do status (ex.: custo_suspeito); null = nenhum.
+      integrityCode: integrityIssue ? integrityIssue.code : null,
+      integrityReason: integrityIssue ? integrityIssue.reason : null,
     },
   };
 }

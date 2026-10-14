@@ -467,6 +467,16 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-compbar').hidden"), true);
     });
 
+    await check("abas no topo da tabela: Precificar · Promoções · Diagnóstico (Precificar é a padrão; Diagnóstico é a Composição)", async () => {
+      const abas = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('#cm-view [data-view]'), function (b) { return b.getAttribute('data-view') + ':' + b.textContent.trim(); }).join('|')");
+      assert.strictEqual(abas, "operational:Precificar|promotions:Promoções|composition:Diagnóstico");
+      assert.strictEqual(await cdp.evaluate("window.VFCentralMargemUi.getState().view"), "operational");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-view [data-view=operational]').getAttribute('aria-pressed')"), "true");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-promos').hidden"), true, "o painel de promoções só aparece na aba Promoções");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-compbar').hidden"), true, "a barra de composição só aparece no Diagnóstico");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('cm-opportunities'))"), false, "a seção solta de Oportunidades no fim da página foi substituída pela aba");
+    });
+
     await check("visão Composição preserva a planilha técnica (6 fontes + Margem + Estado + Diagnóstico)", async () => {
       await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host thead [data-source-select]').length"), 6);

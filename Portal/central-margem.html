@@ -109,7 +109,15 @@
           <section class="cm-section cm-section--sheet" aria-labelledby="cm-sheet-title">
             <h2 class="vf-visually-hidden" id="cm-sheet-title">Produtos</h2>
             <div class="vf-card cm-sheet">
-              <div class="cm-sheet__toolbar">
+              <!-- Abas da Central: Precificar (decisão por produto) · Promoções
+                   (melhor promoção por anúncio, com veredito) · Diagnóstico
+                   (composição por fonte e divergências). -->
+              <nav class="vf-tabs cm-sheet__tabs cm-view" id="cm-view" role="group" aria-label="Seções da Central">
+                <button class="vf-tab is-active" type="button" data-view="operational" aria-pressed="true">Precificar</button>
+                <button class="vf-tab" type="button" data-view="promotions" aria-pressed="false">Promoções</button>
+                <button class="vf-tab" type="button" data-view="composition" aria-pressed="false">Diagnóstico</button>
+              </nav>
+              <div class="cm-sheet__toolbar" id="cm-sheet-toolbar">
                 <div class="cm-sheet__filters">
                   <div class="vf-field cm-context__search">
                     <label class="vf-visually-hidden" for="cm-search">Buscar produto</label>
@@ -147,10 +155,6 @@
                 </div>
                 <div class="cm-sheet__meta">
                   <span class="vf-tag is-neutral" id="cm-result-count">0 produtos</span>
-                  <div class="vf-segmented cm-view" id="cm-view" role="group" aria-label="Visão da tabela">
-                    <button class="vf-segmented__item is-active" type="button" data-view="operational" aria-pressed="true">Operacional</button>
-                    <button class="vf-segmented__item" type="button" data-view="composition" aria-pressed="false">Composição</button>
-                  </div>
                 </div>
               </div>
 
@@ -167,6 +171,34 @@
               </div>
 
               <div id="cm-table-host" class="cm-table-host" aria-live="polite"></div>
+
+              <!-- Promoções: uma linha por anúncio (a melhor promoção) com veredito
+                   do mesmo cálculo do simulador. Fonte bulk persistida; a página
+                   é cotada ao vivo em segundo plano. -->
+              <div class="cm-promos" id="cm-promos" hidden>
+                <div class="cm-promos__bar">
+                  <span class="cm-promos__badge" id="cm-opps-meta"></span>
+                  <label class="vf-filter-group">
+                    <span class="vf-visually-hidden">Filtrar por veredito</span>
+                    <select class="vf-select vf-select--sm" id="cm-promo-veredito">
+                      <option value="">Veredito: oportunidades</option>
+                      <option value="entrar">Entrar</option>
+                      <option value="entrar_se_girar">Entrar se girar</option>
+                      <option value="nao_entrar">Não entrar</option>
+                      <option value="bloqueado">Bloqueado</option>
+                      <option value="todos">Todos</option>
+                    </select>
+                  </label>
+                  <label class="vf-filter-group">
+                    <span class="vf-visually-hidden">Filtrar por tipo de promoção</span>
+                    <select class="vf-select vf-select--sm" id="cm-promo-tipo">
+                      <option value="">Tipo: todos</option>
+                    </select>
+                  </label>
+                  <span class="cm-promos__live" id="cm-promos-live" aria-live="polite"></span>
+                </div>
+                <div class="cm-promos__host" id="cm-opps-host"></div>
+              </div>
             </div>
 
             <nav class="vf-pagination" id="cm-pagination" aria-label="Paginação dos produtos" hidden></nav>
@@ -188,14 +220,6 @@
             </div>
           </section>
 
-          <!-- ── Oportunidades (fonte bulk persistida; sem N+1) ─────────── -->
-          <section class="cm-section cm-opps" id="cm-opportunities" aria-labelledby="cm-opps-title" hidden>
-            <div class="cm-divs__bar">
-              <h2 class="cm-divs__title" id="cm-opps-title">Oportunidades de preço e promoção</h2>
-              <span class="cm-divs__summary" id="cm-opps-meta"></span>
-            </div>
-            <div class="vf-card cm-opps__card" id="cm-opps-host"></div>
-          </section>
         </div>
       </div>
     </main>

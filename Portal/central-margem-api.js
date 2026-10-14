@@ -2109,13 +2109,16 @@
         .then(function (result) { return pricingResult(result, "Não foi possível carregar as promoções do Mercado Livre."); });
     }
 
-    /* Oportunidades da conta: fonte bulk persistida, zero chamadas ao ML.
-       Paginada NO SERVIDOR (page/limit → page, limit, total, hasNext). */
+    /* Promoções da conta (aba Promoções): fonte bulk persistida. `cotacao`:
+       "estimada" (padrão, zero chamadas ao ML) ou "viva" (cota só a página ao
+       vivo). Filtros `veredito`/`tipo` e paginação NO SERVIDOR
+       (page/limit → page, limit, total, hasNext). */
     function getOpportunities(params, signal) {
       params = params || {};
       var slug = String(params.clientSlug || "").trim();
       return call(precificacaoBase(slug) + "/oportunidades" + buildQuery({
         clienteContaId: params.clienteContaId, periodo: params.periodo, page: params.page, limit: params.limit,
+        veredito: params.veredito, tipo: params.tipo, cotacao: params.cotacao,
       }), { signal: signal })
         .then(function (result) { return pricingResult(result, "Não foi possível carregar as oportunidades."); });
     }

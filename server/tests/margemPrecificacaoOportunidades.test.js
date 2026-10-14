@@ -140,7 +140,7 @@ cenario("ranking explicável: veredito → com histórico → ΔLC × unidades; 
   assert.strictEqual(mlb3.precoPromocao, 95, "MLB3: a melhor promoção do mesmo item (menor perda por unidade)");
   assert.strictEqual(mlb3.opcoes_total, 2);
   assert.strictEqual(r.fonte.frescor, "atual");
-  assert.deepStrictEqual(r.filtro, { veredito: ["entrar", "entrar_se_girar"] });
+  assert.deepStrictEqual(r.filtro, { veredito: ["entrar", "entrar_se_girar"], tipo: null });
   assert.deepStrictEqual(r.contagem, { entrar: 0, entrar_se_girar: 3, nao_entrar: 1, bloqueado: 0 });
 });
 
@@ -225,6 +225,91 @@ cenario("margem atual com retorno ML da promoção em andamento: ΔLC parte da M
   assert.strictEqual(b.MLB2.flags.rebate_ambiguo, true);
 });
 
+cenario("filtro por tipo de promoção: considera só as promoções daquele tipo (melhor por anúncio), lista os tipos e as outras opções do anúncio", async () => {
+  const itens = [
+    diagRow("MLB1", { id: "A", tipo: "DEAL", preco: 90 }),
+    diagRow("MLB1", { id: "B", tipo: "SMART", preco: 92, retorno: 6 }),
+    diagRow("MLB1", { id: "C", tipo: "DEAL", preco: 88 }),
+    diagRow("MLB2", { id: "D", tipo: "DEAL", preco: 90 }),
+    diagRow("MLB3", { id: "E", tipo: "SMART", preco: 91, retorno: 6 }),
+  ];
+  const snaps = ["MLB1", "MLB2", "MLB3"].map((id) => snapRow(id));
+  const todas = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos" }, deps(fakeDb({ itens, snaps })));
+  assert.deepStrictEqual(todas.tipos, [{ tipo: "DEAL", total: 3 }, { tipo: "SMART", total: 2 }]);
+  const mlb1 = todas.oportunidades.find((o) => o.itemId === "MLB1");
+  assert.strictEqual(mlb1.opcoes_total, 3);
+  assert.strictEqual(mlb1.opcoes.length, 2, "as outras promoções do anúncio, para a linha expansível");
+  assert.ok(mlb1.opcoes.every((o) => o.promocao && o.veredito && "delta_lc" in o && "seller_banca" in o && "flags" in o));
+  assert.ok(!("opcoes" in mlb1.opcoes[0]), "a opção é um resumo, não uma linha completa");
+  const so = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos", tipo: "deal" }, deps(fakeDb({ itens, snaps })));
+  assert.deepStrictEqual(so.oportunidades.map((o) => o.itemId).sort(), ["MLB1", "MLB2"]);
+  assert.ok(so.oportunidades.every((o) => o.promocao.tipo === "DEAL"));
+  assert.strictEqual(so.oportunidades.find((o) => o.itemId === "MLB1").opcoes_total, 2, "opções contadas dentro do tipo");
+  assert.strictEqual(so.filtro.tipo, "deal");
+  assert.deepStrictEqual(so.tipos.map((t) => t.tipo), ["DEAL", "SMART"], "a lista de tipos não depende do filtro");
+});
+
+function cotacaoViva({ falhaItens = [], freteBaixo = [] } = {}) {
+  const chamadas = [];
+  return {
+    chamadas,
+    buscarComissaoEFrete: async (args) => {
+      chamadas.push(args);
+      if (falhaItens.includes(args.itemId)) return { comissaoValor: null, fretePrevisto: null };
+      return { comissaoValor: Math.round(args.precoEfetivo * 0.12 * 100) / 100, comissaoPercentual: 0.12, fretePrevisto: freteBaixo.includes(args.itemId) ? 0 : 15 };
+    },
+    mlFetch: async () => ({ ok: true, status: 200, data: {} }),
+    obterAnuncios: async (clienteId, ids) => new Map(ids.map((id) => [id, { item_id: id, listing_type_id: "gold_special", category_id: "MLB1", logistic_type: "xd_drop_off" }])),
+  };
+}
+
+cenario("?cotacao=viva: só a PÁGINA é cotada ao vivo; faixa de frete real; cotação que falha vira `bloqueado` na própria linha", async () => {
+  const itens = [diagRow("MLB1", { preco: 90, retorno: 8 }), diagRow("MLB2", { preco: 90, retorno: 8 }), diagRow("MLB3", { preco: 90, retorno: 8 }), diagRow("MLB4", { preco: 90, retorno: 8 })];
+  const snaps = itens.map((r) => snapRow(r.item_id));
+  const vivo = cotacaoViva({ falhaItens: ["MLB2"], freteBaixo: ["MLB1"] });
+  const d = { ...deps(fakeDb({ itens, snaps })), ...vivo };
+  const estimada = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos", limit: 3 }, d);
+  assert.deepStrictEqual(vivo.chamadas, [], "sem ?cotacao=viva a lista não consulta o ML");
+  assert.strictEqual(estimada.cotacao.modo, "estimada");
+  assert.ok(estimada.oportunidades.every((o) => o.estimado === true && o.cotacao.ao_vivo === false && o.flags.mudou_faixa_frete === null));
+
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos", limit: 3, cotacao: "viva" }, d);
+  assert.strictEqual(r.cotacao.modo, "viva");
+  assert.strictEqual(vivo.chamadas.length, 3, "UMA cotação por linha da página (3), não do catálogo (4)");
+  assert.deepStrictEqual(r.oportunidades.map((o) => o.itemId).sort(), estimada.oportunidades.map((o) => o.itemId).sort(), "mesma página da estimativa");
+  const por = Object.fromEntries(r.oportunidades.map((o) => [o.itemId, o]));
+  const ids = Object.keys(por);
+  for (const id of ids) {
+    const o = por[id];
+    if (id === "MLB2") {
+      assert.strictEqual(o.veredito, "bloqueado");
+      assert.strictEqual(o.veredito_motivo, "comissao_indisponivel");
+      assert.strictEqual(o.cenario.lc, null);
+      assert.strictEqual(o.cotacao.evidencia.comissao.motivo, "ml_indisponivel");
+      assert.strictEqual(o.estimado, false, "falha de cotação não volta para a estimativa");
+    } else {
+      assert.strictEqual(o.estimado, false);
+      assert.strictEqual(o.cotacao.ao_vivo, true);
+      assert.strictEqual(o.cenario.comissao, 10.8);
+      assert.strictEqual(o.flags.mudou_faixa_frete, id === "MLB1", `${id}: o frete caiu de 15 para 0 só no MLB1`);
+    }
+  }
+  assert.strictEqual(por.MLB1.cenario.frete, 0);
+  assert.strictEqual(por.MLB1.atual.frete, 15);
+  assert.ok(vivo.chamadas.every((c) => c.mlUserId === "555" && c.sellerId === "555" && c.precoEfetivo === 90 && c.listingTypeId === "gold_special"), "token e seller da conta");
+  // a ordem da página é refeita pelo mesmo critério: bloqueado por último
+  assert.strictEqual(r.oportunidades[r.oportunidades.length - 1].itemId, "MLB2");
+});
+
+cenario("?cotacao desconhecida: 400; padrão é a estimativa", async () => {
+  const db = fakeDb({ itens: [diagRow("MLB1")], snaps: [snapRow("MLB1")] });
+  await assert.rejects(
+    () => listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, cotacao: "agora" }, deps(db)),
+    (err) => err.statusCode === 400 && err.code === "FILTRO_INVALIDO"
+  );
+  assert.strictEqual(db.queries.length, 0);
+});
+
 cenario("filtro `veredito` desconhecido: 400 antes de qualquer leitura (nunca ignorado em silêncio)", async () => {
   const db = fakeDb({ itens: [diagRow("MLB1")], snaps: [snapRow("MLB1")] });
   await assert.rejects(
@@ -235,6 +320,29 @@ cenario("filtro `veredito` desconhecido: 400 antes de qualquer leitura (nunca ig
   assert.deepStrictEqual(parseVeredito(undefined), ["entrar", "entrar_se_girar"]);
   assert.deepStrictEqual(parseVeredito("Entrar, nao_entrar"), ["entrar", "nao_entrar"]);
   assert.strictEqual(parseVeredito("todos"), null);
+});
+
+cenario("controllers repassam veredito, tipo, cotacao, página e período ao serviço (e erro 400 do serviço chega como 400)", async () => {
+  const { createPromoSnapshotController } = require("../controllers/promoSnapshotController");
+  const { createMargemPrecificacaoController } = require("../controllers/margemPrecificacaoController");
+  const query = { clienteContaId: "7", veredito: "todos", tipo: "DEAL", cotacao: "viva", page: "2", limit: "10", periodo: "2026-09" };
+  const esperado = { clienteSlug: "loja-a", clienteContaId: "7", periodo: "2026-09", veredito: "todos", tipo: "DEAL", cotacao: "viva", page: "2", limit: "10" };
+  for (const criar of [
+    (oportunidades) => createPromoSnapshotController({ oportunidades }),
+    (oportunidades) => createMargemPrecificacaoController({ oportunidades }),
+  ]) {
+    let recebido = null;
+    const ctrl = criar({ listarOportunidades: async (p) => { recebido = p; return { ok: true, oportunidades: [] }; } });
+    const res = { status(c) { this.codigo = c; return this; }, json(b) { this.corpo = b; return this; } };
+    await ctrl.listarOportunidades({ params: { clienteSlug: "loja-a" }, query, user: { id: 1 } }, res);
+    assert.deepStrictEqual(recebido, esperado);
+    assert.strictEqual(res.codigo, 200);
+    const ruim = criar({ listarOportunidades: async () => { const e = new Error("x"); e.statusCode = 400; e.payload = { ok: false, codigo: "FILTRO_INVALIDO" }; throw e; } });
+    const res2 = { status(c) { this.codigo = c; return this; }, json(b) { this.corpo = b; return this; } };
+    await ruim.listarOportunidades({ params: { clienteSlug: "loja-a" }, query: { clienteContaId: "7", veredito: "x" }, user: { id: 1 } }, res2);
+    assert.strictEqual(res2.codigo, 400);
+    assert.strictEqual(res2.corpo.codigo, "FILTRO_INVALIDO");
+  }
 });
 
 cenario("rankearOportunidades é pura e estável: mesma entrada embaralhada → mesma página", () => {

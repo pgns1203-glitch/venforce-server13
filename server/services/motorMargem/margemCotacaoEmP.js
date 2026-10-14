@@ -176,4 +176,32 @@ function criarCotadorEmP({
   return { cotar, cotarVarios, estatisticas: () => ({ ...stats }), freteAplicavel };
 }
 
-module.exports = { criarCotadorEmP, MOTIVOS_COTACAO, LOGISTICA_SEM_FRETE_PREVISTO, mapComLimite };
+/** Cotação → entrada `cotacao` do core.calcularCenario. */
+function cotacaoParaNucleo(cotacao) {
+  return {
+    comissao: cotacao.comissao,
+    frete: cotacao.frete,
+    frete_aplicavel: cotacao.frete_aplicavel,
+    limite_excedido: cotacao.limite_excedido,
+  };
+}
+
+/** Evidência (fonte, data e motivo) de uma cotação, por componente. */
+function evidenciaDaCotacao(cotacao) {
+  if (!cotacao) return null;
+  return {
+    comissao: {
+      fonte: cotacao.fonte.comissao,
+      consultado_em: cotacao.consultado_em,
+      motivo: cotacao.comissao === null ? cotacao.motivos.comissao : null,
+    },
+    frete: {
+      fonte: cotacao.fonte.frete,
+      consultado_em: cotacao.frete_aplicavel ? cotacao.consultado_em : null,
+      motivo: cotacao.frete === null && cotacao.frete_aplicavel ? cotacao.motivos.frete : null,
+      aplicavel: cotacao.frete_aplicavel,
+    },
+  };
+}
+
+module.exports = { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao, MOTIVOS_COTACAO, LOGISTICA_SEM_FRETE_PREVISTO, mapComLimite };

@@ -21,7 +21,7 @@
 
 const pool = require("../../config/database");
 const core = require("./core");
-const { criarCotadorEmP } = require("./margemCotacaoEmP");
+const { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao } = require("./margemCotacaoEmP");
 const { carregarRebatesAtivos, margemAtualComRebate, MOTIVO_REBATE } = require("./margemAtualRebate");
 
 const MAX_CENARIOS = 20;
@@ -293,22 +293,7 @@ function deveCotar(tarefa, atual) {
   return !(precoAtual !== null && tarefa.preco >= precoAtual - core.TOLERANCIA_VALOR);
 }
 
-function evidenciaCotacao(cotacao) {
-  if (!cotacao) return null;
-  return {
-    comissao: {
-      fonte: cotacao.fonte.comissao,
-      consultado_em: cotacao.consultado_em,
-      motivo: cotacao.comissao === null ? cotacao.motivos.comissao : null,
-    },
-    frete: {
-      fonte: cotacao.fonte.frete,
-      consultado_em: cotacao.frete_aplicavel ? cotacao.consultado_em : null,
-      motivo: cotacao.frete === null && cotacao.frete_aplicavel ? cotacao.motivos.frete : null,
-      aplicavel: cotacao.frete_aplicavel,
-    },
-  };
-}
+const evidenciaCotacao = evidenciaDaCotacao;
 
 function calcularTarefa(tarefa, ctx) {
   const { atual, flags, meta, cotacoes, evidenciaBase, rebateAtual } = ctx;
@@ -349,7 +334,7 @@ function calcularTarefa(tarefa, ctx) {
     atual,
     cenario: { tipo: tarefa.tipo, preco: tarefa.preco, rebate: tarefa.rebate, status_promocao: tarefa.status_promocao },
     cotacao: cotacao
-      ? { comissao: cotacao.comissao, frete: cotacao.frete, frete_aplicavel: cotacao.frete_aplicavel, limite_excedido: cotacao.limite_excedido }
+      ? cotacaoParaNucleo(cotacao)
       : { comissao: null, frete: null, frete_aplicavel: ctx.freteAplicavel },
     meta,
     flags,

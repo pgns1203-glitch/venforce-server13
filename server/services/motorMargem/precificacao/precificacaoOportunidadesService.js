@@ -39,6 +39,7 @@ const pool = require("../../../config/database");
 const core = require("../core");
 const { carregarRebatesDaConta, MOTIVO_REBATE } = require("../margemAtualRebate");
 const { sqlOportunidadesElegiveis, lerLinhas } = require("./precificacaoOportunidadesSql");
+const { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao, mapComLimite } = require("../margemCotacaoEmP");
 
 const FRESCO_MIN = 360; // 6h — mesmos limiares de promocoesDiagnosticoService
 const ANTIGO_MIN = 1440; // 24h
@@ -84,6 +85,16 @@ function defaults(deps = {}) {
     carregarRealizada:
       deps.carregarRealizada || require("../marginSnapshotReadService").carregarRealizadaDoPeriodo,
     now: deps.now || (() => new Date()),
+    // Cotação AO VIVO da página (só com ?cotacao=viva) — injetável nos testes.
+    buscarComissaoEFrete: deps.buscarComissaoEFrete || ((...a) => require("../../shared/marketplaceCurrentQuoteService").buscarComissaoEFrete(...a)),
+    mlFetch: deps.mlFetch || ((...a) => require("../../../utils/mlClient").mlFetch(...a)),
+    obterAnuncios: deps.obterAnuncios || (async (clienteId, itemIds) => {
+      const r = await (deps.db || pool).query(
+        `SELECT item_id, listing_type_id, category_id, logistic_type FROM meli_anuncios WHERE cliente_id = $1 AND item_id = ANY($2::text[])`,
+        [clienteId, itemIds]
+      );
+      return new Map(r.rows.map((x) => [x.item_id, x]));
+    }),
     // Promo Snapshot (injetável nos testes).
     promo: deps.promo || {
       estadoComAutoTrigger: (identidade, opts) =>
@@ -155,7 +166,8 @@ function metaDaLinha(snap) {
 
 // Uma candidata a partir de (promoção, snapshot de margem) — mesma régua para
 // as duas fontes. null = fora do ranking (ativa / sem desconto efetivo).
-function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false, rebateAtual = null, rebateIndisponivel = null }) {
+function montarCandidata(args) {
+  const { itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false, rebateAtual = null, rebateIndisponivel = null, cotacaoReal = null } = args;
   if (motivoForaDoRanking({ status: promocao && promocao.status, precoPromo, precoAtual: snap.price })) return null;
 
   // Composição de hoje: a mesma da tabela (snapshot + retorno ML em andamento).
@@ -176,8 +188,10 @@ function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo
       comissao: num(snap.commission), frete: num(snap.freight), rebate: rebateEmAndamento === null ? 0 : rebateEmAndamento,
     },
     cenario: { tipo: "promo", preco: num(precoPromo), rebate: retornoMl || 0, status_promocao: promocao && promocao.status },
-    // Estimativa DECLARADA (sem consulta ao ML): taxa de comissão do snapshot × P' e frete do snapshot.
-    cotacao: { comissao: taxa === null ? null : round2(num(precoPromo) * taxa), frete: num(snap.freight), frete_aplicavel: freteAplicavel },
+    // Sem cotação real, a estimativa é DECLARADA (sem consulta ao ML): taxa de comissão do snapshot × P' e frete do snapshot.
+    cotacao: cotacaoReal
+      ? cotacaoParaNucleo(cotacaoReal)
+      : { comissao: taxa === null ? null : round2(num(precoPromo) * taxa), frete: num(snap.freight), frete_aplicavel: freteAplicavel },
     meta,
     flags: {
       rebate_ambiguo: rebateAmbiguo,
@@ -207,7 +221,7 @@ function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo
     // Vendas indisponíveis (Central de Vendas falhou): null, nunca "0 un.".
     unidades,
     receita: vendasIndisponivel ? null : vendas ? num(vendas.receita) : null,
-    estimado: true,
+    estimado: !cotacaoReal,
     // O mesmo cenário do /simular:
     veredito: calc.veredito,
     veredito_motivo: calc.motivo,
@@ -221,23 +235,52 @@ function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo
     impacto_lc: impacto,
     flags: {
       ...calc.flags,
-      // A faixa de frete só se conhece cotando: a lista estima, então não afirma.
-      mudou_faixa_frete: null,
+      // A faixa de frete só se conhece cotando: estimando, a lista não afirma.
+      mudou_faixa_frete: cotacaoReal ? calc.flags.mudou_faixa_frete : null,
       sem_historico: !temHistorico,
     },
     atual: calc.atual,
     cenario: calc.cenario,
     meta: calc.meta,
-    cotacao: {
-      ao_vivo: false,
-      fonte: "estimada_snapshot",
-      comissao_taxa: taxa,
-      motivo: "A lista não consulta o Mercado Livre: comissão = taxa do snapshot × P'; frete = o do snapshot.",
-    },
+    cotacao: cotacaoReal
+      ? { ao_vivo: true, fonte: "ml_listing_prices", consultado_em: cotacaoReal.consultado_em, evidencia: evidenciaDaCotacao(cotacaoReal) }
+      : {
+        ao_vivo: false,
+        fonte: "estimada_snapshot",
+        comissao_taxa: taxa,
+        motivo: "Estimativa: comissão = taxa do snapshot × P'; frete = o do snapshot. A cotação ao vivo confirma.",
+      },
     opcoes_total: 1,
   };
   linha.motivo = motivoDa(linha);
+  // Entradas guardadas (fora do JSON) para refazer o mesmo cenário com a cotação real.
+  Object.defineProperty(linha, "__args", { value: args, enumerable: false });
   return linha;
+}
+
+// Cópia que preserva as entradas guardadas (o spread não leva propriedade não enumerável).
+function copiarCandidata(c, extra = {}) {
+  const copia = { ...c, ...extra };
+  if (c.__args) Object.defineProperty(copia, "__args", { value: c.__args, enumerable: false });
+  return copia;
+}
+
+// Opção (outra promoção do mesmo anúncio): só o que a linha expandida mostra.
+function resumoDaOpcao(c) {
+  return {
+    promocao: c.promocao,
+    precoPromocao: c.precoPromocao,
+    retornoMl: c.retornoMl,
+    veredito: c.veredito,
+    veredito_motivo: c.veredito_motivo,
+    delta_lc: c.delta_lc,
+    margemDepois: c.margemDepois,
+    lucroDepois: c.lucroDepois,
+    seller_banca: c.seller_banca,
+    ml_banca: c.ml_banca,
+    flags: c.flags,
+    estimado: c.estimado,
+  };
 }
 
 // Ordem das candidatas: veredito → com histórico antes de sem histórico →
@@ -267,21 +310,32 @@ function compararCandidatas(a, b) {
  * veredito sobre essa linha, ordem e página. Pura — o serviço e os testes usam
  * a mesma função.
  */
-function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PADRAO }) {
-  const porItem = new Map();
+function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PADRAO, tipo = null }) {
+  // Tipos de promoção presentes (para o filtro da tela): contados ANTES de filtrar por tipo.
+  const tiposMap = new Map();
   for (const c of candidatas) {
+    const t = c.promocao && c.promocao.tipo ? String(c.promocao.tipo) : null;
+    if (t) tiposMap.set(t, (tiposMap.get(t) || 0) + 1);
+  }
+  const tipos = Array.from(tiposMap, ([nome, total]) => ({ tipo: nome, total })).sort((a, b) => (a.tipo < b.tipo ? -1 : 1));
+  const alvo = tipo ? String(tipo).toLowerCase() : null;
+  const base = alvo ? candidatas.filter((c) => String((c.promocao && c.promocao.tipo) || "").toLowerCase() === alvo) : candidatas;
+
+  const porItem = new Map();
+  for (const c of base) {
     const grupo = porItem.get(c.itemId);
-    if (!grupo) porItem.set(c.itemId, { melhor: c, total: 1 });
+    if (!grupo) porItem.set(c.itemId, { melhor: c, todas: [c] });
     else {
-      grupo.total += 1;
+      grupo.todas.push(c);
       if (compararCandidatas(c, grupo.melhor) < 0) grupo.melhor = c;
     }
   }
   const melhores = [];
   const contagem = { [VEREDITOS.ENTRAR]: 0, [VEREDITOS.ENTRAR_SE_GIRAR]: 0, [VEREDITOS.NAO_ENTRAR]: 0, [VEREDITOS.BLOQUEADO]: 0 };
-  for (const { melhor, total } of porItem.values()) {
+  for (const { melhor, todas } of porItem.values()) {
     contagem[melhor.veredito] += 1;
-    melhores.push({ ...melhor, opcoes_total: total });
+    const outras = todas.filter((c) => c !== melhor).sort(compararCandidatas);
+    melhores.push(copiarCandidata(melhor, { opcoes_total: todas.length, opcoes: outras.map(resumoDaOpcao) }));
   }
   const aceitos = veredito === null ? melhores : melhores.filter((c) => veredito.includes(c.veredito));
   aceitos.sort(compararCandidatas);
@@ -291,6 +345,7 @@ function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PA
     pagina: aceitos.slice(inicio, inicio + limit),
     hasNext: inicio + limit < aceitos.length,
     contagem,
+    tipos,
   };
 }
 
@@ -307,6 +362,20 @@ function parseVeredito(bruto) {
     throw erroHttp(400, "FILTRO_INVALIDO", `Filtro "veredito" inválido. Aceitos: ${validos.join(", ")} ou todos.`);
   }
   return Array.from(new Set(valores));
+}
+
+// `tipo` da requisição: texto livre (tipo da promoção do ML); vazio = todos.
+function parseTipo(bruto) {
+  if (bruto === undefined || bruto === null || String(bruto).trim() === "") return null;
+  return String(bruto).trim().slice(0, 80);
+}
+
+// `cotacao`: "estimada" (padrão, sem ML) ou "viva" (cota só a página, ao vivo).
+function parseCotacao(bruto) {
+  if (bruto === undefined || bruto === null || String(bruto).trim() === "") return "estimada";
+  const v = String(bruto).trim().toLowerCase();
+  if (v !== "estimada" && v !== "viva") throw erroHttp(400, "FILTRO_INVALIDO", 'Parâmetro "cotacao" inválido. Aceitos: estimada, viva.');
+  return v;
 }
 
 async function carregarVendas(d, cliente, conta, params, deps) {
@@ -361,22 +430,56 @@ function candidataDaLinha(r, promocao, vendasPorMlb, vendasIndisponivel, rebates
   });
 }
 
-function respostaDaLista({ base, candidatas, pag, veredito }) {
-  const { total, pagina, hasNext, contagem } = rankearOportunidades(candidatas, { page: pag.page, limit: pag.limit, veredito });
+/**
+ * Refina a PÁGINA já escolhida com a cotação REAL em P' (listing_prices +
+ * shipping free, só GET): o recorte e a página vêm da estimativa; aqui só os
+ * números e o veredito de cada linha passam a ser exatos. Cotação que falha
+ * não some com a linha: ela vira `bloqueado` com o motivo (sem voltar à
+ * estimativa). Dentro da página a ordem é refeita pelo mesmo critério.
+ */
+async function refinarPaginaAoVivo({ pagina, d, cliente, sellerId }) {
+  const anuncios = await d.obterAnuncios(cliente.id, pagina.map((c) => c.itemId));
+  let consultas = 0;
+  const refinadas = await mapComLimite(pagina, 4, async (c) => {
+    if (!c.__args) return c;
+    const cotador = criarCotadorEmP({
+      clienteId: cliente.id, itemId: c.itemId, anuncio: anuncios.get(c.itemId) || null, sellerId, mlUserId: sellerId,
+      buscarComissaoEFrete: d.buscarComissaoEFrete, mlFetch: d.mlFetch, now: d.now, maxCotacoes: 1,
+    });
+    const cotacao = await cotador.cotar(c.precoPromocao);
+    consultas += cotador.estatisticas().chamadas;
+    const nova = montarCandidata({ ...c.__args, cotacaoReal: cotacao });
+    return nova ? copiarCandidata(nova, { opcoes_total: c.opcoes_total, opcoes: c.opcoes }) : c;
+  });
+  refinadas.sort(compararCandidatas);
+  return { pagina: refinadas, consultas };
+}
+
+async function respostaDaLista({ base, candidatas, pag, veredito, tipo, cotacao, d, cliente, sellerId }) {
+  const ranking = rankearOportunidades(candidatas, { page: pag.page, limit: pag.limit, veredito, tipo });
+  let pagina = ranking.pagina;
+  let consultas = 0;
+  if (cotacao === "viva" && pagina.length) {
+    const r = await refinarPaginaAoVivo({ pagina, d, cliente, sellerId });
+    pagina = r.pagina;
+    consultas = r.consultas;
+  }
   return {
     ...base,
     page: pag.page,
     limit: pag.limit,
-    total,
-    hasNext,
-    filtro: { veredito: veredito === null ? "todos" : veredito },
-    contagem,
+    total: ranking.total,
+    hasNext: ranking.hasNext,
+    filtro: { veredito: veredito === null ? "todos" : veredito, tipo },
+    contagem: ranking.contagem,
+    tipos: ranking.tipos,
+    cotacao: { modo: cotacao, consultas },
     oportunidades: pagina,
   };
 }
 
 // ─── Fonte principal: Promo Snapshot ─────────────────────────────────────────
-async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, params, deps, pag, veredito }) {
+async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, params, deps, pag, veredito, tipo, cotacao }) {
   const { vendasPorMlb, periodo, indisponivel } = await carregarVendas(d, cliente, conta, params, deps);
   const { rows } = await d.promo.listarElegiveis({ clienteId: cliente.id, clienteContaId: conta.id, sellerId, runId: estado.snapshotRunId });
   // Retorno ML das promoções EM ANDAMENTO da conta — uma consulta (a margem
@@ -396,6 +499,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
     observadaEm: r.promo_observado_em || null,
   }, vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
   return respostaDaLista({
+    d, cliente, sellerId, tipo, cotacao,
     base: {
       ok: true,
       disponivel: true,
@@ -421,7 +525,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
 }
 
 // ─── Compatibilidade: diagnóstico da tela antiga ─────────────────────────────
-async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params, deps, pag, veredito }) {
+async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params, deps, pag, veredito, tipo, cotacao }) {
   const head = await consultaOuVazio(
     d.db,
     `SELECT id, created_at, parcial, itens_scaneados
@@ -470,6 +574,7 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
     id: r.promo_id || null, chave: r.chave || null, nome: r.promo_nome || null, tipo: r.promo_tipo || null, status: r.promo_status || null,
   }, vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
   return respostaDaLista({
+    d, cliente, sellerId, tipo, cotacao,
     base: { ...base, periodo: periodoPublico(periodo), ...vendasPublico(indisponivel) },
     candidatas,
     pag,
@@ -496,6 +601,8 @@ async function listarOportunidades(params = {}, deps = {}) {
   const d = defaults(deps);
   // Filtro inválido recusa antes de qualquer leitura.
   const veredito = parseVeredito(params.veredito);
+  const tipo = parseTipo(params.tipo);
+  const cotacao = parseCotacao(params.cotacao);
   const { cliente, conta } = await d.resolverContaDoCliente(
     { clienteSlug: params.clienteSlug, clienteContaId: params.clienteContaId },
     deps
@@ -526,7 +633,7 @@ async function listarOportunidades(params = {}, deps = {}) {
     if (!(err && err.code === "42P01")) throw err;
   }
 
-  const ctx = { d, cliente, conta, sellerId, estado, sync, params, deps, pag, veredito };
+  const ctx = { d, cliente, conta, sellerId, estado, sync, params, deps, pag, veredito, tipo, cotacao };
   if (estado && estado.hasSnapshot) return oportunidadesDoSnapshot(ctx);
 
   const legado = await oportunidadesDoLegado(ctx);
@@ -552,6 +659,8 @@ module.exports = {
   rankearOportunidades,
   compararCandidatas,
   parseVeredito,
+  parseTipo,
+  parseCotacao,
   motivoForaDoRanking,
   MOTIVO_FORA_DO_RANKING,
   VEREDITOS_PADRAO,

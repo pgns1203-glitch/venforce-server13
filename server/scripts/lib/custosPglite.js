@@ -67,6 +67,13 @@ async function criarBancoCustos({ ensure = true } = {}) {
       UNIQUE (base_id, produto_id)
     );
     ALTER TABLE custos ADD COLUMN IF NOT EXISTS id_model TEXT;
+    -- Base vinculada (buildCostRowsFromBase → resolverBaseVinculada).
+    CREATE TABLE clientes (id SERIAL PRIMARY KEY, nome TEXT, slug TEXT UNIQUE NOT NULL, ativo BOOLEAN DEFAULT true);
+    CREATE TABLE base_cliente_vinculos (
+      id SERIAL PRIMARY KEY, base_id INTEGER REFERENCES bases(id) ON DELETE CASCADE, cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE,
+      marketplace TEXT, origem TEXT DEFAULT 'manual', ativo BOOLEAN DEFAULT true, cliente_conta_id INTEGER,
+      confirmado_por INTEGER, created_at TIMESTAMP DEFAULT NOW(), updated_at TIMESTAMP DEFAULT NOW()
+    );
   `);
   if (ensure) {
     const { ensureColunasCustos } = require("../../services/bases/baseCustosService");

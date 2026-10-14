@@ -217,6 +217,70 @@ async function main() {
     ok("TikTok: chave = sku_id, como sempre", tiktok.every((r) => chaveDadosCusto(r, "tiktok") === r.sku_id));
   }
 
+  console.log("\n▸ Fechamento: Order.all → Performance → Base vinculada (banco) → motor");
+  {
+    const { processShopee } = require("../services/fechamentoFinanceiro/shopeePerformanceService");
+    const { buildCostRowsFromBase } = require("../services/bases/baseCustosService");
+    await pool.query(`INSERT INTO clientes (nome, slug) VALUES ('Loja', 'loja')`);
+    async function vincular(slug, linhas) {
+      const b = (await pool.query(`INSERT INTO bases (slug, nome, marketplace) VALUES ($1, $1, 'shopee') RETURNING id`, [slug])).rows[0].id;
+      for (const [item, model, custo, imposto] of linhas) {
+        await pool.query(`INSERT INTO custos (base_id, produto_id, custo_produto, imposto_percentual, id_model) VALUES ($1,$2,$3,$4,$5)`, [b, item, custo, imposto, model]);
+      }
+      await pool.query(`UPDATE base_cliente_vinculos SET ativo = false`);
+      await pool.query(`INSERT INTO base_cliente_vinculos (base_id, cliente_id, marketplace) VALUES ($1, 1, 'shopee')`, [b]);
+    }
+    const perf = (itemId, variationId, sku, produto, variacao) => ({
+      "ID do Item": itemId, Produto: produto, "Status Atual do Item": "Normal", "ID da Variação": variationId, "Nome da Variação": variacao,
+      "Status Atual da Variação": "Normal", "SKU da Variação": sku, "SKU Principle": "", "Vendas (Pedido pago) (BRL)": 0,
+      "Unidades (Pedido pago)": 0, "Impressão do Produto": 0, "Cliques Por Produto": 0, CTR: "0%",
+    });
+    const venda = (id, sku, produto, variacao, preco, extra = {}) => ({
+      "ID do pedido": id, "Status do pedido": "Concluído", "Cancelar Motivo": "", "Status da Devolução / Reembolso": "",
+      "Nº de referência do SKU principal": "", "Nome do Produto": produto, "Número de referência SKU": sku, "Nome da variação": variacao,
+      "Preço acordado": String(preco), Quantidade: "1", "Subtotal do produto": String(preco), "Valor Total": String(preco),
+      "Taxa de transação": "0.00", "Taxa de comissão líquida": (preco * 0.18).toFixed(2), "Taxa de serviço líquida": "4.00",
+      "Valor estimado do frete": "", ...extra,
+    });
+    const PERFORMANCE = [
+      perf("1001", "5001", "CAN-BRANCO", "Caneca", "Branco"), perf("1001", "5002", "CAN-PRETO", "Caneca", "Preto"),
+      perf("1002", "5003", "PRATO-1", "Prato", "Azul"), perf("1002", "5004", "PRATO-2", "Prato", "Verde"),
+      perf("1003", "5005", "COPO-1", "Copo", "Vidro"), perf("1003", "5006", "COPO-2", "Copo", "Cristal"),
+    ];
+    const ORDER_ALL = [
+      venda("A", "CAN-BRANCO", "Caneca", "Branco", 50),          // Model 5001 pela ponte
+      venda("B", "CAN-PRETO", "Caneca", "Preto", 50),            // Model 5002 pela ponte
+      venda("C", "PRATO-1", "Prato", "Azul", 40),                // Model 5003 pela ponte
+      venda("D", "COPO-SUMIU", "Copo", "", 30),                  // Item 1003 por título, Models 5 × 8 → ambíguo
+      venda("E", "PRATO-SUMIU", "Prato", "", 40),                // Item 1002 por título, Models 12 = 12 → equivalente
+      venda("F", "", "Caneca", "", 50, { "ID do item": "1001", "ID do modelo": "5002" }), // match direto Item + Model
+    ];
+    // Base Red Fish-like: o mesmo Item com Models de custos DIFERENTES (Caneca, Copo) e iguais (Prato).
+    const MATRIZ = [["1001", "5001", 9, 0.1], ["1001", "5002", 20, 0.1], ["1002", "5003", 12, 0.1], ["1002", "5004", 12, 0.1], ["1003", "5005", 5, 0.1], ["1003", "5006", 8, 0.1]];
+    async function fechar(slug, linhas) {
+      await vincular(slug, linhas);
+      const { costRows } = await buildCostRowsFromBase({ clienteSlug: "loja", marketplace: "shopee" });
+      const r = processShopee(PERFORMANCE, costRows, 0, 0, 0, ORDER_ALL);
+      const por = Object.fromEntries(r.detailedRows.map((d) => [d["ID do pedido"], d]));
+      return { r, por, costRows };
+    }
+    // ANTES: o banco achatado guardava o ÚLTIMO Model de cada Item.
+    const ultimo = new Map(MATRIZ.map((l) => [l[0], l]));
+    const antes = await fechar("fechamento-antes", [...ultimo.values()]);
+    const depois = await fechar("fechamento-depois", MATRIZ);
+    ok("a base vinculada entrega ao motor TODAS as variações (6 linhas, não 3)", depois.costRows.length === 6 && antes.costRows.length === 3);
+    ok("Model 5001 recebe o custo A (9); Model 5002 recebe o custo B (20)", depois.por.A.CMV === 9 && depois.por.B.CMV === 20);
+    ok("duas variações do mesmo Item com LC/MC diferentes", depois.por.A.LC !== depois.por.B.LC && depois.por.A.MC !== depois.por.B.MC);
+    ok("ponte Performance → Item/Model", depois.por.A["Match de custo"] === "bridge_variation_id" && depois.por.A["ID resolvido pela ponte"] === "5001");
+    ok("match direto Item + Model", /^direct/.test(depois.por.F["Match de custo"]) && depois.por.F.CMV === 20);
+    ok("equivalência: Models do Item com o MESMO custo → custo do Item", depois.por.E["Match de custo"] === "bridge_item_financial_equivalent" && depois.por.E.CMV === 12);
+    ok("ambiguidade: Models com custos diferentes e variação desconhecida → sem custo (nunca o primeiro)", depois.por.D.CMV === null && depois.por.D.LC === null);
+    ok("antes (achatada): o Model que o banco perdeu ficava sem custo — sem contaminar com o custo de outro Model",
+      antes.por.A.CMV === null && antes.por.B.CMV === 20);
+    ok(`cobertura antes ${antes.r.summary.calculatedCoveragePercent}% → depois ${depois.r.summary.calculatedCoveragePercent}%`,
+      depois.r.summary.calculatedCoveragePercent > antes.r.summary.calculatedCoveragePercent);
+  }
+
   console.log(`\ncustosShopeeItemModelSqlCheck: ${checks}/${checks} verificações SQL OK (PGlite)`);
   await fechar();
 }

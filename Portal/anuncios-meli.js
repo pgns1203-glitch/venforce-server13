@@ -1170,7 +1170,7 @@
     linha.classList.toggle("is-aberta", abrindo);
     painel.hidden = !abrindo;
     atualizarBotaoExpandir();
-    if (!abrindo) return;
+    if (!abrindo) { renderBarraCustos(); return; }
 
     var cache = AM.state.familyCache[familyId];
     if (cache) {
@@ -1257,6 +1257,10 @@
     var idsFilhos = [];
     painel.querySelectorAll(".am-margem[data-margem-item]").forEach(function (c) { idsFilhos.push(c.getAttribute("data-margem-item")); });
     garantirCustos(idsFilhos);
+    // Com o custo dos filhos já no cache (família aberta antes, ou vista
+    // antes de trocar o filtro), garantirCustos não lê nada e o aviso
+    // "N sem custo nesta página" nunca seria recontado — reconta aqui.
+    renderBarraCustos();
     if (CUSTOS.modo) aplicarModoNaLista();
     // Expandir não mexe na capa: ela já veio decidida na listagem.
   }
@@ -3560,9 +3564,12 @@
     return null;
   }
 
-  function itensDeCustoNaTela() {
+  function itensDeCustoNaTela(soVisiveis) {
     var ids = [];
     document.querySelectorAll("#am-catalogo-container .am-margem[data-margem-item]").forEach(function (cel) {
+      // Família recolhida mantém os filhos no DOM (reabrir não refaz a
+      // requisição) — eles não estão "nesta página" para o operador.
+      if (soVisiveis && cel.closest(".am-grupo-painel[hidden]")) return;
       var id = cel.getAttribute("data-margem-item");
       if (ids.indexOf(id) < 0) ids.push(id);
     });
@@ -4017,7 +4024,7 @@
     }
 
     if (!CUSTOS.modo) {
-      var semCusto = itensDeCustoNaTela().filter(function (id) { return CUSTOS.cache[id] === null; }).length;
+      var semCusto = itensDeCustoNaTela(true).filter(function (id) { return CUSTOS.cache[id] === null; }).length;
       // Na linha da busca quando há o slot; senão, na barra própria.
       var alvo = slot || box;
       if (slot) box.innerHTML = "";

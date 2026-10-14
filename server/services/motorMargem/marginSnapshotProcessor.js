@@ -36,7 +36,10 @@
 //    pedido pela tela (M5).
 //
 // 3. Unidade de retry = lote. A cotação por item nunca lança (o Motor engole
-//    e devolve null) — então nenhum item é "corrigido" aqui.
+//    e devolve null) — então nenhum item é "corrigido" aqui. Exceção: item
+//    com comissão/frete ausentes por falha de leitura (cotacaoIncompleta)
+//    ganha UMA repescagem no fim do run e, se continuar incompleto, não é
+//    gravado (o núcleo assumiria 0 e a margem sairia inflada).
 
 const pool = require("../../config/database");
 const motorMargem = require("./motorMargemService");
@@ -189,6 +192,21 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
   };
 }
 
+// Cotação de comissão/frete INCOMPLETA por falha de leitura, não por fato.
+// `obterCotacaoAtual` engole 429/timeout de listing_prices/shipping_options
+// e devolve null (ver marketplaceCurrentQuoteService) — o núcleo então
+// assume 0 e a margem sai "computável" e inflada (ex.: 48% gravado contra
+// 22% real, comissão e frete zerados). Frete ausente é legítimo só quando o
+// envio é combinável (o ML não cota) — mesma lista de buscarComissaoEFrete.
+const LOGISTICAS_COMBINAVEIS = ["not_specified", "custom", ""];
+
+function cotacaoIncompleta(item) {
+  const diag = item && item.diagnostico;
+  const faltantes = (diag && diag.faltantesMeliApi) || [];
+  if (faltantes.includes("comissao")) return true;
+  return faltantes.includes("frete") && !LOGISTICAS_COMBINAVEIS.includes((diag && diag.logisticType) || "");
+}
+
 // Vai para log, last_error e error_message: truncada e sem segredo.
 function mensagemCurta(err) {
   return redigirSegredos(err?.message || "Erro desconhecido.", 500);
@@ -234,7 +252,10 @@ async function processMarginSnapshotRun(run, deps = {}) {
   const limiter = deps.rateLimiter || obterLimiterDoProcesso(config);
 
   const inicio = clock();
-  const stats = { retries: 0, rateLimitedRetries: 0, lotesFalhos: 0, itensNaoRetornados: 0, itensForaDoCatalogo: 0 };
+  const stats = {
+    retries: 0, rateLimitedRetries: 0, lotesFalhos: 0, itensNaoRetornados: 0, itensForaDoCatalogo: 0,
+    cotacaoIncompleta: 0, cotacaoIncompletaRecuperada: 0,
+  };
 
   // Log estruturado: ids e contadores, mensagens redigidas (marginSnapshotLog).
   function evento(nivel, nome, campos = {}) {
@@ -330,6 +351,8 @@ async function processMarginSnapshotRun(run, deps = {}) {
         lotesFalhos: stats.lotesFalhos,
         itensNaoRetornados: stats.itensNaoRetornados,
         itensForaDoCatalogo: stats.itensForaDoCatalogo,
+        cotacaoIncompleta: stats.cotacaoIncompleta,
+        cotacaoIncompletaRecuperada: stats.cotacaoIncompletaRecuperada,
         duracaoMs: clock() - inicio,
       },
     };
@@ -339,6 +362,23 @@ async function processMarginSnapshotRun(run, deps = {}) {
   let successItems = 0;
   let failedItems = 0;
   let falhasConsecutivas = 0;
+  // Itens com cotação incompleta (ver cotacaoIncompleta): nunca gravados com
+  // comissão/frete assumidos 0 — vão para a repescagem no fim do run.
+  const repescagem = [];
+
+  async function gravarItem(item) {
+    const itemId = String(item.identity.itemId);
+    try {
+      const dados = mapItemParaSnapshot({ item, run, base: prepared.base, observedAt });
+      await upsertProjectionSnapshot(dados, db);
+      successItems += 1;
+    } catch (err) {
+      // Falha técnica isolada de persistência: a linha anterior (se
+      // existir) fica intocada — o UPSERT simplesmente não aconteceu.
+      failedItems += 1;
+      evento("error", "margin_snapshot_item_persist_failed", { item_id: itemId, erro: mensagemCurta(err) });
+    }
+  }
 
   await registrarProgresso({ processedItems, successItems, failedItems, cursorOffset: 0, totalItems: total });
 
@@ -363,16 +403,11 @@ async function processMarginSnapshotRun(run, deps = {}) {
         // a listagem e o detalhe): não é snapshot, é "não retornado" abaixo.
         if (!itemId || !loteIds.includes(itemId) || retornados.has(itemId)) continue;
         retornados.add(itemId);
-        try {
-          const dados = mapItemParaSnapshot({ item, run, base: prepared.base, observedAt });
-          await upsertProjectionSnapshot(dados, db);
-          successItems += 1;
-        } catch (err) {
-          // Falha técnica isolada de persistência: a linha anterior (se
-          // existir) fica intocada — o UPSERT simplesmente não aconteceu.
-          failedItems += 1;
-          evento("error", "margin_snapshot_item_persist_failed", { item_id: itemId, erro: mensagemCurta(err) });
+        if (cotacaoIncompleta(item)) {
+          repescagem.push(itemId);
+          continue;
         }
+        await gravarItem(item);
       }
 
       const naoRetornados = loteIds.filter((id) => !retornados.has(id));
@@ -427,6 +462,50 @@ async function processMarginSnapshotRun(run, deps = {}) {
     }
     // Espaçamento entre lotes: feito pelo limiter do processo (comVez), que
     // vale para TODOS os runs — não há mais pausa própria por run aqui.
+  }
+
+  // ── 3b. Repescagem da cotação incompleta ────────────────────────────────
+  // Falha de comissão/frete costuma ser 429 momentâneo do ML: uma segunda
+  // leitura, depois de uma pausa, normalmente traz os valores. O que
+  // continuar incompleto NÃO é gravado — a linha anterior (se houver) fica
+  // com os valores dela + refresh_status failed, como num lote que falhou.
+  // Um número inflado na lista é pior que um número antigo ou "—".
+  stats.cotacaoIncompleta = repescagem.length;
+  if (repescagem.length) {
+    await sleep(config.batchBackoffBaseMs, signal);
+    const aindaIncompletos = [];
+    for (let i = 0; i < repescagem.length; i += BATCH_SIZE) {
+      verificarParada();
+      const loteIds = repescagem.slice(i, i + BATCH_SIZE);
+      const tentativa = await executarComRetry(
+        () => comVez(() => enrichBatch(prepared, { itemIds: loteIds }, { ...deps, db })),
+        { config, sleep, signal, onRetry: aoRetentar("repescagem_cotacao") }
+      );
+      const recuperados = new Set();
+      if (tentativa.ok) {
+        for (const item of tentativa.value.itens || []) {
+          const itemId = item?.identity?.itemId ? String(item.identity.itemId) : "";
+          if (!loteIds.includes(itemId) || recuperados.has(itemId) || cotacaoIncompleta(item)) continue;
+          recuperados.add(itemId);
+          stats.cotacaoIncompletaRecuperada += 1;
+          await gravarItem(item);
+        }
+      }
+      for (const id of loteIds) if (!recuperados.has(id)) aindaIncompletos.push(id);
+    }
+    if (aindaIncompletos.length) {
+      failedItems += aindaIncompletos.length;
+      evento("warn", "margin_snapshot_cotacao_incompleta", {
+        itens: aindaIncompletos.length, recuperados: stats.cotacaoIncompletaRecuperada,
+      });
+      await markSnapshotsRefreshFailed({
+        clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
+        itemIds: aindaIncompletos, runId: run.id,
+        lastError: "Comissão ou frete não retornados pelo Mercado Livre nesta leitura; margem não recalculada para não gravar valor sem esses custos.",
+        db,
+      });
+    }
+    await registrarProgresso({ processedItems, successItems, failedItems, cursorOffset: total, totalItems: total });
   }
 
   // ── 4. Itens fora do catálogo (listagem completa e bem-sucedida) ────────

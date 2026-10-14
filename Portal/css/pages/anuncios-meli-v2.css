@@ -3730,3 +3730,100 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   .vf-page-anuncios-meli .am-custos-savebar,
   .vf-page-anuncios-meli .am-custo__btn svg { transition: none; }
 }
+
+/* ---- Importar base de custo (modal) -------------------------------------
+   Baixar → preencher → enviar → gravar. Ver anuncios-meli.js,
+   "IMPORTAR BASE DE CUSTO". */
+.am-imp-box .vf-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+}
+
+.am-imp-box .vf-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  max-height: 70vh;
+  overflow-y: auto;
+}
+
+.am-imp-intro {
+  margin: 0;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-sm);
+}
+
+.am-imp-passos {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  margin: 0;
+  padding-left: var(--vf-sp-5);
+}
+
+.am-imp-passo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+}
+
+.am-imp-passo .vf-field__hint {
+  margin: 0;
+}
+
+.am-imp-passo__titulo {
+  color: var(--vf-text);
+  font-size: var(--vf-fs-sm);
+}
+
+.am-imp-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  margin-top: var(--vf-sp-1);
+}
+
+.am-imp-resumo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  margin: var(--vf-sp-2) 0 0;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+}
+
+.am-imp-resumo .is-ok {
+  color: var(--vf-success-strong);
+  font-weight: 600;
+}
+
+.am-imp-resumo .is-erro {
+  color: var(--vf-danger-strong);
+  font-weight: 600;
+}
+
+.am-imp-tabela {
+  max-height: 280px;
+  overflow-y: auto;
+  margin-top: var(--vf-sp-2);
+}
+
+.am-imp-recusadas {
+  margin-top: var(--vf-sp-2);
+  font-size: var(--vf-fs-xs);
+}
+
+.am-imp-recusadas summary {
+  cursor: pointer;
+  color: var(--vf-danger-strong);
+}
+
+.am-imp-recusadas ul,
+.am-imp-falhas {
+  margin: var(--vf-sp-1) 0 0;
+  padding-left: var(--vf-sp-4);
+  color: var(--vf-text-secondary);
+}

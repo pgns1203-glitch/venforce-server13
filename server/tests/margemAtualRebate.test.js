@@ -265,6 +265,70 @@ cenario("KPIs (placar da conta): o anúncio que o retorno ML tirou de Prejuízo 
   assert.strictEqual(somaStatus, 5, "cada anúncio conta uma única vez");
 });
 
+cenario("KPI LC/un em prejuízo: soma só o que SEGUE em Prejuízo, já com o retorno ML dos que continuam nele", async () => {
+  const { deps } = await contaComRebates({ rebates: REBATES_CONTA });
+  const resumo = await read.obterResumo({ clienteSlug: "loja-a", clienteContaId: 5 }, deps);
+  // Seguem em Prejuízo: MLB3 (retorno 1,00) e MLB4 (sem promoção). MLB1/MLB2 saíram e não entram na soma.
+  const esperado = Math.round((2 * LOSS_CALC.profit + 1 + Number.EPSILON) * 100) / 100;
+  assert.strictEqual(resumo.kpis.lcPrejuizo, esperado);
+  assert.ok(resumo.kpis.lcPrejuizo < 0);
+  // Sem retorno nenhum: soma do persistido dos 4 em Prejuízo.
+  const sem = await contaComRebates({ rebates: [] });
+  const resumoSem = await read.obterResumo({ clienteSlug: "loja-a", clienteContaId: 5 }, sem.deps);
+  assert.strictEqual(resumoSem.kpis.lcPrejuizo, Math.round((4 * LOSS_CALC.profit + Number.EPSILON) * 100) / 100);
+  // Conta ainda sem leitura: sem placar (null), nunca R$ 0 fingindo leitura.
+  const vazia = makeMarginSnapshotFakeDb();
+  const resumoVazio = await read.obterResumo({ clienteSlug: "loja-a", clienteContaId: 5 }, { ...sem.deps, db: vazia });
+  assert.strictEqual(resumoVazio.kpis, null);
+});
+
+// Receita realizada por MLB (a ordem worklist usa a receita REALIZADA): o agregador real do
+// fixture, com a receita de cada MLB trocada pelo valor do teste.
+function comReceitas(deps, receitas) {
+  const motor = require("./helpers/motorMargemFixture").motorDeps({ comVendas: true });
+  return {
+    ...deps,
+    carregarVendas: motor.carregarVendas,
+    agregarPorMlb: (args) => {
+      const real = motor.agregarPorMlb(args);
+      const molde = real.porMlb.values().next().value;
+      return { ...real, porMlb: new Map(Object.entries(receitas).map(([id, receita]) => [id, { ...molde, receita }])) };
+    },
+  };
+}
+
+cenario("ordenacao=worklist: prejuízo → abaixo da meta → resto, e dentro de cada grupo a MAIOR receita primeiro (status efetivo)", async () => {
+  const { deps } = await contaComRebates({ rebates: REBATES_CONTA });
+  const d = comReceitas(deps, { MLB1: 100, MLB2: 900, MLB3: 300, MLB4: 700, MLB5: 50 });
+  const r = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "worklist" }, d);
+  // MLB3/MLB4 seguem Prejuízo (700 > 300); MLB1 virou Margem baixa; MLB2/MLB5 saudáveis (900 > 50)
+  assert.deepStrictEqual(r.itens.map((i) => i.itemId), ["MLB4", "MLB3", "MLB1", "MLB2", "MLB5"]);
+  assert.deepStrictEqual(r.itens.map((i) => i.status), ["LOSS", "LOSS", "LOW_MARGIN", "HEALTHY", "HEALTHY"]);
+  assert.deepStrictEqual(r.ordenacao, { chave: "worklist", direcao: "ASC" });
+  // página estável: sem repetir nem pular
+  const p1 = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "worklist", limit: 2, page: 1 }, d);
+  const p2 = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "worklist", limit: 2, page: 2 }, d);
+  const p3 = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "worklist", limit: 2, page: 3 }, d);
+  assert.deepStrictEqual([...p1.itens, ...p2.itens, ...p3.itens].map((i) => i.itemId), ["MLB4", "MLB3", "MLB1", "MLB2", "MLB5"]);
+  // sem retorno ML nenhum o grupo do prejuízo cresce (os 4 persistidos, por receita) e o saudável fica por último
+  const sem = await contaComRebates({ rebates: [] });
+  const r2 = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "worklist" }, comReceitas(sem.deps, { MLB1: 100, MLB2: 900, MLB3: 300, MLB4: 700, MLB5: 5000 }));
+  assert.deepStrictEqual(r2.itens.map((i) => i.itemId), ["MLB2", "MLB4", "MLB3", "MLB1", "MLB5"], "os 4 persistidos em Prejuízo vêm antes do saudável MLB5, mesmo com ele tendo a maior receita");
+});
+
+cenario("ordenacao=worklist: realizado indisponível não derruba a lista (receita desconhecida = 0; desempate por item) e direção DESC é recusada", async () => {
+  const { deps } = await contaComRebates({ rebates: REBATES_CONTA });
+  const falha = { ...deps, carregarVendas: async () => { throw new Error("central fora"); }, logger: { error() {} } };
+  const r = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "worklist" }, falha);
+  assert.deepStrictEqual(r.itens.map((i) => i.itemId), ["MLB3", "MLB4", "MLB1", "MLB2", "MLB5"]);
+  assert.strictEqual(r.vendas.realizado, null);
+  assert.strictEqual(r.vendas.realizado_motivo, "CENTRAL_VENDAS_FALHOU");
+  await assert.rejects(
+    () => read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "worklist", direcao: "DESC" }, deps),
+    (err) => err.statusCode === 400 && err.payload.codigo === "ORDENACAO_INVALIDA"
+  );
+});
+
 cenario("filtro e ordenação por status usam o status EFETIVO (a lista bate com o placar)", async () => {
   const { deps } = await contaComRebates({ rebates: REBATES_CONTA });
   const ids = (r) => r.itens.map((i) => i.itemId).sort();

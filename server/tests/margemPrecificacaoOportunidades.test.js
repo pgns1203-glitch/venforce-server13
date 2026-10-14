@@ -168,6 +168,26 @@ cenario("`entrar` vem antes de `entrar_se_girar`; sem histórico, ΔLC por unida
   assert.strictEqual(so.total, 1);
 });
 
+cenario("resumo (KPI Promos com +LC): quantos anúncios valem entrar e o impacto ΔLC × unidades dos que têm histórico", async () => {
+  const itens = [
+    diagRow("MLB1", { preco: 90, retorno: 12 }), // entrar, com histórico (2 un)
+    diagRow("MLB2", { preco: 90, retorno: 12 }), // entrar, sem histórico
+    diagRow("MLB3", { preco: 90, retorno: 0 }), // entrar_se_girar: não conta
+  ];
+  const snaps = ["MLB1", "MLB2", "MLB3"].map((id) => snapRow(id));
+  const vendas = new Map([["MLB1", { unidades: 2 }], ["MLB3", { unidades: 9 }]]);
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, limit: 1 }, deps(fakeDb({ itens, snaps }), vendas));
+  const mlb1 = (await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos" }, deps(fakeDb({ itens, snaps }), vendas))).oportunidades.find((o) => o.itemId === "MLB1");
+  assert.strictEqual(r.resumo.entrar, 2);
+  assert.strictEqual(r.resumo.com_historico, 1);
+  assert.strictEqual(r.resumo.sem_historico, 1);
+  assert.strictEqual(r.resumo.impacto_lc, mlb1.impacto_lc);
+  assert.ok(mlb1.impacto_lc > 0);
+  assert.strictEqual(r.oportunidades.length, 1, "o resumo não depende do tamanho da página");
+  const vazio = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ itens: [diagRow("MLB9", { preco: 90 })], snaps: [snapRow("MLB9")] })));
+  assert.deepStrictEqual(vazio.resumo, { entrar: 0, impacto_lc: 0, com_historico: 0, sem_historico: 0 });
+});
+
 cenario("sem histórico de vendas: flag sem_historico e ordem por ΔLC por unidade; vendas indisponíveis também não pesam", async () => {
   const itens = [diagRow("MLB1", { preco: 90, retorno: 1 }), diagRow("MLB2", { preco: 90, retorno: 6 })];
   const snaps = [snapRow("MLB1"), snapRow("MLB2")];

@@ -97,7 +97,7 @@ function lerOrdenacao(params = {}, repo = snapshotRepository) {
   if (!ordem) {
     throw api.criarErroHttp(
       400,
-      "Ordenação inválida. Aceitas: margin_percent, profit, status, updated_at, calculated_at, titulo (ASC|DESC).",
+      "Ordenação inválida. Aceitas: margin_percent, profit, status, updated_at, calculated_at, titulo (ASC|DESC) e worklist (prejuízo → abaixo da meta → maior receita).",
       "ORDENACAO_INVALIDA"
     );
   }
@@ -162,8 +162,12 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
       repo.summarizeProjectionSnapshots({ filtro: filtroEfetivo, db }),
       repo.countProjectionSnapshotsFiltrado({ filtro: filtroFora, db }),
     ]);
-    const { ultimoCalculoEm, ...placar } = agregado;
-    kpis = placar;
+    const { ultimoCalculoEm, lcPrejuizo, ...placar } = agregado;
+    kpis = {
+      ...placar,
+      // LC/un somado dos anúncios em Prejuízo, já com o retorno ML dos que seguem em prejuízo.
+      lcPrejuizo: Math.round((lcPrejuizo + efetivo.overrides.rebateEmPrejuizo + Number.EPSILON) * 100) / 100,
+    };
     foraDoCatalogo = fora.total;
   }
 
@@ -585,14 +589,20 @@ async function listarItens(params = {}, deps = {}) {
     clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, ...filtros, statusOverrides: efetivo.overrides,
   });
 
-  const [linhas, contagem] = await Promise.all([
-    repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit: pag.limit, offset: pag.offset, db }),
-    repo.countProjectionSnapshotsFiltrado({ filtro, db }),
-  ]);
+  // O realizado vem ANTES da página: a ordem `worklist` usa a receita realizada por MLB.
   const realizada = await carregarRealizadaDoPeriodo(
     { cliente, conta, dateFrom: params.dateFrom, dateTo: params.dateTo, periodo: params.periodo },
     deps
   );
+  const receitas = {};
+  for (const [mlb, venda] of realizada.porMlb || []) {
+    const receita = venda && Number(venda.receita);
+    if (Number.isFinite(receita)) receitas[mlb] = receita;
+  }
+  const [linhas, contagem] = await Promise.all([
+    repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit: pag.limit, offset: pag.offset, receitas, db }),
+    repo.countProjectionSnapshotsFiltrado({ filtro, db }),
+  ]);
 
   const rebates = efetivo.rebates;
 

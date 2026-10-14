@@ -375,6 +375,16 @@ const ORDENACOES = {
   updated_at: "updated_at",
   calculated_at: "calculated_at",
   titulo: "titulo",
+  // Worklist da Central: prejuízo → abaixo da meta → resto, e dentro de cada grupo a
+  // maior receita realizada primeiro (ver ORDENACOES_COMPOSTAS; a direção é fixa).
+  worklist: "CASE WHEN __STATUS__ = 'LOSS' THEN 0 WHEN __STATUS__ = 'LOW_MARGIN' THEN 1 ELSE 2 END",
+};
+
+// Ordenações com mais de uma chave: a expressão acima vem primeiro (ASC) e
+// `__RECEITA__` vira a receita realizada por MLB (objeto JSON enviado como
+// parâmetro, lookup por chave — sem junção nem varredura de array).
+const ORDENACOES_COMPOSTAS = {
+  worklist: "__EXPR__ ASC, __RECEITA__ DESC, item_id ASC",
 };
 
 // Aliases do contrato ao vivo (motorMargemService.ORDENACOES).
@@ -393,6 +403,11 @@ function resolverOrdenacao({ ordenacao = null, direcao = null } = {}) {
     dir = dir || dirAlias;
   }
   if (!Object.prototype.hasOwnProperty.call(ORDENACOES, chave)) return null;
+  if (ORDENACOES_COMPOSTAS[chave]) {
+    // Direção fixa: pedir DESC numa ordem composta não tem significado.
+    if (dir && dir !== "ASC") return null;
+    return { chave, direcao: "ASC", orderBy: ORDENACOES_COMPOSTAS[chave].replace("__EXPR__", ORDENACOES[chave]) };
+  }
   if (!dir) dir = chave === "updated_at" || chave === "calculated_at" ? "DESC" : "ASC";
   if (dir !== "ASC" && dir !== "DESC") return null;
   return { chave, direcao: dir, orderBy: `${ORDENACOES[chave]} ${dir} NULLS LAST, item_id ASC` };
@@ -404,9 +419,15 @@ function resolverOrdenacao({ ordenacao = null, direcao = null } = {}) {
 // páginas).
 const ORDEM_PADRAO = resolverOrdenacao().orderBy;
 
-async function queryProjectionSnapshotsPage({ filtro, orderBy = ORDEM_PADRAO, limit, offset, db = pool }) {
-  const params = [...filtro.params, limit, offset];
-  const ordem = String(orderBy).replace(/__STATUS__/g, filtro.statusExpr || "status");
+async function queryProjectionSnapshotsPage({ filtro, orderBy = ORDEM_PADRAO, limit, offset, receitas = null, db = pool }) {
+  const params = [...filtro.params];
+  let ordem = String(orderBy).replace(/__STATUS__/g, filtro.statusExpr || "status");
+  if (ordem.includes("__RECEITA__")) {
+    // Receita realizada por MLB como objeto JSON ({ "MLB1": 1234.5 }): sem receita conhecida = 0.
+    params.push(JSON.stringify(receitas || {}));
+    ordem = ordem.replace(/__RECEITA__/g, `COALESCE(($${params.length}::jsonb ->> item_id)::numeric, 0)`);
+  }
+  params.push(limit, offset);
   const result = await db.query(
     `/* ms:list */ SELECT * FROM margin_projection_snapshots
       WHERE ${filtro.condicoes.join(" AND ")}
@@ -445,6 +466,7 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
             COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'active')::int AS anuncios_ativos,
             COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'paused')::int AS anuncios_pausados,
             COUNT(*) FILTER (WHERE margin IS NOT NULL)::int AS com_margem,
+            COALESCE(SUM(profit) FILTER (WHERE ${filtro.statusExpr || "status"} = 'LOSS'), 0) AS lc_prejuizo,
             MAX(calculated_at) AS ultimo_calculo
        FROM margin_projection_snapshots
       WHERE ${filtro.condicoes.join(" AND ")}`,
@@ -458,6 +480,9 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
     porRefreshStatus: { fresh: n(row.refresh_fresh), stale: n(row.refresh_stale), failed: n(row.refresh_failed) },
     anuncios: { total: n(row.total), ativos: n(row.anuncios_ativos), pausados: n(row.anuncios_pausados) },
     comMargem: n(row.com_margem),
+    // LC por unidade somado dos anúncios em Prejuízo (SEM o retorno ML dos que seguem em
+    // prejuízo: o serviço de leitura soma esse retorno).
+    lcPrejuizo: n(row.lc_prejuizo),
     ultimoCalculoEm: row.ultimo_calculo || null,
   };
 }

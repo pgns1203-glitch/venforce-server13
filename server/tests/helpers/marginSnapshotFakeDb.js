@@ -99,6 +99,18 @@ function ordenarPorOrderBy(sql, linhas, params = []) {
       const idx = (row) => { const i = ordem.indexOf(row[ap[2]]); return i === -1 ? null : i + 1; };
       return { valor: idx, dir: ap[3], nulls: ap[4] || (ap[3] === "ASC" ? "LAST" : "FIRST") };
     }
+    // Worklist: CASE de status (persistido ou efetivo) e receita por MLB num parâmetro JSON.
+    const cs = texto.match(/^CASE WHEN (status|COALESCE\(.+?, status\)) = 'LOSS' THEN 0 WHEN \1 = 'LOW_MARGIN' THEN 1 ELSE 2 END (ASC|DESC)$/);
+    if (cs) {
+      const ef = cs[1].match(new RegExp(`^${EXPR_STATUS_EFETIVO}$`));
+      const st = (row) => (ef ? statusEfetivo(row, params, ef[1], ef[2]) : row.status);
+      return { valor: (row) => { const x = st(row); return x === "LOSS" ? 0 : x === "LOW_MARGIN" ? 1 : 2; }, dir: cs[2], nulls: "LAST" };
+    }
+    const rc = texto.match(/^COALESCE\(\(\$(\d+)::jsonb ->> item_id\)::numeric, 0\) (ASC|DESC)$/);
+    if (rc) {
+      const mapa = JSON.parse(params[Number(rc[1]) - 1] || "{}");
+      return { valor: (row) => (mapa[row.item_id] === undefined || mapa[row.item_id] === null ? 0 : Number(mapa[row.item_id])), dir: rc[2], nulls: "LAST" };
+    }
     const apEf = texto.match(new RegExp(`^array_position\\(ARRAY\\[([^\\]]+)\\]::text\\[\\], ${EXPR_STATUS_EFETIVO}\\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$`));
     if (apEf) {
       const ordem = apEf[1].split(",").map((v) => v.trim().replace(/^'|'$/g, ""));
@@ -144,6 +156,12 @@ function makeMarginSnapshotFakeDb() {
     if (sql.includes("/* ms:kpis */")) {
       const linhas = filtrarPorWhere(sql, snapshots, params);
       const row = { total: linhas.length, com_margem: linhas.filter((r) => r.margin !== null && r.margin !== undefined).length };
+      // LC somado dos anúncios em Prejuízo (status persistido ou efetivo).
+      if (/AS lc_prejuizo/.test(sql)) {
+        const mEf = sql.match(new RegExp(`SUM\\(profit\\) FILTER \\(WHERE ${EXPR_STATUS_EFETIVO} = 'LOSS'\\)`));
+        const st = (r) => (mEf ? statusEfetivo(r, params, mEf[1], mEf[2]) : r.status);
+        row.lc_prejuizo = linhas.filter((r) => st(r) === "LOSS").reduce((soma, r) => soma + (Number(r.profit) || 0), 0);
+      }
       for (const m of sql.matchAll(/COUNT\(\*\) FILTER \(WHERE (\w+) = '([^']+)'\)::int AS "(\w+)"/g)) {
         row[m[3]] = linhas.filter((r) => r[m[1]] === m[2]).length;
       }

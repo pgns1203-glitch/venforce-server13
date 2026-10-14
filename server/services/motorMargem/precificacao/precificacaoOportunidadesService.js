@@ -337,6 +337,16 @@ function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PA
     const outras = todas.filter((c) => c !== melhor).sort(compararCandidatas);
     melhores.push(copiarCandidata(melhor, { opcoes_total: todas.length, opcoes: outras.map(resumoDaOpcao) }));
   }
+  // Resumo das promoções que valem entrar (KPI "Promos com +LC"): quantos anúncios e o
+  // impacto ΔLC × unidades dos que têm histórico de vendas (sem histórico não há impacto total).
+  const entrar = melhores.filter((c) => c.veredito === VEREDITOS.ENTRAR);
+  const comImpacto = entrar.filter((c) => c.impacto_lc !== null && c.impacto_lc !== undefined);
+  const resumo = {
+    entrar: entrar.length,
+    impacto_lc: round2(comImpacto.reduce((soma, c) => soma + c.impacto_lc, 0)),
+    com_historico: comImpacto.length,
+    sem_historico: entrar.length - comImpacto.length,
+  };
   const aceitos = veredito === null ? melhores : melhores.filter((c) => veredito.includes(c.veredito));
   aceitos.sort(compararCandidatas);
   const inicio = (page - 1) * limit;
@@ -345,6 +355,7 @@ function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PA
     pagina: aceitos.slice(inicio, inicio + limit),
     hasNext: inicio + limit < aceitos.length,
     contagem,
+    resumo,
     tipos,
   };
 }
@@ -472,6 +483,7 @@ async function respostaDaLista({ base, candidatas, pag, veredito, tipo, cotacao,
     hasNext: ranking.hasNext,
     filtro: { veredito: veredito === null ? "todos" : veredito, tipo },
     contagem: ranking.contagem,
+    resumo: ranking.resumo,
     tipos: ranking.tipos,
     cotacao: { modo: cotacao, consultas },
     oportunidades: pagina,

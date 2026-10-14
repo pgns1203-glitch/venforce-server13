@@ -159,18 +159,22 @@ async function carregarRebatesDaConta({ clienteContaId, sellerId, db, promoRepo,
  */
 async function calcularStatusOverrides({ clienteId, clienteContaId, rebates, snapshotRepo, db }) {
   const comRebate = Array.from(rebates.entries()).filter(([, info]) => info && info.rebate !== null && info.rebate !== undefined);
-  if (!comRebate.length) return { itemIds: [], statuses: [] };
+  if (!comRebate.length) return { itemIds: [], statuses: [], rebateEmPrejuizo: 0 };
   const linhas = await snapshotRepo.listProjectionSnapshotsByItemIds({
     clienteId, clienteContaId, itemIds: comRebate.map(([itemId]) => itemId), db,
   });
   const itemIds = [];
   const statuses = [];
+  // Retorno ML dos anúncios que CONTINUAM em Prejuízo (o LC deles é o persistido + o retorno):
+  // quem sai de Prejuízo deixa de entrar na soma do prejuízo, então não entra aqui.
+  let rebateEmPrejuizo = 0;
   for (const linha of linhas) {
     const atual = margemAtualComRebate(linha, rebates.get(String(linha.itemId)));
     const novo = reclassificarStatus(linha, atual);
     if (novo) { itemIds.push(String(linha.itemId)); statuses.push(novo.status); }
+    else if (linha.status === "LOSS" && atual.rebate !== null && atual.rebate !== undefined) rebateEmPrejuizo += Number(atual.rebate);
   }
-  return { itemIds, statuses };
+  return { itemIds, statuses, rebateEmPrejuizo: Math.round((rebateEmPrejuizo + Number.EPSILON) * 100) / 100 };
 }
 
 module.exports = {

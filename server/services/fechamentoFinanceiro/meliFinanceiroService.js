@@ -8,6 +8,7 @@ const {
   normalizeId,
   normalizeIdNoPrefix,
   normalizeHeaderName,
+  normalizeText,
   findField,
 } = require("../../utils/textUtils");
 const { MELI_HEADER_FIELDS } = require("../../utils/excelUtils");
@@ -30,6 +31,15 @@ function hasFieldValue(row, candidates) {
   return String(findField(row, candidates) ?? "").trim() !== "";
 }
 
+// Pacote de diversos produtos (export de vendas, out/2026): a linha
+// financeira do pacote diz "Pacote de N produtos" no Estado e cada produto
+// traz a coluna "Pacote de diversos produtos" = Sim.
+const PACK_PARENT_STATUS = /^(?:pacote|paquete) de (\d+) (?:produtos?|productos?)$/;
+const PACK_MEMBER_FIELDS = [
+  "pacote de diversos produtos",
+  "paquete de varios productos",
+];
+
 function parseMeliRows(rows) {
   return rows.map((row, index) => {
     const saleNumber = String(
@@ -51,6 +61,11 @@ function parseMeliRows(rows) {
     const skuRaw = String(
       findField(row, ["sku", "seller sku", "codigo sku", "código sku"]) ?? ""
     ).trim();
+
+    const packSizeMatch = PACK_PARENT_STATUS.exec(
+      normalizeText(findField(row, ["estado"]))
+    );
+    const packFlag = normalizeText(findField(row, PACK_MEMBER_FIELDS));
 
     return {
       rowIndex: index,
@@ -88,6 +103,14 @@ function parseMeliRows(rows) {
       statusKind: classifyMeliSaleStatus(row),
       modelIdRaw,
       skuRaw,
+      // N declarado pela linha financeira do pacote (0 = não declara) e a
+      // marca do produto (null = coluna ausente ou vazia).
+      packSize: packSizeMatch ? Number(packSizeMatch[1]) : 0,
+      packMember: packFlag === "sim" || packFlag === "si"
+        ? true
+        : packFlag === "nao" || packFlag === "no"
+          ? false
+          : null,
     };
   });
 }
@@ -118,11 +141,34 @@ function isEffectiveItemRow(row) {
   return Boolean(row?.adId) && Number(row?.units || 0) > 0;
 }
 
+function detailHasOwnFinancials(detail) {
+  return Boolean(
+    detail?.hasProductRevenue ||
+    detail?.hasFinancialTotal ||
+    detail?.hasSaleFee ||
+    detail?.hasShippingFee ||
+    Math.abs(Number(detail?.cancelRefund || 0)) > 0 ||
+    Math.abs(Number(detail?.descontosBonus || 0)) > 0
+  );
+}
+
+// Produto do pacote do pai: no export real cada produto do pacote tem o SEU
+// N.º de venda, mas nenhum campo financeiro — receita, tarifas e Total só
+// existem na linha do pacote. Exige essa ausência E uma marca de pacote (a
+// do produto ou o "Pacote de N produtos" do pai); posição sozinha não basta.
+function detailBelongsToParentPack(parent, detail) {
+  if (detailHasOwnFinancials(detail)) return false;
+  return detail.packMember === true || Number(parent?.packSize) > 0;
+}
+
+// Outro N.º de venda começa outra venda — exceto produto do pacote do pai.
+// Venda com financeiro próprio nunca é anexada ao grupo anterior.
 function detailStartsAnotherSale(parent, detail) {
   return Boolean(
     parent?.saleNumber &&
     detail?.saleNumber &&
-    String(parent.saleNumber) !== String(detail.saleNumber)
+    String(parent.saleNumber) !== String(detail.saleNumber) &&
+    !detailBelongsToParentPack(parent, detail)
   );
 }
 
@@ -142,6 +188,8 @@ function collectMeliAssociations(parsedRows) {
       if (isMainRow(next)) break;
       if (!isDetailRow(next)) break;
       if (detailStartsAnotherSale(parent, next)) break;
+      // O pai declara quantos produtos o pacote tem: o bloco termina no N-ésimo.
+      if (parent.packSize > 0 && details.length >= parent.packSize) break;
       details.push(next);
       detailIndexes.push(j);
       j += 1;

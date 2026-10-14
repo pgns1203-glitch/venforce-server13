@@ -3960,6 +3960,8 @@
   function renderBarraCustos() {
     var box = el("am-custos-barra");
     if (!box) return;
+    var slot = el("am-custos-acoes-slot");
+    if (slot) slot.innerHTML = "";
     if (!AM.clienteAtual || CUSTOS.base === undefined) { box.innerHTML = ""; return; }
 
     if (CUSTOS.base === null) {
@@ -3972,7 +3974,10 @@
 
     if (!CUSTOS.modo) {
       var semCusto = itensDeCustoNaTela().filter(function (id) { return CUSTOS.cache[id] === null; }).length;
-      box.innerHTML = '<div class="am-custos-acoes">' +
+      // Na linha da busca quando há o slot; senão, na barra própria.
+      var alvo = slot || box;
+      if (slot) box.innerHTML = "";
+      alvo.innerHTML = '<div class="am-custos-acoes">' +
         (semCusto ? '<span class="vf-tag is-warning" title="Anúncios desta página sem custo na Base">' +
           semCusto + " sem custo nesta página</span>" : "") +
         '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-custos-acao="importar">' +
@@ -4080,6 +4085,8 @@
     }
     var barra = el("am-custos-barra");
     var savebar = el("am-custos-savebar");
+    var slot = el("am-custos-acoes-slot");
+    if (slot) slot.addEventListener("click", onClick);
     if (barra) {
       barra.addEventListener("click", onClick);
       barra.addEventListener("change", function (e) {

@@ -3978,12 +3978,14 @@
       var alvo = slot || box;
       if (slot) box.innerHTML = "";
       alvo.innerHTML = '<div class="am-custos-acoes">' +
-        (semCusto ? '<span class="vf-tag is-warning" title="Anúncios desta página sem custo na Base">' +
-          semCusto + " sem custo nesta página</span>" : "") +
-        '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-custos-acao="importar">' +
-          icPlanilha(12) + " Importar base de custo</button>" +
-        '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-custos-acao="entrar">' +
-          icLapis(12) + " Editar custos</button>" +
+        // Mesma altura/fonte dos campos de busca e ordenação ao lado
+        // (vf-btn no tamanho padrão, aviso com a altura de controle).
+        (semCusto ? '<span class="am-custos-acoes__aviso" title="Anúncios desta página sem custo na Base">' +
+          icAlerta(14) + " " + semCusto + " sem custo nesta página</span>" : "") +
+        '<button type="button" class="vf-btn vf-btn--secondary" data-custos-acao="importar">' +
+          icPlanilha(14) + " Importar base de custo</button>" +
+        '<button type="button" class="vf-btn vf-btn--secondary" data-custos-acao="entrar">' +
+          icLapis(14) + " Editar custos</button>" +
         "</div>";
       return;
     }

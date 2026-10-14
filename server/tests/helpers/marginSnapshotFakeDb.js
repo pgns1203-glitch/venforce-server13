@@ -32,6 +32,9 @@ function avaliarCondicao(cond, row, params) {
   if ((m = cond.match(/^(\w+) = \$(\d+)$/))) return row[m[1]] === p(m[2]);
   if ((m = cond.match(/^(\w+) IS NULL$/))) return row[m[1]] === null || row[m[1]] === undefined;
   if ((m = cond.match(/^(\w+) IS NOT NULL$/))) return row[m[1]] !== null && row[m[1]] !== undefined;
+  if ((m = cond.match(new RegExp(`^${EXPR_STATUS_EFETIVO} = ANY\\(\\$(\\d+)::text\\[\\]\\)$`)))) {
+    return p(m[3]).includes(statusEfetivo(row, params, m[1], m[2]));
+  }
   if ((m = cond.match(/^(\w+) = ANY\(\$(\d+)::text\[\]\)$/))) return p(m[2]).includes(row[m[1]]);
   if ((m = cond.match(/^\(quality_json->>'statusAnuncio'\) = ANY\(\$(\d+)::text\[\]\)$/))) {
     return p(m[1]).includes(row.quality_json && row.quality_json.statusAnuncio);
@@ -51,6 +54,14 @@ function avaliarCondicao(cond, row, params) {
     });
   }
   throw new Error(`marginSnapshotFakeDb: condição não suportada -> ${cond}`);
+}
+
+// Status EFETIVO (statusOverrides do builder): COALESCE(($novos)[array_position($ids, item_id)], status).
+// Mesma semântica do Postgres: item sem override cai no status persistido.
+const EXPR_STATUS_EFETIVO = "COALESCE\\(\\(\\$(\\d+)::text\\[\\]\\)\\[array_position\\(\\$(\\d+)::text\\[\\], item_id\\)\\], status\\)";
+function statusEfetivo(row, params, iNovos, iIds) {
+  const i = params[Number(iIds) - 1].indexOf(row.item_id);
+  return i >= 0 ? params[Number(iNovos) - 1][i] : row.status;
 }
 
 function filtrarPorWhere(sql, linhas, params) {
@@ -76,7 +87,7 @@ function dividirNivelZero(texto) {
   return partes;
 }
 
-function ordenarPorOrderBy(sql, linhas) {
+function ordenarPorOrderBy(sql, linhas, params = []) {
   const m = sql.match(/ORDER BY ([\s\S]+?)\s+LIMIT/);
   if (!m) return linhas;
   const chaves = dividirNivelZero(m[1]).map((parte) => {
@@ -87,6 +98,24 @@ function ordenarPorOrderBy(sql, linhas) {
       const ordem = ap[1].split(",").map((v) => v.trim().replace(/^'|'$/g, ""));
       const idx = (row) => { const i = ordem.indexOf(row[ap[2]]); return i === -1 ? null : i + 1; };
       return { valor: idx, dir: ap[3], nulls: ap[4] || (ap[3] === "ASC" ? "LAST" : "FIRST") };
+    }
+    // Worklist: CASE de status (persistido ou efetivo) e receita por MLB num parâmetro JSON.
+    const cs = texto.match(/^CASE WHEN (status|COALESCE\(.+?, status\)) = 'LOSS' THEN 0 WHEN \1 = 'LOW_MARGIN' THEN 1 ELSE 2 END (ASC|DESC)$/);
+    if (cs) {
+      const ef = cs[1].match(new RegExp(`^${EXPR_STATUS_EFETIVO}$`));
+      const st = (row) => (ef ? statusEfetivo(row, params, ef[1], ef[2]) : row.status);
+      return { valor: (row) => { const x = st(row); return x === "LOSS" ? 0 : x === "LOW_MARGIN" ? 1 : 2; }, dir: cs[2], nulls: "LAST" };
+    }
+    const rc = texto.match(/^COALESCE\(\(\$(\d+)::jsonb ->> item_id\)::numeric, 0\) (ASC|DESC)$/);
+    if (rc) {
+      const mapa = JSON.parse(params[Number(rc[1]) - 1] || "{}");
+      return { valor: (row) => (mapa[row.item_id] === undefined || mapa[row.item_id] === null ? 0 : Number(mapa[row.item_id])), dir: rc[2], nulls: "LAST" };
+    }
+    const apEf = texto.match(new RegExp(`^array_position\\(ARRAY\\[([^\\]]+)\\]::text\\[\\], ${EXPR_STATUS_EFETIVO}\\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$`));
+    if (apEf) {
+      const ordem = apEf[1].split(",").map((v) => v.trim().replace(/^'|'$/g, ""));
+      const idx = (row) => { const i = ordem.indexOf(statusEfetivo(row, params, apEf[2], apEf[3])); return i === -1 ? null : i + 1; };
+      return { valor: idx, dir: apEf[4], nulls: apEf[5] || (apEf[4] === "ASC" ? "LAST" : "FIRST") };
     }
     const mm = texto.match(/^(\w+) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
     if (!mm) throw new Error(`marginSnapshotFakeDb: ORDER BY não suportado -> ${texto}`);
@@ -121,20 +150,34 @@ function makeMarginSnapshotFakeDb() {
     if (sql.includes("/* ms:list */")) {
       const limit = params[params.length - 2];
       const offset = params[params.length - 1];
-      const linhas = ordenarPorOrderBy(sql, filtrarPorWhere(sql, snapshots, params));
+      const linhas = ordenarPorOrderBy(sql, filtrarPorWhere(sql, snapshots, params), params);
       return { rows: linhas.slice(offset, offset + limit).map((r) => ({ ...r })) };
     }
     if (sql.includes("/* ms:kpis */")) {
       const linhas = filtrarPorWhere(sql, snapshots, params);
       const row = { total: linhas.length, com_margem: linhas.filter((r) => r.margin !== null && r.margin !== undefined).length };
+      // LC somado dos anúncios em Prejuízo (status persistido ou efetivo).
+      if (/AS lc_prejuizo/.test(sql)) {
+        const mEf = sql.match(new RegExp(`SUM\\(profit\\) FILTER \\(WHERE ${EXPR_STATUS_EFETIVO} = 'LOSS'\\)`));
+        const st = (r) => (mEf ? statusEfetivo(r, params, mEf[1], mEf[2]) : r.status);
+        row.lc_prejuizo = linhas.filter((r) => st(r) === "LOSS").reduce((soma, r) => soma + (Number(r.profit) || 0), 0);
+      }
       for (const m of sql.matchAll(/COUNT\(\*\) FILTER \(WHERE (\w+) = '([^']+)'\)::int AS "(\w+)"/g)) {
         row[m[3]] = linhas.filter((r) => r[m[1]] === m[2]).length;
+      }
+      for (const m of sql.matchAll(new RegExp(`COUNT\\(\\*\\) FILTER \\(WHERE ${EXPR_STATUS_EFETIVO} = '([^']+)'\\)::int AS "(\\w+)"`, "g"))) {
+        row[m[4]] = linhas.filter((r) => statusEfetivo(r, params, m[1], m[2]) === m[3]).length;
       }
       for (const m of sql.matchAll(/COUNT\(\*\) FILTER \(WHERE quality_json->>'statusAnuncio' = '([^']+)'\)::int AS (\w+)/g)) {
         row[m[2]] = linhas.filter((r) => r.quality_json && r.quality_json.statusAnuncio === m[1]).length;
       }
       row.ultimo_calculo = linhas.reduce((max, r) => (!max || r.calculated_at > max ? r.calculated_at : max), null);
       return { rows: [row] };
+    }
+    if (sql.includes("/* ms:por-itens */")) {
+      const [clienteId, clienteContaId, marketplace, ids] = params;
+      return { rows: snapshots.filter((r) => Number(r.cliente_id) === Number(clienteId) && Number(r.cliente_conta_id) === Number(clienteContaId)
+        && r.marketplace === marketplace && !r.catalog_missing_since && ids.includes(r.item_id)).map((r) => ({ ...r })) };
     }
     if (sql.includes("/* ms:projecoes */")) {
       return { rows: filtrarPorWhere(sql, snapshots, params).map((r) => ({ ...r })) };

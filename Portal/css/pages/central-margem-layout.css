@@ -1,0 +1,98 @@
+/* Central de Margem — layout limpo (Fase 3).
+   Arquivo próprio da Central (nada em style.css): carrega DEPOIS de central-margem-v2.css
+   e só acrescenta/ajusta o que a nova hierarquia pede — quatro KPIs de decisão, a worklist
+   da aba Precificar com UMA próxima ação por produto e a Bancada do drawer. */
+
+/* ── KPIs de decisão: sempre quatro ───────────────────────────────────── */
+.vf-page-central-margem .cm-top__kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.vf-page-central-margem .cm-topk.is-success .cm-topk__value { color: var(--vf-success-strong); }
+.vf-page-central-margem .cm-topk:nth-child(4) { border-left: 1px solid var(--vf-border); }
+.vf-page-central-margem .cm-topk__foot { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Realizado: uma linha quando disponível; senão um aviso único. */
+.vf-page-central-margem .cm-top__realized {
+  margin: var(--vf-sp-2) 0 0;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-xs);
+}
+.vf-page-central-margem .cm-top__realized[hidden] { display: none; }
+.vf-page-central-margem .cm-top__realized.is-unavailable {
+  padding: var(--vf-sp-2) var(--vf-sp-3);
+  border: 1px solid var(--vf-warning-border, var(--vf-border));
+  border-radius: var(--vf-radius-md, 8px);
+  background: var(--vf-warning-soft, var(--vf-surface));
+  color: var(--vf-warning-text, var(--vf-text-secondary));
+}
+
+/* ── Precificar: worklist (Produto | Preço | LC/un | Margem | Próxima ação | ›) ── */
+.vf-page-central-margem .cm-table--op th:nth-child(1),
+.vf-page-central-margem .cm-table--op td:nth-child(1) { width: 38%; }
+.vf-page-central-margem .cm-table--op th:nth-child(2),
+.vf-page-central-margem .cm-table--op td:nth-child(2) { width: 11%; }
+.vf-page-central-margem .cm-table--op th:nth-child(3),
+.vf-page-central-margem .cm-table--op td:nth-child(3) { width: 11%; }
+.vf-page-central-margem .cm-table--op th:nth-child(4),
+.vf-page-central-margem .cm-table--op td:nth-child(4) { width: 12%; }
+.vf-page-central-margem .cm-table--op th:nth-child(5),
+.vf-page-central-margem .cm-table--op td:nth-child(5) { width: 24%; }
+.vf-page-central-margem .cm-table--op th:nth-child(6),
+.vf-page-central-margem .cm-table--op td:nth-child(6) { width: 4%; }
+
+.vf-page-central-margem .cm-next-cell { white-space: normal; }
+.vf-page-central-margem .cm-next-chip {
+  display: inline-flex; align-items: center; max-width: 100%;
+  padding: 4px 10px; border: 1px solid var(--vf-border); border-radius: 999px;
+  background: var(--vf-surface); color: var(--vf-text); font: inherit; font-size: var(--vf-fs-xs); font-weight: 600;
+  line-height: 1.3; text-align: left; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.vf-page-central-margem .cm-next-chip:hover { background: var(--vf-surface-hover); }
+.vf-page-central-margem .cm-next-chip:focus-visible { outline: 2px solid var(--vf-primary); outline-offset: 1px; }
+.vf-page-central-margem .cm-next-chip.is-danger { border-color: var(--vf-danger); color: var(--vf-danger); }
+.vf-page-central-margem .cm-next-chip.is-warning { border-color: var(--vf-warning-strong); color: var(--vf-warning-strong); }
+.vf-page-central-margem .cm-next-chip.is-success { border-color: var(--vf-success-strong); color: var(--vf-success-strong); }
+.vf-page-central-margem .cm-next-chip.is-neutral { color: var(--vf-text-secondary); font-weight: 500; }
+.vf-page-central-margem .cm-go { width: 28px; text-align: center; color: var(--vf-text-muted); font-size: var(--vf-fs-lg, 18px); }
+.vf-page-central-margem .cm-op-row:hover .cm-go { color: var(--vf-primary); }
+
+/* central-margem-v2.css quebra os KPIs em 3 colunas até 1280px (eram 6): com quatro, mantém 4 e só cai para 2 em tela estreita. */
+@media (max-width: 1280px) {
+  .vf-page-central-margem .cm-top__kpis { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .vf-page-central-margem .cm-topk:nth-child(4) { border-left: 1px solid var(--vf-border); }
+  .vf-page-central-margem .cm-topk:nth-child(n + 4) { border-top: 0; }
+}
+@media (max-width: 900px) {
+  .vf-page-central-margem .cm-top__kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vf-page-central-margem .cm-topk:nth-child(odd) { border-left: 0; }
+  .vf-page-central-margem .cm-topk:nth-child(n + 3) { border-top: 1px solid var(--vf-border); }
+}
+
+/* ── Drawer = Bancada: atual × cenário em cascata ─────────────────────── */
+.cm-drawer .cm-banc { display: flex; flex-direction: column; gap: var(--vf-sp-3); padding: var(--vf-sp-3) var(--vf-sp-4); background: var(--vf-surface); border-bottom: 1px solid var(--vf-border); }
+.cm-drawer .cm-banc__cenarios { display: flex; flex-wrap: wrap; gap: var(--vf-sp-2); }
+.cm-drawer .cm-banc__opcao {
+  display: inline-flex; align-items: center; gap: var(--vf-sp-2); padding: 6px 12px;
+  border: 1px solid var(--vf-border); border-radius: 999px; background: var(--vf-surface);
+  color: var(--vf-text); font: inherit; font-size: var(--vf-fs-xs); font-weight: 600; cursor: pointer;
+}
+.cm-drawer .cm-banc__opcao:hover { background: var(--vf-surface-hover); }
+.cm-drawer .cm-banc__opcao.is-active { border-color: var(--vf-primary); background: var(--vf-primary-soft); color: var(--vf-primary-strong); }
+.cm-drawer .cm-banc__opcao:focus-visible { outline: 2px solid var(--vf-primary); outline-offset: 1px; }
+.cm-drawer .cm-banc__resultado { display: flex; flex-direction: column; gap: var(--vf-sp-2); }
+.cm-drawer .cm-banc__veredito { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2); }
+.cm-drawer .cm-banc__tabela { width: 100%; border-collapse: collapse; font-size: var(--vf-fs-sm); }
+.cm-drawer .cm-banc__tabela th, .cm-drawer .cm-banc__tabela td { padding: 5px 8px; border-bottom: 1px solid var(--vf-border); text-align: left; }
+.cm-drawer .cm-banc__tabela thead th { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.cm-drawer .cm-banc__tabela td.num, .cm-drawer .cm-banc__tabela th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cm-drawer .cm-banc__tabela tbody th { color: var(--vf-text-secondary); font-weight: 500; }
+.cm-drawer .cm-banc__sinal { display: inline-block; width: 1em; color: var(--vf-text-muted); }
+.cm-drawer .cm-banc__total th, .cm-drawer .cm-banc__total td { border-top: 2px solid var(--vf-border); font-weight: 700; }
+.cm-drawer .cm-banc__tabela td.is-up { color: var(--vf-success-strong); }
+.cm-drawer .cm-banc__tabela td.is-down { color: var(--vf-danger-strong, var(--vf-danger)); }
+.cm-drawer .cm-banc__empate { margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text-secondary); }
+.cm-drawer .cm-banc__fonte, .cm-drawer .cm-banc__nota { margin: 0; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
+.cm-drawer .cm-banc__promo { display: flex; flex-direction: column; gap: 2px; }
+.cm-drawer .cm-banc__banca { display: flex; gap: var(--vf-sp-4); margin: var(--vf-sp-1) 0 0; }
+.cm-drawer .cm-banc__banca dt { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
+.cm-drawer .cm-banc__banca dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; }
+.cm-drawer .cm-chip.is-static { cursor: default; opacity: .85; }

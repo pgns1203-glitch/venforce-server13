@@ -136,20 +136,30 @@ const MOCK_CLIENT = `
     function rawItem(conta, i) {
       var status = STATUS[i % 5];
       var margin = MARGEM[i % 5];
+      var custo = 40;
+      // Item de custo acima do preço: o backend manda a margem como FRAÇÃO
+      // (−1,1309 = −113,09%); o custo é o que fecha a conta na Composição
+      // (100 − 10 − 12 − 20 − 171,09 = −113,09 sobre preço 100).
+      if (i === 12) { margin = -1.1309; custo = 171.09; }
+      // Anúncio em promoção com retorno ML de R$ 3,30: o backend já soma o
+      // retorno à margem atual (100 + 3,30 − 10 − 12 − 20 − 40 = 21,30 → 21,3%).
+      var rebate = null;
+      if (i === 15) { margin = 0.213; rebate = 3.3; }
       return {
         itemId: "C" + conta + "-MLB" + (100000 + i), title: "Produto " + i + " da conta " + conta, titulo: "Produto " + i + " da conta " + conta,
         sku: skuDe(i), status: status, confidence: "HIGH", marketplace: "meli", targetMargin: 0.1,
         fields: {
-          price: field(ev("MELI_API", 100)), cost: field(status === "UNVALIDATED" ? null : ev("VENFORCE_BASE", 40, "DECLARED")),
+          price: field(ev("MELI_API", 100)), cost: field(status === "UNVALIDATED" ? null : ev("VENFORCE_BASE", custo, "DECLARED")),
           taxRate: field(ev("VENFORCE_BASE", 0.1, "DECLARED")), fixedFee: field(ev("VENFORCE_BASE", 0, "DECLARED")),
           commission: field(ev("MELI_API", 12)), commissionRate: field(ev("MELI_API", 0.12)), freight: field(ev("MELI_API", 20)),
         },
-        projected: { margin: margin, profit: margin === null ? null : margin * 100, estimated: false },
+        projected: { margin: margin, profit: margin === null ? null : margin * 100, estimated: false, rebate: rebate },
         realized: { margin: null, profit: null, pending: true },
         quality: { confidence: "HIGH", confidenceByField: {}, reasons: [], divergences: [], statusReasons: ["status " + status] },
         diagnostico: { statusAnuncio: statusAnuncioDe(i) },
         snapshot: { refreshStatus: i === 3 ? "failed" : "fresh", lastError: i === 3 ? "ML 503" : null, calculatedAt: "2026-09-27T10:00:00Z" },
         statusBase: "projected",
+        realizado_motivo: window.__cmRealizadoFalha ? "CENTRAL_VENDAS_FALHOU" : null,
         sales: vendasDe(i), settlement: { available: false },
         projectedVsRealized: comparacaoDe(i, margin),
       };
@@ -179,6 +189,15 @@ const MOCK_CLIENT = `
       return { status: "NO_SALES", projected: projetado, realized: { available: false, units: null }, drift: null, notComparable: [] };
     }
     function realizadoDe(conta, periodo) {
+      // Central de Vendas fora do ar: o backend manda realizado null + motivo e KPIs null.
+      if (window.__cmRealizadoFalha) {
+        return window.VFCentralMargemApi.normalizeSnapshotRealizado({
+          ok: true, habilitado: true, realizado: null, realizado_motivo: "CENTRAL_VENDAS_FALHOU",
+          realizado_mensagem: "A leitura de vendas da Central de Vendas falhou para este período. O realizado está indisponível — nenhum valor foi zerado.",
+          periodo: { dateFrom: "2026-07-01", dateTo: "2026-07-27", modo: "mes", periodo: periodo, rotulo: "mês " + periodo },
+          cobertura: null, freshness: { estado: "INDISPONIVEL", sincronizadoAte: null, syncEmAndamento: false, syncAtivo: null }, kpis: null,
+        });
+      }
       return window.VFCentralMargemApi.normalizeSnapshotRealizado({
         ok: true, habilitado: true,
         periodo: periodo
@@ -437,7 +456,12 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo.length"), 1);
       assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo[0].clienteContaId"), null);
 
-      await cdp.evaluate("window.VF.context.setConta(10)");
+      // As contas do Shell chegam depois do carregamento: repete até a conta entrar (setConta antes disso é ignorado).
+      for (let i = 0; i < 60; i += 1) {
+        await cdp.evaluate("window.VF.context.setConta(10)");
+        if (await cdp.evaluate("window.VFCentralMargemUi.getState().contaId === 10")) break;
+        await sleep(100);
+      }
       await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 10", "contexto não entregou a conta durante a request");
       assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo.length"), 1, "a resposta sem conta ainda estava pendente");
 
@@ -492,13 +516,16 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-period-wrap').hidden"), false, "seletor de período visível no modo persistido");
     });
 
-    await check("linha operacional mostra vendas, margem projetada × realizada e Δ do Motor; sem venda e realizado indisponível são explícitos", async () => {
+    await check("Diagnóstico mostra vendas, margem projetada × realizada e Δ do Motor; sem venda e realizado indisponível são explícitos (a worklist só decide)", async () => {
+      // A worklist de Precificar não carrega colunas de realizado: tudo isso mora no Diagnóstico.
+      const colunas = await cdp.evaluate("Array.from(document.querySelectorAll('#cm-table-host thead th')).map(function (th) { return th.textContent.trim().toLowerCase(); })");
+      assert.deepStrictEqual(colunas, ["produto", "preço", "lc/un", "margem", "próxima ação", "abrir produto"]);
+      await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
       const vendido = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"]').innerText");
       assert.ok(vendido.includes("73 un") && vendido.includes("62 ped."), vendido);
       const real = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-cmp]').textContent");
       assert.ok(/16,8%/.test(real), `margem realizada ausente: ${real}`);
-      const delta = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-drift]').textContent");
-      assert.ok(/-3,2 pp/.test(delta), `Δ margem ausente: ${delta}`);
+      assert.ok(/-3,2 pp/.test(real), `Δ margem ausente: ${real}`);
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('tr[data-item-id=\"C900-MLB100000\"] [data-cm-coverage-partial]'))"), "cobertura parcial sinalizada");
       const semVenda = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100001\"]').innerText");
       assert.ok(semVenda.includes("sem venda no período"), semVenda);
@@ -516,6 +543,45 @@ async function run() {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
+    await check("margem −1,1309 do backend (fração) aparece −113,09% na tabela, no drawer e na Composição; nunca −1,13%", async () => {
+      const id = "C900-MLB100012";
+      const celula = (seletor) => cdp.evaluate(`(function(){var e=document.querySelector('tr[data-item-id="${id}"] ${seletor}');return e?e.textContent.trim():null;})()`);
+      assert.strictEqual(await celula(".cm-mc-value"), "-113,09%", "visão Operacional (coluna Margem Proj.)");
+
+      await cdp.evaluate("window.VFCentralMargemUi.openDrawer('" + id + "', 'evidence')");
+      await waitFor(cdp, "document.getElementById('cm-drawer-summary').textContent.indexOf('Margem projetada') !== -1", "resumo do drawer não abriu");
+      const resumo = await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent");
+      assert.ok(resumo.includes("-113,09%"), `drawer: ${resumo}`);
+      assert.ok(!resumo.includes("-1,13%"), `drawer converteu a fração em silêncio: ${resumo}`);
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+
+      await cdp.evaluate("document.querySelector('[data-view=\"composition\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--comp')", "visão Composição não abriu");
+      assert.strictEqual(await celula(".cm-mc-value"), "-113,09%", "visão Composição");
+      await cdp.evaluate("document.querySelector('[data-view=\"operational\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--op')", "visão Operacional não voltou");
+      assert.deepStrictEqual(await st("s.data.items.filter(function(i){return i.id==='" + id + "';}).map(function(i){return i.projected.margin;})"), [-1.1309]);
+    });
+
+    await check("promoção em andamento com retorno ML: a MESMA margem atual na tabela, no drawer e na Composição, com o retorno explicado", async () => {
+      const id = "C900-MLB100015";
+      const celula = (seletor) => cdp.evaluate(`(function(){var e=document.querySelector('tr[data-item-id="${id}"] ${seletor}');return e?e.textContent.trim():null;})()`);
+      assert.strictEqual(await celula(".cm-mc-value"), "21,3%", "tabela (Operacional)");
+      assert.ok((await celula("[data-cm-rebate]")).includes("inclui retorno ML"), "a linha explica o retorno somado");
+
+      await cdp.evaluate("window.VFCentralMargemUi.openDrawer('" + id + "', 'evidence')");
+      await waitFor(cdp, "document.getElementById('cm-drawer-summary').textContent.indexOf('Margem projetada') !== -1", "resumo do drawer não abriu");
+      const resumo = (await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent")).replace(/\u00a0/g, " ");
+      assert.ok(resumo.includes("21,3%") && resumo.includes("inclui retorno ML"), `drawer: ${resumo}`);
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+
+      await cdp.evaluate("document.querySelector('[data-view=\"composition\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--comp')", "visão Composição não abriu");
+      assert.strictEqual(await celula(".cm-mc-value"), "21,3%", "Composição (fórmula local com o retorno ML do backend)");
+      await cdp.evaluate("document.querySelector('[data-view=\"operational\"]').click()");
+      await waitFor(cdp, "document.querySelector('table.cm-table--op')", "visão Operacional não voltou");
+    });
+
     await check("trocar o período relê itens e realizado com periodo=YYYY-MM (Shell) e NÃO pede refresh do snapshot", async () => {
       const refreshAntes = await cdp.evaluate("window.__cmCalls.refresh.length");
       const valor = await cdp.evaluate("document.getElementById('cm-period').options[2].value");
@@ -529,6 +595,30 @@ async function run() {
       await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "!window.__cmCalls.realizado[window.__cmCalls.realizado.length-1].periodo && !window.VFCentralMargemUi.getState().realizadoLoading", "volta ao padrão não releu o realizado");
       assert.strictEqual(await cdp.evaluate("window.VF.context.getPeriodoParam()"), null);
+    });
+
+    await check("Central de Vendas falhando: UM aviso 'Realizado indisponível · motivo' (nenhum R$ 0 nem 0), bloco detalhado oculto, e as linhas não dizem 'sem venda'", async () => {
+      await cdp.evaluate("window.__cmRealizadoFalha = true");
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='2026-07';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "document.querySelector('[data-cm-realized-unavailable]') && !window.VFCentralMargemUi.getState().loading && !window.VFCentralMargemUi.getState().realizadoLoading", "estado indisponível do realizado não apareceu");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('[data-cm-realized-unavailable]').length"), 1, "aviso ÚNICO");
+      const aviso = await cdp.evaluate("document.getElementById('cm-top-realized').textContent");
+      assert.ok(aviso.startsWith("Realizado indisponível ·"), aviso);
+      assert.ok(aviso.includes("nenhum valor foi zerado"), aviso);
+      assert.ok(!/R\$\s*0[,\s]/.test(aviso), `R$ 0 no aviso: ${aviso}`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-realized').hidden"), true, "o bloco detalhado do realizado some (não repete 'Indisponível' em cada KPI)");
+      const topo = await cdp.evaluate("document.getElementById('cm-kpis-top').textContent");
+      assert.ok(!/R\$\s*0[,\s]/.test(topo), `R$ 0 no topo: ${topo}`);
+      // O realizado por produto mora no Diagnóstico (a worklist de Precificar só decide).
+      await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
+      const linha = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"]').textContent");
+      assert.ok(/indisponível/i.test(linha), linha);
+      assert.ok(!/sem venda/i.test(linha), `linha afirma 'sem venda' sem saber: ${linha}`);
+      await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
+
+      await cdp.evaluate("window.__cmRealizadoFalha = false");
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "!document.querySelector('[data-cm-realized-unavailable]') && !window.VFCentralMargemUi.getState().loading && !window.VFCentralMargemUi.getState().realizadoLoading", "realizado não voltou ao normal");
     });
 
     await check("filtro de anúncio: active, paused e todos combinam com busca/status sem perder paginação", async () => {

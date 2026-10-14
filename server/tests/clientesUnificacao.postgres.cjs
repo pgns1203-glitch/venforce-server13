@@ -1001,6 +1001,17 @@ async function main() {
         await single.end();
       }
     });
+    await test("mapping permanente impede purge de legado e canônico", async () => {
+      const op = await merge();
+      await assert.rejects(
+        pool.query("DELETE FROM clientes WHERE id=2"),
+        (e) => e.message === "MERGED_CLIENT_DELETE_BLOCKED",
+      );
+      await assert.rejects(pool.query("DELETE FROM clientes WHERE id=1"));
+      assert.equal((await service.resolveCanonicalCliente(2)).cliente.id, 1);
+      await reverse(op);
+      assert.equal((await service.resolveCanonicalCliente(2)).cliente.id, 2);
+    });
     console.log(
       `${cases} cenários PostgreSQL passaram; banco descartável, zero produção.`,
     );

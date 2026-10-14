@@ -6,6 +6,14 @@ DO $$ BEGIN
   ALTER TABLE clientes ADD CONSTRAINT clientes_merge_not_self CHECK (merged_into_cliente_id IS NULL OR merged_into_cliente_id <> id);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 CREATE INDEX IF NOT EXISTS idx_clientes_merged_into ON clientes(merged_into_cliente_id) WHERE merged_into_cliente_id IS NOT NULL;
+-- Mapping de legado não pode desaparecer por purge administrativo posterior.
+CREATE OR REPLACE FUNCTION clientes_unificacao_preservar_legado() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF OLD.merged_into_cliente_id IS NOT NULL THEN RAISE EXCEPTION 'MERGED_CLIENT_DELETE_BLOCKED'; END IF;
+ RETURN OLD;
+END $$;
+DROP TRIGGER IF EXISTS clientes_preservar_legado_unificado ON clientes;
+CREATE TRIGGER clientes_preservar_legado_unificado BEFORE DELETE ON clientes FOR EACH ROW EXECUTE FUNCTION clientes_unificacao_preservar_legado();
 CREATE TABLE IF NOT EXISTS cliente_unificacoes (
  id bigserial PRIMARY KEY,
  operation_key uuid NOT NULL UNIQUE,

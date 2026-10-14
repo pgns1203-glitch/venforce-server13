@@ -178,6 +178,8 @@ executing/completed e snapshots participam da transação funcional.
 anti-self. Legado fica `ativo=false`; ID/nome/slug/created_at continuam.
 `resolveCanonicalCliente` retorna Cliente normal ou canônico e origem;
 limita profundidade e detecta ciclos. Rollback restaura atividade/mapping.
+Trigger anti-purge protege o legado unificado; FK restritiva protege o canônico.
+Triggers somente DELETE não são executados no motor, que nunca deleta.
 Não foi criado segundo alias/mapping nem URL de frontend.
 
 Activity logs usam o mesmo schema de `activityLogService`, mas com o client
@@ -331,7 +333,7 @@ rollback de terceira alteração, perda de resposta pós-COMMIT e fluxo HTTP.
 Suíte completa da base #254: 331 arquivos, 328 passaram, três falhas históricas.
 Nova suíte: 334 arquivos, 331 passaram, mesmas falhas e zero regressão nova.
 A validação dirigida cobriu 173 arquivos; foram adicionados 41 cenários de
-domínio, 52 verificações HTTP/auth e 38 casos de PostgreSQL, incluindo pool
+domínio, 52 verificações HTTP/auth e 39 casos de PostgreSQL, incluindo pool
 max=1 e deadline.
 
 Runner de verificação continua após falhas para executar todos os arquivos,

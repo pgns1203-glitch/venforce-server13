@@ -30,7 +30,7 @@
   },
   "domainScenarios": 41,
   "httpAuthAssertions": 52,
-  "postgresScenarios": 38,
+  "postgresScenarios": 39,
   "postgres": {
     "version": "18.6",
     "location": "localhost disposable vf_unificacao_test_*",
@@ -42,7 +42,8 @@
     "commitResponseLostReplay": true,
     "poolMaxOne": true,
     "deadlineRollback": true,
-    "rollbackDivergenceBlocked": true
+    "rollbackDivergenceBlocked": true,
+    "mappingProtectedAgainstPurge": true
   },
   "sharedDomain": {
     "cliV0Compatibility": true,

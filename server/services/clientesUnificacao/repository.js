@@ -248,9 +248,10 @@ async function readSnapshot(db, manifest) {
     s.errors.push({ table, code: "FK_SCOPE_CYCLE_UNKNOWN" });
   // Custom triggers / exclusion constraints on changed identity families are
   // catalogued; unsupported semantics cannot be waived through a manifest.
+  // pg_trigger bits: INSERT=4, UPDATE=16. DELETE não é usado pelo motor.
   const triggers = (
     await db.query(
-      `SELECT r.relname AS table_name,t.tgname AS name FROM pg_trigger t JOIN pg_class r ON r.oid=t.tgrelid JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND t.tgenabled<>'D' ORDER BY r.relname,t.tgname`,
+      `SELECT r.relname AS table_name,t.tgname AS name FROM pg_trigger t JOIN pg_class r ON r.oid=t.tgrelid JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND t.tgenabled<>'D' AND (t.tgtype & 20)<>0 ORDER BY r.relname,t.tgname`,
     )
   ).rows;
   for (const t of triggers)

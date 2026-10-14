@@ -86,6 +86,13 @@ class MemoryDb {
 
   async query(sql, params = []) {
     const q = String(sql).replace(/\s+/g, " ").trim();
+    if (q.startsWith("SELECT id, cliente_id FROM cliente_contas WHERE marketplace")) {
+      return { rows: this.contas.filter((c) => c.marketplace === "meli" && String(c.external_account_id) === String(params[0])) };
+    }
+    if (q.startsWith("SELECT id, cliente_id, cliente_conta_id, ml_user_id FROM ml_tokens")) {
+      return { rows: this.grants.filter((g) => String(g.ml_user_id) === String(params[0])) };
+    }
+
     this.log.push({ sql: q, params });
 
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(q) || q.includes("pg_advisory")) return { rows: [] };
@@ -112,8 +119,8 @@ class MemoryDb {
     if (q.startsWith("SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true")) {
       return { rows: this.contas.filter((c) => c.cliente_id === Number(params[0]) && c.marketplace === params[1] && c.ativo) };
     }
-    if (q.startsWith("SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true")) {
-      const total = this.contas.filter((c) => c.cliente_id === Number(params[0]) && c.marketplace === params[1] && c.ativo).length;
+    if (q.startsWith("SELECT COUNT(*)::int AS total FROM cliente_contas")) {
+      const total = this.contas.filter((c) => c.cliente_id === Number(params[0]) && c.marketplace === (params[1] || "meli") && c.ativo).length;
       return { rows: [{ total }] };
     }
 

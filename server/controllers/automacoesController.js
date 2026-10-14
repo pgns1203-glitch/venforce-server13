@@ -550,13 +550,10 @@ async function iniciarDiagnosticoCompletoController(req, res) {
       status: "sucesso",
     });
 
-    // mlUserId já resolvido acima (conta selecionada, ou fallback legado
-    // quando o cliente não tem cliente_contas cadastradas) viaja direto para
-    // o worker — a tabela `relatorios` não tem coluna de conta/seller, e o
-    // worker roda no mesmo processo, então não há por que persistir só para
-    // reler em seguida (ver diagnosticoService.executarDiagnosticoCompleto).
+    // Identidade já resolvida viaja ao worker, que a revalida antes de
+    // consultar ML. Não há persistência nova ou fallback para principal.
     setImmediate(() => {
-      executarDiagnosticoCompleto(relatorioId, { mlUserId: contexto.mlUserId }).catch((err) => {
+      executarDiagnosticoCompleto(relatorioId, { mlUserId: contexto.mlUserId, clienteContaId: contexto.conta.id }).catch((err) => {
         console.error(`[diag ${relatorioId}] falha não tratada:`, err);
       });
     });

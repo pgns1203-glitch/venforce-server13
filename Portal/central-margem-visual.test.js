@@ -208,7 +208,10 @@ async function run() {
     const texto = async (seletor) => (await cdp.evaluate(`document.querySelector(${JSON.stringify(seletor)}).innerText`)).replace(/ /g, " ");
     const semRolagemHorizontal = () => cdp.evaluate("document.documentElement.scrollWidth <= window.innerWidth + 1");
 
-    await waitFor(cdp, "window.VFCentralMargemUi && window.VF && window.VF.context && window.VFCentralMargemUi.getState().awaitingAccount", "Shell não pediu a conta");
+    // Com uma Conta única, o Shell pode concluir a resolução antes deste poll.
+    // Aceitar esse estado estável evita depender da duração do estado transitório;
+    // as asserções seguintes continuam exigindo Conta #10 e os oito anúncios.
+    await waitFor(cdp, "window.VFCentralMargemUi && window.VF && window.VF.context && (window.VFCentralMargemUi.getState().awaitingAccount || (window.VF.context.getState() === 'READY' && window.VFCentralMargemUi.getState().contaId === 10))", "Shell não resolveu a conta nem pediu seleção");
     for (let i = 0; i < 60; i += 1) {
       await cdp.evaluate("window.VF.context.setConta(10)");
       if (await cdp.evaluate("window.VFCentralMargemUi.getState().contaId === 10")) break;

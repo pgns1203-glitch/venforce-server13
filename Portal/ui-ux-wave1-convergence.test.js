@@ -233,6 +233,9 @@ async function run() {
         body: Buffer.from(JSON.stringify(obj)).toString("base64"),
       });
       const p = new URL(url).pathname;
+      // A configuração admin do Shell é uma leitura conhecida da unificação.
+      // Flag OFF conserva a navegação desta fixture e a checagem de rotas estrita.
+      if (p === "/admin/clientes-unificacao/config" && params.request.method === "GET") return json({ ok: true, uiEnabled: false, executeEnabled: false, rollbackEnabled: false, actor: { id: 12, role: "admin" } });
       // 404 de propósito: exercita o fallback legado do Shell
       // (/operacao/cliente-360/clientes), mesmo caminho de vf-shell-hardening.
       if (p === "/me/context" || p === "/me/portfolio") {

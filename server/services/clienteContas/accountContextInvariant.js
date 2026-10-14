@@ -37,9 +37,13 @@ function str(v) {
  *  - sellerId         seller usado para montar o path do marketplace | null
  *  - mlUserId         ml_user_id usado para resolver o token | null
  *  - grant            { id, cliente_id, ml_user_id } | null
- *  - base             { base_id, cliente_conta_id } | null
+ *  - base             { id, cliente_id, cliente_conta_id, marketplace, ativo,
+ *                       vinculo_marketplace, vinculo_ativo } | null (strict)
  *  - requireAccount   se true, exige que uma conta tenha sido resolvida
  *  - requireGrant     se true (meli), exige grant resolvido
+ *  - strict           exige metadados de identidade/atividade completos
+ *  - eligibleAccountCount contagem de Contas ativas do Cliente/marketplace;
+ *                       somente 1 permite Base legada NULL
  * @returns {{ ok: boolean, violacoes: string[] }}
  */
 function checkAccountContext(ctx = {}) {
@@ -55,6 +59,8 @@ function checkAccountContext(ctx = {}) {
     base = null,
     requireAccount = false,
     requireGrant = false,
+    strict = false,
+    eligibleAccountCount = null,
   } = ctx;
 
   if (clienteId == null) violacoes.push("clienteId ausente");
@@ -113,12 +119,42 @@ function checkAccountContext(ctx = {}) {
     violacoes.push("grant ML não resolvido em fluxo meli que o exige");
   }
 
+  // O modo estrito é opt-in do contexto de precificação. Consumidores de
+  // outros módulos preservam o contrato anterior; nenhuma consulta/efeito.
+  let code = null;
+  let statusCode = 409;
+  if (strict) {
+    if (!conta) code = "ACCOUNT_CONTEXT_NOT_FOUND";
+    else if (Number(conta.cliente_id) !== Number(clienteId)) {
+      code = "CONTA_NAO_PERTENCE_AO_CLIENTE"; statusCode = 403;
+    } else if (conta.marketplace !== marketplace) {
+      code = "MARKETPLACE_INCOMPATIVEL"; statusCode = 422;
+    } else if (conta.ativo !== true) code = "CONTA_INATIVA";
+    else if (clienteContaId != null && Number(conta.id) !== Number(clienteContaId)) code = "ACCOUNT_CONTEXT_MISMATCH";
+    else if (grant && (grant.cliente_id == null || grant.ml_user_id == null ||
+        Number(grant.cliente_id) !== Number(clienteId) ||
+        str(grant.ml_user_id) !== str(conta.external_account_id) ||
+        (grant.cliente_conta_id != null && Number(grant.cliente_conta_id) !== Number(conta.id)))) {
+      code = "GRANT_ACCOUNT_MISMATCH";
+    }
+    if (base && !code) {
+      if (base.ativo !== true || base.vinculo_ativo !== true) code = "BASE_INATIVA";
+      else if (base.marketplace !== marketplace || base.vinculo_marketplace !== marketplace) {
+        code = "MARKETPLACE_INCOMPATIVEL"; statusCode = 422;
+      } else if (Number(base.cliente_id) !== Number(clienteId)) code = "BASE_ACCOUNT_MISMATCH";
+      else if (base.cliente_conta_id == null) {
+        if (Number(eligibleAccountCount) !== 1) code = "ACCOUNT_CONTEXT_AMBIGUOUS";
+      } else if (Number(base.cliente_conta_id) !== Number(conta.id)) code = "BASE_ACCOUNT_MISMATCH";
+    }
+    if (code) violacoes.push(code);
+  }
+
   if (base && base.cliente_conta_id != null && clienteContaId != null &&
       Number(base.cliente_conta_id) !== Number(clienteContaId)) {
     violacoes.push(`base vinculada à conta ${base.cliente_conta_id}, não à conta selecionada (${clienteContaId})`);
   }
 
-  return { ok: violacoes.length === 0, violacoes };
+  return { ok: violacoes.length === 0, violacoes, ...(strict ? { code, statusCode } : {}) };
 }
 
 /**
@@ -126,11 +162,12 @@ function checkAccountContext(ctx = {}) {
  * a observabilidade (nunca token/segredo).
  */
 function assertAccountContext(ctx = {}) {
-  const { ok, violacoes } = checkAccountContext(ctx);
+  const { ok, violacoes, code, statusCode } = checkAccountContext(ctx);
   if (!ok) {
     const err = new Error(`Invariante de contexto de conta violado: ${violacoes.join("; ")}`);
-    err.code = "ACCOUNT_CONTEXT_INVARIANTE_VIOLADO";
-    err.statusCode = 409;
+    err.code = code || "ACCOUNT_CONTEXT_INVARIANTE_VIOLADO";
+    err.statusCode = statusCode || 409;
+    if (ctx.strict) err.payload = { ok: false, code: err.code, codigo: err.code, erro: err.message };
     err.violacoes = violacoes;
     throw err;
   }

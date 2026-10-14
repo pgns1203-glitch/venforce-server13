@@ -1,0 +1,127 @@
+{
+  "base_main": "ab17097583dfebf0f77dbc061b5f19576d7595fd",
+  "branch": "fix/account-context-foundation",
+  "ambiente": "mocks locais; DATABASE_URL localhost de teste; sem .env de produção; rede externa bloqueada",
+  "baseline": {
+    "arquivos": 322,
+    "passaram": 319,
+    "falharam": 3
+  },
+  "branch_suite_completa": {
+    "arquivos": 323,
+    "passaram": 320,
+    "falharam": 3,
+    "novas_falhas": 0
+  },
+  "falhas_historicas": [
+    {
+      "arquivo": "designStudioWorkspace.test.js",
+      "falha_e_log_normalizado_identicos_a_main": true,
+      "sha256_log_normalizado": "5969d6d4f450b2e8fad31b62fdc0ec1a86dcfc676a72ef9779fb56f99147fd14"
+    },
+    {
+      "arquivo": "meliAnunciosOrdenacaoGlobal.test.js",
+      "falha_e_log_normalizado_identicos_a_main": true,
+      "sha256_log_normalizado": "cbedec5bad5dc06ef22b6fc3f0cd20f283b2d38adf2e5b0cb1526252cd2052ca"
+    },
+    {
+      "arquivo": "mlTokenService.test.js",
+      "falha_e_log_normalizado_identicos_a_main": true,
+      "sha256_log_normalizado": "70449c1e8452c984acef2a466c2257710b09be01f5c4073900438fb3aa7cabe5"
+    }
+  ],
+  "direcionados_finais": {
+    "arquivos": 10,
+    "passaram": 10,
+    "cenarios_nova_suite": 29,
+    "resultados": [
+      {
+        "file": "accountContextFoundation.test.js",
+        "status": 0,
+        "seconds": 0.1
+      },
+      {
+        "file": "automacoesContaScoped.test.js",
+        "status": 0,
+        "seconds": 0.07
+      },
+      {
+        "file": "automacoesProntidaoConta.test.js",
+        "status": 0,
+        "seconds": 0.24
+      },
+      {
+        "file": "contextoPrecificacaoContaScoped.test.js",
+        "status": 0,
+        "seconds": 0.07
+      },
+      {
+        "file": "contextoPrecificacaoErroCanonico.test.js",
+        "status": 0,
+        "seconds": 0.07
+      },
+      {
+        "file": "motorMargemCarregarWorkspaceContaScoped.test.js",
+        "status": 0,
+        "seconds": 0.11
+      },
+      {
+        "file": "planilhaPrecificacaoSemBaseContaScoped.test.js",
+        "status": 0,
+        "seconds": 0.32
+      },
+      {
+        "file": "precificacaoServiceContaScoped.test.js",
+        "status": 0,
+        "seconds": 0.11
+      },
+      {
+        "file": "precificacaoServiceD8ContaBase.test.js",
+        "status": 0,
+        "seconds": 0.11
+      },
+      {
+        "file": "promocoesRetornoContaScoped.test.js",
+        "status": 0,
+        "seconds": 0.09
+      }
+    ]
+  },
+  "paths_protegidos_sem_diff": [
+    "server/services/centralVendas",
+    "server/jobs",
+    "server/config/database.js",
+    "server/config/databaseConexao.js",
+    "server/services/painelContas",
+    "server/services/financeiro",
+    "server/sql",
+    "server/services/mlTokenService.js",
+    "server/services/clienteContas/clienteContaService.js"
+  ],
+  "migrations": false,
+  "consulta_producao": false,
+  "alteracao_producao": false,
+  "npm_test_oficial": {
+    "exit_code": 1,
+    "interrompe_na_primeira_falha_historica": "designStudioWorkspace.test.js"
+  },
+  "arquivos_alterados": [
+    "docs/account-context/ETAPA_1_FUNDACAO_ACCOUNT_AWARE.md",
+    "docs/account-context/VALIDACAO_ETAPA_1.json",
+    "server/controllers/automacoesController.js",
+    "server/services/automacoes/contextoPrecificacaoService.js",
+    "server/services/automacoes/diagnosticoService.js",
+    "server/services/automacoes/precificacaoService.js",
+    "server/services/clienteContas/accountContextInvariant.js",
+    "server/tests/accountContextFoundation.test.js",
+    "server/tests/automacoesContaScoped.test.js",
+    "server/tests/automacoesProntidaoConta.test.js",
+    "server/tests/contextoPrecificacaoContaScoped.test.js",
+    "server/tests/contextoPrecificacaoErroCanonico.test.js",
+    "server/tests/motorMargemCarregarWorkspaceContaScoped.test.js",
+    "server/tests/planilhaPrecificacaoSemBaseContaScoped.test.js",
+    "server/tests/precificacaoServiceContaScoped.test.js",
+    "server/tests/precificacaoServiceD8ContaBase.test.js",
+    "server/tests/promocoesRetornoContaScoped.test.js"
+  ]
+}

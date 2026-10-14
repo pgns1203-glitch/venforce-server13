@@ -24,13 +24,13 @@ const Module = require("module");
 
 const originalLoad = Module._load;
 let GRANT_CONECTADO = false;
-async function resolveMlGrantStub({ mlUserId, requireUsable }) {
+async function resolveMlGrantStub({ clienteId, mlUserId, requireUsable }) {
   if (!GRANT_CONECTADO) {
     const err = new Error("Cliente não possui grant Mercado Livre.");
     err.code = "ML_GRANT_NOT_FOUND";
     throw err;
   }
-  return { ml_user_id: mlUserId || "111" };
+  return { id: 42, cliente_id: clienteId, ml_user_id: mlUserId || "111" };
 }
 Module._load = function loadWithMlTokenStub(request, parent, isMain) {
   if (request === "../mlTokenService") {
@@ -79,6 +79,13 @@ class MockDb {
   }
   async query(sql, params = []) {
     const q = String(sql).replace(/\s+/g, " ").trim();
+    if (q.startsWith("SELECT id, cliente_id FROM cliente_contas WHERE marketplace")) {
+      return { rows: this.contas.filter((c) => c.marketplace === "meli" && String(c.external_account_id) === String(params[0])) };
+    }
+    if (q.startsWith("SELECT id, cliente_id, cliente_conta_id, ml_user_id FROM ml_tokens")) {
+      return { rows: this.contas.filter((c) => String(c.external_account_id) === String(params[0])).map((c) => ({ id: 42, cliente_id: c.cliente_id, cliente_conta_id: c.id, ml_user_id: c.external_account_id })) };
+    }
+
 
     if (q.startsWith("SELECT id, nome, slug FROM clientes WHERE slug = $1 AND ativo = true")) {
       return { rows: cliente.slug === params[0] ? [cliente] : [] };
@@ -99,9 +106,9 @@ class MockDb {
       );
       return { rows };
     }
-    if (q.startsWith("SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true")) {
+    if (q.startsWith("SELECT COUNT(*)::int AS total FROM cliente_contas")) {
       const total = this.contas.filter(
-        (c) => c.cliente_id === Number(params[0]) && c.marketplace === params[1] && c.ativo !== false
+        (c) => c.cliente_id === Number(params[0]) && c.marketplace === (params[1] || "meli") && c.ativo !== false
       ).length;
       return { rows: [{ total }] };
     }
@@ -119,7 +126,7 @@ class MockDb {
         .filter((x) => x.cliente_id === Number(params[0]) && x.ativo !== false && x.marketplace === "meli")
         .map((v) => {
           const b = this.basesById[v.base_id];
-          return b ? { ...b, cliente_conta_id: v.cliente_conta_id ?? null } : null;
+          return b ? { ...b, cliente_id: v.cliente_id, marketplace: "meli", vinculo_marketplace: v.marketplace, vinculo_ativo: v.ativo, cliente_conta_id: v.cliente_conta_id ?? null } : null;
         })
         .filter((b) => b && b.ativo !== false);
       return { rows };
@@ -193,28 +200,17 @@ async function run() {
     }
   );
 
-  // 3b. Híbrido real (fixture de precificacaoServiceContaScoped.test.js /
-  //     promocoesRetornoContaScoped.test.js): 2 contas ativas, mas a base
-  //     ainda está vinculada só a nível de cliente (cliente_conta_id NULL,
-  //     não migrada por conta). Não é "base de outra conta" — é vínculo
-  //     legado sem dono específico — continua resolvendo para QUALQUER
-  //     conta explícita do cliente, sem exigir migração de dado.
+  // Base NULL em multi-conta é uma ambiguidade de contexto, mesmo com Conta explícita.
   const vinculoCompartilhado = { id: 9005, cliente_id: 1, cliente_conta_id: null, base_id: 7005, marketplace: "meli", ativo: true };
-  const baseCompartilhada = { id: 7005, slug: "base-compartilhada", nome: "Base Compartilhada", ativo: true, created_at: null, updated_at: null };
+  const baseCompartilhada = { id: 7005, slug: "base-compartilhada", nome: "Base Compartilhada", ativo: true };
   await withMockDb(
-    { contas: [contaA, contaB], vinculos: [vinculoCompartilhado], basesById: { 7005: baseCompartilhada } },
-    true,
+    { contas: [contaA, contaB], vinculos: [vinculoCompartilhado], basesById: { 7005: baseCompartilhada } }, true,
     async () => {
-      const ctxA = await resolverContextoPrecificacao({ clienteSlugRaw: "cliente-multi", clienteContaId: 501 });
-      ok("híbrido: conta A explícita resolve a base compartilhada não migrada", ctxA.base?.id === 7005);
-      const ctxB = await resolverContextoPrecificacao({ clienteSlugRaw: "cliente-multi", clienteContaId: 502 });
-      ok("híbrido: conta B explícita também resolve a mesma base compartilhada", ctxB.base?.id === 7005);
+      for (const id of [501, 502]) await rejeitaCom("Base NULL multi-conta falha fechado", resolverContextoPrecificacao({ clienteSlugRaw: "cliente-multi", clienteContaId: id }), (e) => e.statusCode === 409 && e.code === "ACCOUNT_CONTEXT_AMBIGUOUS");
     }
   );
 
-  // 4. Sem conta explícita e SEM cliente_contas cadastradas (cliente
-  //    totalmente legado, client-level) + múltiplas bases → BASE_AMBIGUA
-  //    preservada (legado intacto).
+  // 4. Zero Contas ativas: recusa antes de selecionar Grant/Base do Cliente.
   const vinculoLegadoX = { id: 9003, cliente_id: 1, cliente_conta_id: null, base_id: 7003, marketplace: "meli", ativo: true };
   const vinculoLegadoY = { id: 9004, cliente_id: 1, cliente_conta_id: null, base_id: 7004, marketplace: "meli", ativo: true };
   const baseX = { id: 7003, slug: "base-x", nome: "Base X", ativo: true, created_at: null, updated_at: null };
@@ -223,9 +219,7 @@ async function run() {
     { contas: [], vinculos: [vinculoLegadoX, vinculoLegadoY], basesById: { 7003: baseX, 7004: baseY } },
     true,
     async () => {
-      const ctx = await resolverContextoPrecificacao({ clienteSlugRaw: "cliente-multi", clienteContaId: null });
-      ok("legado sem cliente_contas, 2 bases: NÃO pronto", ctx.pronto === false);
-      ok("legado sem cliente_contas, 2 bases: motivo BASE_AMBIGUA preservado", ctx.motivo === MOTIVOS.MULTIPLAS_BASES_MELI);
+      await rejeitaCom("zero Conta ativa nunca usa Grant principal", resolverContextoPrecificacao({ clienteSlugRaw: "cliente-multi" }), (e) => e.statusCode === 404 && e.code === "ACCOUNT_CONTEXT_NOT_FOUND");
     }
   );
 

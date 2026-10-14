@@ -14,6 +14,7 @@
 
 const pool = require("../../config/database");
 const mlTokenService = require("../mlTokenService");
+const { erroContexto, validarIdentidade, validarTitularidadeSeller, resolverBaseEstrita } = require("./accountContextIdentityService");
 
 const MARKETPLACES_SUPORTADOS = new Set(["meli", "shopee"]);
 // Cadastro de conta aceita também TikTok Shop (operação de lançamento manual
@@ -392,13 +393,13 @@ async function atualizarNicknameConta(contaId, nickname, queryable = pool) {
 // backfill em massa da migration. Idempotente: se a conta já existe para
 // (cliente_id, ml_user_id), apenas garante que o grant aponte para ela.
 // Nunca toca em access_token/refresh_token/expires_at/token_status.
-async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, grantIsPrimary = false }) {
+async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, grantIsPrimary = false, transactionClient = null }) {
   const mlUserIdStr = mlUserId == null ? "" : String(mlUserId);
   if (!mlUserIdStr) return null;
 
-  const client = await pool.connect();
+  const client = transactionClient || await pool.connect();
   try {
-    await client.query("BEGIN");
+    if (!transactionClient) await client.query("BEGIN");
     await client.query(`SELECT pg_advisory_xact_lock(1296845909, $1)`, [Number(clienteId)]);
 
     const existente = await client.query(
@@ -430,7 +431,7 @@ async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, gran
       const inserted = await client.query(
         `INSERT INTO cliente_contas (cliente_id, marketplace, nome, slug, external_account_id, is_primary, ativo, metadata_json)
          VALUES ($1, 'meli', $2, $3, $4, $5, true, $6)
-         ON CONFLICT (cliente_id, marketplace, external_account_id) DO NOTHING
+         ON CONFLICT (cliente_id, marketplace, external_account_id) WHERE external_account_id IS NOT NULL DO NOTHING
          RETURNING *`,
         [clienteId, `Mercado Livre ${ordinal}`, slug, mlUserIdStr, devePrincipal, { origem: "oauth_callback" }]
       );
@@ -447,15 +448,16 @@ async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, gran
       );
     }
 
-    await client.query("COMMIT");
+    if (!transactionClient) await client.query("COMMIT");
     return sanitizarConta(conta);
   } catch (error) {
+    if (transactionClient) throw error;
     await client.query("ROLLBACK");
     // Nunca deve derrubar o fluxo OAuth por causa da fundação de contas.
     console.error(JSON.stringify({ event: "cliente_conta_auto_provisao_falhou", cliente_id: clienteId, ml_user_id: mlUserIdStr, error: error.message }));
     return null;
   } finally {
-    client.release();
+    if (!transactionClient) client.release();
   }
 }
 
@@ -465,13 +467,13 @@ async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, gran
 // service é a segunda linha de defesa, não a única. Idempotente: se a conta
 // ainda não tem external_account_id, grava agora (primeira conexão daquela
 // conta). Nunca move o grant para outra conta nem apaga tokens existentes.
-async function vincularGrantMlNaConta({ contaId, mlUserId }) {
+async function vincularGrantMlNaConta({ contaId, mlUserId, transactionClient = null }) {
   const mlUserIdStr = mlUserId == null ? "" : String(mlUserId);
   if (!mlUserIdStr) throw criarErroHttp(400, "mlUserId é obrigatório.");
 
-  const client = await pool.connect();
+  const client = transactionClient || await pool.connect();
   try {
-    await client.query("BEGIN");
+    if (!transactionClient) await client.query("BEGIN");
     const found = await client.query("SELECT * FROM cliente_contas WHERE id = $1 FOR UPDATE", [contaId]);
     const conta = found.rows[0];
     if (!conta) throw criarErroHttp(404, "Conta não encontrada.");
@@ -494,17 +496,71 @@ async function vincularGrantMlNaConta({ contaId, mlUserId }) {
       [conta.id, conta.cliente_id, mlUserIdStr]
     );
 
-    await client.query("COMMIT");
+    if (!transactionClient) await client.query("COMMIT");
     return sanitizarConta({ ...conta, external_account_id: conta.external_account_id || mlUserIdStr });
   } catch (error) {
-    await client.query("ROLLBACK");
+    if (!transactionClient) await client.query("ROLLBACK");
     if (error.code === "23505") {
       throw criarErroHttp(409, "Este seller já está vinculado a outra conta VenForce.", { code: "ML_ACCOUNT_MISMATCH" });
     }
     throw error;
   } finally {
-    client.release();
+    if (!transactionClient) client.release();
   }
+}
+
+// OAuth é uma unidade: preflight de titularidade, Grant e vínculo na MESMA
+// transação. Só o callback usa esta porta; nenhum sync/refresh é disparado.
+async function concluirOAuthContaMl({ clienteId, clienteSlug, clienteContaId = null,
+  mlUserId, accessToken, refreshToken, expiresAt }) {
+  const seller = String(mlUserId || "").trim();
+  if (!/^[1-9]\d*$/.test(seller) || typeof accessToken !== "string" || !accessToken.trim() ||
+      typeof refreshToken !== "string" || !refreshToken.trim() || !(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime())) throw erroContexto("OAUTH_IDENTITY_INVALID", "Resposta OAuth sem identidade/credenciais válidas.", 400);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    // Serializa OAuth do MESMO seller entre Clientes, antes do preflight.
+    await client.query("SELECT pg_advisory_xact_lock(1296845910, hashtext($1))", [seller]);
+    // Mesma ordem do save de Grant: Cliente antes de Conta/Grant evita
+    // inversão entre callback explícito e provisionamento legado concorrentes.
+    await client.query("SELECT pg_advisory_xact_lock(1296845907, $1)", [Number(clienteId)]);
+    const cliente = await resolverClientePorIdOuSlug({ clienteId }, client);
+    if (cliente.ativo === false) throw erroContexto("CLIENTE_INATIVO", "Cliente inativo.");
+    let conta = null;
+    if (clienteContaId != null) {
+      const locked = await client.query("SELECT * FROM cliente_contas WHERE id = $1 FOR UPDATE", [clienteContaId]);
+      conta = locked.rows[0];
+      if (!conta) throw erroContexto("ACCOUNT_CONTEXT_NOT_FOUND", "Conta não encontrada.", 404);
+      validarIdentidade({ cliente, conta, clienteContaId, marketplace: "meli" });
+      if (conta.external_account_id && String(conta.external_account_id) !== seller) {
+        throw erroContexto("ML_ACCOUNT_MISMATCH", "Seller OAuth incompatível com a Conta.");
+      }
+    } else {
+      const exact = await client.query("SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = 'meli' AND external_account_id = $2", [cliente.id, seller]);
+      if (exact.rows.length > 1) throw erroContexto("ACCOUNT_CONTEXT_AMBIGUOUS", "Mais de uma Conta para o seller OAuth.");
+      conta = exact.rows[0] || null;
+      if (conta) validarIdentidade({ cliente, conta, marketplace: "meli" });
+    }
+    const identidade = conta || { id: null, cliente_id: cliente.id, marketplace: "meli", ativo: true };
+    await validarTitularidadeSeller(cliente, { ...identidade, external_account_id: seller }, client);
+    const grant = await mlTokenService.saveMlToken({ clienteId: cliente.id, mlUserId: seller,
+      accessToken, refreshToken, expiresAt, transactionClient: client });
+    if (!grant?.id) throw erroContexto("GRANT_PERSIST_FAILED", "Grant OAuth não foi persistido.");
+    const resolvida = conta
+      ? await vincularGrantMlNaConta({ contaId: conta.id, mlUserId: seller, transactionClient: client })
+      : await garantirContaMlParaGrant({ clienteId: cliente.id, clienteSlug, mlUserId: seller,
+          grantIsPrimary: grant?.is_primary === true, transactionClient: client });
+    if (!resolvida) throw erroContexto("ACCOUNT_BINDING_FAILED", "Não foi possível associar a Conta OAuth.");
+    validarIdentidade({ cliente, conta: resolvida, grant: { ...grant, cliente_conta_id: resolvida.id } });
+    await client.query("COMMIT");
+    mlTokenService.clearGrantBackoff(grant.id);
+    return { grant, conta: resolvida };
+  } catch (error) {
+    try { await client.query("ROLLBACK"); } catch (_) {}
+    if (error.code === "23505") throw erroContexto("ACCOUNT_CONTEXT_AMBIGUOUS", "Conflito de identidade durante OAuth.");
+    error.message = mlTokenService.sanitizeErrorMessage(error, [accessToken, refreshToken]);
+    throw error;
+  } finally { client.release(); }
 }
 
 async function atualizarConta(contaId, { nome, ativo } = {}) {
@@ -705,7 +761,7 @@ async function desconectarGrantMlDaConta(contaId) {
 // sem precisar monkeypatchar o singleton do pool. Todo chamador existente
 // (Central Full, /clientes, /bases) continua igual — não passa esse campo e
 // cai no default.
-async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, marketplace, clienteContaId = null, requireUsableGrant = false, queryable = pool }) {
+async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, marketplace, clienteContaId = null, requireUsableGrant = false, queryable = pool, strictIdentity = false, resolveBase = true }) {
   const cliente = await resolverClientePorIdOuSlug({ clienteId, clienteSlug }, queryable);
   const marketplaceNorm = normalizarMarketplaceConta(marketplace);
   if (!marketplaceNorm) throw criarErroHttp(400, "marketplace deve ser 'meli' ou 'shopee'.");
@@ -749,6 +805,13 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
     // 0 contas ativas: segue em modo legado (conta = null).
   }
 
+  if (strictIdentity) {
+    if (!conta) throw erroContexto("ACCOUNT_CONTEXT_NOT_FOUND", "Cliente sem operação ativa.", 404);
+    if (cliente.ativo === false) throw erroContexto("CLIENTE_INATIVO", "Cliente inativo.");
+    validarIdentidade({ cliente, conta, marketplace: marketplaceNorm });
+    await validarTitularidadeSeller(cliente, conta, queryable);
+  }
+
   const context = {
     cliente: { id: cliente.id, nome: cliente.nome, slug: cliente.slug },
     marketplace: marketplaceNorm,
@@ -786,6 +849,15 @@ async function resolveMarketplaceAccountContext({ clienteId, clienteSlug, market
     }
   }
 
+  if (strictIdentity) {
+    validarIdentidade({ cliente, conta: context.conta, grant: context.grant, marketplace: marketplaceNorm });
+    if (marketplaceNorm === "meli" && requireUsableGrant && !context.grant) {
+      throw erroContexto("ML_GRANT_NOT_FOUND", "Conta sem Grant Mercado Livre exato.", 424);
+    }
+    context.base = resolveBase ? await resolverBaseEstrita(cliente, context.conta, queryable) : null;
+    return context;
+  }
+
   if (conta) {
     context.base = await obterBaseDaConta(conta.id, queryable);
   } else {
@@ -814,6 +886,7 @@ module.exports = {
   resolverContaParaVinculoLegado,
   obterConta,
   criarConta,
+  concluirOAuthContaMl,
   garantirContaMlParaGrant,
   vincularGrantMlNaConta,
   atualizarNicknameConta,

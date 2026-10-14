@@ -29,7 +29,7 @@ async function resolveMlGrantStub({ clienteId, requireUsable }) {
     err.code = "ML_GRANT_NOT_FOUND";
     throw err;
   }
-  return { ml_user_id: GRANT_CONECTADO };
+  return { id: 42, cliente_id: clienteId, ml_user_id: GRANT_CONECTADO };
 }
 Module._load = function loadWithMlTokenStub(request, parent, isMain) {
   if (request === "../mlTokenService") {
@@ -74,18 +74,19 @@ const cliente = { id: 1, nome: "N97 Comercial", slug: "n97", ativo: true };
 
 class MockDb {
   constructor({ basesMeli = [] } = {}) {
-    this.basesMeli = basesMeli;
+    this.basesMeli = basesMeli.map((b) => ({ ...b, cliente_id: 1, marketplace: "meli", vinculo_marketplace: "meli", vinculo_ativo: true, cliente_conta_id: null }));
   }
   async query(sql, params = []) {
     const q = String(sql).replace(/\s+/g, " ").trim();
     if (q.startsWith("SELECT id, nome, slug FROM clientes WHERE slug = $1 AND ativo = true")) {
       return { rows: cliente.slug === params[0] ? [cliente] : [] };
     }
+    if (q.startsWith("SELECT * FROM cliente_contas WHERE id = $1")) return { rows: [{ id: 51, cliente_id: 1, marketplace: "meli", ativo: true, external_account_id: "111" }] };
+    if (q.startsWith("SELECT COUNT(*)::int AS total FROM cliente_contas")) return { rows: [{ total: 1 }] };
     // resolveMarketplaceAccountContext (clienteContaService.js) resolve o
     // cliente de novo, por slug, com um SELECT ligeiramente diferente (sem
-    // "AND ativo = true" no texto). Nenhuma cliente_conta cadastrada nestes
-    // cenários → cai no caminho legado (mesmo comportamento de antes desta
-    // integração): grant principal/fallback via mlTokenService.
+    // "AND ativo = true" no texto). Uma Conta ativa identifica a operação
+    // sem seleção adicional; o Grant é exato pelo seller dessa Conta.
     if (q.startsWith("SELECT id, nome, slug, ativo FROM clientes WHERE slug = $1")) {
       return { rows: cliente.slug === params[0] ? [cliente] : [] };
     }
@@ -93,7 +94,7 @@ class MockDb {
       return { rows: cliente.id === Number(params[0]) ? [cliente] : [] };
     }
     if (q.startsWith("SELECT * FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true")) {
-      return { rows: [] }; // nenhuma conta cadastrada → modo legado
+      return { rows: [{ id: 51, cliente_id: 1, marketplace: "meli", ativo: true, external_account_id: "111" }] }; // cardinalidade única
     }
     if (q.includes("FROM base_cliente_vinculos v") && q.includes("JOIN bases b ON b.id = v.base_id AND b.ativo = true") && !q.includes("b.slug = $2")) {
       return { rows: this.basesMeli };

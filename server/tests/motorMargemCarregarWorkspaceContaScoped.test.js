@@ -35,13 +35,13 @@ const Module = require("module");
 // ── stub de mlTokenService, mesmo padrão de contextoPrecificacaoContaScoped.test.js ──
 const originalLoad = Module._load;
 let GRANT_CONECTADO = true;
-async function resolveMlGrantStub({ mlUserId, requireUsable }) {
+async function resolveMlGrantStub({ clienteId, mlUserId, requireUsable }) {
   if (!GRANT_CONECTADO) {
     const err = new Error("Cliente não possui grant Mercado Livre.");
     err.code = "ML_GRANT_NOT_FOUND";
     throw err;
   }
-  return { ml_user_id: mlUserId || "111" };
+  return { id: 42, cliente_id: clienteId, ml_user_id: mlUserId || "111" };
 }
 Module._load = function loadWithMlTokenStub(request, parent, isMain) {
   if (request === "../mlTokenService") {
@@ -151,6 +151,13 @@ class MockDb {
   }
   async query(sql, params = []) {
     const q = String(sql).replace(/\s+/g, " ").trim();
+    if (q.startsWith("SELECT id, cliente_id FROM cliente_contas WHERE marketplace")) {
+      return { rows: this.contas.filter((c) => c.marketplace === "meli" && String(c.external_account_id) === String(params[0])) };
+    }
+    if (q.startsWith("SELECT id, cliente_id, cliente_conta_id, ml_user_id FROM ml_tokens")) {
+      return { rows: this.contas.filter((c) => String(c.external_account_id) === String(params[0])).map((c) => ({ id: 42, cliente_id: c.cliente_id, cliente_conta_id: c.id, ml_user_id: c.external_account_id })) };
+    }
+
 
     if (q.startsWith("SELECT id, nome, slug FROM clientes WHERE slug = $1 AND ativo = true")) {
       return { rows: cliente.slug === params[0] ? [cliente] : [] };
@@ -182,7 +189,7 @@ class MockDb {
         .filter((x) => x.cliente_id === Number(params[0]) && x.ativo !== false && x.marketplace === "meli")
         .map((v) => {
           const b = this.basesById[v.base_id];
-          return b ? { ...b, cliente_conta_id: v.cliente_conta_id ?? null } : null;
+          return b ? { ...b, cliente_id: v.cliente_id, marketplace: "meli", vinculo_marketplace: v.marketplace, vinculo_ativo: v.ativo, cliente_conta_id: v.cliente_conta_id ?? null } : null;
         })
         .filter((b) => b && b.ativo !== false);
       return { rows };

@@ -76,6 +76,7 @@ Module._load = function stub(request, parent, isMain) {
 };
 const { buildShopeeCostMap } = require("../services/fechamentoFinanceiro/shopeePerformanceService");
 const { processShopeeFinancialOrders } = require("../services/fechamentoFinanceiro/shopeeOrderAllService");
+const { processMeli } = require("../services/fechamentoFinanceiro/meliFinanceiroService");
 Module._load = originalLoad;
 
 function linhaShopee(o) {
@@ -115,6 +116,29 @@ async function main() {
     finalMarginCalculated: 0.1051, tacos: 0.03, tacox: 0.047, adsTotal: 12000, venforceTotal: 5000, affiliatesTotal: 3000.3,
   };
   comparar("MELI", meli);
+
+  console.log("\n▸ MELI — pacote de diversos produtos pelo MOTOR REAL (processMeli)");
+  // Estrutura do export real: linha do pacote com o financeiro + produtos com
+  // o seu N.º de venda e sem financeiro. As duas telas leem o MESMO resultado;
+  // a V3 tira "Aguardando financeiro" só da cobertura que o motor grava.
+  const P = (o) => ({ "N.º de venda": "", Estado: "", "Pacote de diversos produtos": "", Unidades: "", "Receita por produtos (BRL)": "",
+    "Tarifa de venda e impostos (BRL)": "", "Tarifas de envio (BRL)": "", "Total (BRL)": "", "# de anúncio": "",
+    "Título do anúncio": "", "Preço unitário de venda do anúncio (BRL)": "", ...o });
+  const pacote = processMeli([
+    P({ "N.º de venda": "9000000000000100", Estado: "Pacote de 2 produtos", "Receita por produtos (BRL)": "629.89",
+      "Tarifa de venda e impostos (BRL)": "-76.04", "Tarifas de envio (BRL)": "-54.1", "Total (BRL)": "499.75" }),
+    P({ "N.º de venda": "9000000000000101", Estado: "Entregue", "Pacote de diversos produtos": "Sim", Unidades: "1",
+      "# de anúncio": "MLB900000101", "Preço unitário de venda do anúncio (BRL)": "299.99" }),
+    P({ "N.º de venda": "9000000000000102", Estado: "Entregue", "Pacote de diversos produtos": "Sim", Unidades: "1",
+      "# de anúncio": "MLB900000102", "Preço unitário de venda do anúncio (BRL)": "329.9" }),
+  ], [{ "# de anúncio": "MLB900000101", custo: 100, imposto: 10 }, { "# de anúncio": "MLB900000102", custo: 110, imposto: 10 }], 0, 0, 0);
+  eq("motor: Total do pacote no fechamento", pacote.summary.paidRevenueTotal, 499.75);
+  eq("motor: nenhuma venda pendente", pacote.summary.revenuePendingFinancial, 0);
+  comparar("MELI pacote", pacote.summary);
+  const produtosV3 = await import(pathToFileURL(path.join(__dirname, "..", "..", "frontend-react", "src", "utils", "financeiro", "produtos.js")).href);
+  const linhasV3 = produtosV3.normalizarLinhas(pacote.detailedRows);
+  eq("V3: 2 produtos", linhasV3.length, 2);
+  ok("V3: nenhum produto do pacote como 'Aguardando financeiro'", linhasV3.every((l) => l.statusPrincipal !== "aguardando_financeiro"));
 
   console.log("\n▸ Shopee — summary do MOTOR REAL (processShopeeFinancialOrders)");
   const costMap = buildShopeeCostMap([{ sku: "SKU-A", custo: 10, imposto: 0.08 }]);

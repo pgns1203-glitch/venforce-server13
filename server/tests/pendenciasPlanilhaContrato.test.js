@@ -10,10 +10,10 @@
 // Round-trip: pendência → XLSX → preencher Novo custo/Imposto → parser real →
 // classificação do frontend → upsert real → base atualizada.
 //
-// Também CARACTERIZA o comportamento do upsert que justifica as proteções da
-// tela (Shopee): a identidade de uma linha é o produto_id; gravar outro Model
-// no mesmo Item sobrescreve o registro; omitir id_model o zera. Se o backend
-// mudar isso, estes testes avisam e a tela pode ser simplificada.
+// Também CARACTERIZA o upsert Shopee de que a tela depende (FIN-508): a
+// identidade de uma linha é Item + Model — outro Model do mesmo Item é uma
+// variação NOVA (a existente não muda); omitir o Model num Item que só tem
+// variações é recusado (409), nunca zera nem escolhe uma.
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://127.0.0.1:1/x";
 
@@ -51,6 +51,20 @@ function instalarBancoEmMemoria({ marketplace, custos = [] }) {
     if (/FROM custos WHERE base_id = \$1 AND produto_id = \$2 LIMIT 1/.test(q)) {
       return { rows: rows.filter((r) => r.base_id === params[0] && r.produto_id === params[1]).slice(0, 1) };
     }
+    // Shopee (FIN-508): a linha é a variação — Item + Model.
+    const daVariacao = (r) => r.base_id === params[0] && r.produto_id === params[1] && (r.id_model || "") === params[2];
+    if (/^SELECT .* FROM custos WHERE base_id = \$1 AND produto_id = \$2 AND sku_id = '' AND sku = '' AND COALESCE\(id_model, ''\) = \$3 LIMIT 1/.test(q)) {
+      return { rows: rows.filter(daVariacao).slice(0, 1) };
+    }
+    if (/^UPDATE custos SET custo_produto = \$4/.test(q)) {
+      const r = rows.find(daVariacao);
+      Object.assign(r, { custo_produto: params[3], imposto_percentual: params[4], taxa_fixa: params[5] });
+      if (params[6]) r.produto_nome = params[6];
+      return { rows: [r] };
+    }
+    if (/^SELECT id_model FROM custos WHERE base_id = \$1 AND produto_id = \$2 AND sku_id = '' AND COALESCE\(id_model, ''\) <> ''/.test(q)) {
+      return { rows: rows.filter((r) => r.base_id === params[0] && r.produto_id === params[1] && r.id_model).map((r) => ({ id_model: r.id_model })) };
+    }
     if (/^SELECT imposto_percentual, taxa_fixa, COUNT/.test(q)) {
       const r = rows.find((x) => x.base_id === params[0]);
       return { rows: r ? [{ imposto_percentual: r.imposto_percentual, taxa_fixa: r.taxa_fixa, total: 1 }] : [] };
@@ -59,6 +73,12 @@ function instalarBancoEmMemoria({ marketplace, custos = [] }) {
       const r = rows.find((x) => x.base_id === params[0] && x.produto_id === params[1]);
       Object.assign(r, { custo_produto: params[2], imposto_percentual: params[3], taxa_fixa: params[4], id_model: params[5] });
       if (params[6]) r.produto_nome = params[6];
+      return { rows: [r] };
+    }
+    if (/^INSERT INTO custos .* VALUES \(\$1, \$2, '', \$3/.test(q)) {
+      // INSERT da variação Shopee: sku_id e sku são literais ''.
+      const r = { base_id: params[0], produto_id: params[1], sku_id: "", custo_produto: params[2], imposto_percentual: params[3], taxa_fixa: params[4], id_model: params[5], produto_nome: params[6], variacao_nome: params[7], sku: "" };
+      rows.push(r);
       return { rows: [r] };
     }
     if (/^INSERT INTO custos/.test(q)) {
@@ -158,14 +178,18 @@ function preencher(bytes, preenchimentos) {
     }
   }
 
-  console.log("▸ Caracterização do upsert (por que a tela protege o Shopee)");
+  console.log("▸ Caracterização do upsert Shopee (FIN-508: a identidade é Item + Model)");
   {
     const mem = instalarBancoEmMemoria({ marketplace: "shopee", custos: [{ produto_id: "111", id_model: "A", custo_produto: 20, imposto_percentual: 0.1 }] });
     try {
-      await upsert({ produto_id: "111", custo_produto: 5, id_model: "B" });
-      eq("outro Model no MESMO Item sobrescreve o registro (a identidade é o produto_id)", [mem.rows.length, mem.rows[0].id_model, Number(mem.rows[0].custo_produto)], [1, "B", 5]);
-      await upsert({ produto_id: "111", custo_produto: 6 });
-      eq("omitir id_model ZERA o existente (por isso a tela sempre o envia)", mem.rows[0].id_model, null);
+      const r1 = await upsert({ produto_id: "111", custo_produto: 5, id_model: "B" });
+      eq("outro Model no MESMO Item cria a variação — a existente não muda",
+        [r1.body.acao, mem.rows.map((r) => [r.id_model, Number(r.custo_produto)])], ["criado", [["A", 20], ["B", 5]]]);
+      const r2 = await upsert({ produto_id: "111", custo_produto: 7, id_model: "A" });
+      eq("o mesmo Model atualiza só ele", [r2.body.acao, mem.rows.map((r) => [r.id_model, Number(r.custo_produto)])], ["atualizado", [["A", 7], ["B", 5]]]);
+      const r3 = await upsert({ produto_id: "111", custo_produto: 6 });
+      eq("omitir o Model num Item só com variações → 409, nada zerado nem escolhido",
+        [r3.statusCode, r3.body.code, mem.rows.map((r) => [r.id_model, Number(r.custo_produto)])], [409, "SHOPEE_MODEL_OBRIGATORIO", [["A", 7], ["B", 5]]]);
     } finally {
       mem.restaurar();
     }

@@ -7,6 +7,7 @@ const XLSX = require("xlsx");
 const { parseMoneyValue } = require("../utils/numberUtils");
 const {
   parseSpreadsheet,
+  parseShopeeCostSpreadsheet,
   detectMeliHeader,
   detectShopeeHeaderRow,
   validateMeliHeaderAtRow,
@@ -359,7 +360,10 @@ async function processarFechamentoFinanceiroController(req, res) {
     let costsSource = "upload";
     let costsBase = null;
     if (costsFile && costsFile.buffer && marketplace !== "tiktok") {
-      costRowsRaw = parseSpreadsheet(costsFile.buffer);
+      // Shopee: ID/Model de 12 dígitos com a precisão da célula (FIN-508).
+      costRowsRaw = marketplace === "shopee"
+        ? parseShopeeCostSpreadsheet(costsFile.buffer)
+        : parseSpreadsheet(costsFile.buffer);
     } else {
       // Base vinculada: monta as linhas de custo a partir do banco, no formato
       // que o parser do marketplace entende (MELI ou TikTok).

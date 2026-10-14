@@ -756,6 +756,8 @@
 
   function loadCentral(manual) {
     if (!state.client) return;
+    // Cálculos do Motor guardados na tela valem por leitura: nova leitura, novo pedido.
+    contract.resetCalcs();
     if (state.mode === "snapshot") return loadSnapshot(manual);
     if (state.mode === "legacy" || typeof api.getSnapshotResumo !== "function") {
       state.mode = "legacy";
@@ -1891,6 +1893,12 @@
     if (integrity.key === "RECONCILING") {
       return { title: "Aguardar conciliação", detail: "Não tratar o realizado como fechado." };
     }
+    if (composition.pending) {
+      return { title: "Calculando composição", detail: "O Motor está calculando LC e margem desta seleção de fontes." };
+    }
+    if (composition.failed) {
+      return { title: "Cálculo indisponível", detail: composition.failureReason || "Não foi possível calcular esta composição agora." };
+    }
     if (!composition.computable) {
       return { title: "Completar composição", detail: "Falta " + composition.missing.map(variableLabel).join(", ") + " na fonte selecionada." };
     }
@@ -2029,10 +2037,14 @@
     // Margem: MC é o número que importa (principal, maior); LC é o valor em
     // R$ que sustenta a MC (secundário). Os dois continuam presentes — só
     // compartilham uma coluna em vez de duas.
-    var margemCellHtml = (composition.computable
-      ? '<span class="cm-cell-value cm-mc-value ' + marginClass(composition.margin, item) + '">' + escapeHtml(formatPercent(composition.margin)) + "</span>" +
-        '<span class="cm-cell-sub cm-lc-value"><span class="cm-cell-meta">LC ' + escapeHtml(formatMoney(composition.profit)) + "</span></span>" + assumed
-      : unavailable("Indisponível", "Falta " + composition.missing.map(variableLabel).join(", ") + " na composição selecionada.")) +
+    var margemCellHtml = (composition.pending
+      ? '<span class="cm-cell-meta" data-cm-calc-pending title="LC e margem desta composição são calculados pelo Motor no backend.">Calculando…</span>'
+      : composition.failed
+        ? unavailable("Indisponível", composition.failureReason || "Não foi possível calcular esta composição agora.")
+        : composition.computable
+          ? '<span class="cm-cell-value cm-mc-value ' + marginClass(composition.margin, item) + '">' + escapeHtml(formatPercent(composition.margin)) + "</span>" +
+            '<span class="cm-cell-sub cm-lc-value"><span class="cm-cell-meta">LC ' + escapeHtml(formatMoney(composition.profit)) + "</span></span>" + assumed
+          : unavailable("Indisponível", "Falta " + composition.missing.map(variableLabel).join(", ") + " na composição selecionada.")) +
       comparisonLineHtml(item);
 
     // Estado: resultado financeiro + integridade do dado continuam sendo DOIS
@@ -2165,6 +2177,7 @@
   }
 
   function renderSheet() {
+    scheduleCalcs();
     if (state.loading) {
       refs.tableHost.innerHTML = loadingTable();
       refs.pagination.hidden = true;
@@ -2348,7 +2361,85 @@
    * a página mostra só o resumo (total · críticas · revisar) e a fila completa
    * abre sob demanda. A fila continua renderizada (e navegável) por inteiro.
    */
+  // ---------------------------------------------------------------------------
+  // Cálculo no backend (Composição personalizada, simulação avançada e impacto
+  // das divergências). A tela não tem fórmula: pede ao núcleo do Motor, em
+  // lote, e redesenha quando a resposta chega.
+  // ---------------------------------------------------------------------------
+
+  var calcTimer = null;
+
+  function scheduleCalcs() {
+    if (calcTimer || typeof root.setTimeout !== "function") return;
+    calcTimer = root.setTimeout(function () {
+      calcTimer = null;
+      runCalcs();
+    }, 0);
+  }
+
+  function itemsOnScreen() {
+    if (isSnapshotMode()) return state.data ? state.data.items || [] : [];
+    return visibleSlice(filteredItems());
+  }
+
+  function scenarioRequest() {
+    if (!state.advancedOpen || !state.scenario || !state.selectedItemId || state.drawerTab !== "pricing") return null;
+    var item = findSelectedItem();
+    if (!item || item.stub) return null;
+    var request = contract.simulateScenario(item, state.scenario, state.selection).request;
+    return request && contract.needsCalc(request) ? request : null;
+  }
+
+  function runCalcs() {
+    if (!state.client || !state.data || state.loading) return;
+    var requests = contract.pendingCalcRequests(state.view === "composition" ? itemsOnScreen() : [], filteredItems(), state.selection);
+    var scenario = scenarioRequest();
+    if (scenario) requests.push(scenario);
+    if (!requests.length) return;
+    if (typeof api.calcularComposicoes !== "function" || !state.contaId) {
+      contract.recordCalcFailure(requests, !state.contaId
+        ? "Escolha a operação (conta) para o Motor calcular esta composição."
+        : "Cálculo indisponível nesta leitura.");
+      redrawAfterCalcs();
+      return;
+    }
+    contract.markCalcInflight(requests);
+    var contaNoInicio = state.contaId;
+    api.calcularComposicoes({ clienteContaId: contaNoInicio, requests: requests.map(function (r) { return { insumos: r.insumos, base_insumos: r.base_insumos, meta_margem: r.meta_margem }; }) })
+      .then(function (result) {
+        if (result && result.ok) contract.recordCalcResults(requests, result.itens);
+        else contract.recordCalcFailure(requests, result && result.error);
+        redrawAfterCalcs();
+      })
+      .catch(function (error) {
+        contract.recordCalcFailure(requests, error && error.message);
+        redrawAfterCalcs();
+      });
+  }
+
+  /**
+   * Redesenha só o que o cálculo recém-chegado alimenta. A planilha só muda na
+   * visão Composição (na operacional nenhuma célula depende dele) e, quando
+   * muda com o drawer aberto, o elemento que o abriu é substituído: o alvo da
+   * devolução de foco é remapeado para a linha nova (senão o foco se perderia).
+   */
+  function redrawAfterCalcs() {
+    if (!state.data) return;
+    if (state.view === "composition") {
+      var focoItem = state.previousFocus && state.previousFocus.closest ? state.previousFocus.closest("tr[data-item-id]") : null;
+      var focoId = focoItem ? focoItem.getAttribute("data-item-id") : null;
+      renderSheet();
+      if (focoId) {
+        var novaLinha = refs.tableHost.querySelector('tr[data-item-id="' + focoId.replace(/"/g, '\\"') + '"]');
+        if (novaLinha) state.previousFocus = novaLinha;
+      }
+    }
+    renderDivergences();
+    if (state.selectedItemId && state.drawerTab === "pricing" && refs.drawer.classList.contains("is-open")) renderDrawer();
+  }
+
   function renderDivergences() {
+    scheduleCalcs();
     refs.divergencesToggle.setAttribute("aria-expanded", state.divergencesOpen ? "true" : "false");
     refs.divergencesToggle.textContent = state.divergencesOpen ? "Ocultar divergências" : "Ver divergências";
     refs.divergencesBody.hidden = !state.divergencesOpen;
@@ -2378,7 +2469,9 @@
     refs.divergences.innerHTML = '<div class="vf-table-wrap cm-div-wrap"><table class="vf-table vf-table--compact cm-div-table"><thead><tr>' +
       "<th>Produto</th><th>Variável</th><th>Comparação</th><th class=\"num\">Impacto MC</th><th>Severidade</th><th><span class=\"vf-visually-hidden\">Ação</span></th>" +
       "</tr></thead><tbody>" + rows.map(function (row) {
-        var impact = row.impactPp === null
+        var impact = row.impactPending
+          ? '<span class="cm-cell-meta" data-cm-calc-pending>Calculando…</span>'
+          : row.impactPp === null
           ? unavailable("Sem comparação")
           : '<span class="cm-impact ' + (row.impactPp < 0 ? "is-bad" : Math.abs(row.impactPp) >= 1 ? "is-warn" : "is-good") + '">' + escapeHtml(formatPp(row.impactPp)) + "</span>";
         return "<tr>" +
@@ -2813,12 +2906,17 @@
         '" aria-label="Valor hipotético de ' + escapeHtml(contract.VARIABLE_META[variableKey].label) + '"></td>' +
         '<td class="cm-scenario-base">' + escapeHtml(formatByVariable(variableKey, simulation.baseline.values[variableKey]) || "Indisponível") + "</td></tr>";
     }).join("");
-    return '<details class="cm-adv"' + (state.advancedOpen ? " open" : "") + ' id="cm-adv"><summary>Simulação avançada <small>hipótese local — não é decisão</small></summary>' +
+    var resultado = simulation.pending
+      ? '<p class="cm-adv__result" data-cm-calc-pending>Calculando no Motor…</p>'
+      : simulation.failed
+        ? '<p class="cm-adv__result cm-field-error" role="alert">Não foi possível calcular agora: ' + escapeHtml(simulation.failureReason || "tente de novo.") + "</p>"
+        : '<p class="cm-adv__result">Resultado hipotético: LC ' + escapeHtml(simulation.computable ? formatMoney(simulation.profit) : "—") + " · MC " +
+          escapeHtml(simulation.computable ? formatPercent(simulation.margin) : "—") +
+          (simulation.computable ? "" : " · cenário incompleto: falta " + escapeHtml(simulation.missing.map(variableLabel).join(", "))) + "</p>";
+    return '<details class="cm-adv"' + (state.advancedOpen ? " open" : "") + ' id="cm-adv"><summary>Simulação avançada <small>hipótese — o cálculo é do Motor, não é decisão</small></summary>' +
       '<p class="cm-adv__warn"><strong>Somente simulação.</strong> Não grava na Base, não muda comissão, não muda o custo real e não altera nada no Mercado Livre. Só o <strong>preço</strong> pode virar escrita real.</p>' +
       '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-scenario-table"><thead><tr><th>Variável</th><th>Hipótese</th><th>Fonte atual</th></tr></thead><tbody>' + rows + "</tbody></table></div>" +
-      '<p class="cm-adv__result">Resultado hipotético: LC ' + escapeHtml(simulation.computable ? formatMoney(simulation.profit) : "—") + " · MC " +
-      escapeHtml(simulation.computable ? formatPercent(simulation.margin) : "—") +
-      (simulation.computable ? "" : " · cenário incompleto: falta " + escapeHtml(simulation.missing.map(variableLabel).join(", "))) + "</p>" +
+      resultado +
       '<button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-scenario-reset"' + (simulation.changed.length ? "" : " disabled") + ">Restaurar hipótese</button>" +
       "</details>";
   }
@@ -2826,6 +2924,7 @@
   function renderPricingTab(item) {
     refs.drawerBody.innerHTML = manualPricingHtml(item) + advancedSimulationHtml(item) + promotionsHtml(item);
     bindPricingControls(item);
+    scheduleCalcs();
   }
 
   function bindPricingControls(item) {

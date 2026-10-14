@@ -23,63 +23,6 @@ function context() {
   };
 }
 
-function legacyFixture() {
-  const catalog = {
-    ok: true,
-    anuncios: [
-      { item_id: "MLB-A", titulo: "Produto saudável", sku: "A", preco: 100, last_synced_at: "2026-08-12T12:00:00Z" },
-      { item_id: "MLB-B", titulo: "Produto em prejuízo", sku: "B", preco: 50 },
-      { item_id: "MLB-C", titulo: "Produto suspeito", sku: "C", preco: 80 },
-      { item_id: "MLB-D", titulo: "Produto sem custo", sku: "D", preco: 90 },
-      { item_id: "MLB-E", titulo: "Margem real pendente", sku: "E", preco: 70 },
-    ],
-    paginacao: { page: 1, limit: 50, total: 5, totalPaginas: 1 },
-  };
-
-  function order(id, revenue, cost, tax, result, confidence, commission, freight) {
-    return {
-      pedidoId: `ORDER-${id}`,
-      data: "2026-08-10",
-      confianca: confidence,
-      itens: [{
-        itemId: id,
-        mlb: id,
-        sku: id,
-        quantidade: 1,
-        valorUnitario: revenue,
-        receitaProduto: revenue,
-        custoProduto: cost,
-        impostoInterno: tax,
-        resultado: result,
-        confianca: confidence,
-      }],
-      componentes: [
-        { itemId: id, tipo: "tarifa_venda", valor: -commission, fonte: "orders_api", confianca: confidence },
-        { itemId: id, tipo: "frete_seller", valor: -freight, fonte: "orders_api", confianca: confidence },
-      ],
-    };
-  }
-
-  const sales = {
-    ok: true,
-    motor: { status: "persistido", geradoEm: "2026-08-12T12:30:00Z" },
-    periodo: { label: "Últimos 30 dias", inicio: "2026-07-14", fim: "2026-08-12" },
-    produtos: {
-      "MLB-A": { base: { custo: 40, imposto: 10, status: "real" } },
-      "MLB-B": { base: { custo: 40, imposto: 10, status: "real" } },
-      "MLB-C": { base: { custo: 20, imposto: 10, status: "real" } },
-      "MLB-D": { base: { custo: null, imposto: null, status: "ausente" } },
-      "MLB-E": { base: { custo: 20, imposto: 10, status: "real" } },
-    },
-    pedidos: [
-      order("MLB-A", 100, 40, 10, 30, "confiavel", 10, 5),
-      order("MLB-B", 50, 40, 5, -10, "confiavel", 10, 5),
-      order("MLB-C", 80, 20, 8, 20, "bloqueado", 8, 4),
-    ],
-  };
-
-  return { catalog, sales };
-}
 
 async function run() {
   await test("normaliza confiança categórica sem inventar score", () => {
@@ -96,40 +39,24 @@ async function run() {
     assert.strictEqual(result.explanation, "score do Motor");
   });
 
-  await test("adapter real cobre saudável, prejuízo, suspeito, custo ausente e realizado pendente", () => {
-    const fixture = legacyFixture();
-    const result = api.adaptLegacyResponse(fixture.catalog, fixture.sales, context());
-    const byId = Object.fromEntries(result.items.map((item) => [item.id, item]));
-    assert.strictEqual(result.sourceMode, "legacy-adapter");
-    assert.strictEqual(result.partial, true);
-    assert.strictEqual(byId["MLB-A"].status, "HEALTHY");
-    assert.strictEqual(byId["MLB-A"].realized.margin, 0.3);
-    assert.strictEqual(byId["MLB-A"].variables.cost.value, 40);
-    assert.strictEqual(byId["MLB-A"].variables.freightActual.value, 5);
-    assert.strictEqual(byId["MLB-B"].status, "LOSS");
-    assert.strictEqual(byId["MLB-C"].status, "SUSPECT_DATA");
-    assert.strictEqual(byId["MLB-D"].status, "UNVALIDATED");
-    assert.strictEqual(byId["MLB-D"].variables.cost.value, null);
-    assert.strictEqual(byId["MLB-E"].realized.pending, true);
-    assert.strictEqual(byId["MLB-E"].realized.margin, null);
-  });
-
-  await test("não chama API por linha e degrada para os dois endpoints agregados", async () => {
-    const fixture = legacyFixture();
+  await test("sem Motor canônico (404) não há leitura de reserva: erro explícito, nenhuma margem calculada na tela", async () => {
     const calls = [];
     const client = api.createClient({
       request(path) {
         calls.push(path);
-        if (path.startsWith("/operacao/central-margem/")) return { ok: false, status: 404, error: "ausente" };
-        if (path.startsWith("/anuncios-meli?")) return { ok: true, status: 200, data: fixture.catalog };
-        if (path.startsWith("/operacao/central-vendas/")) return { ok: true, status: 200, data: fixture.sales };
-        throw new Error(`rota inesperada: ${path}`);
+        return { ok: false, status: 404, error: "ausente" };
       },
     });
-    const result = await client.getCentral({ clientSlug: "loja-teste", clientName: "Loja Teste", page: 1, limit: 50 });
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(calls.length, 3);
-    assert.strictEqual(calls.filter((path) => path.includes("MLB-")).length, 0);
+    const central = await client.getCentral({ clientSlug: "loja-teste", clientName: "Loja Teste", page: 1, limit: 50 });
+    const workspace = await client.getWorkspace({ clientSlug: "loja-teste" });
+    for (const result of [central, workspace]) {
+      assert.strictEqual(result.ok, false);
+      assert.strictEqual(result.code, "MOTOR_INDISPONIVEL");
+      assert.strictEqual(result.type, "motor-indisponivel");
+      assert.ok(!result.items, "sem itens montados fora do Motor");
+    }
+    assert.strictEqual(calls.length, 2, "uma chamada por leitura: sem cair em /anuncios-meli nem /central-vendas");
+    assert.ok(calls.every((path) => path.startsWith("/operacao/central-margem/")), calls.join(" "));
   });
 
   await test("erro real do Motor é exibido e não mascarado pelo fallback", async () => {
@@ -144,15 +71,6 @@ async function run() {
     assert.strictEqual(result.ok, false);
     assert.strictEqual(result.error, "motor indisponível");
     assert.strictEqual(calls, 1);
-  });
-
-  await test("resposta financeira parcial mantém o catálogo e sinaliza pendências", () => {
-    const fixture = legacyFixture();
-    const result = api.adaptLegacyResponse(fixture.catalog, null, context(), { status: 503 });
-    assert.strictEqual(result.ok, true);
-    assert.strictEqual(result.items.length, 5);
-    assert.ok(result.warnings.some((warning) => warning.includes("leitura financeira falhou")));
-    assert.ok(result.items.every((item) => item.realized.margin === null));
   });
 
   await test("contrato canônico suporta todos os estados e divergência de frete", () => {
@@ -266,27 +184,6 @@ async function run() {
     assert.strictEqual(normalized.variables.soldValue.value, 980);
     assert.strictEqual(normalized.confidence.explanation, "Frete realizado divergiu do previsto.");
     assert.strictEqual(result.lastUpdated, "2026-08-12T10:00:00Z");
-  });
-
-  await test("simulação calcula margem, lucro e comparações sem escrever preço", () => {
-    const fixture = legacyFixture();
-    const result = api.adaptLegacyResponse(fixture.catalog, fixture.sales, context());
-    const item = result.items.find((entry) => entry.id === "MLB-A");
-    const simulation = api.simulatePrice(item, 120);
-    assert.strictEqual(simulation.computable, true);
-    assert.strictEqual(simulation.profit, 51);
-    assert.strictEqual(simulation.margin, 0.425);
-    assert.strictEqual(simulation.targetMargin, null);
-  });
-
-  await test("simulação explica dados ausentes", () => {
-    const fixture = legacyFixture();
-    const result = api.adaptLegacyResponse(fixture.catalog, fixture.sales, context());
-    const item = result.items.find((entry) => entry.id === "MLB-D");
-    const simulation = api.simulatePrice(item, 120);
-    assert.strictEqual(simulation.computable, false);
-    assert.ok(simulation.missing.includes("cost"));
-    assert.ok(simulation.missing.includes("commissionRate"));
   });
 
   // =========================================================================
@@ -469,108 +366,100 @@ async function run() {
     assert.strictEqual(api.PRESETS.projected.price, "MELI_API");
   });
 
-  await test("núcleo espelha marginEngine: preço e custo obrigatórios, opcional vira zero declarado", () => {
-    const complete = api.computeMargin({ price: 100, cost: 40, tax: 0.06, commission: 16.5, freight: 23.4, fixedFee: 0 });
-    assert.strictEqual(complete.computable, true);
-    assert.strictEqual(complete.profit, 14.1);
-    assert.strictEqual(complete.margin, 0.141);
-    assert.strictEqual(complete.strict, true);
+  // Linha de /api/margem/composicao como o backend (core.calcularComposicao) devolve.
+  function calcRow(id, patch) {
+    return Object.assign({
+      id: String(id), computavel: true, lc: 14.1, margem_ratio: 0.141, faltando: [], assumido: [], estrito: true,
+      delta_lc: null, delta_margem_pp: null, delta_meta_pp: null,
+    }, patch || {});
+  }
 
-    const missingCost = api.computeMargin({ price: 100, cost: null, tax: 0.06, commission: 1, freight: 1, fixedFee: 0 });
-    assert.strictEqual(missingCost.computable, false);
-    assert.deepStrictEqual(missingCost.missing, ["cost"]);
-    assert.strictEqual(missingCost.profit, null);
-    assert.strictEqual(missingCost.margin, null);
+  function customSelection(extra) {
+    return Object.assign(api.clonePreset("projected"), { freight: "MELI_ORDER" }, extra || {});
+  }
 
-    // Opcional ausente entra como zero DECLARADO, nunca como zero silencioso.
-    const assumedFreight = api.computeMargin({ price: 100, cost: 40, tax: 0.06, commission: 16.5, freight: null, fixedFee: null });
-    assert.strictEqual(assumedFreight.computable, true);
-    assert.deepStrictEqual(assumedFreight.assumed, ["freight", "fixedFee"]);
-    assert.strictEqual(assumedFreight.strict, false);
-
-    // Preço zero não é margem zero: é dado impossível.
-    assert.strictEqual(api.computeMargin({ price: 0, cost: 10 }).computable, false);
+  await test("presets: LC e MC são os do PRÓPRIO item (calculados pelo Motor); nenhum pedido ao backend", () => {
+    api.resetCalcs();
+    const item = normalizedItem({ margin: { projected: { missing: [], assumed: ["taxRate"] }, realized: { missing: ["fixedFee"], assumed: [] } } });
+    const projected = api.resolveComposition(item, api.PRESETS.projected);
+    assert.strictEqual(projected.pending, false);
+    assert.strictEqual(projected.request, null);
+    assert.strictEqual(projected.computable, true);
+    assert.strictEqual(projected.margin, item.projected.margin);
+    assert.strictEqual(projected.profit, item.projected.profit);
+    assert.deepStrictEqual(projected.assumed, ["tax"], "nomes do núcleo viram variáveis da planilha");
+    assert.strictEqual(projected.strict, false);
+    const realized = api.resolveComposition(item, api.PRESETS.realized);
+    assert.strictEqual(realized.margin, item.realized.margin);
+    assert.strictEqual(realized.profit, item.realized.profit);
+    assert.deepStrictEqual(realized.missing, ["fixedFee"]);
+    assert.deepStrictEqual(api.pendingCalcRequests([item], [], api.PRESETS.projected), [], "preset não gera pedido");
   });
 
-  await test("fonte sem evidência mantém null e impede o cálculo em vez de zerar", () => {
+  await test("tabela = Composição: a margem da Composição Projetada é a margem projetada do item (inclusive com retorno ML)", () => {
+    api.resetCalcs();
+    const item = normalizedItem({ projected: { margin: 0.0654, profit: 6.54, rebate: 3.3 } });
+    const composition = api.resolveComposition(item, api.PRESETS.projected);
+    assert.strictEqual(composition.margin, item.projected.margin);
+    assert.strictEqual(composition.profit, item.projected.profit);
+    assert.strictEqual(composition.values.rebate, 3.3, "o retorno ML segue indo ao Motor como insumo");
+  });
+
+  await test("fonte sem evidência mantém null; seleção personalizada espera o backend e nunca mostra número local", () => {
+    api.resetCalcs();
     const item = normalizedItem();
-    const composition = api.resolveComposition(item, Object.assign(api.clonePreset("projected"), { price: "EXTENSION_DOM" }));
+    const selection = Object.assign(api.clonePreset("projected"), { price: "EXTENSION_DOM" });
+    const composition = api.resolveComposition(item, selection);
     assert.strictEqual(composition.values.price, null);
     assert.deepStrictEqual(composition.unavailable, ["price"]);
+    assert.strictEqual(composition.preset, "custom");
+    assert.strictEqual(composition.pending, true);
     assert.strictEqual(composition.computable, false);
     assert.strictEqual(composition.profit, null);
     assert.strictEqual(composition.margin, null);
+    assert.strictEqual(composition.request.insumos.preco, null, "ausente segue null (nunca zero)");
+    assert.strictEqual(composition.request.insumos.custo, 40);
+    // O backend responde que sem preço não há margem.
+    api.recordCalcResults([composition.request], [calcRow(0, { computavel: false, lc: null, margem_ratio: null, faltando: ["price"] })]);
+    const depois = api.resolveComposition(item, selection);
+    assert.strictEqual(depois.pending, false);
+    assert.strictEqual(depois.computable, false);
+    assert.deepStrictEqual(depois.missing, ["price"]);
+    assert.strictEqual(depois.profit, null);
+    assert.strictEqual(depois.margin, null);
   });
 
-  await test("simulatePrice continua idêntico à implementação anterior", () => {
-    // Oráculo: cópia literal da fórmula que existia antes da centralização.
-    function round(value, digits) {
-      if (value === null) return null;
-      const factor = Math.pow(10, digits === undefined ? 2 : digits);
-      return Math.round((value + Number.EPSILON) * factor) / factor;
-    }
-    function legacySimulatePrice(item, newPrice) {
-      const price = Number.isFinite(Number(newPrice)) && newPrice !== null && newPrice !== "" ? Number(newPrice) : null;
-      const inputs = (item && item.simulationInputs) || {};
-      const missing = [];
-      const num = (v) => (v === null || v === undefined || v === "" || !Number.isFinite(Number(v)) ? null : Number(v));
-      if (price === null || price <= 0) missing.push("price");
-      if (num(inputs.cost) === null) missing.push("cost");
-      if (num(inputs.taxRate) === null) missing.push("taxRate");
-      if (num(inputs.commissionRate) === null) missing.push("commissionRate");
-      if (num(inputs.freight) === null) missing.push("freight");
-      if (missing.length) return { computable: false, missing, profit: null, margin: null };
-      const cost = Number(inputs.cost);
-      const taxRate = Number(inputs.taxRate);
-      const commissionRate = Number(inputs.commissionRate);
-      const freight = Number(inputs.freight);
-      const fixedFee = num(inputs.fixedFee) || 0;
-      const profit = price - price * taxRate - price * commissionRate - freight - fixedFee - cost;
-      const margin = profit / price;
-      const currentMargin = item.projected && item.projected.margin;
-      const targetMargin = item.targetMargin;
-      return {
-        computable: true,
-        price: round(price, 2),
-        profit: round(profit, 2),
-        margin: round(margin, 6),
-        currentMargin,
-        deltaCurrentPp: currentMargin === null || currentMargin === undefined ? null : round((margin - currentMargin) * 100, 2),
-        targetMargin,
-        deltaTargetPp: targetMargin === null || targetMargin === undefined ? null : round((margin - targetMargin) * 100, 2),
-        source: inputs.source || "Motor de Margem",
-        missing: [],
-      };
-    }
-
-    const cases = [];
-    [null, 0, 1, 47, 99.9, 119.9, 1234.56].forEach((price) => {
-      [
-        { cost: 40, taxRate: 0.06, commissionRate: 0.165, freight: 23.4, fixedFee: 0, source: "Motor de Margem" },
-        { cost: 83.33, taxRate: 0.115, commissionRate: 0.1499, freight: 18.7, fixedFee: 6.75, source: "Adapter" },
-        { cost: null, taxRate: 0.06, commissionRate: 0.165, freight: 23.4, fixedFee: 0 },
-        { cost: 40, taxRate: 0.06, commissionRate: null, freight: null, fixedFee: null },
-      ].forEach((inputs) => {
-        [null, 0.12, 0].forEach((targetMargin) => {
-          cases.push({ simulationInputs: inputs, targetMargin, projected: { margin: 0.05 } });
-          cases.push({ simulationInputs: inputs, targetMargin, projected: { margin: null } });
-        });
-        cases.forEach((item) => { item.__price = price; });
-      });
-    });
-
-    let compared = 0;
-    cases.forEach((item) => {
-      [null, 0, 1, 47, 99.9, 120, 1234.56].forEach((price) => {
-        assert.deepStrictEqual(api.simulatePrice(item, price), legacySimulatePrice(item, price),
-          `divergiu para preço ${price} e inputs ${JSON.stringify(item.simulationInputs)}`);
-        compared += 1;
-      });
-    });
-    assert.ok(compared >= 100, `poucos casos comparados: ${compared}`);
+  await test("seleção personalizada: LC/MC vêm do backend, em lote, sem repetir pedido já feito", () => {
+    api.resetCalcs();
+    const a = normalizedItem();
+    const b = normalizedItem({ itemId: "MLB-V10", identity: { itemId: "MLB-V10", sku: "V10", titulo: "Outro" } });
+    const selection = customSelection();
+    const pedidos = api.pendingCalcRequests([a, b], [], selection);
+    assert.strictEqual(pedidos.length, 1, "a mesma composição de insumos é pedida uma vez");
+    assert.deepStrictEqual(pedidos[0].insumos, { preco: 100, custo: 40, aliquota: 0.06, taxa_fixa: 0, comissao: 16.5, frete: 18.7, rebate: null });
+    api.markCalcInflight(pedidos);
+    assert.deepStrictEqual(api.pendingCalcRequests([a, b], [], selection), [], "pedido a caminho não se repete");
+    api.recordCalcResults(pedidos, [calcRow(0, { lc: 18.8, margem_ratio: 0.188 })]);
+    const r = api.resolveComposition(a, selection);
+    assert.strictEqual(r.pending, false);
+    assert.strictEqual(r.computable, true);
+    assert.strictEqual(r.profit, 18.8);
+    assert.strictEqual(r.margin, 0.188);
+    assert.deepStrictEqual(api.pendingCalcRequests([a, b], [], selection), []);
+    // Falha do backend: composição indisponível com o motivo, sem tentar de novo em loop.
+    const outra = customSelection({ price: "MELI_ORDER" });
+    const novo = api.pendingCalcRequests([a], [], outra);
+    api.recordCalcFailure(novo, "Cálculo indisponível nesta leitura.");
+    const falhou = api.resolveComposition(a, outra);
+    assert.strictEqual(falhou.failed, true);
+    assert.strictEqual(falhou.computable, false);
+    assert.strictEqual(falhou.failureReason, "Cálculo indisponível nesta leitura.");
+    assert.strictEqual(falhou.margin, null);
+    assert.deepStrictEqual(api.pendingCalcRequests([a], [], outra), []);
   });
 
-  await test("cenário é local: overrides não viram evidência nem alteram o item", () => {
+  await test("cenário é local: overrides não viram evidência nem alteram o item; o resultado é do backend", () => {
+    api.resetCalcs();
     const item = normalizedItem();
     const before = JSON.stringify(item.sources);
     const scenario = {
@@ -581,18 +470,35 @@ async function run() {
       freight: { source: "MELI_ORDER", value: null, manual: false },
       fixedFee: { source: "VENFORCE_BASE", value: null, manual: false },
     };
+    const pendente = api.simulateScenario(item, scenario, api.PRESETS.projected);
+    assert.strictEqual(pendente.pending, true);
+    assert.strictEqual(pendente.computable, false);
+    assert.strictEqual(pendente.profit, null, "sem resposta do backend não há número");
+    assert.strictEqual(pendente.margin, null);
+    assert.strictEqual(pendente.values.price, 150);
+    assert.strictEqual(pendente.values.freight, 18.7);
+    assert.deepStrictEqual(pendente.changed.slice().sort(), ["freight", "price"]);
+    assert.strictEqual(pendente.persisted, false);
+    assert.strictEqual(pendente.request.insumos.preco, 150);
+    assert.strictEqual(pendente.request.base_insumos.preco, 100, "Δ contra a composição da seleção atual");
+    assert.strictEqual(pendente.request.base_insumos.frete, 23.4);
+    assert.strictEqual(pendente.request.meta_margem, 0.12);
+
+    api.recordCalcResults([pendente.request], [calcRow(0, { lc: 51, margem_ratio: 0.34, delta_lc: 36.9, delta_margem_pp: 19.9, delta_meta_pp: 22 })]);
     const simulation = api.simulateScenario(item, scenario, api.PRESETS.projected);
+    assert.strictEqual(simulation.pending, false);
     assert.strictEqual(simulation.computable, true);
-    assert.strictEqual(simulation.values.price, 150);
-    assert.strictEqual(simulation.values.freight, 18.7);
-    assert.deepStrictEqual(simulation.changed.sort(), ["freight", "price"]);
-    assert.strictEqual(simulation.persisted, false);
-    assert.ok(simulation.deltaMarginPp !== null);
+    assert.strictEqual(simulation.profit, 51);
+    assert.strictEqual(simulation.margin, 0.34);
+    assert.strictEqual(simulation.deltaProfit, 36.9);
+    assert.strictEqual(simulation.deltaMarginPp, 19.9);
+    assert.strictEqual(simulation.deltaTargetPp, 22);
     // Nada do item foi mutado pela simulação.
     assert.strictEqual(JSON.stringify(item.sources), before);
   });
 
-  await test("cenário sem variável obrigatória não calcula e não assume zero", () => {
+  await test("cenário sem variável obrigatória: o backend diz o que falta; nada é assumido como zero na tela", () => {
+    api.resetCalcs();
     const item = normalizedItem();
     const scenario = {
       price: { source: "MELI_API", value: null, manual: false },
@@ -602,6 +508,9 @@ async function run() {
       freight: { source: "MELI_API", value: null, manual: false },
       fixedFee: { source: "VENFORCE_BASE", value: null, manual: false },
     };
+    const pendente = api.simulateScenario(item, scenario, api.PRESETS.projected);
+    assert.strictEqual(pendente.request.insumos.custo, null, "custo ausente segue null no pedido");
+    api.recordCalcResults([pendente.request], [calcRow(0, { computavel: false, lc: null, margem_ratio: null, faltando: ["cost"] })]);
     const simulation = api.simulateScenario(item, scenario, api.PRESETS.projected);
     assert.strictEqual(simulation.computable, false);
     assert.deepStrictEqual(simulation.missing, ["cost"]);
@@ -651,8 +560,19 @@ async function run() {
     assert.strictEqual(summary.integrity.MISSING, 1);
   });
 
-  await test("fila de divergências usa divergência real e calcula o impacto na MC", () => {
+  await test("fila de divergências usa divergência real; o impacto na MC vem do backend", () => {
+    api.resetCalcs();
     const item = normalizedItem();
+    const pendente = api.divergenceQueue([item], api.PRESETS.projected);
+    assert.strictEqual(pendente.length, 1);
+    assert.strictEqual(pendente[0].impactPp, null, "sem resposta do backend não há impacto");
+    assert.strictEqual(pendente[0].impactPending, true);
+    const pedidos = api.pendingCalcRequests([], [item], api.PRESETS.projected);
+    assert.strictEqual(pedidos.length, 1);
+    assert.strictEqual(pedidos[0].insumos.frete, 18.7, "valor alternativo");
+    assert.strictEqual(pedidos[0].base_insumos.frete, 23.4, "composição atual");
+    // Frete menor melhora a MC: (23,40 − 18,70) / 100 = +4,7 pp — calculado pelo núcleo.
+    api.recordCalcResults(pedidos, [calcRow(0, { delta_margem_pp: 4.7, delta_lc: 4.7 })]);
     const rows = api.divergenceQueue([item], api.PRESETS.projected);
     assert.strictEqual(rows.length, 1);
     const row = rows[0];
@@ -661,10 +581,22 @@ async function run() {
     assert.strictEqual(row.selectedValue, 23.4);
     assert.strictEqual(row.alternativeSource, "MELI_ORDER");
     assert.strictEqual(row.alternativeValue, 18.7);
-    // Frete menor melhora a MC: (23,40 − 18,70) / 100 = +4,7 pp.
     assert.strictEqual(row.impactPp, 4.7);
+    assert.strictEqual(row.impactPending, false);
     assert.strictEqual(row.type, "DRIFT");
     assert.strictEqual(row.origin, "motor");
+    assert.strictEqual(row.severity, "CRITICA", "DRIFT sobe a crítica quando o impacto do backend é material (≥ 2 pp)");
+    assert.deepStrictEqual(api.pendingCalcRequests([], [item], api.PRESETS.projected), []);
+
+    // Impacto pequeno: só revisar. Falha do backend: sem comparação, não fica pendente para sempre.
+    api.resetCalcs();
+    api.recordCalcResults(api.pendingCalcRequests([], [item], api.PRESETS.projected), [calcRow(0, { delta_margem_pp: 0.4 })]);
+    assert.strictEqual(api.divergenceQueue([item], api.PRESETS.projected)[0].severity, "REVISAR");
+    api.resetCalcs();
+    api.recordCalcFailure(api.pendingCalcRequests([], [item], api.PRESETS.projected), "x");
+    const falhou = api.divergenceQueue([item], api.PRESETS.projected)[0];
+    assert.strictEqual(falhou.impactPp, null);
+    assert.strictEqual(falhou.impactPending, false);
 
     // O Motor publica a mesma divergência em fields[x].divergences e em
     // quality.divergences; a fila mostra uma linha só.
@@ -691,6 +623,57 @@ async function run() {
     assert.strictEqual(api.divergenceQueue([clean], api.PRESETS.projected).length, 0);
   });
 
+  await test("client: /api/margem/composicao em lote (POST, escopo da conta, ids por posição, 200 por chamada)", async () => {
+    const calls = [];
+    const client = api.createClient({
+      request(path, options) {
+        calls.push({ path, options });
+        const itens = options.body.itens.map((entry) => calcRow(entry.id, { lc: Number(entry.id) }));
+        return { ok: true, status: 200, data: { ok: true, itens } };
+      },
+    });
+    const pedidos = Array.from({ length: 450 }, (_, i) => ({ insumos: { preco: 100 + i }, base_insumos: i % 2 ? { preco: 1 } : undefined, meta_margem: i === 0 ? 0.1 : undefined }));
+    const result = await client.calcularComposicoes({ clienteContaId: 900, requests: pedidos });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.itens.length, 450);
+    assert.deepStrictEqual(calls.map((c) => c.options.body.itens.length), [200, 200, 50]);
+    assert.ok(calls.every((c) => c.path === "/api/margem/composicao" && c.options.method === "POST" && c.options.body.cliente_conta_id === 900));
+    assert.deepStrictEqual(calls[1].options.body.itens[0].id, "200", "id = posição no pedido todo");
+    assert.strictEqual(calls[0].options.body.itens[0].meta_margem, 0.1);
+    assert.ok(!("base_insumos" in calls[0].options.body.itens[0]));
+    assert.deepStrictEqual(calls[0].options.body.itens[1].base_insumos, { preco: 1 });
+    // Os resultados casam com os pedidos pela posição.
+    api.resetCalcs();
+    const subset = pedidos.slice(0, 3).map((p, i) => ({ key: "k" + i }));
+    api.recordCalcResults(subset, result.itens.slice(0, 3));
+    assert.strictEqual((await client.calcularComposicoes({ clienteContaId: 900, requests: [] })).itens.length, 0);
+    const falho = api.createClient({ request: () => ({ ok: false, status: 403, error: "fora da carteira" }) });
+    const erro = await falho.calcularComposicoes({ clienteContaId: 1, requests: [{ insumos: {} }] });
+    assert.strictEqual(erro.ok, false);
+    assert.strictEqual(erro.error, "fora da carteira");
+  });
+
+  await test("a tela não tem fórmula financeira: nada de computeMargin/simulatePrice nem conta de lucro no código", () => {
+    const fs = require("fs");
+    const path = require("path");
+    for (const arquivo of ["central-margem-api.js", "central-margem.js"]) {
+      const codigo = fs.readFileSync(path.join(__dirname, arquivo), "utf8")
+        .split("\n").filter((linha) => !/^\s*(\/\/|\*|\/\*)/.test(linha)).join("\n");
+      const proibidos = [
+        [/computeMargin|simulatePrice|legacySimulate|adaptLegacyResponse|normalizeLegacyItem/, "motor/adapter local"],
+        [/\.price\s*\*|price\s*\*\s*(tax|commission|rate)|\*\s*(tax|commission)Rate|\*\s*resolved\./i, "preço × taxa"],
+        [/profit\s*\/\s*(price|sold|resolved)|margin\s*=\s*profit|\bmargin\s*[-+]\s*\w+\.margin/, "lucro ÷ preço / diferença de margens"],
+        [/(price|preco)\s*-\s*(cost|custo|freight|frete|commission|comissao)\b/i, "preço − custos"],
+        [/\.raw\.(profit|margin)/, "margem bruta local"],
+        [/>\s*1\s*\?/, "heurística de escala"],
+      ];
+      for (const [regex, rotulo] of proibidos) {
+        const achado = codigo.split("\n").filter((linha) => regex.test(linha));
+        assert.deepStrictEqual(achado, [], `${arquivo}: ${rotulo}`);
+      }
+    }
+  });
+
   await test("saúde das fontes não inventa Mercado Pago nem Extensão", () => {
     const response = api.normalizeCanonicalResponse({ ok: true, itens: [canonicalItem()] }, context());
     const health = Object.fromEntries(api.sourceHealth(response).map((entry) => [entry.key, entry]));
@@ -704,32 +687,6 @@ async function run() {
     // Recebimento líquido continua ausente: nunca derivado do preço vendido.
     assert.strictEqual(response.items[0].variables.netReceipt.value, null);
     assert.strictEqual(response.items[0].variables.mercadoPago.value, null);
-  });
-
-  await test("adapter legado expõe fontes reais e deriva divergência com a tolerância do núcleo", () => {
-    const fixture = legacyFixture();
-    // Preço de catálogo 100 × último vendido 100: dentro da tolerância.
-    const same = api.adaptLegacyResponse(fixture.catalog, fixture.sales, context());
-    const itemA = same.items.find((entry) => entry.id === "MLB-A");
-    assert.strictEqual(itemA.sources.price.entries.MELI_API.value, 100);
-    assert.strictEqual(itemA.sources.price.entries.MELI_ORDER.value, 100);
-    assert.strictEqual(itemA.divergences.length, 0);
-    // O adapter não tem frete previsto nem taxa fixa: ausência explícita.
-    assert.strictEqual(itemA.sources.freight.entries.MELI_API.available, false);
-    assert.strictEqual(itemA.sources.fixedFee.entries.VENFORCE_BASE.available, false);
-    assert.strictEqual(api.resolveComposition(itemA, api.PRESETS.projected).values.freight, null);
-
-    // Agora com preço vendido bem diferente do catálogo.
-    const drifted = JSON.parse(JSON.stringify(fixture));
-    drifted.sales.pedidos[0].itens[0].valorUnitario = 80;
-    const result = api.adaptLegacyResponse(drifted.catalog, drifted.sales, context());
-    const item = result.items.find((entry) => entry.id === "MLB-A");
-    assert.strictEqual(item.divergences.length, 1);
-    assert.strictEqual(item.divergences[0].type, "DRIFT");
-    assert.strictEqual(item.divergences[0].origin, "adapter");
-    assert.strictEqual(item.divergences[0].variableKey, "price");
-    // DRIFT não é defeito de dado: o status permanece o que era.
-    assert.strictEqual(item.status, "HEALTHY");
   });
 
   // ── Leitura persistida (Margin Snapshot) ─────────────────────────────────

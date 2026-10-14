@@ -2,13 +2,14 @@
  * Central de Margem — contrato único de dados do frontend.
  *
  * Ordem de leitura:
- *   1. GET /operacao/central-margem/:slug (contrato canônico do Motor)
- *   2. Se a rota ainda não existir (404/501), adapter somente-leitura sobre:
- *      - GET /anuncios-meli
- *      - GET /operacao/central-vendas/:slug
+ *   GET /operacao/central-margem/:slug (contrato canônico do Motor). Sem o
+ *   Motor não há leitura de reserva: calcular margem na tela seria uma segunda
+ *   fórmula.
  *
  * A página nunca chama endpoints por linha. null continua significando ausente;
  * nenhum valor financeiro inexistente é convertido silenciosamente em zero.
+ * NENHUMA fórmula financeira vive aqui: LC e margem de qualquer composição vêm
+ * do núcleo do Motor (ver "CÁLCULO — SEMPRE DO BACKEND").
  */
 (function (root, factory) {
   var api = factory(root || {});
@@ -949,465 +950,123 @@
     };
   }
 
-  function strongestLegacyConfidence(values) {
-    var normalized = (values || []).map(function (value) { return normalizeConfidence(value); });
-    if (normalized.some(function (entry) { return entry.level === "LOW"; })) {
-      return normalizeConfidence("LOW", "Há pedido bloqueado ou componente financeiro ausente no período.");
-    }
-    if (normalized.some(function (entry) { return entry.level === "MEDIUM"; })) {
-      return normalizeConfidence("MEDIUM", "A Central de Vendas marcou parte dos pedidos como parcial.");
-    }
-    if (normalized.some(function (entry) { return entry.level === "HIGH"; })) {
-      return normalizeConfidence("HIGH", "Os pedidos agregados foram classificados como confiáveis pela Central de Vendas.");
-    }
-    return normalizeConfidence("UNKNOWN", "Ainda não há venda conciliada para este produto no período.");
+  /* =========================================================================
+   * CÁLCULO — SEMPRE DO BACKEND
+   *
+   * Esta tela NÃO tem fórmula financeira. LC e margem de qualquer composição
+   * vêm do núcleo do Motor (server/services/motorMargem/core):
+   *   - presets Projetado e Realizado: os números que o próprio item já traz;
+   *   - qualquer outra seleção de fontes, a hipótese da simulação avançada e o
+   *     impacto de cada divergência: POST /api/margem/composicao, em lote,
+   *     guardado aqui por chave de insumos.
+   * Enquanto o backend não respondeu a composição fica `pending` (e `failed`
+   * se ele recusou): nunca um número calculado na tela.
+   * ========================================================================= */
+
+  var CALC_INPUTS = ["price", "cost", "tax", "commission", "freight", "fixedFee", "rebate"];
+  var CALC_FIELD = { price: "preco", cost: "custo", tax: "aliquota", commission: "comissao", freight: "frete", fixedFee: "taxa_fixa", rebate: "rebate" };
+  // Nomes dos campos do núcleo (`faltando`/`assumido`) → variáveis da planilha.
+  var CORE_VARIABLE = { price: "price", cost: "cost", taxRate: "tax", commission: "commission", freight: "freight", fixedFee: "fixedFee" };
+
+  var calcStore = {};
+  var calcInflight = {};
+
+  function coreVariables(list) {
+    return arrayOf(list).map(function (name) { return CORE_VARIABLE[name] || name; });
   }
 
-  function ensureAggregate(map, key) {
-    if (!map[key]) {
-      map[key] = {
-        units: 0,
-        soldValue: 0,
-        soldValuePresent: false,
-        costTotal: 0,
-        costPresent: false,
-        taxTotal: 0,
-        taxPresent: false,
-        commissionTotal: 0,
-        commissionPresent: false,
-        freightTotal: 0,
-        freightPresent: false,
-        profitTotal: 0,
-        profitPresent: false,
-        confidences: [],
-        lastSoldPrice: null,
-        lastSoldAt: null,
-        latestOrderId: null,
-        sources: {},
-      };
-    }
-    return map[key];
-  }
-
-  function addPresent(aggregate, name, value) {
-    var numeric = numberOrNull(value);
-    if (numeric === null) return;
-    aggregate[name] += numeric;
-    var presentName = name === "soldValue" ? "soldValuePresent" : name.replace(/Total$/, "Present");
-    aggregate[presentName] = true;
-  }
-
-  function buildSalesIndex(salesPayload) {
-    var index = {};
-    arrayOf(salesPayload && salesPayload.pedidos).forEach(function (order) {
-      var orderItems = arrayOf(order.itens);
-      var components = arrayOf(order.componentes);
-      orderItems.forEach(function (orderItem) {
-        var key = String(firstValue(orderItem.mlb, orderItem.itemId, orderItem.id, "") || "");
-        if (!key) return;
-        var aggregate = ensureAggregate(index, key);
-        var quantity = numberOrNull(firstValue(orderItem.quantidade, order.unidades, 1));
-        aggregate.units += quantity && quantity > 0 ? quantity : 1;
-        addPresent(aggregate, "soldValue", orderItem.receitaProduto);
-        addPresent(aggregate, "costTotal", orderItem.custoProduto);
-        addPresent(aggregate, "taxTotal", orderItem.impostoInterno);
-        addPresent(aggregate, "profitTotal", orderItem.resultado);
-        aggregate.confidences.push(firstValue(orderItem.confianca, order.confianca));
-
-        var itemRef = String(firstValue(orderItem.itemId, orderItem.id, orderItem.mlb, "") || "");
-        var scopedComponents = components.filter(function (component) {
-          var componentRef = String(firstValue(component.itemId, component.item_id, "") || "");
-          return componentRef ? componentRef === itemRef : orderItems.length === 1;
-        });
-        scopedComponents.forEach(function (component) {
-          var componentValue = numberOrNull(component.valor);
-          if (componentValue === null) return;
-          if (component.tipo === "tarifa_venda") {
-            addPresent(aggregate, "commissionTotal", Math.abs(componentValue));
-            aggregate.sources.commission = component.fonte || "MELI_ORDER";
-          }
-          if (component.tipo === "frete_seller") {
-            addPresent(aggregate, "freightTotal", Math.abs(componentValue));
-            aggregate.sources.freight = component.fonte || "MELI_ORDER";
-          }
-        });
-
-        var soldAt = firstValue(order.data, order.dataPedido);
-        if (!aggregate.lastSoldAt || (soldAt && String(soldAt) > String(aggregate.lastSoldAt))) {
-          aggregate.lastSoldAt = soldAt || aggregate.lastSoldAt;
-          aggregate.lastSoldPrice = numberOrNull(orderItem.valorUnitario);
-          aggregate.latestOrderId = firstValue(order.pedidoId, order.id);
-        }
-      });
+  function insumosOf(values) {
+    var out = {};
+    CALC_INPUTS.forEach(function (key) {
+      var value = values ? numberOrNull(values[key]) : null;
+      out[CALC_FIELD[key]] = value;
     });
-    return index;
+    return out;
   }
 
-  function legacyStatus(item) {
-    if (item.reconciling) return "RECONCILING";
-    if (item.variables.cost.value === null) return "UNVALIDATED";
-    if (item.confidence.level === "LOW") return "SUSPECT_DATA";
-    if ((item.realized.margin !== null && item.realized.margin < 0) ||
-        (item.projected.margin !== null && item.projected.margin < 0)) return "LOSS";
-    if (item.realized.margin !== null || item.projected.margin !== null) return "HEALTHY";
-    return "UNVALIDATED";
-  }
-
-  function legacyProblem(item) {
-    if (item.reconciling) return "Dados ainda conciliando";
-    if (item.variables.cost.value === null) return "Custo ausente na leitura disponível";
-    if (item.confidence.level === "LOW") return "Pedido bloqueado ou dado financeiro incompleto";
-    if (item.realized.margin !== null && item.realized.margin < 0) return "Margem realizada negativa";
-    if (item.projected.margin !== null && item.projected.margin < 0) return "Projeção estimada negativa";
-    if (item.realized.margin === null) return "Margem realizada pendente";
-    if (item.projected.estimated) return "Projeção estimada com histórico de pedidos";
-    return "Sem exceção identificada no recorte";
-  }
-
-  function normalizeLegacyItem(catalogItem, salesPayload, salesIndex, context) {
-    var itemId = String(firstValue(catalogItem.item_id, catalogItem.itemId, catalogItem.mlb, "") || "");
-    var aggregate = salesIndex[itemId] || null;
-    var productMap = (salesPayload && salesPayload.produtos) || {};
-    var product = productMap[itemId] || {};
-    var base = product.base || {};
-    var units = aggregate && aggregate.units > 0 ? aggregate.units : null;
-    var soldValue = aggregate && aggregate.soldValuePresent ? aggregate.soldValue : null;
-    var cost = numberOrNull(base.custo);
-    if (cost === null && aggregate && aggregate.costPresent && units) cost = aggregate.costTotal / units;
-    var legacyInvalid = [];
-    var taxRate = checkedRatio(base.imposto, "rate", "Alíquota de imposto (Base)", legacyInvalid);
-    if (taxRate === null && aggregate && aggregate.taxPresent && soldValue) taxRate = aggregate.taxTotal / soldValue;
-    var commissionRate = aggregate && aggregate.commissionPresent && soldValue ? aggregate.commissionTotal / soldValue : null;
-    var commissionRealized = aggregate && aggregate.commissionPresent && units ? aggregate.commissionTotal / units : null;
-    var freightAverage = aggregate && aggregate.freightPresent && units ? aggregate.freightTotal / units : null;
-    var currentPrice = numberOrNull(catalogItem.preco);
-    var projectionComplete = currentPrice !== null && currentPrice > 0 && cost !== null && taxRate !== null && commissionRate !== null && freightAverage !== null;
-    var projectedProfit = null;
-    var projectedMargin = null;
-    if (projectionComplete) {
-      projectedProfit = currentPrice - cost - currentPrice * taxRate - currentPrice * commissionRate - freightAverage;
-      projectedMargin = projectedProfit / currentPrice;
+  function calcKey(values, baseValues, targetMargin) {
+    function part(set) {
+      return set ? CALC_INPUTS.map(function (key) {
+        var value = numberOrNull(set[key]);
+        return value === null ? "·" : String(value);
+      }).join("|") : "-";
     }
-    var realizedProfit = aggregate && aggregate.profitPresent ? aggregate.profitTotal : null;
-    var realizedMargin = realizedProfit !== null && soldValue && soldValue > 0 ? realizedProfit / soldValue : null;
-    var confidence = strongestLegacyConfidence(aggregate ? aggregate.confidences : []);
-    if (projectionComplete && confidence.level === "HIGH") {
-      confidence = normalizeConfidence("MEDIUM", "A venda é confiável, mas a projeção usa médias históricas de tarifa e frete até o Motor canônico estar disponível.");
-    }
-    var motor = (salesPayload && salesPayload.motor) || {};
-    var reconciling = motor.status && ["persistido", "sem_dados"].indexOf(String(motor.status)) === -1;
-
-    var item = {
-      id: itemId,
-      itemId: itemId,
-      sku: firstValue(catalogItem.sku, product.sku),
-      title: firstValue(catalogItem.titulo, product.titulo, itemId || "Produto sem título"),
-      image: firstValue(catalogItem.thumbnail, catalogItem.image),
-      permalink: catalogItem.permalink || null,
-      client: context.client,
-      marketplace: context.marketplace || "meli",
-      status: "UNVALIDATED",
-      confidence: confidence,
-      problem: legacyInvalid.length ? legacyInvalid[0].reason : null,
-      invalidFields: legacyInvalid,
-      targetMargin: null,
-      projected: {
-        margin: round(projectedMargin, 6),
-        profit: round(projectedProfit, 2),
-        estimated: projectionComplete,
-        note: projectionComplete ? "Estimativa da UI: preço atual + custo/imposto da Base + médias realizadas de tarifa e frete." : null,
-      },
-      realized: {
-        margin: round(realizedMargin, 6),
-        profit: round(realizedProfit, 2),
-        pending: realizedMargin === null,
-      },
-      variables: {
-        price: variable(currentPrice, {
-          source: "MELI_API", confidence: "HIGH", updatedAt: catalogItem.last_synced_at,
-          explanation: "Preço atual armazenado pela sincronização de Anúncios ML.",
-        }),
-        observedPrice: variable(null, {
-          source: "EXTENSION_DOM", confidence: "UNKNOWN",
-          explanation: "AGUARDANDO_MOTOR: a extensão ainda não expõe evidência para a Central.",
-        }),
-        lastSoldPrice: variable(aggregate && aggregate.lastSoldPrice, {
-          source: "MELI_ORDER", confidence: aggregate ? confidence : "UNKNOWN", updatedAt: aggregate && aggregate.lastSoldAt,
-        }),
-        cost: variable(cost, {
-          source: cost !== null ? "VENFORCE_BASE" : null,
-          confidence: cost !== null ? (base.status === "real" ? "HIGH" : "MEDIUM") : "UNKNOWN",
-          explanation: cost !== null ? "Custo lido pela Central de Vendas a partir da Base vinculada." : "Nenhum custo foi exposto para este produto no período.",
-        }),
-        tax: variable(taxRate, {
-          format: "percent", source: taxRate !== null ? "VENFORCE_BASE" : null,
-          confidence: taxRate !== null ? "HIGH" : "UNKNOWN",
-          explanation: taxRate !== null ? "Percentual de imposto lido pela Central de Vendas." : "Imposto indisponível.",
-        }),
-        commission: variable(currentPrice !== null && commissionRate !== null ? currentPrice * commissionRate : null, {
-          rate: commissionRate, source: aggregate && aggregate.sources.commission || (commissionRate !== null ? "MELI_ORDER" : null),
-          confidence: commissionRate !== null ? "MEDIUM" : "UNKNOWN", estimated: commissionRate !== null,
-          explanation: commissionRate !== null ? "Estimativa por unidade no preço atual, usando a tarifa efetiva do histórico." : "Comissão atual/API ainda não disponível.",
-        }),
-        freightExpected: variable(null, {
-          source: "MELI_API", confidence: "UNKNOWN",
-          explanation: "AGUARDANDO_MOTOR: frete previsto/API ainda não exposto.",
-        }),
-        freightActual: variable(freightAverage, {
-          source: aggregate && aggregate.sources.freight || (freightAverage !== null ? "MELI_ORDER" : null),
-          confidence: freightAverage !== null ? confidence : "UNKNOWN", updatedAt: aggregate && aggregate.lastSoldAt,
-          detail: freightAverage !== null ? "Média realizada por unidade no período." : null,
-        }),
-        soldValue: variable(soldValue, {
-          source: soldValue !== null ? "MELI_ORDER" : null, confidence: soldValue !== null ? confidence : "UNKNOWN",
-          detail: soldValue !== null ? "Valor vendido agregado no período." : null,
-        }),
-        netReceipt: variable(null, {
-          source: "MERCADO_PAGO", confidence: "UNKNOWN",
-          explanation: "AGUARDANDO_MOTOR: recebimento líquido ainda não conciliado com Mercado Pago.",
-        }),
-        mercadoPago: variable(null, {
-          source: "MERCADO_PAGO", confidence: "UNKNOWN",
-          explanation: "AGUARDANDO_MOTOR: integração de recebimentos indisponível.",
-        }),
-      },
-      // Mapa fonte -> observação com os valores que o adapter realmente
-      // consegue ler. Fonte sem leitura fica ausente e a UI mostra
-      // "Indisponível" — o adapter não tem frete/comissão previstos da API,
-      // taxa fixa nem evidência da extensão.
-      sources: buildSourceMap({
-        price: {
-          evidences: [
-            { source: "MELI_API", kind: "PROJECTED", value: currentPrice, quality: "MEASURED", observedAt: catalogItem.last_synced_at, note: "Preço atual sincronizado em Anúncios ML." },
-            { source: "MELI_ORDER", kind: "REALIZED", value: aggregate && aggregate.lastSoldPrice, quality: "MEASURED", observedAt: aggregate && aggregate.lastSoldAt, note: "Último preço unitário vendido no período." },
-          ],
-        },
-        cost: {
-          evidences: [
-            { source: "VENFORCE_BASE", kind: "PROJECTED", value: cost, quality: "DECLARED", note: "Custo lido pela Central de Vendas a partir da Base vinculada." },
-          ],
-        },
-        tax: {
-          evidences: [
-            { source: "VENFORCE_BASE", kind: "PROJECTED", value: taxRate, quality: "DECLARED", note: "Percentual de imposto lido pela Central de Vendas." },
-          ],
-        },
-        commission: {
-          evidences: [
-            { source: "MELI_ORDER", kind: "REALIZED", value: commissionRealized, quality: "MEASURED", observedAt: aggregate && aggregate.lastSoldAt, note: "Tarifa realizada por unidade no período." },
-          ],
-        },
-        freight: {
-          evidences: [
-            { source: "MELI_ORDER", kind: "REALIZED", value: freightAverage, quality: "ESTIMATED", observedAt: aggregate && aggregate.lastSoldAt, note: "Média realizada por unidade no período." },
-          ],
-        },
-        fixedFee: { evidences: [] },
-      }),
-      confidenceByVariable: {
-        price: normalizeConfidence("HIGH", "Preço atual armazenado pela sincronização de Anúncios ML."),
-        cost: normalizeConfidence(cost !== null ? (base.status === "real" ? "HIGH" : "MEDIUM") : "UNKNOWN",
-          cost !== null ? null : "Nenhum custo foi exposto para este produto no período."),
-        tax: normalizeConfidence(taxRate !== null ? "HIGH" : "UNKNOWN"),
-        commission: normalizeConfidence(commissionRealized !== null ? confidence.level : "UNKNOWN",
-          commissionRealized !== null ? null : "Tarifa realizada indisponível no período."),
-        freight: normalizeConfidence(freightAverage !== null ? "MEDIUM" : "UNKNOWN",
-          freightAverage !== null ? "Média realizada por unidade; o adapter não expõe frete previsto." : "Frete indisponível no período."),
-        fixedFee: normalizeConfidence("UNKNOWN", "O adapter de compatibilidade não expõe taxa fixa da Base."),
-      },
-      divergences: [],
-      hasOrders: Boolean(aggregate),
-      settlementAvailable: false,
-      settlementReason: "MERCADO_PAGO_NAO_INTEGRADO",
-      reconciliation: aggregate ? (confidence.level === "LOW" ? "Bloqueada" : confidence.level === "MEDIUM" ? "Parcial" : "Conciliada") : "Sem venda no período",
-      reconciling: reconciling,
-      latestOrderId: aggregate && aggregate.latestOrderId,
-      links: {},
-      audit: {
-        itemId: itemId,
-        sku: firstValue(catalogItem.sku, product.sku),
-        marketplace: context.marketplace || "meli",
-        clientSlug: context.client && context.client.slug,
-        statusReasons: [],
-        qualityReasons: confidence.explanation ? [confidence.explanation] : [],
-        projectedMissing: [],
-        projectedAssumed: [],
-        realizedMissing: [],
-        realizedAssumed: [],
-        hasConflict: false,
-        hasDrift: false,
-        settlementReason: "MERCADO_PAGO_NAO_INTEGRADO",
-        lastSoldAt: aggregate && aggregate.lastSoldAt,
-        orders: null,
-        units: units,
-        catalogSyncedAt: catalogItem.last_synced_at || null,
-      },
-      simulationInputs: {
-        cost: cost,
-        taxRate: taxRate,
-        commissionRate: commissionRate,
-        freight: freightAverage,
-        fixedFee: 0,
-        complete: projectionComplete,
-        source: "Adapter: Base + histórico realizado",
-      },
-      raw: catalogItem,
-    };
-    item.status = legacyStatus(item);
-    item.problem = legacyProblem(item);
-    item.motorChoice = buildMotorChoice({}, item.sources);
-    // DRIFT não é defeito de dado (marginEvidence): previsto × realizado
-    // diferentes é informação, não suspeita. O status não muda por causa dele;
-    // quem mostra o desvio é a fila de divergências.
-    item.divergences = deriveDivergences(item);
-    return item;
+    var target = numberOrNull(targetMargin);
+    return part(values) + "#" + part(baseValues) + "#" + (target === null ? "-" : String(target));
   }
 
-  /**
-   * O adapter legado não tem camada de evidências, então o Motor não relata
-   * divergência nenhuma por ele. Aqui as observações REAIS que o adapter já
-   * leu (previsto × realizado da mesma variável) são comparadas com a MESMA
-   * regra de tolerância do núcleo (marginEvidence.isDifferent) e marcadas com
-   * `origin: "adapter"`, para nunca serem confundidas com um CONFLICT do Motor.
-   * Nenhum valor é inventado: só entram pares em que as duas pontas existem.
-   */
-  function deriveDivergences(item) {
-    var rows = [];
-    VARIABLES.forEach(function (variableKey) {
-      var bucket = item.sources && item.sources[variableKey];
-      if (!bucket) return;
-      var projected = null;
-      var realized = null;
-      bucket.order.forEach(function (source) {
-        var entry = bucket.entries[source];
-        if (!entry || !entry.available) return;
-        if (entry.kind === "REALIZED") { if (!realized) realized = entry; return; }
-        if (!projected) projected = entry;
-      });
-      if (!projected || !realized) return;
-      if (!isDifferent(projected.value, realized.value, toleranceFor(variableKey))) return;
-      rows.push(normalizeDivergence({
-        field: VARIABLE_META[variableKey].field,
-        type: "DRIFT",
-        origin: "adapter",
-        a: { source: projected.source, kind: projected.kind, value: projected.value, observedAt: projected.observedAt },
-        b: { source: realized.source, kind: realized.kind, value: realized.value, observedAt: realized.observedAt },
-        explanation: "Comparação feita na leitura de compatibilidade entre as duas observações disponíveis, com a mesma tolerância do núcleo do Motor.",
-      }, VARIABLE_META[variableKey].field));
-    });
-    return rows;
-  }
-
-  function adaptLegacyResponse(catalogPayload, salesPayload, context, salesError) {
-    catalogPayload = catalogPayload || {};
-    context = context || {};
-    var catalog = arrayOf(catalogPayload.anuncios);
-    var index = buildSalesIndex(salesPayload || {});
-    var items = catalog.map(function (row) { return normalizeLegacyItem(row, salesPayload || {}, index, context); });
-    var paginationRaw = catalogPayload.paginacao || {};
-    var counts = countStatuses(items);
-    var warnings = [
-      "Motor de Margem ainda sem endpoint público; usando adapter somente-leitura sobre Anúncios ML e Central de Vendas.",
-    ];
-    if (salesError) warnings.push("A leitura financeira falhou; margem realizada, custo e frete podem aparecer pendentes.");
-    var noBase = items.length > 0 && items.every(function (item) { return item.variables.cost.value === null; });
-    if (noBase) warnings.push("Nenhum custo foi exposto para os produtos desta página. Verifique a Base vinculada sem editá-la pela Central.");
-
+  /** Resultado do backend (linha de /composicao) no formato que a tela usa. */
+  function normalizeCalc(row) {
+    if (!row || typeof row.computavel !== "boolean") return { failed: true, reason: "Resposta do cálculo inválida." };
+    var assumed = coreVariables(row.assumido);
     return {
-      ok: true,
-      sourceMode: "legacy-adapter",
-      sourceLabel: "Adapter de dados reais",
-      partial: true,
-      client: context.client,
-      marketplace: context.marketplace || "meli",
-      items: items,
-      pagination: {
-        page: numberOrNull(firstValue(paginationRaw.page, context.page, 1)) || 1,
-        limit: numberOrNull(firstValue(paginationRaw.limit, context.limit, 50)) || 50,
-        total: numberOrNull(firstValue(paginationRaw.total, items.length)) || 0,
-        totalPages: numberOrNull(firstValue(paginationRaw.totalPaginas, paginationRaw.totalPages)) || 1,
-      },
-      summary: {
-        monitored: numberOrNull(firstValue(paginationRaw.total, items.length)) || 0,
-        counts: counts,
-        scope: "page",
-      },
-      lastUpdated: firstValue(
-        salesPayload && salesPayload.motor && salesPayload.motor.geradoEm,
-        catalog.reduce(function (latest, item) {
-          return !latest || (item.last_synced_at && item.last_synced_at > latest) ? item.last_synced_at : latest;
-        }, null)
-      ),
-      period: salesPayload && salesPayload.periodo || context.period || null,
-      warnings: warnings,
-      gaps: ["AGUARDANDO_MOTOR: frete previsto/API", "AGUARDANDO_MOTOR: Mercado Pago", "AGUARDANDO_MOTOR: preço observado pela extensão", "AGUARDANDO_MOTOR: margem alvo"],
-    };
-  }
-
-  /*
-   * NÚCLEO DE CÁLCULO — espelho fiel de
-   * server/services/motorMargem/core/marginEngine.js#computeMargin.
-   *
-   *   lucro  = preço − (preço × imposto) − comissão − frete − taxaFixa − custo
-   *   margem = lucro / preço
-   *
-   * Mesmas regras do backend, e por isso mesmas consequências:
-   *  - preço e custo são OBRIGATÓRIOS: sem eles não existe margem (`missing`);
-   *  - imposto/taxa fixa/comissão/frete ausentes entram como 0, mas o nome fica
-   *    registrado em `assumed` e `strict` vira false. Ausente nunca vira zero
-   *    silencioso: vira zero declarado.
-   *
-   * Esta é a ÚNICA fórmula financeira do frontend. `simulatePrice`,
-   * `simulateScenario` e a planilha consomem daqui.
-   */
-  var REQUIRED_VARIABLES = ["price", "cost"];
-  var OPTIONAL_VARIABLES = ["tax", "commission", "freight", "fixedFee"];
-
-  function computeMargin(values) {
-    var input = values || {};
-    var resolved = {
-      price: numberOrNull(firstValue(input.price, input.preco)),
-      cost: numberOrNull(firstValue(input.cost, input.custo)),
-      tax: numberOrNull(firstValue(input.tax, input.taxRate)),
-      commission: numberOrNull(input.commission),
-      freight: numberOrNull(input.freight),
-      fixedFee: numberOrNull(input.fixedFee),
-    };
-
-    var missing = REQUIRED_VARIABLES.filter(function (key) { return resolved[key] === null; });
-    var assumed = OPTIONAL_VARIABLES.filter(function (key) { return resolved[key] === null; });
-    // Preço zero ou negativo não é "margem zero", é dado impossível.
-    if (resolved.price !== null && resolved.price <= 0 && missing.indexOf("price") === -1) missing.push("price");
-
-    if (missing.length) {
-      return { computable: false, profit: null, margin: null, missing: missing, assumed: assumed, strict: false, values: resolved };
-    }
-
-    var rebate = numberOrNull(input.rebate) || 0;
-    var profit = resolved.price + rebate
-      - resolved.price * (resolved.tax === null ? 0 : resolved.tax)
-      - (resolved.commission === null ? 0 : resolved.commission)
-      - (resolved.freight === null ? 0 : resolved.freight)
-      - (resolved.fixedFee === null ? 0 : resolved.fixedFee)
-      - resolved.cost;
-
-    return {
-      computable: true,
-      profit: round(profit, 2),
-      margin: round(profit / resolved.price, 6),
-      missing: [],
+      computable: row.computavel,
+      profit: numberOrNull(row.lc),
+      margin: numberOrNull(row.margem_ratio),
+      missing: coreVariables(row.faltando),
       assumed: assumed,
-      strict: assumed.length === 0,
-      values: resolved,
-      // Valores sem arredondamento, para quem precisa comparar margens em pp
-      // sem acumular o erro do arredondamento de exibição.
-      raw: { profit: profit, margin: profit / resolved.price },
+      strict: row.estrito === true,
+      deltaProfit: numberOrNull(row.delta_lc),
+      deltaMarginPp: numberOrNull(row.delta_margem_pp),
+      deltaTargetPp: numberOrNull(row.delta_meta_pp),
     };
   }
 
+  /** Números do PRÓPRIO item para um preset (calculados pelo Motor, não aqui). */
+  function presetCalcOf(item, presetName) {
+    var block = presetName === "projected" ? item && item.projected : presetName === "realized" ? item && item.realized : null;
+    if (!block) return null;
+    var audit = (item && item.audit) || {};
+    var assumed = coreVariables(presetName === "projected" ? audit.projectedAssumed : audit.realizedAssumed);
+    var computable = block.margin !== null && block.margin !== undefined && block.profit !== null && block.profit !== undefined;
+    return {
+      computable: computable,
+      profit: computable ? block.profit : null,
+      margin: computable ? block.margin : null,
+      missing: coreVariables(presetName === "projected" ? audit.projectedMissing : audit.realizedMissing),
+      assumed: assumed,
+      strict: computable && assumed.length === 0,
+    };
+  }
+
+  /** Guarda as respostas de /composicao. `requests[i]` ↔ `rows[i]` (id = índice). */
+  function recordCalcResults(requests, rows) {
+    var byId = {};
+    arrayOf(rows).forEach(function (row) { if (row && row.id !== undefined) byId[String(row.id)] = row; });
+    arrayOf(requests).forEach(function (request, index) {
+      delete calcInflight[request.key];
+      calcStore[request.key] = normalizeCalc(byId[String(index)]);
+    });
+  }
+
+  function recordCalcFailure(requests, reason) {
+    arrayOf(requests).forEach(function (request) {
+      delete calcInflight[request.key];
+      calcStore[request.key] = { failed: true, reason: reason || "Não foi possível calcular agora." };
+    });
+  }
+
+  function markCalcInflight(requests) {
+    arrayOf(requests).forEach(function (request) { calcInflight[request.key] = true; });
+  }
+
+  /** O pedido ainda precisa ir ao backend? (nem respondido nem a caminho) */
+  function needsCalc(request) {
+    return Boolean(request) && !calcOf(request.key) && !calcInflight[request.key];
+  }
+
+  function resetCalcs() {
+    calcStore = {};
+    calcInflight = {};
+  }
+
+  function calcOf(key) {
+    return Object.prototype.hasOwnProperty.call(calcStore, key) ? calcStore[key] : null;
+  }
+
   /**
-   * Resolve a composição de um item para uma seleção de fontes e calcula
-   * LC/MC. Fonte ausente devolve valor null — nunca zero implícito.
+   * Resolve a composição de um item para uma seleção de fontes. Fonte ausente
+   * devolve valor null — nunca zero implícito. LC/MC vêm do backend (ver acima).
    */
   function resolveComposition(item, selection) {
     var chosen = selection && typeof selection === "object" ? selection : PRESETS.projected;
@@ -1427,27 +1086,37 @@
       ? numberOrNull(item.projected.rebate)
       : null;
     values.rebate = rebate;
-    var result = computeMargin(values);
+
+    var preset = presetFor(chosen);
+    var key = calcKey(values);
+    var calc = preset === "custom" ? calcOf(key) : presetCalcOf(item, preset);
+    var pending = calc === null;
+    var failed = Boolean(calc && calc.failed);
     return {
       selection: chosen,
-      preset: presetFor(chosen),
+      preset: preset,
       values: values,
       entries: entries,
       unavailable: unavailable,
-      computable: result.computable,
-      profit: result.profit,
-      margin: result.margin,
-      missing: result.missing,
-      assumed: result.assumed,
-      strict: result.strict,
-      raw: result.raw || { profit: null, margin: null },
+      pending: pending,
+      failed: failed,
+      failureReason: failed ? calc.reason : null,
+      computable: !pending && !failed && calc.computable === true,
+      profit: !pending && !failed ? calc.profit : null,
+      margin: !pending && !failed ? calc.margin : null,
+      missing: !pending && !failed ? calc.missing : [],
+      assumed: !pending && !failed ? calc.assumed : [],
+      strict: !pending && !failed && calc.strict === true,
+      // O que falta pedir ao backend para esta composição (null = nada).
+      request: pending ? { key: key, insumos: insumosOf(values) } : null,
     };
   }
 
   /**
    * Cenário do drawer: overrides LOCAIS por variável.
    * `{ price: { source, value, manual } }`. Nada aqui é evidência, nada é
-   * gravado em Bases e nada altera o produto ou o marketplace.
+   * gravado em Bases e nada altera o produto ou o marketplace. O resultado
+   * (LC, MC, Δ) é do backend, comparado com a composição da seleção atual.
    */
   function simulateScenario(item, scenario, baselineSelection) {
     var overrides = scenario && typeof scenario === "object" ? scenario : {};
@@ -1468,70 +1137,35 @@
     // O retorno ML acompanha o preço atual; trocar o preço no cenário o descarta.
     var priceChanged = (overrides.price || {}).manual === true || values.price !== baseline.values.price;
     values.rebate = priceChanged ? null : baseline.values.rebate;
-    var result = computeMargin(values);
-    var raw = result.raw || { profit: null, margin: null };
-    var deltaProfit = raw.profit === null || baseline.raw.profit === null ? null : round(raw.profit - baseline.raw.profit, 2);
-    var deltaMarginPp = raw.margin === null || baseline.raw.margin === null ? null : round((raw.margin - baseline.raw.margin) * 100, 2);
     var targetMargin = item && item.targetMargin;
+    targetMargin = targetMargin === undefined ? null : targetMargin;
+
+    var key = calcKey(values, baseline.values, targetMargin);
+    var calc = calcOf(key);
+    var pending = calc === null;
+    var failed = Boolean(calc && calc.failed);
+    var ready = !pending && !failed;
     return {
-      computable: result.computable,
-      profit: result.profit,
-      margin: result.margin,
-      missing: result.missing,
-      assumed: result.assumed,
-      strict: result.strict,
+      pending: pending,
+      failed: failed,
+      failureReason: failed ? calc.reason : null,
+      computable: ready && calc.computable === true,
+      profit: ready ? calc.profit : null,
+      margin: ready ? calc.margin : null,
+      missing: ready ? calc.missing : [],
+      assumed: ready ? calc.assumed : [],
+      strict: ready && calc.strict === true,
       values: values,
       entries: entries,
       changed: changed,
       baseline: baseline,
-      deltaProfit: deltaProfit,
-      deltaMarginPp: deltaMarginPp,
-      targetMargin: targetMargin === undefined ? null : targetMargin,
-      deltaTargetPp: raw.margin === null || targetMargin === null || targetMargin === undefined
-        ? null
-        : round((raw.margin - targetMargin) * 100, 2),
+      deltaProfit: ready ? calc.deltaProfit : null,
+      deltaMarginPp: ready ? calc.deltaMarginPp : null,
+      targetMargin: targetMargin,
+      deltaTargetPp: ready ? calc.deltaTargetPp : null,
       // Sempre local. O backend revalidaria tudo antes de qualquer escrita.
       persisted: false,
-    };
-  }
-
-  function simulatePrice(item, newPrice) {
-    var price = numberOrNull(newPrice);
-    var inputs = item && item.simulationInputs || {};
-    var missing = [];
-    if (price === null || price <= 0) missing.push("price");
-    if (numberOrNull(inputs.cost) === null) missing.push("cost");
-    if (numberOrNull(inputs.taxRate) === null) missing.push("taxRate");
-    if (numberOrNull(inputs.commissionRate) === null) missing.push("commissionRate");
-    if (numberOrNull(inputs.freight) === null) missing.push("freight");
-    if (missing.length) return { computable: false, missing: missing, profit: null, margin: null };
-
-    var commissionRate = Number(inputs.commissionRate);
-    // A comissão em reais acompanha o preço simulado; o resto da fórmula é o
-    // mesmo núcleo usado pela planilha e pelo cenário.
-    var computed = computeMargin({
-      price: price,
-      cost: Number(inputs.cost),
-      tax: Number(inputs.taxRate),
-      commission: price * commissionRate,
-      freight: Number(inputs.freight),
-      fixedFee: numberOrNull(inputs.fixedFee) || 0,
-    });
-    var profit = computed.raw.profit;
-    var margin = computed.raw.margin;
-    var currentMargin = item.projected && item.projected.margin;
-    var targetMargin = item.targetMargin;
-    return {
-      computable: true,
-      price: round(price, 2),
-      profit: round(profit, 2),
-      margin: round(margin, 6),
-      currentMargin: currentMargin,
-      deltaCurrentPp: currentMargin === null || currentMargin === undefined ? null : round((margin - currentMargin) * 100, 2),
-      targetMargin: targetMargin,
-      deltaTargetPp: targetMargin === null || targetMargin === undefined ? null : round((margin - targetMargin) * 100, 2),
-      source: inputs.source || "Motor de Margem",
-      missing: [],
+      request: pending ? { key: key, insumos: insumosOf(values), base_insumos: insumosOf(baseline.values), meta_margem: targetMargin } : null,
     };
   }
 
@@ -1709,29 +1343,49 @@
     });
   }
 
+  /** Valor alternativo de uma divergência e o pedido de cálculo do seu impacto na MC. */
+  function divergenceAlternative(item, composition, divergence, chosen) {
+    var variableKey = variableOfField(divergence.field);
+    if (!variableKey) return null;
+    var selectedSource = chosen[variableKey];
+    // Lados da divergência como SLOT (fonte + momento): um DRIFT da Base
+    // (atual × na venda) tem a mesma fonte nos dois lados.
+    var sideA = { source: slotOf(divergence.sourceAKey, divergence.kindA), value: divergence.valueA };
+    var sideB = { source: slotOf(divergence.sourceBKey, divergence.kindB), value: divergence.valueB };
+    var alternative = sideA.source === selectedSource ? sideB : sideB.source === selectedSource ? sideA : sideB;
+    if (alternative.value === null || alternative.value === undefined) return null;
+    var alternativeValues = Object.assign({}, composition.values);
+    alternativeValues[variableKey] = alternative.value;
+    var key = calcKey(alternativeValues, composition.values);
+    return {
+      variableKey: variableKey,
+      selectedSource: selectedSource,
+      alternative: alternative,
+      key: key,
+      request: { key: key, insumos: insumosOf(alternativeValues), base_insumos: insumosOf(composition.values) },
+    };
+  }
+
+  /**
+   * Fila de divergências: uma linha por divergência REAL relatada pelo Motor
+   * (CONFLICT/DRIFT). O impacto na MC (em pp) é calculado pelo núcleo no
+   * backend (MC com o valor alternativo menos a MC da composição atual);
+   * enquanto não chega, `impactPending` e `impactPp: null`. Nenhuma divergência
+   * é inventada.
+   */
   function divergenceQueue(items, selection) {
     var chosen = selection || PRESETS.projected;
     var rows = [];
     (items || []).forEach(function (item) {
       var composition = resolveComposition(item, chosen);
       (item.divergences || []).forEach(function (divergence) {
-        var variableKey = variableOfField(divergence.field);
-        if (!variableKey) return;
-        var selectedSource = chosen[variableKey];
-        // Lados da divergência como SLOT (fonte + momento): um DRIFT da Base
-        // (atual × na venda) tem a mesma fonte nos dois lados.
-        var sideA = { source: slotOf(divergence.sourceAKey, divergence.kindA), value: divergence.valueA };
-        var sideB = { source: slotOf(divergence.sourceBKey, divergence.kindB), value: divergence.valueB };
-        var alternative = sideA.source === selectedSource ? sideB : sideB.source === selectedSource ? sideA : sideB;
+        var info = divergenceAlternative(item, composition, divergence, chosen);
+        if (!info) return;
+        var variableKey = info.variableKey;
         var selectedValue = composition.values[variableKey];
-        if (alternative.value === null || alternative.value === undefined) return;
-
-        var alternativeValues = Object.assign({}, composition.values);
-        alternativeValues[variableKey] = alternative.value;
-        var alternativeMargin = computeMargin(alternativeValues);
-        var impactPp = alternativeMargin.raw && alternativeMargin.raw.margin !== null && composition.raw.margin !== null
-          ? round((alternativeMargin.raw.margin - composition.raw.margin) * 100, 2)
-          : null;
+        var calc = calcOf(info.key);
+        var impactReady = Boolean(calc && !calc.failed);
+        var impactPp = impactReady ? calc.deltaMarginPp : null;
 
         // CONFLICT é defeito de dado: duas fontes do mesmo momento discordam.
         // DRIFT é previsto × realizado — informação, não defeito — e só sobe a
@@ -1748,19 +1402,50 @@
           format: VARIABLE_META[variableKey].format,
           type: type || "CONFLICT",
           origin: divergence.origin || "motor",
-          selectedSource: selectedSource,
-          selectedSourceLabel: sourceLabel(selectedSource),
+          selectedSource: info.selectedSource,
+          selectedSourceLabel: sourceLabel(info.selectedSource),
           selectedValue: selectedValue,
-          alternativeSource: alternative.source,
-          alternativeSourceLabel: sourceLabel(alternative.source),
-          alternativeValue: numberOrNull(alternative.value),
+          alternativeSource: info.alternative.source,
+          alternativeSourceLabel: sourceLabel(info.alternative.source),
+          alternativeValue: numberOrNull(info.alternative.value),
           impactPp: impactPp,
+          impactPending: !calc,
           severity: critical ? "CRITICA" : "REVISAR",
           explanation: divergence.explanation,
         });
       });
     });
     return rows;
+  }
+
+  /**
+   * O que ainda falta pedir ao backend para a tela renderizar sem número
+   * local: composições pendentes (seleção personalizada) dos `compositionItems`
+   * e o impacto de cada divergência dos `divergenceItems`. Sem repetição e sem
+   * o que já foi respondido ou está a caminho.
+   */
+  function pendingCalcRequests(compositionItems, divergenceItems, selection) {
+    var chosen = selection || PRESETS.projected;
+    var seen = {};
+    var list = [];
+    function add(request) {
+      if (!request || seen[request.key] || calcOf(request.key) || calcInflight[request.key]) return;
+      seen[request.key] = true;
+      list.push(request);
+    }
+    (compositionItems || []).forEach(function (item) {
+      var composition = resolveComposition(item, chosen);
+      if (composition.pending) add(composition.request);
+    });
+    (divergenceItems || []).forEach(function (item) {
+      if (!(item.divergences || []).length) return;
+      var composition = resolveComposition(item, chosen);
+      (item.divergences || []).forEach(function (divergence) {
+        var info = divergenceAlternative(item, composition, divergence, chosen);
+        if (info) add(info.request);
+      });
+    });
+    return list;
   }
 
   /* =========================================================================
@@ -2134,6 +1819,19 @@
       return { dateFrom: iso(start), dateTo: iso(end) };
     }
 
+    // O Motor canônico não responde neste ambiente (rota ausente). Não há
+    // leitura de reserva: calcular margem fora do Motor seria uma segunda
+    // fórmula. A tela mostra o erro explícito.
+    function motorIndisponivel(result) {
+      return {
+        ok: false,
+        status: result.status,
+        error: "O Motor de Margem não está disponível neste ambiente (rota da Central ausente). A margem só é exibida quando calculada pelo Motor.",
+        code: "MOTOR_INDISPONIVEL",
+        type: "motor-indisponivel",
+      };
+    }
+
     function getCentral(params, signal) {
       params = params || {};
       var slug = String(params.clientSlug || "").trim();
@@ -2165,25 +1863,7 @@
             return { ok: false, status: canonical.status, error: canonical.error || "O Motor de Margem não respondeu.", code: canonical.code || null, type: canonical.type || "api" };
           }
 
-          var catalogQuery = buildQuery({
-            clienteSlug: slug,
-            q: params.search,
-            page: context.page,
-            limit: context.limit,
-          });
-          var salesQuery = buildQuery({ marketplace: context.marketplace, dateFrom: range.dateFrom, dateTo: range.dateTo });
-          return Promise.all([
-            call("/anuncios-meli" + catalogQuery, { signal: signal }),
-            call("/operacao/central-vendas/" + encodeURIComponent(slug) + salesQuery, { signal: signal }),
-          ]).then(function (results) {
-            var catalog = results[0];
-            var sales = results[1];
-            if (catalog.aborted || sales.aborted) return { ok: false, aborted: true, type: "aborted" };
-            if (!catalog.ok) {
-              return { ok: false, status: catalog.status, error: catalog.error || "Não foi possível carregar o catálogo do cliente.", type: catalog.type || "api" };
-            }
-            return adaptLegacyResponse(catalog.data, sales.ok ? sales.data : null, context, sales.ok ? null : sales);
-          });
+          return motorIndisponivel(canonical);
         });
     }
 
@@ -2219,41 +1899,7 @@
             return { ok: false, status: canonical.status, error: canonical.error || "O Motor de Margem não respondeu.", code: canonical.code || null, type: canonical.type || "api" };
           }
 
-          // Fallback legado: o catálogo sincronizado (DB) não tem o teto de
-          // batch ao vivo do Motor — pede um limite maior para aproximar um
-          // workspace sem nunca chamar o Mercado Livre por linha.
-          var maxItens = numberOrNull(params.maxItens) || 200;
-          var catalogQuery = buildQuery({ clienteSlug: slug, limit: maxItens, page: 1 });
-          var salesQuery = buildQuery({ marketplace: context.marketplace, dateFrom: range.dateFrom, dateTo: range.dateTo });
-          return Promise.all([
-            call("/anuncios-meli" + catalogQuery, { signal: signal }),
-            call("/operacao/central-vendas/" + encodeURIComponent(slug) + salesQuery, { signal: signal }),
-          ]).then(function (results) {
-            var catalog = results[0];
-            var sales = results[1];
-            if (catalog.aborted || sales.aborted) return { ok: false, aborted: true, type: "aborted" };
-            if (!catalog.ok) {
-              return { ok: false, status: catalog.status, error: catalog.error || "Não foi possível carregar o catálogo do cliente.", type: catalog.type || "api" };
-            }
-            var legacy = adaptLegacyResponse(catalog.data, sales.ok ? sales.data : null, context, sales.ok ? null : sales);
-            var total = legacy.pagination.total || legacy.items.length;
-            var partial = legacy.items.length < total;
-            return {
-              ok: true,
-              sourceMode: legacy.sourceMode,
-              sourceLabel: legacy.sourceLabel,
-              client: legacy.client,
-              marketplace: legacy.marketplace,
-              items: legacy.items,
-              partial: partial,
-              coverage: { loaded: legacy.items.length, total: total, partial: partial },
-              summary: { counts: legacy.summary.counts, scope: "workspace" },
-              lastUpdated: legacy.lastUpdated,
-              period: legacy.period,
-              warnings: legacy.warnings,
-              gaps: legacy.gaps,
-            };
-          });
+          return motorIndisponivel(canonical);
         });
     }
 
@@ -2372,6 +2018,42 @@
       };
     }
 
+    /*
+     * LC/MC de composições (Composição da tabela, simulação avançada e impacto
+     * das divergências): o NÚCLEO do Motor calcula, em lote (até 200 por
+     * chamada). Somente leitura; a conta é o escopo (cliente_conta_id).
+     */
+    var COMPOSICAO_LOTE = 200;
+
+    function composicaoChunk(clienteContaId, chunk, offset, signal) {
+      var itens = chunk.map(function (request, i) {
+        var entry = { id: String(offset + i), insumos: request.insumos };
+        if (request.base_insumos) entry.base_insumos = request.base_insumos;
+        if (request.meta_margem !== undefined && request.meta_margem !== null) entry.meta_margem = request.meta_margem;
+        return entry;
+      });
+      return call("/api/margem/composicao", { method: "POST", body: { cliente_conta_id: clienteContaId, itens: itens }, signal: signal });
+    }
+
+    function calcularComposicoes(params, signal) {
+      params = params || {};
+      var requests = arrayOf(params.requests);
+      if (!requests.length) return Promise.resolve({ ok: true, itens: [] });
+      var chunks = [];
+      for (var offset = 0; offset < requests.length; offset += COMPOSICAO_LOTE) {
+        chunks.push({ offset: offset, list: requests.slice(offset, offset + COMPOSICAO_LOTE) });
+      }
+      return Promise.all(chunks.map(function (chunk) {
+        return composicaoChunk(params.clienteContaId, chunk.list, chunk.offset, signal);
+      })).then(function (results) {
+        var failed = results.filter(function (result) { return !result.ok; })[0];
+        if (failed) return apiError(failed, "Não foi possível calcular a composição agora.");
+        var rows = [];
+        results.forEach(function (result) { rows = rows.concat(arrayOf(result.data.itens)); });
+        return { ok: true, itens: rows };
+      });
+    }
+
     /* Simulação ao vivo (digitação): não persiste nada, não escreve nada. */
     function simulatePricing(params, signal) {
       params = params || {};
@@ -2447,6 +2129,7 @@
       getSnapshotRealizado: getSnapshotRealizado,
       requestSnapshotRefresh: requestSnapshotRefresh,
       getSnapshotRefreshStatus: getSnapshotRefreshStatus,
+      calcularComposicoes: calcularComposicoes,
       simulatePricing: simulatePricing,
       previewPricing: previewPricing,
       applyPricing: applyPricing,
@@ -2475,7 +2158,6 @@
     INTEGRITY_STATES: INTEGRITY_STATES,
     presetFor: presetFor,
     clonePreset: clonePreset,
-    computeMargin: computeMargin,
     resolveComposition: resolveComposition,
     simulateScenario: simulateScenario,
     sourceEntry: sourceEntry,
@@ -2493,9 +2175,14 @@
     normalizeCanonicalItem: normalizeCanonicalItem,
     normalizeCanonicalResponse: normalizeCanonicalResponse,
     normalizeWorkspaceResponse: normalizeWorkspaceResponse,
-    adaptLegacyResponse: adaptLegacyResponse,
-    buildSalesIndex: buildSalesIndex,
-    simulatePrice: simulatePrice,
+    pendingCalcRequests: pendingCalcRequests,
+    recordCalcResults: recordCalcResults,
+    recordCalcFailure: recordCalcFailure,
+    markCalcInflight: markCalcInflight,
+    needsCalc: needsCalc,
+    resetCalcs: resetCalcs,
+    calcKey: calcKey,
+    insumosOf: insumosOf,
     countStatuses: countStatuses,
     isRunTerminal: isRunTerminal,
     snapshotStatusFilter: snapshotStatusFilter,

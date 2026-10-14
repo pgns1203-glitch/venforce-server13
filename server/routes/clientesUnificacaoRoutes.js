@@ -4,11 +4,20 @@ const {
   requireAdmin,
 } = require("../middlewares/authMiddleware");
 const { createService } = require("../services/clientesUnificacao/service");
-const { safeError } = require("../services/clientesUnificacao/contracts");
+const {
+  safeError,
+  rollbackConfirmation,
+} = require("../services/clientesUnificacao/contracts");
+const { enabled, flags } = require("../config/clientesUnificacao");
 function createRouter({
   service,
   authenticate = authMiddleware,
   admin = requireAdmin,
+  getUiConfig = () => ({
+    uiEnabled: enabled(process.env.CLIENTES_UNIFICACAO_UI_ENABLED),
+    executeEnabled: flags().execute,
+    rollbackEnabled: flags().rollback,
+  }),
 } = {}) {
   const router = express.Router();
   router.use(authenticate, admin);
@@ -20,6 +29,19 @@ function createRouter({
       res.status(e.statusCode).json({ ok: false, code: e.code, erro: e.code });
     }
   };
+  // Metadados de apresentação; autenticação e admin já verificados acima.
+  router.get(
+    "/config",
+    handle((req) => ({
+      ...getUiConfig(),
+      actor: { id: req.user.id, role: req.user.role },
+    })),
+  );
+  const present = (operation) =>
+    operation && {
+      ...operation,
+      rollbackConfirmationText: rollbackConfirmation(operation),
+    };
   router.post(
     "/preview",
     handle((req) => service.preview(req.body?.manifest, req.user)),
@@ -27,7 +49,7 @@ function createRouter({
   router.post(
     "/execute",
     handle(async (req) => ({
-      operation: await service.execute(req.body, req.user),
+      operation: present(await service.execute(req.body, req.user)),
     })),
   );
   router.get(
@@ -45,13 +67,15 @@ function createRouter({
   router.get(
     "/:id",
     handle(async (req) => ({
-      operation: await service.detail(req.params.id, req.user),
+      operation: present(await service.detail(req.params.id, req.user)),
     })),
   );
   router.post(
     "/:id/rollback",
     handle(async (req) => ({
-      operation: await service.rollback(req.params.id, req.body, req.user),
+      operation: present(
+        await service.rollback(req.params.id, req.body, req.user),
+      ),
     })),
   );
   return router;

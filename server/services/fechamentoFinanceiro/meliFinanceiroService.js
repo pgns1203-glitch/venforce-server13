@@ -319,6 +319,19 @@ function analyzeMeliParsing(rows) {
   const mainRows = parsedRows.filter(isMainRow);
   const detailRows = parsedRows.filter(isDetailRow);
   const associations = collectMeliAssociations(parsedRows);
+  // Pacote que não fecha com a própria linha financeira (export cortado, N
+  // declarado ≠ produtos encontrados, Σ unidades × preço ≠ receita do pai):
+  // o rateio continua o mesmo, mas o fechamento avisa em vez de calar.
+  const packGroups = associations.groups.filter((group) => group.parent.packSize > 0);
+  const incompletePacks = packGroups.filter((group) => {
+    if (group.details.length !== group.parent.packSize) return true;
+    if (!(Math.abs(group.parent.productRevenue) > 0)) return false;
+    const childrenRevenue = group.details.reduce(
+      (sum, detail) => sum + Number(detail.units || 0) * Number(detail.unitSalePrice || 0),
+      0
+    );
+    return Math.abs(round2(childrenRevenue) - round2(group.parent.productRevenue)) > 0.01;
+  });
   const standaloneSaleKeys = new Set(
     associations.standaloneItems.map(({ row }) => row.saleNumber || `linha:${row.rowIndex + 1}`)
   );
@@ -347,6 +360,10 @@ function analyzeMeliParsing(rows) {
     associatedItemsCount:
       associations.groups.reduce((sum, group) => sum + group.details.length, 0) +
       associations.standaloneItems.length,
+    packGroupsCount: packGroups.length,
+    incompletePackSales: incompletePacks.map(
+      (group) => group.parent.saleNumber || `linha ${group.parent.rowIndex + 1}`
+    ),
     sourceRevenueFound: round2(associatedRevenue + standaloneRevenue),
     detectedRevenueHeaders: revenueHeaders,
     unparsedRevenueCells,
@@ -1211,6 +1228,14 @@ function processMeli(
   }
   for (const warning of costConflictWarnings) {
     executiveNotes.push(warning);
+  }
+  const incompletePackSales = parsingDiagnostics.incompletePackSales || [];
+  if (incompletePackSales.length > 0) {
+    executiveNotes.push(
+      `${incompletePackSales.length} pacote(s) com produtos que não fecham com a linha do pacote ` +
+        `(${incompletePackSales.slice(0, 5).join(", ")}${incompletePackSales.length > 5 ? ", …" : ""}). ` +
+        "O financeiro do pacote foi rateado entre os produtos encontrados — confira o export."
+    );
   }
   if (excludedStatusRows.length > 0) {
     executiveNotes.push(

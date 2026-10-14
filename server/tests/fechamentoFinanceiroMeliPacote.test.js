@@ -216,6 +216,29 @@ console.log("\n▸ Caso 7 — filho sem custo: financeiro válido, LC condiciona
   eq("3 com LC", r.detailedRows.filter((l) => typeof l.LC === "number").length, 3);
 }
 
+// ── Caso 8 — financeiro realmente ausente no pai ──────────────────────────
+console.log("\n▸ Caso 8 — pacote sem Total publicado continua 'aguardando financeiro'");
+{
+  // Pai com receita, mas sem tarifas nem Total (o ML ainda não publicou).
+  const rows = [
+    pai("2000000000000600", 2, { rec: 200 }),
+    filho("2000000000000601", "MLB700000001", 120),
+    filho("2000000000000602", "MLB700000002", 80),
+  ];
+  const r = processMeli(rows, [custo("MLB700000001", 30), custo("MLB700000002", 20)], 0, 0, 0);
+  eq("2 produtos, ambos pendentes", pendentes(r).length, 2);
+  ok("Total desconhecido continua null (nunca 0)", r.detailedRows.every((l) => l["Total (BRL)"] === null));
+  ok("LC desconhecido continua null", r.detailedRows.every((l) => l.LC === null));
+  eq("receita preservada", r.summary.grossRevenueTotal, 200);
+  eq("receita pendente", r.summary.revenuePendingFinancial, 200);
+}
+{
+  // Venda simples sem Total: pendência legítima não vira "disponível".
+  const rows = [simples("2000000000000610", "MLB700000003", 50, {}, { rec: 50 })];
+  const r = processMeli(rows, [custo("MLB700000003", 10)], 0, 0, 0);
+  eq("venda simples sem Total é pendente", pendentes(r).length, 1);
+}
+
 // ── Caso 9 — devolução dentro do pacote (estrutura real) ──────────────────
 console.log("\n▸ Caso 9 — devolução de um filho do pacote");
 {
@@ -246,6 +269,75 @@ console.log("\n▸ Caso 10 — parcelas fecham com o pai até o centavo");
   eq("Σ Total = 82,66", soma(r.detailedRows, "Total (BRL)"), 82.66);
   eq("Σ venda = 100,00", soma(r.detailedRows, "Venda Total"), 100);
   eq("Σ ajuste = 0", soma(r.detailedRows, "Ajuste plataforma (BRL)"), 0);
+}
+
+// ── Limites do bloco ──────────────────────────────────────────────────────
+console.log("\n▸ Limites — o pai declara N e o bloco termina no N-ésimo filho");
+{
+  // Um filho órfão (sem pai) logo depois de um pacote completo NÃO é absorvido.
+  const rows = [
+    pai("2000000000000900", 2, { rec: 200, tv: -20, te: -10, tot: 170 }),
+    filho("2000000000000901", "MLB110000001", 120),
+    filho("2000000000000902", "MLB110000002", 80),
+    filho("2000000000000903", "MLB110000003", 50),
+  ];
+  const assoc = collectMeliAssociations(parseMeliRows(rows));
+  eq("o pacote leva só os 2 que declarou", assoc.groups[0].detailIndexes, [1, 2]);
+  const r = processMeli(rows, [], 0, 0, 0);
+  eq("o órfão continua sem financeiro (pendente legítimo)", pendentes(r).map((l) => l["# de anúncio"]), ["MLB110000003"]);
+  eq("Total do pacote não vaza para o órfão", soma(r.detailedRows.filter((l) => l["Total (BRL)"] !== null), "Total (BRL)"), 170);
+}
+{
+  // Formato antigo/sintético (6bda0151): filho SEM N.º de venda continua no pai.
+  const rows = [
+    linha({ venda: "10001", data: DATA, estado: "Pago", un: 2, rec: 200, tv: -20, tot: 180 }),
+    linha({ mlb: "MLB555", tit: "Produto detalhado", pu: 100 }),
+  ];
+  const r = processMeli(rows, [custo("MLB555", 40, 0)], 0, 0, 0);
+  eq("filho sem N.º de venda herda o pai", r.detailedRows[0]["Total (BRL)"], 180);
+}
+{
+  // Venda com financeiro próprio e outro N.º de venda nunca entra no grupo
+  // anterior, mesmo marcada "Pacote = Sim".
+  const rows = [
+    linha({ venda: "5001", data: DATA, estado: "Pago", rec: 300, tot: 260, tv: -40 }),
+    linha({ venda: "5001", data: DATA, estado: "Pago", mlb: "MLB111", un: 1, pu: 200 }),
+    linha({ venda: "5002", data: DATA, estado: "Pago", pacote: "Sim", mlb: "MLB333", un: 2, pu: 50, rec: 100, tot: 90, tv: -10 }),
+  ];
+  const assoc = collectMeliAssociations(parseMeliRows(rows));
+  eq("grupo 5001 só com o seu filho", assoc.groups[0].detailIndexes, [1]);
+  eq("5002 avulsa", assoc.standaloneItems.map((s) => s.index), [2]);
+}
+
+console.log("\n▸ Limites — pacote que não fecha com a linha do pacote avisa");
+{
+  // Export cortado: o pai declara 3, só 2 produtos vieram antes da próxima venda.
+  const rows = [
+    pai("2000000000001000", 3, { rec: 300, tv: -30, te: -10, tot: 260 }),
+    filho("2000000000001001", "MLB120000001", 100),
+    filho("2000000000001002", "MLB120000002", 100),
+    simples("2000000000001003", "MLB120000003", 50, { tv: -5, te: -5, tot: 40 }),
+  ];
+  const r = processMeli(rows, [], 0, 0, 0);
+  eq("pacote incompleto listado no diagnóstico", r.parsingDiagnostics.incompletePackSales, ["2000000000001000"]);
+  ok("aviso no fechamento", r.summary.executiveNotes.some((n) => /1 pacote\(s\) com produtos que não fecham/.test(n)));
+  eq("a venda seguinte não completa o pacote", linhaDe(r, "MLB120000003")["Total (BRL)"], 40);
+  eq("o Total do pacote fica nos produtos encontrados", round2(linhaDe(r, "MLB120000001")["Total (BRL)"] + linhaDe(r, "MLB120000002")["Total (BRL)"]), 260);
+}
+{
+  // Σ unidades × preço ≠ receita do pai.
+  const rows = [
+    pai("2000000000001100", 2, { rec: 250, tv: -25, te: -10, tot: 215 }),
+    filho("2000000000001101", "MLB130000001", 100),
+    filho("2000000000001102", "MLB130000002", 100),
+  ];
+  const r = processMeli(rows, [], 0, 0, 0);
+  eq("soma que não fecha também avisa", r.parsingDiagnostics.incompletePackSales, ["2000000000001100"]);
+}
+{
+  const r = processMeli(PACOTE_4, CUSTOS_4, 0, 0, 0);
+  eq("pacote completo não avisa", r.parsingDiagnostics.incompletePackSales, []);
+  eq("1 pacote reconhecido", r.parsingDiagnostics.packGroupsCount, 1);
 }
 
 // ── Ponta a ponta pelo controller (mesmo caminho do legado e da V3) ───────

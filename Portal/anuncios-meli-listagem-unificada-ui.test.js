@@ -2714,6 +2714,49 @@ async function run() {
       console.log("  ✓ 39a2");
     });
 
+    await check("39a2b — faixa da família usa a cor do status do Motor de cada ponta, igual à célula do item", async () => {
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "familia", key: "fam:FAM-COR", family_id: "FAM-COR", family_name: "Camiseta Pesca",
+            titulo: "Camiseta Pesca", margemProjetadaPercent: null, margemProjetadaComputable: false,
+            margemProjetadaMinPercent: 4.2, margemProjetadaMaxPercent: 23.8,
+            margemProjetadaMinStatus: "LOW_MARGIN", margemProjetadaMaxStatus: "HEALTHY", cover: { thumbnail: null } },
+          { tipo: "familia", key: "fam:FAM-UNI", family_id: "FAM-UNI", family_name: "Kit Camisetas",
+            titulo: "Kit Camisetas", margemProjetadaPercent: null, margemProjetadaComputable: false,
+            margemProjetadaMinPercent: 23.8, margemProjetadaMaxPercent: 23.8,
+            margemProjetadaMinStatus: "HEALTHY", margemProjetadaMaxStatus: "HEALTHY", cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-COR-I", key: "item:MLB-COR-I", titulo: "Item avulso", status: "active",
+            margemProjetadaPercent: 23.6, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY", cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 3, totalPaginas: 1 },
+      });
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_asc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-UNI")}')`, "a linha da família não renderizou");
+      const estado = await cdp.evaluate(`(function(){
+        var min = document.querySelector('${linhaFam("FAM-COR")} .am-margem__valor[data-faixa="min"]');
+        var max = document.querySelector('${linhaFam("FAM-COR")} .am-margem__valor[data-faixa="max"]');
+        var uni = document.querySelector('${linhaFam("FAM-UNI")} .am-margem__valor[data-faixa="unico"]');
+        var item = document.querySelector('.am-row[data-item="MLB-COR-I"] .am-margem__valor');
+        return {
+          minWarning: !!(min && min.classList.contains('is-warning')),
+          maxSuccess: !!(max && max.classList.contains('is-success')),
+          uniSuccess: !!(uni && uni.classList.contains('is-success')),
+          mesmaCorDoItem: !!(uni && item && getComputedStyle(uni).color === getComputedStyle(item).color),
+        }; })()`);
+      assert.ok(estado.minWarning, "mínimo vindo de filho LOW_MARGIN usa a cor de margem baixa");
+      assert.ok(estado.maxSuccess, "máximo vindo de filho HEALTHY usa a cor de saudável");
+      assert.ok(estado.uniSuccess, "faixa de um ponto só também ganha a cor do status");
+      assert.ok(estado.mesmaCorDoItem, "família saudável e item avulso saudável têm a MESMA cor");
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39a2b");
+    });
+
     await check("39a3 — margem_desc: família sem NENHUM filho computável (min/max ausentes) continua '—', nunca inventa faixa", async () => {
       pedidos.length = 0;
       ordenarPorGlobalHandler = () => ({

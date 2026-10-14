@@ -155,6 +155,7 @@ const MOCK_CLIENT = `
         diagnostico: { statusAnuncio: statusAnuncioDe(i) },
         snapshot: { refreshStatus: i === 3 ? "failed" : "fresh", lastError: i === 3 ? "ML 503" : null, calculatedAt: "2026-09-27T10:00:00Z" },
         statusBase: "projected",
+        realizado_motivo: window.__cmRealizadoFalha ? "CENTRAL_VENDAS_FALHOU" : null,
         sales: vendasDe(i), settlement: { available: false },
         projectedVsRealized: comparacaoDe(i, margin),
       };
@@ -184,6 +185,15 @@ const MOCK_CLIENT = `
       return { status: "NO_SALES", projected: projetado, realized: { available: false, units: null }, drift: null, notComparable: [] };
     }
     function realizadoDe(conta, periodo) {
+      // Central de Vendas fora do ar: o backend manda realizado null + motivo e KPIs null.
+      if (window.__cmRealizadoFalha) {
+        return window.VFCentralMargemApi.normalizeSnapshotRealizado({
+          ok: true, habilitado: true, realizado: null, realizado_motivo: "CENTRAL_VENDAS_FALHOU",
+          realizado_mensagem: "A leitura de vendas da Central de Vendas falhou para este período. O realizado está indisponível — nenhum valor foi zerado.",
+          periodo: { dateFrom: "2026-07-01", dateTo: "2026-07-27", modo: "mes", periodo: periodo, rotulo: "mês " + periodo },
+          cobertura: null, freshness: { estado: "INDISPONIVEL", sincronizadoAte: null, syncEmAndamento: false, syncAtivo: null }, kpis: null,
+        });
+      }
       return window.VFCentralMargemApi.normalizeSnapshotRealizado({
         ok: true, habilitado: true,
         periodo: periodo
@@ -554,6 +564,26 @@ async function run() {
       await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "!window.__cmCalls.realizado[window.__cmCalls.realizado.length-1].periodo && !window.VFCentralMargemUi.getState().realizadoLoading", "volta ao padrão não releu o realizado");
       assert.strictEqual(await cdp.evaluate("window.VF.context.getPeriodoParam()"), null);
+    });
+
+    await check("Central de Vendas falhando: nenhum KPI de realizado mostra R$ 0 nem 0 — tudo 'Indisponível' com o motivo, e as linhas não dizem 'sem venda'", async () => {
+      await cdp.evaluate("window.__cmRealizadoFalha = true");
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='2026-07';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "document.querySelector('[data-cm-realized-unavailable]') && !window.VFCentralMargemUi.getState().loading && !window.VFCentralMargemUi.getState().realizadoLoading", "estado indisponível do realizado não apareceu");
+      const bloco = await cdp.evaluate("document.getElementById('cm-realized').textContent");
+      assert.ok(bloco.includes("Indisponível"), bloco);
+      assert.ok(bloco.includes("nenhum valor foi zerado"), bloco);
+      assert.ok(!/R\$\s*0[,\s]/.test(bloco), `R$ 0 no bloco do realizado: ${bloco}`);
+      assert.ok(!/(Pedidos|Unidades|Produtos com venda)\s*0(?![\d,.])/.test(bloco.replace(/\s+/g, " ")), `contagem 0 no bloco: ${bloco}`);
+      const topo = await cdp.evaluate("document.getElementById('cm-kpis-top').textContent");
+      assert.ok(!/R\$\s*0[,\s]/.test(topo), `R$ 0 no topo: ${topo}`);
+      const linha = await cdp.evaluate("document.querySelector('tr[data-item-id=\"C900-MLB100000\"]').textContent");
+      assert.ok(linha.includes("Indisponível"), linha);
+      assert.ok(!/sem venda/i.test(linha), `linha afirma 'sem venda' sem saber: ${linha}`);
+
+      await cdp.evaluate("window.__cmRealizadoFalha = false");
+      await cdp.evaluate("(function(){var s=document.getElementById('cm-period');s.value='';s.dispatchEvent(new Event('change'));})()");
+      await waitFor(cdp, "!document.querySelector('[data-cm-realized-unavailable]') && !window.VFCentralMargemUi.getState().loading && !window.VFCentralMargemUi.getState().realizadoLoading", "realizado não voltou ao normal");
     });
 
     await check("filtro de anúncio: active, paused e todos combinam com busca/status sem perder paginação", async () => {

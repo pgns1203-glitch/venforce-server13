@@ -94,7 +94,7 @@ function motivoDa(linha) {
 
 // Uma candidata a partir de (promoção, snapshot de margem) — mesma régua para
 // as duas fontes. null = fora (sem margem calculável/positiva).
-function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb }) {
+function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false }) {
   const taxa = num(snap.commission_rate);
   const calc = computeMargin({
     price: precoPromo,
@@ -118,8 +118,9 @@ function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo
     retornoMl: retornoMl || null,
     margemDepois: calc.margin,
     lucroDepois: calc.profit,
-    unidades: vendas ? num(vendas.unidades) || 0 : 0,
-    receita: vendas ? num(vendas.receita) : null,
+    // Vendas indisponíveis (Central de Vendas falhou): null, nunca "0 un.".
+    unidades: vendasIndisponivel ? null : vendas ? num(vendas.unidades) || 0 : 0,
+    receita: vendasIndisponivel ? null : vendas ? num(vendas.receita) : null,
     estimado: true,
   };
   linha.motivo = motivoDa(linha);
@@ -131,7 +132,7 @@ function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo
 function ordenarDeduplicarPaginar(candidatas, { page, limit }) {
   candidatas.sort((a, b) =>
     (b.retornoMl ? 1 : 0) - (a.retornoMl ? 1 : 0) ||
-    b.unidades - a.unidades ||
+    (b.unidades || 0) - (a.unidades || 0) ||
     b.margemDepois - a.margemDepois ||
     (a.itemId < b.itemId ? -1 : a.itemId > b.itemId ? 1 : 0)
   );
@@ -152,10 +153,23 @@ async function carregarVendas(d, cliente, conta, params, deps) {
       { cliente: { id: cliente.id, slug: cliente.slug }, conta: { id: conta.id }, periodo: params.periodo || null },
       { ...deps, db: d.db }
     );
-    return { vendasPorMlb: realizada.porMlb || new Map(), periodo: realizada.periodo || null };
+    // `indisponivel` = a Central de Vendas falhou / nada sincronizado: as
+    // linhas saem com unidades/receita null e a resposta diz por quê.
+    return { vendasPorMlb: realizada.porMlb || new Map(), periodo: realizada.periodo || null, indisponivel: realizada.indisponivel || null };
   } catch (_) {
-    return { vendasPorMlb: new Map(), periodo: null };
+    return {
+      vendasPorMlb: new Map(),
+      periodo: null,
+      indisponivel: { motivo: "CENTRAL_VENDAS_FALHOU", mensagem: "A leitura de vendas falhou; unidades e receita ficaram indisponíveis (não são zero)." },
+    };
   }
+}
+
+// Campos públicos de "realizado indisponível" (null + motivo), só quando há.
+function vendasPublico(indisponivel) {
+  return indisponivel
+    ? { vendas: { realizado: null, realizado_motivo: indisponivel.motivo, realizado_mensagem: indisponivel.mensagem } }
+    : {};
 }
 
 function periodoPublico(periodo) {
@@ -166,7 +180,7 @@ const CRITERIO = "Promoção disponível com margem pós-promoção positiva; or
 
 // Linha da página (já filtrada/ordenada no banco) → oportunidade, com a
 // mesma régua de montarCandidata.
-function linhaDaPagina(r, promocao, vendasPorMlb) {
+function linhaDaPagina(r, promocao, vendasPorMlb, vendasIndisponivel = false) {
   return montarCandidata({
     itemId: String(r.item_id),
     promocao,
@@ -178,12 +192,13 @@ function linhaDaPagina(r, promocao, vendasPorMlb) {
     },
     titulo: r.fonte_titulo || null,
     vendasPorMlb,
+    vendasIndisponivel,
   });
 }
 
 // ─── Fonte principal: Promo Snapshot ─────────────────────────────────────────
 async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, params, deps, pag }) {
-  const { vendasPorMlb, periodo } = await carregarVendas(d, cliente, conta, params, deps);
+  const { vendasPorMlb, periodo, indisponivel } = await carregarVendas(d, cliente, conta, params, deps);
   const { total, rows } = await d.promo.listarPagina({
     clienteContaId: conta.id, sellerId, runId: estado.snapshotRunId, vendasPorMlb, page: pag.page, limit: pag.limit,
   });
@@ -198,7 +213,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
     // Leitura desta promoção falhou no último run: é a última leitura boa.
     herdada: r.promo_herdado === true,
     observadaEm: r.promo_observado_em || null,
-  }, vendasPorMlb)).filter(Boolean);
+  }, vendasPorMlb, Boolean(indisponivel))).filter(Boolean);
   const hasNext = pag.page * pag.limit < total;
   return {
     ok: true,
@@ -216,6 +231,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
     sync,
     criterio: CRITERIO,
     periodo: periodoPublico(periodo),
+    ...vendasPublico(indisponivel),
     page: pag.page,
     limit: pag.limit,
     total,
@@ -253,7 +269,7 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
     page: pag.page,
     limit: pag.limit,
   };
-  const { vendasPorMlb, periodo } = await carregarVendas(d, cliente, conta, params, deps);
+  const { vendasPorMlb, periodo, indisponivel } = await carregarVendas(d, cliente, conta, params, deps);
   // Mesma consulta paginada no banco; status vem do payload da linha
   // (status || statusPromocao), vazio = aceito, como na tela antiga.
   const statusSql = `LOWER(COALESCE(NULLIF(i.payload_raw->>'status', ''), i.payload_raw->>'statusPromocao', ''))`;
@@ -275,8 +291,8 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
   const { total, rows } = lerPagina(await d.db.query(sql, valores));
   const pagina = rows.map((r) => linhaDaPagina(r, {
     id: r.promo_id || null, nome: r.promo_nome || null, tipo: r.promo_tipo || null, status: r.promo_status || null,
-  }, vendasPorMlb)).filter(Boolean);
-  return { ...base, periodo: periodoPublico(periodo), total, hasNext: pag.page * pag.limit < total, oportunidades: pagina };
+  }, vendasPorMlb, Boolean(indisponivel))).filter(Boolean);
+  return { ...base, periodo: periodoPublico(periodo), ...vendasPublico(indisponivel), total, hasNext: pag.page * pag.limit < total, oportunidades: pagina };
 }
 
 function mensagemSemFonte(estado) {

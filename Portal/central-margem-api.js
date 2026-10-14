@@ -724,6 +724,9 @@
       // recalculado aqui: a tela só exibe o código e o motivo que o backend mandou.
       integrityCode: firstValue(quality.integrityCode, raw.integrityCode),
       integrityReason: firstValue(quality.integrityReason, raw.integrityReason),
+      // Central de Vendas fora do ar para este período: o realizado do item é
+      // desconhecido (≠ "sem venda"). Só repassa o motivo do backend.
+      realizedUnavailable: raw.realizado_motivo ? { reason: raw.realizado_motivo } : null,
       projected: {
         margin: projectedMargin,
         profit: numberOrNull(firstValue(projectedBlock.profit, projectedBlock.lucro, raw.projectedProfit, raw.lucroProjetado)),
@@ -1924,6 +1927,9 @@
         ? { inicio: periodo.dateFrom, fim: periodo.dateTo, mode: periodo.modo || null, value: periodo.periodo || null, label: periodo.rotulo || (context.period && context.period.label) || null }
         : (context.period || null),
       salesCoverage: normalizeSalesCoverage(payload.vendas && payload.vendas.cobertura),
+      salesUnavailable: payload.vendas && payload.vendas.realizado_motivo
+        ? { reason: payload.vendas.realizado_motivo, message: payload.vendas.realizado_mensagem || null }
+        : null,
       refresh: {
         activeRun: snapshotRun(payload.refresh && payload.refresh.runAtivo),
         lastRun: snapshotRun(payload.refresh && payload.refresh.ultimoRun),
@@ -1967,7 +1973,13 @@
     var margem = k.margem || {};
     var drift = k.drift || {};
     var lucro = k.lucro || {};
-    return {
+    // Central de Vendas falhou / nada sincronizado: o backend manda
+    // `realizado: null` + `realizado_motivo` e KPIs null. A tela mostra
+    // "Indisponível" com o motivo — nunca R$ 0 / 0 pedidos.
+    var unavailable = payload.realizado_motivo
+      ? { reason: payload.realizado_motivo, message: payload.realizado_mensagem || null }
+      : null;
+    var out = {
       ok: true,
       enabled: true,
       period: { inicio: periodo.dateFrom || null, fim: periodo.dateTo || null, mode: periodo.modo || null, value: periodo.periodo || null, label: periodo.rotulo || null, reference: periodo.referencia || null },
@@ -2012,6 +2024,9 @@
         },
       },
     };
+    out.unavailable = unavailable;
+    if (unavailable) out.kpis = null;
+    return out;
   }
 
   function apiBase() {

@@ -30,6 +30,7 @@ const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const { flagLigada } = require("./marginSnapshotConfig");
 const { redigirSegredos } = require("./marginSnapshotSanitize");
+const { logEvento } = require("./marginSnapshotLog");
 const periodoRealizado = require("./marginRealizadoPeriodo");
 const { agregarKpisRealizados } = require("./marginRealizadoKpis");
 
@@ -186,6 +187,25 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
 // Composição do item: projetada (snapshot) + realizada (Central de Vendas)
 // ---------------------------------------------------------------------------
 
+// Motivos pelos quais o realizado do período NÃO pode ser afirmado. Nos dois
+// casos o contrato é `realizado: null` + `realizado_motivo`: receita, unidades,
+// pedidos e lucro ficam null — "não sabemos" nunca vira "R$ 0 / 0 vendas".
+const MOTIVO_REALIZADO = {
+  CENTRAL_VENDAS_FALHOU: "CENTRAL_VENDAS_FALHOU",
+  SEM_SINCRONIZACAO: "SEM_SINCRONIZACAO",
+};
+
+const MENSAGEM_REALIZADO = {
+  CENTRAL_VENDAS_FALHOU:
+    "A leitura de vendas da Central de Vendas falhou para este período. O realizado está indisponível — nenhum valor foi zerado.",
+  SEM_SINCRONIZACAO:
+    "Nenhuma sincronização de vendas cobre este período. O realizado está indisponível — não é zero.",
+};
+
+function realizadoIndisponivel(motivo) {
+  return { motivo, mensagem: MENSAGEM_REALIZADO[motivo] };
+}
+
 async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo, periodo = null }, deps = {}) {
   const db = deps.db || pool;
   // Lazy: motorMargemService carrega adapters do ML — só a política de
@@ -193,28 +213,60 @@ async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo, pe
   const motor = require("./motorMargemService");
   // Período do REALIZADO: explícito, `periodo=YYYY-MM` (parâmetro global do
   // Shell) ou o padrão "últimos 30 dias até ontem" (marginRealizadoPeriodo).
+  // Período inválido continua sendo erro do chamador (fora do try abaixo).
   const periodoResolvido = periodoRealizado.resolverPeriodoRealizado({ dateFrom, dateTo, periodo, now: deps.now || new Date() });
-  const includeLegacy = await motor.resolverIncludeLegacy({ clienteId: cliente.id, contaId: conta.id }, deps);
-  const vendasRaw = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
-    {
-      clienteSlug: cliente.slug,
+
+  let vendasRaw;
+  let agregado;
+  try {
+    const includeLegacy = await motor.resolverIncludeLegacy({ clienteId: cliente.id, contaId: conta.id }, deps);
+    vendasRaw = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
+      {
+        clienteSlug: cliente.slug,
+        dateFrom: periodoResolvido.dateFrom,
+        dateTo: periodoResolvido.dateTo,
+        marketplace: MARKETPLACE,
+        clienteContaId: conta.id,
+        includeLegacy,
+      },
+      db
+    );
+    agregado = (deps.agregarPorMlb || centralVendas.agregarPorMlb)({
+      pedidosTodos: vendasRaw.pedidosTodos || vendasRaw.pedidos,
+      pedidosResultado: vendasRaw.pedidos,
+      itens: vendasRaw.itens,
+      componentes: vendasRaw.componentes,
+    });
+  } catch (err) {
+    // A Central de Vendas falhou: o realizado fica INDISPONÍVEL (null +
+    // motivo). Derrubar a leitura inteira esconderia o projetado, que não
+    // depende dela; zerar mentiria.
+    logEvento(deps.logger, "error", "margin_snapshot.realizado_indisponivel", {
+      motivo: MOTIVO_REALIZADO.CENTRAL_VENDAS_FALHOU,
+      clienteId: cliente.id,
+      clienteContaId: conta.id,
       dateFrom: periodoResolvido.dateFrom,
       dateTo: periodoResolvido.dateTo,
-      marketplace: MARKETPLACE,
-      clienteContaId: conta.id,
-      includeLegacy,
-    },
-    db
-  );
-  const agregado = (deps.agregarPorMlb || centralVendas.agregarPorMlb)({
-    pedidosTodos: vendasRaw.pedidosTodos || vendasRaw.pedidos,
-    pedidosResultado: vendasRaw.pedidos,
-    itens: vendasRaw.itens,
-    componentes: vendasRaw.componentes,
-  });
+      erro: err && err.message,
+    });
+    return {
+      periodo: periodoResolvido,
+      sincronizado: false,
+      pedidosNoPeriodo: null,
+      porMlb: new Map(),
+      reembolsoPorMlb: new Map(),
+      semMlb: null,
+      reembolsos: null,
+      cobertura: null,
+      fallbackObservedAt: null,
+      indisponivel: realizadoIndisponivel(MOTIVO_REALIZADO.CENTRAL_VENDAS_FALHOU),
+    };
+  }
+
+  const sincronizado = vendasRaw.sincronizado === true;
   return {
     periodo: periodoResolvido,
-    sincronizado: vendasRaw.sincronizado === true,
+    sincronizado,
     pedidosNoPeriodo: Array.isArray(vendasRaw.pedidos) ? vendasRaw.pedidos.length : 0,
     porMlb: agregado.porMlb,
     reembolsoPorMlb: agregado.reembolsoPorMlb,
@@ -224,6 +276,8 @@ async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo, pe
     // o que ficou de fora) — nunca "sem venda" quando o mês não foi coberto.
     cobertura: periodoRealizado.resumirCobertura({ competencias: vendasRaw.competencias || [] }),
     fallbackObservedAt: vendasRaw.importSnapshotAt || null,
+    // Nenhum import cobre o período: não há realizado para afirmar (≠ zero venda).
+    indisponivel: sincronizado ? null : realizadoIndisponivel(MOTIVO_REALIZADO.SEM_SINCRONIZACAO),
   };
 }
 
@@ -286,6 +340,7 @@ function comporItem(row, realizada, deps = {}) {
 
   const fields = core.resolveAllFields(bag);
   const hasOrders = Boolean(realizado);
+  const realizadoMotivo = realizada.indisponivel ? realizada.indisponivel.motivo : null;
 
   // Mesmo cálculo do realizado de buildMarginItem: só com venda; valores
   // REALIZED de cada variável — nunca caindo para o projetado.
@@ -363,7 +418,10 @@ function comporItem(row, realizada, deps = {}) {
       // Mesmo erro de projeção do Motor ao vivo (marginItem.margin.projectionError).
       projectionError: core.compareMargins(projected.margin, realized.margin),
     },
-    projectedVsRealized,
+    // Realizado indisponível: nada de "NO_SALES" (afirmaria que não vendeu).
+    projectedVsRealized: realizadoMotivo ? null : projectedVsRealized,
+    realizado: realizadoMotivo ? null : undefined,
+    realizado_motivo: realizadoMotivo,
     quality: {
       confidence: row.confidenceLevel,
       confidenceByField: quality.confidenceByField || {},
@@ -483,6 +541,10 @@ async function listarItens(params = {}, deps = {}) {
       sincronizado: realizada.sincronizado,
       pedidosNoPeriodo: realizada.pedidosNoPeriodo,
       cobertura: coberturaPublica(realizada.cobertura),
+      // Realizado indisponível: null + motivo (nunca 0 pedidos / "sem venda").
+      ...(realizada.indisponivel
+        ? { realizado: null, realizado_motivo: realizada.indisponivel.motivo, realizado_mensagem: realizada.indisponivel.mensagem }
+        : {}),
     },
     paginacao: {
       page: pag.page,
@@ -520,12 +582,17 @@ async function obterRealizado(params = {}, deps = {}) {
   const projecoes = await (repo.mapProjectionsForItems
     ? repo.mapProjectionsForItems({ clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, itemIds: Array.from(realizada.porMlb.keys()), db })
     : new Map());
-  const kpis = agregarKpisRealizados({
-    porMlb: realizada.porMlb,
-    semMlb: realizada.semMlb,
-    pedidosNoPeriodo: realizada.pedidosNoPeriodo,
-    projecoes,
-  });
+  // Realizado indisponível (Central de Vendas falhou / nada sincronizado):
+  // sem KPIs. Agregar um período vazio devolveria receita 0, 0 pedidos e
+  // 0 produtos com venda — afirmaria "não vendeu" sem saber.
+  const kpis = realizada.indisponivel
+    ? null
+    : agregarKpisRealizados({
+        porMlb: realizada.porMlb,
+        semMlb: realizada.semMlb,
+        pedidosNoPeriodo: realizada.pedidosNoPeriodo,
+        projecoes,
+      });
 
   let syncAtivo = null;
   try {
@@ -537,7 +604,11 @@ async function obterRealizado(params = {}, deps = {}) {
   }
 
   const cobertura = coberturaPublica(realizada.cobertura);
+  const indisponivel = realizada.indisponivel
+    ? { realizado: null, realizado_motivo: realizada.indisponivel.motivo, realizado_mensagem: realizada.indisponivel.mensagem }
+    : {};
   return {
+    ...indisponivel,
     ok: true,
     habilitado: true,
     modo: "snapshot",
@@ -545,12 +616,12 @@ async function obterRealizado(params = {}, deps = {}) {
     conta,
     marketplace: MARKETPLACE,
     periodo: periodoPublico(realizada),
-    cobertura: { ...cobertura, competencias: realizada.cobertura.competencias },
+    cobertura: cobertura ? { ...cobertura, competencias: realizada.cobertura.competencias } : null,
     freshness: {
-      estado: cobertura.estado,
-      sincronizadoAte: cobertura.sincronizadoAte,
-      ultimaPublicacaoEm: cobertura.ultimaPublicacaoEm,
-      ultimoImportEm: cobertura.ultimoImportEm,
+      estado: cobertura ? cobertura.estado : "INDISPONIVEL",
+      sincronizadoAte: cobertura ? cobertura.sincronizadoAte : null,
+      ultimaPublicacaoEm: cobertura ? cobertura.ultimaPublicacaoEm : null,
+      ultimoImportEm: cobertura ? cobertura.ultimoImportEm : null,
       syncEmAndamento: Boolean(syncAtivo),
       syncAtivo,
     },

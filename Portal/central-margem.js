@@ -1100,7 +1100,10 @@
     PARCIAL: { label: "Parcial", tone: "is-warning", copy: "parte do período não está coberta pela sincronização publicada" },
     NAO_DECLARADA: { label: "Cobertura não declarada", tone: "is-neutral", copy: "dados de importação anterior à publicação por cobertura" },
     SEM_SINCRONIZACAO: { label: "Sem sincronização", tone: "is-neutral", copy: "nenhuma venda sincronizada neste período" },
+    INDISPONIVEL: { label: "Indisponível", tone: "is-warning", copy: "a leitura de vendas falhou neste período" },
   };
+
+  var REALIZED_KPI_LABELS = ["Receita realizada", "Unidades", "Pedidos", "Produtos com venda", "Lucro realizado", "Margem realizada", "Desvio de margem"];
 
   function realizedKpi(label, valueHtml, foot, modifier) {
     return '<div class="cm-kpi cm-kpi--static ' + (modifier || "") + '"><span class="cm-kpi__label">' + escapeHtml(label) + "</span>" +
@@ -1154,6 +1157,14 @@
       (fresh.lastPublishedAt ? '<span class="cm-realized__fact">publicado em ' + escapeHtml(formatDateTime(fresh.lastPublishedAt)) + "</span>" : "") +
       '<span class="cm-realized__fact">Projetado calculado em ' + escapeHtml(formatDateTime(state.snapshot && state.snapshot.lastCalculatedAt) || "—") + "</span>";
 
+    if (r.unavailable) {
+      var motivoTxt = r.unavailable.message || "O realizado deste período está indisponível.";
+      refs.kpisRealized.innerHTML = REALIZED_KPI_LABELS.map(function (label) {
+        return realizedKpi(label, unavailable("Indisponível", motivoTxt), null);
+      }).join("");
+      refs.realizedNotes.innerHTML = '<p class="cm-realized__error" role="alert" data-cm-realized-unavailable="' + escapeHtml(r.unavailable.reason) + '">' + escapeHtml(motivoTxt) + "</p>";
+      return;
+    }
     var k = r.kpis || {};
     var m = k.margin || {};
     var d = k.drift || {};
@@ -1524,7 +1535,7 @@
     var r = isSnapshotMode() ? state.realizado : null;
     var k = r && r.kpis ? r.kpis : null;
     var semRealizado = isSnapshotMode()
-      ? (state.realizadoLoading ? "carregando…" : "sem realizado do período")
+      ? (state.realizadoLoading ? "carregando…" : r && r.unavailable ? "realizado indisponível" : "sem realizado do período")
       : "disponível na leitura persistida por conta";
     var m = k ? k.margin || {} : {};
     var counts;
@@ -1739,7 +1750,9 @@
           "<td>" + escapeHtml(op.promocao.nome || op.promocao.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(op.promocao.tipo || "") + "</span>" + herdadaMeta(op.promocao) + "</td>" +
           '<td class="num">' + escapeHtml(formatMoney(op.precoPromocao) || "—") + "</td>" +
           '<td class="num"><strong class="' + marginClass(op.margemDepois, {}) + '">' + escapeHtml(formatPercent(op.margemDepois) || "—") + "</strong></td>" +
-          '<td class="num">' + escapeHtml(formatInt(op.unidades) || "0") + " un.</td>" +
+          '<td class="num">' + (op.unidades === null || op.unidades === undefined
+            ? unavailable("—", "Vendas indisponíveis neste período (a leitura da Central de Vendas falhou).")
+            : escapeHtml(formatInt(op.unidades) + " un.")) + "</td>" +
           '<td class="num">' + escapeHtml(op.retornoMl ? formatMoney(op.retornoMl) : "—") + "</td>" +
           '<td class="cm-opps-why">' + escapeHtml(op.motivo || "") + "</td>" +
           '<td class="vf-table__actions"><button class="vf-btn vf-btn--sm" type="button" data-opp-item="' + escapeHtml(op.itemId) + '">Precificar</button></td></tr>';
@@ -1956,6 +1969,7 @@
   /** Vendas do período na célula do produto: unidades · pedidos · receita. */
   function salesLineHtml(item) {
     var sales = item.sales || {};
+    if (item.realizedUnavailable) return '<span class="cm-prod-sales is-empty" data-cm-sales="unavailable">vendas indisponíveis</span>';
     if (!item.hasOrders) {
       return '<span class="cm-prod-sales is-empty" data-cm-sales="none">sem venda no período</span>';
     }
@@ -2057,6 +2071,7 @@
   }
 
   function realizedCellHtml(item) {
+    if (item.realizedUnavailable) return unavailable("Indisponível", "A leitura de vendas falhou neste período; o realizado deste anúncio é desconhecido (não é 'sem venda').");
     var cmp = item.comparison;
     if (cmp && (cmp.status === "NO_SALES" || cmp.status === "REALIZED_NOT_COMPUTABLE")) {
       var titulo = cmp.status === "REALIZED_NOT_COMPUTABLE"
@@ -2080,6 +2095,7 @@
 
   function opSalesCellHtml(item) {
     var sales = item.sales || {};
+    if (item.realizedUnavailable) return unavailable("Indisponível", "A leitura de vendas falhou neste período.");
     if (!item.hasOrders) return '<span class="cm-prod-sales is-empty" data-cm-sales="none">sem venda no período</span>';
     if (sales.units === null || sales.units === undefined) return '<span class="cm-muted">—</span>';
     var parcial = partialCoverage(sales.coverage);
@@ -2559,7 +2575,7 @@
     var sales = item.sales || {};
     var realized = item.realized && item.realized.margin !== null && item.realized.margin !== undefined
       ? escapeHtml(formatPercent(item.realized.margin))
-      : unavailable(item.hasOrders ? "Indisponível" : "Sem venda");
+      : unavailable(item.hasOrders || item.realizedUnavailable ? "Indisponível" : "Sem venda");
     var aplicacao = state.pricing && state.pricing.aplicacao;
     refs.drawerSummary.innerHTML =
       dsumCell("Preço atual", precoAtual === null ? unavailable("Indisponível") : escapeHtml(formatMoney(precoAtual)), precoFoot) +
@@ -3493,6 +3509,10 @@
   function comparisonPanelHtml(item) {
     var cmp = item.comparison;
     var periodo = (state.data && state.data.period && state.data.period.label) || (state.realizado && state.realizado.period && state.realizado.period.label) || "período do realizado";
+    if (!cmp && item.realizedUnavailable) {
+      return panel("Projetado × Realizado", periodo,
+        '<p class="cm-empty-note" data-cm-cmp-panel="UNAVAILABLE">O realizado deste período está indisponível (a leitura da Central de Vendas falhou). Isso não significa que o anúncio não vendeu — nenhum valor foi zerado.</p>');
+    }
     if (!cmp) {
       return panel("Projetado × Realizado", periodo, '<p class="cm-empty-note">O backend não enviou a comparação para este item.</p>');
     }

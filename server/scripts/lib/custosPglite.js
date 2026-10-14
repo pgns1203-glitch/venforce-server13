@@ -48,6 +48,7 @@ async function criarBancoCustos({ ensure = true } = {}) {
   await pg.exec(`
     CREATE TABLE users (id SERIAL PRIMARY KEY, email TEXT);
     INSERT INTO users (email) VALUES ('op@venforce');
+    CREATE TABLE activity_logs (id SERIAL PRIMARY KEY, user_id INTEGER, user_email TEXT, user_nome TEXT, acao TEXT, detalhes TEXT, ip TEXT, status TEXT, created_at TIMESTAMP DEFAULT NOW());
     CREATE TABLE bases (
       id SERIAL PRIMARY KEY, slug TEXT UNIQUE NOT NULL, nome TEXT NOT NULL,
       ativo BOOLEAN NOT NULL DEFAULT true, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

@@ -153,11 +153,12 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
   }
 
   // Memória local do que acabou de ser gravado: a próxima pendência do MESMO
-  // Item (Shopee) precisa enxergar o registro novo — sem isto ela seria
-  // tratada como "criar" e sobrescreveria o que acabou de ser gravado.
+  // registro precisa enxergá-lo — sem isto ela seria tratada como "criar".
+  // Shopee: o registro é Item + Model; as OUTRAS variações do Item continuam.
   function aplicarRegistro(r) {
     setItens((atual) => {
-      const resto = atual.filter((i) => i.produtoId !== r.produtoId);
+      const mesmoRegistro = (i) => i.produtoId === r.produtoId && (marketplace !== "shopee" || (i.idModel || null) === (r.idModel || null));
+      const resto = atual.filter((i) => !mesmoRegistro(i));
       return [...resto, { produtoId: r.produtoId, idModel: r.idModel || null, sku: null, custo: r.custo, imposto: r.imposto, nome: r.nome || null }];
     });
   }
@@ -273,7 +274,7 @@ export function PendenciasCusto({ linhas, processamento, marketplace, contexto =
   const agoraVisiveis = verTodas ? grupos.agora : grupos.agora.slice(0, MAX_VISIVEIS);
   const avisoMesmoItem = (p) =>
     mesmoItem[p.chave] && !registrados[p.chave]
-      ? `${mesmoItem[p.chave]} pendências deste mesmo Item: a base guarda um registro por Item — salvar esta substitui o custo gravado na outra.`
+      ? `${mesmoItem[p.chave]} pendências apontam para o mesmo registro da base${marketplace === "shopee" ? " (mesmo Item e Model)" : ""} — salvar esta substitui o custo gravado na outra.`
       : null;
 
   let explicacaoAgora;

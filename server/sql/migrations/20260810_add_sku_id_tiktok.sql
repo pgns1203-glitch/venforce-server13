@@ -1,4 +1,11 @@
 -- 20260810_add_sku_id_tiktok.sql
+--
+-- ATENÇÃO (FIN-508, 14/10/2026): o índice uq_custos_base_produto_sku_legado
+-- criado no passo 3 foi SUBSTITUÍDO por uq_custos_base_produto_sku_model
+-- (20261014_custos_shopee_item_model.sql), que inclui o Model ID das variações
+-- Shopee. Não reaplique este arquivo à mão numa base já migrada: ele recriaria
+-- o índice antigo e passaria a recusar Models do mesmo Item. O boot
+-- (ensureColunasCustos) já não cria o índice antigo.
 -- TikTok Shop: separa product_id de sku_id na tabela `custos`.
 --
 -- ── Modelo novo ─────────────────────────────────────────────────────────────

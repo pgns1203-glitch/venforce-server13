@@ -270,7 +270,15 @@ async function upsertCustoBase({
     });
   }
 
-  // Localização da linha: TikTok por sku_id; MELI/Shopee por produto_id (o
+  // Shopee (FIN-508): a linha é a VARIAÇÃO — Item + Model.
+  if (String(marketplace || "").trim().toLowerCase() === "shopee") {
+    return upsertVariacaoShopee({
+      baseId, produtoIdNorm, custoProduto, impostoPercentualOpt, taxaFixaOpt,
+      idModel: idModelEntrada, produtoNomeFinal, variacaoNomeFinal,
+    });
+  }
+
+  // Localização da linha: TikTok por sku_id; MELI por produto_id (o
   // caminho histórico, inalterado).
   const existente = await pool.query(
     isTikTok
@@ -343,6 +351,95 @@ async function upsertCustoBase({
   await tocarUpdatedAtBase(baseId);
 
   return { acao: "criado", custo: ins.rows[0] };
+}
+
+// Shopee (FIN-508): upsert de UMA variação. A identidade é Item + Model
+// (uq_custos_base_produto_sku_model):
+//   · com Model  → cria/atualiza exatamente Item + Model; nunca toca outro Model;
+//   · sem Model  → cria/atualiza a linha "pai" do Item (Model NULL); se o
+//                  Item só tem variações, 409 — nunca escolher uma delas;
+//   · o UPDATE nunca muda o id_model: ele é identidade, não atributo.
+async function upsertVariacaoShopee({
+  baseId, produtoIdNorm, custoProduto, impostoPercentualOpt, taxaFixaOpt,
+  idModel, produtoNomeFinal, variacaoNomeFinal,
+}) {
+  const model = String(idModel || "").trim() || null;
+  const identidade = [baseId, produtoIdNorm, model || ""];
+  const ONDE = `base_id = $1 AND produto_id = $2 AND sku_id = '' AND sku = '' AND COALESCE(id_model, '') = $3`;
+
+  const existente = await pool.query(
+    `SELECT ${COLUNAS_CUSTO_RETORNO} FROM custos WHERE ${ONDE} LIMIT 1`,
+    identidade
+  );
+
+  if (existente.rows.length) {
+    const atual = existente.rows[0];
+    const impostoFinal = impostoPercentualOpt.tem ? impostoPercentualOpt.numero : Number(atual.imposto_percentual);
+    const taxaFinal = taxaFixaOpt.tem ? taxaFixaOpt.numero : Number(atual.taxa_fixa);
+    const upd = await pool.query(
+      `UPDATE custos
+          SET custo_produto = $4,
+              imposto_percentual = $5,
+              taxa_fixa = $6,
+              produto_nome = COALESCE($7, produto_nome),
+              variacao_nome = COALESCE($8, variacao_nome),
+              updated_at = CURRENT_TIMESTAMP
+        WHERE ${ONDE}
+        RETURNING ${COLUNAS_CUSTO_RETORNO}`,
+      [...identidade, custoProduto, impostoFinal, taxaFinal, produtoNomeFinal, variacaoNomeFinal]
+    );
+    await tocarUpdatedAtBase(baseId);
+    return { acao: "atualizado", custo: upd.rows[0] };
+  }
+
+  if (!model) {
+    const variacoes = await pool.query(
+      `SELECT id_model FROM custos
+        WHERE base_id = $1 AND produto_id = $2 AND sku_id = '' AND COALESCE(id_model, '') <> ''
+        ORDER BY id_model`,
+      [baseId, produtoIdNorm]
+    );
+    if (variacoes.rows.length) {
+      throw criarHttpErro(409, {
+        ok: false,
+        code: "SHOPEE_MODEL_OBRIGATORIO",
+        erro:
+          `O Item ${produtoIdNorm} tem ${variacoes.rows.length} variação(ões) na base. ` +
+          "Informe o ID Model da variação que deve receber este custo.",
+        variacoes: variacoes.rows.map((r) => r.id_model),
+      });
+    }
+  }
+
+  const padrao = await obterPadraoCustoBase(baseId);
+  const impostoFinal = impostoPercentualOpt.tem ? impostoPercentualOpt.numero : padrao.imposto_percentual;
+  const taxaFinal = taxaFixaOpt.tem ? taxaFixaOpt.numero : padrao.taxa_fixa;
+  const ins = await pool.query(
+    `INSERT INTO custos (base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
+     VALUES ($1, $2, '', $3, $4, $5, $6, $7, $8, '', CURRENT_TIMESTAMP)
+     RETURNING ${COLUNAS_CUSTO_RETORNO}`,
+    [baseId, produtoIdNorm, custoProduto, impostoFinal, taxaFinal, model, produtoNomeFinal, variacaoNomeFinal]
+  );
+  await tocarUpdatedAtBase(baseId);
+  return { acao: "criado", custo: ins.rows[0] };
+}
+
+// Chave do dicionário `dados` das respostas de GET /bases/:slug e
+// /api/bases/:slug — tem que ser ÚNICA por linha, senão a variação some na
+// serialização mesmo estando no banco:
+//   · TikTok             → sku_id (a variação);
+//   · Shopee com Model   → "Item::model:Model" (FIN-508; várias por Item);
+//   · SKU textual legado → "produto_id::sku";
+//   · MELI / Shopee pai  → produto_id (a chave de sempre).
+// Os consumidores leem v.produto_id/v.id_model — a chave só precisa não colidir.
+function chaveDadosCusto(row, marketplace) {
+  if (row.sku_id) return row.sku_id;
+  if (row.sku) return `${row.produto_id}::${row.sku}`;
+  const model = String(row.id_model || "").trim();
+  if (model && String(marketplace || "").trim().toLowerCase() === "shopee") {
+    return `${row.produto_id}::model:${model}`;
+  }
+  return row.produto_id;
 }
 
 // Colunas novas de `custos` + índices de unicidade. Idempotente: roda no boot e
@@ -795,6 +892,7 @@ module.exports = {
   normalizarSkuTikTok,
   erroSkuIdDuplicadoTikTok,
   ensureColunasCustos,
+  chaveDadosCusto,
   obterBaseAtivaPorSlug,
   obterPadraoCustoBase,
   upsertCustoBase,

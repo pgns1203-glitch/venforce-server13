@@ -1905,7 +1905,8 @@ function abrirFormularioItem(item = null) {
   const idModelField = isShopee ? `
     <div class="vf-field vf-field--full">
       <label class="vf-field__label" for="cost-form-id-model">ID Model</label>
-      <input type="text" class="vf-input" id="cost-form-id-model" value="${idModelVal}" placeholder="Opcional — usado principalmente para Shopee" autocomplete="off">
+      <input type="text" class="vf-input" id="cost-form-id-model" value="${idModelVal}" placeholder="ID da variação. Vazio = custo do item (sem variação)" autocomplete="off"${editando ? " readonly" : ""}>
+      ${editando ? `<span class="vf-field__hint">Item + Model identificam a variação: para outra variação, use Adicionar item.</span>` : ""}
     </div>` : "";
 
   // TikTok: ID DO SKU obrigatório (é a chave do custo). Sem SKU textual, sem
@@ -2137,9 +2138,13 @@ function abrirPainelPlanilha() {
 //   TikTok        → sku_id  (ID DO SKU da variação)
 //   MELI/Shopee   → produto_id
 // Assim o rótulo "Atualizar/Adicionar" reflete o que vai acontecer de fato.
+// Identidade de uma linha da base: TikTok = ID DO SKU; Shopee (FIN-508) =
+// Item + Model (várias variações por Item); MELI = ID.
 function chaveIdentidadePlanilha(linha, isTiktok) {
   const bruto = isTiktok ? linha?.sku_id : linha?.id;
-  return bruto == null || String(bruto).trim() === "" ? "" : String(bruto);
+  if (bruto == null || String(bruto).trim() === "") return "";
+  if (!isTiktok && drawerEhShopee()) return `${String(bruto).trim()}|${String(linha?.id_model ?? "").trim()}`;
+  return String(bruto);
 }
 
 function dedupEClassificarPlanilha(rows) {
@@ -2959,6 +2964,7 @@ async function asstBaixarBase(slug, nome, btn) {
     // TikTok baixa no contrato canônico ID | ID DO SKU | CUSTO | IMPOSTO, para
     // que o arquivo baixado possa ser reimportado sem edição.
     const isTiktokDownload = normalizarMarketplaceKey(data.marketplace) === "tiktok";
+    const isShopeeDownload = normalizarMarketplaceKey(data.marketplace) === "shopee";
     const csvTexto = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const linhas = entradas.map(([chave, v]) => {
       const custo   = v.custo_produto   != null ? Number(v.custo_produto).toFixed(2)  : "";
@@ -2966,9 +2972,16 @@ async function asstBaixarBase(slug, nome, btn) {
       if (isTiktokDownload) {
         return `${csvTexto(v.produto_id ?? "")},${csvTexto(v.sku_id ?? chave)},${custo},${imposto}`;
       }
+      // Shopee (FIN-508): com o Model, o arquivo baixado reimporta as variações.
+      if (isShopeeDownload) {
+        return `${csvTexto(v.produto_id ?? chave)},${csvTexto(v.id_model ?? "")},${custo},${imposto}`;
+      }
       return `${csvTexto(v.produto_id ?? chave)},${custo},${imposto}`;
     });
-    const csv = (isTiktokDownload ? "ID,ID DO SKU,CUSTO,IMPOSTO\n" : "ID,Custo,Imposto\n") + linhas.join("\n");
+    const cabecalhoCsv = isTiktokDownload
+      ? "ID,ID DO SKU,CUSTO,IMPOSTO\n"
+      : isShopeeDownload ? "ID,ID Model,Custo,Imposto\n" : "ID,Custo,Imposto\n";
+    const csv = cabecalhoCsv + linhas.join("\n");
 
     const nomeArquivo = "base-" + String(slug || nome).replace(/[^a-z0-9_\-]/gi, "_") + ".csv";
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });

@@ -141,6 +141,82 @@ async function main() {
     ok("MELI · MLB repetido continua uma linha; contador = banco (1, não 2)", rows.length === 1 && r.total === 1 && r.linhasRecebidas === 2);
   }
 
+  console.log("\n▸ Upsert por variação (POST /bases/:slug/custos/upsert)");
+  const { upsertCustoBaseController } = require("../controllers/basesController");
+  const linhasRf = parsePlanilha(planilha([H, ["7001", "9101", 10, 0.08], ["7001", "9102", 20, 0.08]]), "base.xlsx", "shopee");
+  await baseImportService.criarBaseComCustos({ slug: "upsert-shopee", nomeBase: "upsert shopee", marketplace: "shopee", linhasPersistiveis: linhasRf });
+  async function upsert(body, slug = "upsert-shopee") {
+    const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+    await upsertCustoBaseController({ params: { baseSlug: slug }, body, user: { id: 1, role: "admin" }, headers: {}, socket: {} }, res);
+    return res;
+  }
+  const variacoes = async (item) => (await pool.query(
+    `SELECT id_model, custo_produto::float AS custo, imposto_percentual::float AS imposto FROM custos c JOIN bases b ON b.id = c.base_id
+      WHERE b.slug = 'upsert-shopee' AND produto_id = $1 ORDER BY id_model NULLS FIRST`, [item])).rows;
+  {
+    const r = await upsert({ produto_id: "7001", id_model: "9101", custo_produto: 15 });
+    const v = await variacoes("7001");
+    ok("atualizar o Model A não altera o Model B", r.statusCode === 200 && r.body.acao === "atualizado" &&
+      JSON.stringify(v) === JSON.stringify([{ id_model: "9101", custo: 15, imposto: 0.08 }, { id_model: "9102", custo: 20, imposto: 0.08 }]));
+  }
+  {
+    const r = await upsert({ produto_id: "7001", id_model: "9103", custo_produto: 35, imposto_percentual: 0.12 });
+    const v = await variacoes("7001");
+    ok("criar o Model C não apaga A/B (custo e imposto próprios)", r.body.acao === "criado" && v.length === 3 &&
+      v.find((x) => x.id_model === "9103").custo === 35 && v.find((x) => x.id_model === "9103").imposto === 0.12);
+  }
+  {
+    const r = await upsert({ produto_id: "7001", custo_produto: 99 });
+    const v = await variacoes("7001");
+    ok("omitir o Model num Item só com variações → 409 SHOPEE_MODEL_OBRIGATORIO, nada muda",
+      r.statusCode === 409 && r.body.code === "SHOPEE_MODEL_OBRIGATORIO" && r.body.variacoes.length === 3 && v.every((x) => x.custo !== 99) && v.length === 3);
+  }
+  {
+    const r = await upsert({ produto_id: "7002", custo_produto: 8 });
+    const r2 = await upsert({ produto_id: "7002", custo_produto: 9 });
+    const v = await variacoes("7002");
+    ok("Item novo sem Model → cria a linha pai; o 2º upsert atualiza a mesma", r.body.acao === "criado" && r2.body.acao === "atualizado" && v.length === 1 && v[0].id_model === null && v[0].custo === 9);
+  }
+  {
+    await upsert({ produto_id: "7002", id_model: "9201", custo_produto: 30 });
+    const r = await upsert({ produto_id: "7002", custo_produto: 10 });
+    const v = await variacoes("7002");
+    ok("Item com pai + variação: sem Model atualiza SÓ o pai", r.body.acao === "atualizado" &&
+      JSON.stringify(v.map((x) => [x.id_model, x.custo])) === JSON.stringify([[null, 10], ["9201", 30]]));
+  }
+  {
+    const r = await upsert({ produto_id: "7001", id_model: "9102", custo_produto: 21 });
+    ok("imposto omitido preserva o imposto da variação", r.body.custo.imposto_percentual === 0.08 && r.body.custo.id_model === "9102");
+  }
+  {
+    const r = await upsert({ produto_id: "7001", id_model: "9102.0", custo_produto: 0 });
+    const v = await variacoes("7001");
+    ok("id_model normalizado como no importador (\"9102.0\" = 9102); custo 0 explícito é gravado como 0",
+      r.body.acao === "atualizado" && v.length === 3 && v.find((x) => x.id_model === "9102").custo === 0);
+  }
+  {
+    const r = await upsert({ produto_id: "7001", id_model: "9101" });
+    ok("custo ausente continua 400 (semântica de sempre)", r.statusCode === 400);
+  }
+  {
+    const r = await upsert({ produto_id: "MLB123", custo_produto: 12 }, "imp-9");
+    const r2 = await upsert({ produto_id: "MLB999", custo_produto: 7 }, "imp-9");
+    ok("MELI: upsert por produto_id inalterado (atualiza / cria)", r.body.acao === "atualizado" && r2.body.acao === "criado" && r.body.custo.id_model === null);
+  }
+
+  console.log("\n▸ Leitura da base (GET /bases/:slug → dados)");
+  const { chaveDadosCusto } = require("../services/bases/baseCustosService");
+  {
+    const rows = (await pool.query(`SELECT c.* FROM custos c JOIN bases b ON b.id = c.base_id WHERE b.slug = 'upsert-shopee'`)).rows;
+    const chaves = rows.map((r) => chaveDadosCusto(r, "shopee"));
+    ok("Shopee: uma chave por variação — nenhuma linha some na serialização", new Set(chaves).size === rows.length);
+    ok("variação = Item::model:Model; pai = Item", chaves.includes("7001::model:9101") && chaves.includes("7002"));
+    const meli = (await pool.query(`SELECT c.* FROM custos c WHERE base_id = 1`)).rows;
+    ok("MELI: chave = MLB, como sempre", meli.every((r) => chaveDadosCusto(r, "meli") === r.produto_id));
+    const tiktok = (await pool.query(`SELECT c.* FROM custos c WHERE base_id = 3`)).rows;
+    ok("TikTok: chave = sku_id, como sempre", tiktok.every((r) => chaveDadosCusto(r, "tiktok") === r.sku_id));
+  }
+
   console.log(`\ncustosShopeeItemModelSqlCheck: ${checks}/${checks} verificações SQL OK (PGlite)`);
   await fechar();
 }

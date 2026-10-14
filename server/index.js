@@ -138,6 +138,7 @@ const {
   normalizarSkuIdTikTok,
   erroSkuIdDuplicadoTikTok,
   ensureColunasCustos,
+  chaveDadosCusto,
 } = require("./services/bases/baseCustosService");
 const baseImportService = require("./services/bases/baseImportService");
 const baseDependenciesService = require("./services/bases/baseDependenciesService");
@@ -993,15 +994,19 @@ app.get("/api/bases/:baseSlug", apiKeyMiddleware, async (req, res) => {
     }
     const base = baseResult.rows[0];
     const custos = await pool.query(
-      "SELECT produto_id, custo_produto, imposto_percentual, taxa_fixa FROM custos WHERE base_id = $1",
+      "SELECT produto_id, sku_id, sku, custo_produto, imposto_percentual, taxa_fixa, id_model FROM custos WHERE base_id = $1",
       [base.id]
     );
     const dados = {};
     for (const row of custos.rows) {
-      dados[row.produto_id] = {
+      // MELI: chave = MLB, como sempre. Shopee com Model (FIN-508): uma chave
+      // por variação — senão as variações do mesmo Item se sobrescreviam aqui.
+      const variacaoShopee = String(base.marketplace || "").toLowerCase() === "shopee" && row.id_model;
+      dados[chaveDadosCusto(row, base.marketplace)] = {
         custo_produto: parseFloat(row.custo_produto),
         imposto_percentual: parseFloat(row.imposto_percentual),
-        taxa_fixa: parseFloat(row.taxa_fixa)
+        taxa_fixa: parseFloat(row.taxa_fixa),
+        ...(variacaoShopee ? { produto_id: row.produto_id, id_model: row.id_model } : {})
       };
     }
     const duracao = Date.now() - inicio;
@@ -1075,11 +1080,8 @@ app.get("/bases/:baseId", authMiddleware, requireAutomacoesAccess, requireBaseNa
       // linha. MELI/Shopee nunca preenchem sku_id, e a chave continua sendo só
       // o produto_id (comportamento inalterado). O `sku` textual ainda entra na
       // chave das linhas TikTok legadas, que não têm sku_id.
-      const chave = row.sku_id
-        ? row.sku_id
-        : row.sku
-          ? `${row.produto_id}::${row.sku}`
-          : row.produto_id;
+      // FIN-508: Shopee com Model ganha uma chave por variação (Item::model:X).
+      const chave = chaveDadosCusto(row, base.marketplace);
       dados[chave] = {
         produto_id: row.produto_id,
         sku_id: row.sku_id || null,

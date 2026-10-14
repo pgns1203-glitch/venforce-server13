@@ -746,12 +746,11 @@ async function run() {
 
       const lower = async () => (await drawerText()).toLowerCase();
       let body = await lower();
-      assert.ok(body.includes("ajuste manual") && body.includes("novo preço"), body);
-      assert.ok(body.includes("promoções do mercado livre"), body);
+      assert.ok(body.includes("bancada"), body);
       assert.ok(body.includes("simulação avançada"), body);
       // Sem API de precificação/conta no mock: degrada com explicação, nunca quebra.
       assert.ok(body.includes("precificação indisponível nesta leitura"), body);
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-pp-review').disabled"), true);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review')"), null, "sem API de precificação não existe botão de revisão");
 
       await cdp.evaluate("document.querySelector('[data-tab=evidence]').click()");
       body = await lower();

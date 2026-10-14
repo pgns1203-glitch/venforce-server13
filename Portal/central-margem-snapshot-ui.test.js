@@ -456,7 +456,12 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo.length"), 1);
       assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo[0].clienteContaId"), null);
 
-      await cdp.evaluate("window.VF.context.setConta(10)");
+      // As contas do Shell chegam depois do carregamento: repete até a conta entrar (setConta antes disso é ignorado).
+      for (let i = 0; i < 60; i += 1) {
+        await cdp.evaluate("window.VF.context.setConta(10)");
+        if (await cdp.evaluate("window.VFCentralMargemUi.getState().contaId === 10")) break;
+        await sleep(100);
+      }
       await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 10", "contexto não entregou a conta durante a request");
       assert.strictEqual(await cdp.evaluate("window.__cmCalls.resumo.length"), 1, "a resposta sem conta ainda estava pendente");
 

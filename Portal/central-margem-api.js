@@ -723,6 +723,7 @@
       // Preço que atinge a meta, ESTIMADO pelo Motor com a taxa de comissão e o frete do snapshot
       // (a Bancada confirma com cotação real). null quando o Motor não consegue calcular.
       targetPrice: marginBlock.target && marginBlock.target.computable !== false ? numberOrNull(marginBlock.target.price) : null,
+      breakEvenPrice: marginBlock.target ? numberOrNull(marginBlock.target.breakEvenPrice) : null,
       invalidFields: invalidFields,
       // Problema de dado detectado pelo Motor (ex.: "custo_suspeito"). Não é
       // recalculado aqui: a tela só exibe o código e o motivo que o backend mandou.
@@ -2059,6 +2060,28 @@
       });
     }
 
+    /*
+     * Bancada do drawer: POST /api/margem/simular — cenários (preco | promo |
+     * todas_promos | preco_alvo) de UM anúncio, calculados pelo núcleo do Motor
+     * com a cotação real do Mercado Livre em cada preço. Somente leitura.
+     * Falha de cotação volta como cenário `bloqueado` com motivo (nunca estimado).
+     */
+    function simular(params, signal) {
+      params = params || {};
+      return call("/api/margem/simular", {
+        method: "POST",
+        body: { cliente_conta_id: params.clienteContaId, mlb: params.mlb, cenarios: arrayOf(params.cenarios) },
+        signal: signal,
+      }).then(function (result) {
+        if (!result.ok) {
+          var erro = apiError(result, "Não foi possível simular agora.");
+          erro.data = result.data || null;
+          return erro;
+        }
+        return Object.assign({ ok: true }, result.data);
+      });
+    }
+
     /* Simulação ao vivo (digitação): não persiste nada, não escreve nada. */
     function simulatePricing(params, signal) {
       params = params || {};
@@ -2138,6 +2161,7 @@
       requestSnapshotRefresh: requestSnapshotRefresh,
       getSnapshotRefreshStatus: getSnapshotRefreshStatus,
       calcularComposicoes: calcularComposicoes,
+      simular: simular,
       simulatePricing: simulatePricing,
       previewPricing: previewPricing,
       applyPricing: applyPricing,

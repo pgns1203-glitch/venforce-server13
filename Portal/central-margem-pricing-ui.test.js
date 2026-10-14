@@ -151,9 +151,10 @@ const MOCK_CLIENT = `
     function precoVivo(itemId) { return window.__pc.livePrice[itemId] != null ? window.__pc.livePrice[itemId] : PRECO_TABELA[itemId]; }
     window.__pc = {
       livePrice: {},
-      calls: { itens: 0, promos: [], sim: [], preview: [], apply: [], app: [], hist: [], opps: [] },
-      holdPromos: {}, resolvePromos: {},
-      holdSim: false, resolveSim: [],
+      calls: { itens: 0, simular: [], preview: [], apply: [], app: [], hist: [], opps: [] },
+      holdBancada: {}, resolveBancada: {},     // bootstrap (todas_promos) por anúncio
+      holdSim: false, resolveSim: [],          // preço manual (cenário preco)
+      simularFalha: false, alvoModo: "ok",     // ok | sem-preco-viavel
       previewBloqueado: false, escritaHabilitada: false,
       applyMode: "ok",           // ok | network-then-ok | desatualizado-then-ok | divergente | desconhecido
       holdPreview: false, resolvePreview: [], previewSignals: [],
@@ -178,6 +179,75 @@ const MOCK_CLIENT = `
           inicio: null, fim: null, precoOriginal: 149.9, precoFinal: 144.9, descontoReais: 5, descontoPercentual: 3.34, mlBanca: null, sellerBanca: 5,
           meliPercentage: null, sellerPercentage: 3.34, margem: 0.23, lucro: 33, escrita: { suportada: false, acao: null, motivo: "Não é a promoção aplicada." } },
       ];
+    }
+
+    // --- Respostas do /simular (fixtures; nenhuma regra de negócio do front) ---
+    function r2(v) { return Math.round(v * 100) / 100; }
+    function lin(p, o) {
+      o = o || {};
+      var imp = r2(p * 0.1), com = r2(p * 0.12), fr = o.frete == null ? 15 : o.frete, reb = o.rebate || 0, custo = 50;
+      var lc = r2(p - imp - com - fr - custo + reb);
+      return { preco: p, imposto: imp, comissao: com, frete: fr, taxa_fixa: 0, custo: custo, rebate: reb, lc: lc, margem_ratio: Math.round((lc / p) * 10000) / 10000 };
+    }
+    var LINHA_VAZIA = { preco: null, imposto: null, comissao: null, frete: null, taxa_fixa: null, custo: null, rebate: null, lc: null, margem_ratio: null };
+    function evidenciaCot(promo) {
+      var e = { comissao: { fonte: "ml_listing_prices", consultado_em: "2026-10-14T15:00:00Z" }, frete: { fonte: "ml_shipping_options_free", consultado_em: "2026-10-14T15:00:00Z" } };
+      e.preco = promo ? { fonte: "promo_snapshot", observado_em: "2026-10-14T08:00:00Z" } : { fonte: "informado", consultado_em: null };
+      return e;
+    }
+    function resCenario(tipo, entrada, atual, cen, over) {
+      var ok = cen && cen.lc !== null;
+      var r = Object.assign({
+        tipo: tipo, entrada: entrada, veredito: "entrar", motivo: null, motivos: [],
+        flags: { ativa: false, sem_desconto_efetivo: false, mudou_faixa_frete: ok ? cen.frete !== atual.frete : null, rebate_ambiguo: false },
+        atual: atual, cenario: cen || LINHA_VAZIA, desconto: null, ml_banca: null, seller_banca: null,
+        delta_lc: ok ? r2(cen.lc - atual.lc) : null,
+        delta_margem_ratio: ok ? Math.round((cen.margem_ratio - atual.margem_ratio) * 10000) / 10000 : null,
+        empate_volume: ok && cen.lc > 0 ? Math.round((atual.lc / cen.lc - 1) * 10000) / 10000 : null,
+        meta: { margem_alvo: 0.1, margem_minima: 0 }, evidencia: evidenciaCot(tipo === "promo"),
+      }, over || {});
+      return r;
+    }
+    function bloqueadoCen(tipo, entrada, atual, motivo, over) {
+      return resCenario(tipo, entrada, atual, null, Object.assign({ veredito: "bloqueado", motivo: motivo, motivos: [motivo], evidencia: null }, over || {}));
+    }
+    function promoPublica(pr) {
+      return { id: pr.id, chave: pr.id + "::" + pr.tipo, tipo: pr.tipo, nome: pr.nome, status: pr.status, status_exibicao: pr.statusExibicao, inicio: pr.inicio, fim: pr.fim, preco_original: pr.precoOriginal, preco_final: pr.precoFinal };
+    }
+    function cenarioDaPromo(pr, atual) {
+      var entrada = { tipo: "promo", promotion_id: pr.id };
+      var pub = promoPublica(pr);
+      var r;
+      if (pr.id === "P-ATIVA") r = bloqueadoCen("promo", entrada, atual, "promocao_ativa", { flags: { ativa: true, sem_desconto_efetivo: false, mudou_faixa_frete: null, rebate_ambiguo: false } });
+      else if (pr.id === "P-NAO") r = bloqueadoCen("promo", entrada, atual, "promocao_sem_preco");
+      else if (pr.id === "P-DEAL") r = resCenario("promo", entrada, atual, lin(99.9, { rebate: 5.2 }), { veredito: "entrar_se_girar", motivo: "lc_por_unidade_cai", desconto: 10.58, ml_banca: 5.2, seller_banca: 5.38 });
+      else if (pr.id === "P-SMART") r = resCenario("promo", entrada, atual, lin(108.9, { rebate: 3 }), { veredito: "entrar", desconto: 1.58, ml_banca: 3, seller_banca: 0 });
+      else r = resCenario("promo", entrada, atual, lin(95, { frete: 24.9 }), { veredito: "nao_entrar", motivo: "lc_nao_positivo", desconto: 15.48, ml_banca: 0, seller_banca: 15.48 });
+      r.promocao = pub;
+      return r;
+    }
+    function simularResposta(mlb, cenarios) {
+      var atualLin = lin(PRECO_TABELA[mlb]);
+      var saida = [];
+      cenarios.forEach(function (c) {
+        if (c.tipo === "todas_promos") promosDe(mlb).forEach(function (pr) { saida.push(cenarioDaPromo(pr, atualLin)); });
+        else if (c.tipo === "preco") {
+          if (c.preco < 70) saida.push(bloqueadoCen("preco", { tipo: "preco", preco: c.preco }, atualLin, "comissao_indisponivel"));
+          else saida.push(resCenario("preco", { tipo: "preco", preco: c.preco }, atualLin, lin(c.preco), { veredito: c.preco >= atualLin.preco ? "entrar" : "entrar_se_girar" }));
+        } else if (c.tipo === "preco_alvo") {
+          saida.push(window.__pc.alvoModo === "sem-preco-viavel"
+            ? { tipo: "preco_alvo", entrada: c, veredito: "bloqueado", motivo: "sem_preco_viavel", preco_alvo: { encontrado: false, preco: null, motivo: "sem_preco_viavel", causa: "meta_inviavel", margem_alvo: 0.1 } }
+            : { tipo: "preco_alvo", entrada: c, veredito: "entrar", preco_alvo: { encontrado: true, preco: 81.5, motivo: null, margem_alvo: 0.1, iteracoes: 2 }, evidencia: { preco: { fonte: "busca_preco_alvo" } } });
+        }
+      });
+      return {
+        ok: true, mlb: mlb, item: { mlb: mlb },
+        atual: Object.assign({ bloqueios: [], rebate_motivo: null }, atualLin),
+        meta: { margem_alvo: 0.1, margem_minima: 0 },
+        promocoes: cenarios.some(function (c) { return c.tipo === "todas_promos"; }) ? { disponivel: true, motivo: null, snapshot_em: "2026-10-14T08:00:00Z", parcial: false } : null,
+        cotacoes: { consultas: 3, precos_distintos: 3, limite_excedido: 0, maximo_por_requisicao: 40 },
+        cenarios: saida,
+      };
     }
 
     function gatesBase(bloqueado) {
@@ -246,19 +316,22 @@ const MOCK_CLIENT = `
       requestSnapshotRefresh: function () { return Promise.resolve({ ok: true, runId: 1, reused: false, run: { runId: 1, status: "queued" } }); },
       getSnapshotRefreshStatus: function () { return Promise.resolve({ ok: true, run: { runId: 1, status: "completed" } }); },
 
-      getItemPromotions: function (params) {
-        window.__pc.calls.promos.push(params.itemId);
-        var resposta = { ok: true, itemId: params.itemId, contaCorreta: true, atual: { preco: precoVivo(params.itemId), margem: 0.248, lucro: 37.18 }, promocoes: promosDe(params.itemId), escritaHabilitada: window.__pc.escritaHabilitada };
-        if (window.__pc.holdPromos[params.itemId]) {
-          return new Promise(function (resolve) { window.__pc.resolvePromos[params.itemId] = function () { delete window.__pc.holdPromos[params.itemId]; resolve(resposta); }; });
+      // POST /api/margem/simular: números prontos (o Motor é do servidor); a tela só mostra.
+      simular: function (params, signal) {
+        var copia = JSON.parse(JSON.stringify(params));
+        window.__pc.calls.simular.push(copia);
+        var mlb = params.mlb;
+        var cen0 = (params.cenarios || [])[0] || {};
+        if (window.__pc.simularFalha) return Promise.resolve({ ok: false, status: 502, error: "Mercado Livre fora do ar." });
+        var resposta = simularResposta(mlb, params.cenarios || []);
+        if (cen0.tipo === "todas_promos" && window.__pc.holdBancada[mlb]) {
+          return new Promise(function (resolve) { window.__pc.resolveBancada[mlb] = function () { delete window.__pc.holdBancada[mlb]; resolve(resposta); }; });
         }
-        return Promise.resolve(resposta);
-      },
-      simulatePricing: function (params, signal) {
-        window.__pc.calls.sim.push(JSON.parse(JSON.stringify(params)));
-        var resposta = avaliacao(params, { simulado: true });
-        if (window.__pc.holdSim) {
-          return new Promise(function (resolve) { window.__pc.resolveSim.push(function () { resolve(resposta); }); });
+        if (cen0.tipo === "preco" && window.__pc.holdSim) {
+          return new Promise(function (resolve) {
+            // O abort chega tarde (a resposta já estava a caminho): a tela precisa ignorá-la sozinha.
+            window.__pc.resolveSim.push(function () { resolve(resposta); });
+          });
         }
         return Promise.resolve(resposta);
       },
@@ -467,7 +540,9 @@ async function run() {
     const st = (expr) => cdp.evaluate(`(function(){var s=window.VFCentralMargemUi.getState();return ${expr};})()`);
     const drawerText = () => cdp.evaluate("document.getElementById('cm-drawer-body').textContent");
     const calls = (k) => cdp.evaluate(`window.__pc.calls.${k}.length`);
-    const typePrice = (v) => cdp.evaluate(`(function(){var i=document.getElementById('cm-new-price');i.value='${v}';i.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    const typePrice = (v) => cdp.evaluate(`(function(){var i=document.getElementById('cm-new-price');if(!i){document.querySelector('[data-cenario="preco"]').click();i=document.getElementById('cm-new-price');}i.value='${v}';i.dispatchEvent(new Event('input',{bubbles:true}));})()`);
+    const resultado = async () => (await cdp.evaluate("document.getElementById('cm-banc-resultado').textContent")).replace(/\u00a0/g, " ");
+    const selecionar = (id) => cdp.evaluate(`document.querySelector('[data-cenario="${id}"]').click()`);
 
     await waitFor(cdp, "window.VFCentralMargemUi && window.VF && window.VF.context && window.VFCentralMargemUi.getState().awaitingAccount", "Shell não pediu a conta");
     // As contas do Shell chegam depois do 1º resumo: repete até a conta entrar.
@@ -500,8 +575,7 @@ async function run() {
       assert.strictEqual(chips.MLB1002, "Ok");
       assert.ok(/^Subir p\/ R\$\s79,90$/.test(chips.MLB1003), chips.MLB1003);
       assert.ok((await cdp.evaluate("document.getElementById('cm-summary-line').innerText")).includes("3 anúncios · 3 ativos · 0 pausados"));
-      assert.strictEqual(await calls("promos"), 0, "a tabela nunca consulta promoções por linha");
-      assert.strictEqual(await calls("sim"), 0);
+      assert.strictEqual(await calls("simular"), 0, "a tabela nunca simula nem consulta promoções por linha");
       // Filtrar, buscar e trocar de visão também não chamam o ML por linha.
       const itensAntes = await cdp.evaluate("window.__pc.calls.itens");
       await cdp.evaluate("(function(){var s=document.getElementById('cm-financial-filter');s.value='LOSS';s.dispatchEvent(new Event('change'));})()");
@@ -509,26 +583,33 @@ async function run() {
       await cdp.evaluate("(function(){var s=document.getElementById('cm-financial-filter');s.value='';s.dispatchEvent(new Event('change'));})()");
       await waitFor(cdp, "!window.VFCentralMargemUi.getState().loading && document.querySelectorAll('#cm-table-host tbody tr[data-item-id]').length === 3");
       await cdp.evaluate("document.querySelector('[data-view=composition]').click(); document.querySelector('[data-view=operational]').click();");
-      assert.strictEqual(await calls("promos"), 0, "filtrar/paginar/trocar visão: 0 chamadas de promoção");
-      assert.strictEqual(await calls("sim"), 0);
+      assert.strictEqual(await calls("simular"), 0, "filtrar/paginar/trocar visão: 0 chamadas ao /simular");
       await shot("10-pricing-page");
     });
 
-    await check("chip de próxima ação: 'Subir p/ R$ X' abre o drawer com o preço já simulado; 'Promo …' abre a promoção já simulada; sem botão 'Precificar' por linha", async () => {
+    await check("chip de próxima ação: 'Subir p/ R$ X' abre a Bancada com o preço já simulado; 'Promo …' abre a promoção já selecionada; sem botão 'Precificar' por linha", async () => {
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-table-host [data-open-item]').length"), 0);
-      // Subir p/ R$ 79,90 (preço-alvo estimado pelo Motor) → ajuste manual preenchido e simulado pelo backend
-      await cdp.evaluate("window.__pc.calls.sim.length = 0");
+      // Subir p/ R$ 79,90 (preço-alvo estimado pelo Motor) → preço manual preenchido e simulado pelo backend
+      await cdp.evaluate("window.__pc.calls.simular.length = 0");
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"] .cm-next-chip').click()");
       assert.strictEqual(await st("s.selectedItemId"), "MLB1003");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-new-price').value"), "79,90");
-      await waitFor(cdp, "window.__pc.calls.sim.some(function (c) { return c.tipo === 'PRICE' && c.novoPreco === 79.9 && c.itemId === 'MLB1003'; })", "o preço sugerido não foi simulado pelo backend");
+      await waitFor(cdp, "window.__pc.calls.simular.some(function (c) { return c.mlb === 'MLB1003' && c.cenarios[0].tipo === 'preco' && c.cenarios[0].preco === 79.9; })", "o preço sugerido não foi simulado pelo backend");
+      // Anúncio abaixo da meta: a Bancada pede também o preço-alvo COTADO (todas_promos + preco_alvo, uma chamada)
+      const boot = await cdp.evaluate("window.__pc.calls.simular.filter(function (c) { return c.cenarios.some(function (x) { return x.tipo === 'todas_promos'; }); })");
+      assert.strictEqual(boot.length, 1);
+      assert.deepStrictEqual(boot[0].cenarios.map((x) => x.tipo), ["todas_promos", "preco_alvo"]);
+      assert.strictEqual(boot[0].clienteContaId, 10);
+      await waitFor(cdp, "document.querySelector('[data-cm-chip=\"alvo\"]')", "chip do preço-alvo cotado ausente");
+      assert.ok(/Subir p\/ R\$\s81,50/.test(await cdp.evaluate("document.querySelector('[data-cm-chip=\"alvo\"]').textContent")), "o chip da Bancada mostra o preço COTADO, não o estimado");
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
-      // Promo Oferta MLB1001 +R$ 1,90 → promoção P-DEAL simulada ao abrir
-      await cdp.evaluate("window.__pc.calls.sim.length = 0");
+      // Promo Oferta MLB1001 +R$ 1,90 → promoção P-DEAL já selecionada ao abrir
+      await cdp.evaluate("window.__pc.calls.simular.length = 0");
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"] .cm-next-chip').click()");
       assert.strictEqual(await st("s.selectedItemId"), "MLB1001");
-      await waitFor(cdp, "window.__pc.calls.sim.some(function (c) { return c.tipo === 'PROMOTION' && c.promotionId === 'P-DEAL' && c.itemId === 'MLB1001'; })", "a promoção do chip não foi simulada");
+      await waitFor(cdp, "document.querySelector('[data-cenario=\"P-DEAL\"].is-active') && document.querySelector('[data-cm-promo-info=\"P-DEAL\"]')", "a promoção do chip não foi selecionada");
       assert.strictEqual(await st("s.pendingPromoId"), null);
+      assert.deepStrictEqual(await cdp.evaluate("window.__pc.calls.simular.map(function (c) { return c.cenarios.map(function (x) { return x.tipo; }); })"), [["todas_promos"]], "anúncio saudável: sem preço-alvo");
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
       // clicar no chip não abre duas vezes (nem dispara o clique da linha)
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer').classList.contains('is-open')"), false);
@@ -560,7 +641,7 @@ async function run() {
       await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB9999\"] [data-opp-item]').click()");
       assert.strictEqual(await st("s.selectedItemId"), "MLB9999");
       assert.strictEqual(await st("s.drawerTab"), "pricing");
-      await waitFor(cdp, "window.__pc.calls.promos.indexOf('MLB9999') !== -1", "promoções do item de Oportunidades não carregaram");
+      await waitFor(cdp, "window.__pc.calls.simular.some(function (c) { return c.mlb === 'MLB9999'; })", "a Bancada do item de Oportunidades não carregou");
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
@@ -588,10 +669,10 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.querySelector('[data-promo-more=\"MLB1002\"]').getAttribute('aria-expanded')"), "true");
       assert.strictEqual(await cdp.evaluate("document.querySelectorAll('tr[data-promo-options=\"MLB1002\"] tr[data-promo-option]').length"), 2);
       // "Simular" de uma OPÇÃO abre o drawer já com aquela promoção simulada
-      await cdp.evaluate("window.__pc.calls.sim.length = 0");
+      await cdp.evaluate("window.__pc.calls.simular.length = 0");
       await cdp.evaluate("document.querySelector('tr[data-promo-option=\"P-Y3\"] [data-opp-item]').click()");
       assert.strictEqual(await st("s.selectedItemId"), "MLB1002");
-      assert.strictEqual(await st("s.pendingPromoId"), null, "a promoção escolhida é consumida quando as promoções do anúncio chegam");
+      assert.strictEqual(await st("s.pendingPromoId"), null, "a promoção escolhida é consumida quando a Bancada do anúncio chega");
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
@@ -620,56 +701,82 @@ async function run() {
       await waitFor(cdp, "document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'");
     });
 
-    await check("drawer abre IMEDIATAMENTE em Precificar enquanto as promoções carregam em paralelo", async () => {
+    await check("drawer abre IMEDIATAMENTE em Precificar enquanto a Bancada carrega (um só pedido ao /simular, com a conta)", async () => {
       await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
-      await cdp.evaluate("window.__pc.holdPromos['MLB1001'] = true");
+      await cdp.evaluate("window.__pc.calls.simular.length = 0; window.__pc.holdBancada['MLB1001'] = true");
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer').classList.contains('is-open')"), true);
       assert.strictEqual(await st("s.drawerTab"), "pricing");
-      await waitFor(cdp, "document.querySelector('[data-cm-promos=\"loading\"]')", "estado de carregamento das promoções ausente");
-      assert.ok((await drawerText()).includes("Ajuste manual"), "ajuste manual disponível sem esperar o ML");
-      await cdp.evaluate("window.__pc.resolvePromos['MLB1001']()");
-      await waitFor(cdp, "document.querySelector('[data-cm-promos=\"list\"]')", "promoções não renderizaram");
+      await waitFor(cdp, "document.querySelector('[data-cm-bancada=\"loading\"]')", "estado de carregamento da Bancada ausente");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-drawer-summary').innerText")).toLowerCase().includes("preço atual"), "resumo fixo disponível sem esperar o ML");
+      await cdp.evaluate("window.__pc.resolveBancada['MLB1001']()");
+      await waitFor(cdp, "document.querySelector('[data-cm-cenarios]')", "cenários não renderizaram");
+      const pedidos = await cdp.evaluate("window.__pc.calls.simular");
+      assert.strictEqual(pedidos.length, 1, "um pedido só ao abrir");
+      assert.deepStrictEqual(pedidos[0], { clienteContaId: 10, mlb: "MLB1001", cenarios: [{ tipo: "todas_promos" }] });
+      assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('cm-pp-result') || document.querySelector('[data-promo-apply]'))"), false, "o cockpit antigo (cards de promoção, simulação por tipo) saiu do drawer");
     });
 
-    await check("promoções: ATIVA/ELEGÍVEL/PROGRAMADA/NÃO APLICADA, seller × ML banca, margem/LC; escrita só onde é suportada", async () => {
-      const statuses = await cdp.evaluate("Array.from(document.querySelectorAll('[data-promo-status]')).map(function(e){return e.getAttribute('data-promo-status')})");
-      for (const s of ["ATIVA", "ELEGÍVEL", "PROGRAMADA", "NÃO APLICADA"]) assert.ok(statuses.includes(s), statuses.join(","));
-      const deal = await cdp.evaluate("document.querySelector('[data-promo-id=\"P-DEAL\"]').textContent");
-      for (const t of ["Seller banca", "ML banca", "R$ 14,80", "R$ 5,20", "19,7%", "R$ 25,59"]) assert.ok(deal.replace(/ /g, " ").includes(t), `falta ${t}: ${deal}`);
-      assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-promo-apply=\"P-DEAL\"]'))"), "DEAL elegível → Participar");
-      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-promo-apply=\"P-DEAL\"]').textContent"), "Participar");
-      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-promo-apply=\"P-ATIVA\"]').textContent"), "Alterar");
-      for (const id of ["P-PROG", "P-SMART", "P-NAO"]) {
-        assert.strictEqual(await cdp.evaluate(`Boolean(document.querySelector('[data-promo-apply="${id}"]'))`), false, `${id} nunca ganha escrita`);
-        assert.ok((await cdp.evaluate(`document.querySelector('[data-promo-id="${id}"]').textContent`)).includes("Somente simulação"), id);
-      }
-      assert.ok((await drawerText()).includes("rollout"), "rollout desligado é explícito");
-      await shot("11-drawer-promos");
+    await check("Bancada: Preço manual + uma opção por promoção com chip de veredito; ATIVA/sem preço bloqueadas com o motivo; fonte e hora da cotação", async () => {
+      const opcoes = JSON.parse(await cdp.evaluate("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('[data-cenario]'), function (b) { var v = b.querySelector('[data-cm-veredito]'); return [b.getAttribute('data-cenario'), v ? v.getAttribute('data-cm-veredito') : null]; }))"));
+      assert.deepStrictEqual(opcoes, [["preco", null], ["P-ATIVA", "bloqueado"], ["P-DEAL", "entrar_se_girar"], ["P-PROG", "nao_entrar"], ["P-SMART", "entrar"], ["P-NAO", "bloqueado"]]);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cenario=\"preco\"]').getAttribute('aria-checked')"), "true");
+      // Promoção já ativa: bloqueada pelo núcleo, motivo na tela, botão desabilitado
+      await selecionar("P-ATIVA");
+      let txt = await resultado();
+      assert.ok(txt.includes("bloqueado · promoção já ativa"), txt);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true);
+      assert.ok((await cdp.evaluate("document.getElementById('cm-bancada-review').title")).includes("promoção já ativa"));
+      // Sem preço sugerido pelo ML
+      await selecionar("P-NAO");
+      assert.ok((await resultado()).includes("promoção sem preço sugerido"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true);
+      // Promoção elegível: Atual × Cenário em cascata, retorno ML, seller × ML banca, ΔLC e quanto precisa vender a mais
+      await selecionar("P-DEAL");
+      txt = await resultado();
+      for (const t of ["Entrar se girar", "LC por unidade cai", "R$ 110,48", "R$ 99,90", "R$ 21,17", "R$ 18,12", "19,16%", "18,14%", "Retorno ML", "R$ 5,20"]) assert.ok(txt.includes(t), `falta ${t}: ${txt}`);
+      const linhas = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('[data-cm-bancada-cascata] tbody tr'), function (tr) { return tr.getAttribute('data-cm-linha'); }).join(',')");
+      assert.strictEqual(linhas, "preco,imposto,comissao,frete,taxa_fixa,custo,rebate,lc,margem", "cascata: preço → −imposto → −comissão → −frete → −taxa → −custo → +retorno = LC → margem");
+      assert.ok(/-R\$\s3,05/.test(await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"]').textContent").then((t) => t.replace(/\u00a0/g, " "))), "ΔLC/un");
+      assert.ok(/Precisa vender\s*\+16,83%/.test((await cdp.evaluate("document.querySelector('[data-cm-empate]').textContent")).replace(/\u00a0/g, " ")), "empate de volume do núcleo");
+      const banca = (await cdp.evaluate("document.querySelector('[data-cm-promo-info=\"P-DEAL\"]').textContent")).replace(/\u00a0/g, " ");
+      for (const t of ["Oferta MLB1001", "Seller banca", "R$ 5,38", "ML banca", "R$ 5,20"]) assert.ok(banca.includes(t), `falta ${t}: ${banca}`);
+      assert.ok(txt.includes("cotação ao vivo do Mercado Livre às") && txt.includes("promoção lida em"), `fonte/hora: ${txt}`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Revisar entrada na promoção");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), false);
+      assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('cm-new-price'))"), false, "com uma promoção escolhida não há campo de preço");
+      // Muda a faixa de frete: aviso
+      await selecionar("P-PROG");
+      assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cm-flag=\"faixa-frete\"]'))"), "⚠ muda faixa de frete");
+      assert.ok((await resultado()).includes("Não entrar"));
+      await selecionar("P-SMART");
+      assert.ok((await resultado()).includes("Empata o LC total de hoje mesmo vendendo"), "ΔLC > 0: empata vendendo menos");
+      await selecionar("P-DEAL");
+      await shot("11-drawer-bancada");
+      await selecionar("preco");
     });
 
-    await check("preço manual: validação local sem chamada; debounce → 1 simulação no backend com precoVisto", async () => {
+    await check("preço manual: validação local sem chamada; debounce → 1 cenário `preco` cotado pelo backend", async () => {
       await typePrice("114,999");
       await sleep(80);
       assert.ok((await drawerText()).includes("até duas casas"), "erro local de casas decimais");
-      const antes = await calls("sim");
+      const antes = await calls("simular");
       await sleep(500);
-      assert.strictEqual(await calls("sim"), antes, "preço inválido nunca chama o backend");
+      assert.strictEqual(await calls("simular"), antes, "preço inválido nunca chama o backend");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true, "sem cenário calculado não há revisão");
       await typePrice("114");
       await typePrice("114,9");
       await typePrice("114,90");
-      await waitFor(cdp, "document.querySelector('[data-cm-sim=\"PRICE\"]')", "resultado da simulação não apareceu");
-      assert.strictEqual(await calls("sim"), antes + 1, "debounce: digitação vira UMA chamada");
-      const ultima = await cdp.evaluate("window.__pc.calls.sim[window.__pc.calls.sim.length-1]");
-      assert.strictEqual(ultima.novoPreco, 114.9);
-      assert.strictEqual(ultima.precoVisto, 110.48);
-      assert.strictEqual(ultima.clienteContaId, 10);
-      assert.strictEqual(ultima.tipo, "PRICE");
-      const res = (await cdp.evaluate("document.getElementById('cm-pp-result').textContent")).replace(/ /g, " ");
-      for (const t of ["R$ 110,48", "R$ 114,90", "19,16%", "22,04%", "R$ 21,17", "R$ 25,33", "+4"]) assert.ok(res.includes(t), `falta ${t}: ${res}`);
-      assert.ok(res.includes("Margem abaixo da meta"), "gates relevantes aparecem inline");
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-pp-review').disabled"), false);
-      assert.ok((await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent")).includes("confirmado ao vivo"));
+      await waitFor(cdp, "document.querySelector('[data-cm-linha=\"lc\"]') && document.getElementById('cm-banc-resultado').textContent.indexOf('114,90') !== -1", "resultado da simulação não apareceu");
+      assert.strictEqual(await calls("simular"), antes + 1, "debounce: digitação vira UMA chamada");
+      const ultima = await cdp.evaluate("window.__pc.calls.simular[window.__pc.calls.simular.length-1]");
+      assert.deepStrictEqual(ultima, { clienteContaId: 10, mlb: "MLB1001", cenarios: [{ tipo: "preco", preco: 114.9 }] });
+      const res = await resultado();
+      for (const t of ["R$ 110,48", "R$ 114,90", "R$ 21,17", "R$ 24,62", "19,16%", "21,43%", "+R$ 3,45", "+2,27%", "Entrar"]) assert.ok(res.includes(t), `falta ${t}: ${res}`);
+      assert.ok(res.includes("Empata o LC total de hoje mesmo vendendo 14,01% a menos"), res);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), false);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Revisar novo preço");
+      await shot("12-bancada-preco-manual");
     });
 
     await check("simulação: resposta velha (digitação anterior) nunca sobrescreve a nova", async () => {
@@ -679,18 +786,29 @@ async function run() {
       await typePrice("100,00");
       await waitFor(cdp, "window.__pc.resolveSim.length === 2", "2ª simulação não ficou pendente");
       await cdp.evaluate("window.__pc.resolveSim[1]()");
-      await waitFor(cdp, "document.getElementById('cm-pp-result').textContent.indexOf('100,00') !== -1", "resultado da 2ª não apareceu");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('100,00') !== -1", "resultado da 2ª não apareceu");
       await cdp.evaluate("window.__pc.resolveSim[0]()");
       await sleep(150);
-      const res = await cdp.evaluate("document.getElementById('cm-pp-result').textContent");
+      const res = await resultado();
       assert.ok(res.includes("100,00") && !res.includes("120,00"), `resposta velha vazou: ${res}`);
       await cdp.evaluate("window.__pc.holdSim = false; window.__pc.resolveSim = []");
       await typePrice("114,90");
-      await waitFor(cdp, "document.getElementById('cm-pp-result').textContent.indexOf('114,90') !== -1");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('114,90') !== -1 && document.getElementById('cm-bancada-review').disabled === false");
+    });
+
+    await check("falha do /simular: erro explícito e 'Tentar de novo' na Bancada; falha no preço manual não vira número", async () => {
+      await cdp.evaluate("window.__pc.simularFalha = true");
+      await typePrice("113,00");
+      await waitFor(cdp, "document.querySelector('#cm-banc-resultado .cm-field-error')", "erro do preço manual não apareceu");
+      assert.ok((await resultado()).includes("Mercado Livre fora do ar"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true);
+      await cdp.evaluate("window.__pc.simularFalha = false");
+      await typePrice("114,90");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('24,62') !== -1 && document.getElementById('cm-bancada-review').disabled === false");
     });
 
     await check("preview da alteração: produto, conta, antes → depois, gates; rollout OFF bloqueia o botão final (zero escrita)", async () => {
-      await cdp.evaluate("document.getElementById('cm-pp-review').click()");
+      await cdp.evaluate("document.getElementById('cm-bancada-review').click()");
       await waitFor(cdp, "document.getElementById('cm-confirm-overlay').classList.contains('is-open') && document.querySelector('#cm-confirm-body .cm-confirm__table')", "preview não abriu");
       const body = (await cdp.evaluate("document.getElementById('cm-confirm-body').textContent")).replace(/ /g, " ");
       for (const t of ["Produto X", "MLB1001", "Conta Loja piloto", "Mercado Livre 10000", "R$ 110,48", "R$ 114,90", "19,16%", "22,04%", "84 un.", "Conta correta", "Acima do break-even", "Margem abaixo da meta"]) {
@@ -703,28 +821,31 @@ async function run() {
       const pv = await cdp.evaluate("window.__pc.calls.preview[0]");
       assert.strictEqual(pv.precoVisto, 110.48);
       assert.strictEqual(pv.novoPreco, 114.9);
-      await shot("12-preview-rollout-off");
+      await shot("13-preview-rollout-off");
       await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-overlay').classList.contains('is-open')"), false);
     });
 
-    await check("gate bloqueante (break-even) desabilita a confirmação mesmo com rollout ligado", async () => {
+    await check("cenário bloqueado (cotação indisponível) desabilita revisar; preview bloqueado desabilita a confirmação mesmo com rollout ligado", async () => {
       await cdp.evaluate("window.__pc.escritaHabilitada = true");
-      await typePrice("70,00");
-      await waitFor(cdp, "document.getElementById('cm-pp-result').textContent.indexOf('Abaixo do break-even') !== -1", "gate bloqueante não apareceu inline");
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-pp-review').disabled"), true, "revisar fica bloqueado com gate vermelho");
+      await typePrice("60,00");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('bloqueado · tarifa do Mercado Livre indisponível') !== -1", "bloqueio da cotação não apareceu na Bancada");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true, "revisar fica bloqueado com cenário bloqueado");
+      assert.ok(!(await resultado()).includes("R$ 60,00 "), "nenhum número inventado para o cenário bloqueado");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"] td:nth-child(3)').textContent.trim()"), "—");
       await cdp.evaluate("window.__pc.previewBloqueado = true");
       await typePrice("114,90");
-      await waitFor(cdp, "document.querySelector('[data-cm-sim=\"PRICE\"]') && document.getElementById('cm-pp-result').textContent.indexOf('114,90') !== -1");
-      await cdp.evaluate("window.__pc.previewBloqueado = false");
-      await typePrice("114,90 ");
-      await typePrice("114,90");
-      await waitFor(cdp, "document.getElementById('cm-pp-review').disabled === false", "revisar voltou a habilitar");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('24,62') !== -1 && document.getElementById('cm-bancada-review').disabled === false");
+      await cdp.evaluate("document.getElementById('cm-bancada-review').click()");
+      await waitFor(cdp, "document.querySelector('#cm-confirm-body .cm-confirm__table')", "preview bloqueado não abriu");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').disabled"), true, "o servidor bloqueou: confirmar fica desabilitado");
+      await cdp.evaluate("window.__pc.previewBloqueado = false; document.getElementById('cm-confirm-cancel').click()");
     });
 
     await check("confirmar: duplo clique = 1 escrita com a MESMA chave; sucesso mostra o preço confirmado e acompanha o snapshot", async () => {
       const itensAntes = await cdp.evaluate("window.__pc.calls.itens");
-      await cdp.evaluate("document.getElementById('cm-pp-review').click()");
+      const bootsAntes = await cdp.evaluate("window.__pc.calls.simular.filter(function (c) { return c.cenarios[0].tipo === 'todas_promos'; }).length");
+      await cdp.evaluate("document.getElementById('cm-bancada-review').click()");
       await waitFor(cdp, "document.getElementById('cm-confirm-apply').disabled === false", "confirmação não habilitou com rollout ligado");
       await cdp.evaluate("var b=document.getElementById('cm-confirm-apply'); b.click(); b.click(); b.click();");
       await waitFor(cdp, "document.querySelector('[data-cm-apply-result=\"aplicado\"]')", "sucesso não apareceu");
@@ -741,13 +862,15 @@ async function run() {
       await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
       await waitFor(cdp, "document.querySelector('[data-cm-pos-escrita=\"atualizado\"]')", "pós-escrita não chegou a 'margem atualizada'");
       await waitFor(cdp, `window.__pc.calls.itens > ${itensAntes}`, "a página não foi relida depois do snapshot novo");
+      // A coluna "Atual" da Bancada é relida em segundo plano (sem trocar a tela por "carregando").
+      await waitFor(cdp, `window.__pc.calls.simular.filter(function (c) { return c.cenarios[0].tipo === 'todas_promos'; }).length > ${bootsAntes}`, "a Bancada não foi relida depois do snapshot novo");
     });
 
     await check("erro de rede no aplicar: 'Tentar de novo' reusa a MESMA chave (sem escrita dupla)", async () => {
       await cdp.evaluate("window.__pc.applyMode = 'network-then-ok'; window.__pc.calls.apply = []");
       await typePrice("115,90");
-      await waitFor(cdp, "document.getElementById('cm-pp-result').textContent.indexOf('115,90') !== -1 && document.getElementById('cm-pp-review').disabled === false");
-      await cdp.evaluate("document.getElementById('cm-pp-review').click()");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('115,90') !== -1 && document.getElementById('cm-bancada-review').disabled === false");
+      await cdp.evaluate("document.getElementById('cm-bancada-review').click()");
       await waitFor(cdp, "document.getElementById('cm-confirm-apply').disabled === false");
       await cdp.evaluate("document.getElementById('cm-confirm-apply').click()");
       await waitFor(cdp, "document.getElementById('cm-confirm-apply').textContent === 'Tentar de novo'", "retry não foi oferecido");
@@ -762,9 +885,11 @@ async function run() {
 
     const abrirRevisaoPreco = async (valor) => {
       await typePrice(valor);
-      await waitFor(cdp, `document.getElementById('cm-pp-result').textContent.indexOf('${valor}') !== -1 && document.getElementById('cm-pp-review').disabled === false`, "simulação não habilitou revisar");
-      await cdp.evaluate("document.getElementById('cm-pp-review').click()");
+      await waitFor(cdp, `document.getElementById('cm-banc-resultado').textContent.indexOf('${valor}') !== -1 && document.getElementById('cm-bancada-review').disabled === false`, "simulação não habilitou revisar");
+      await cdp.evaluate("document.getElementById('cm-bancada-review').click()");
     };
+    // Promoção: escolhe o cenário na Bancada e abre a revisão (o botão muda para "Revisar entrada na promoção").
+    const abrirRevisaoPromo = (id) => cdp.evaluate(`document.querySelector('[data-cenario="${id}"]').click(); document.getElementById('cm-bancada-review').click();`);
 
     await check("20. preview A responde DEPOIS do preview B: a resposta de A nunca preenche B (e o pedido de A é abortado)", async () => {
       await cdp.evaluate("window.__pc.holdPreview = true; window.__pc.resolvePreview = []; window.__pc.previewSignals = []");
@@ -772,7 +897,7 @@ async function run() {
       await waitFor(cdp, "window.__pc.resolvePreview.length === 1", "preview A não foi pedido");
       await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
       assert.strictEqual(await cdp.evaluate("window.__pc.previewSignals[0] && window.__pc.previewSignals[0].aborted"), true, "fechar aborta o preview em voo");
-      await cdp.evaluate("document.querySelector('[data-promo-apply=\"P-DEAL\"]').click()");
+      await abrirRevisaoPromo("P-DEAL");
       await waitFor(cdp, "window.__pc.resolvePreview.length === 2", "preview B não foi pedido");
       // B responde primeiro, A por último.
       await cdp.evaluate("window.__pc.resolvePreview[1].go()");
@@ -788,7 +913,7 @@ async function run() {
       await abrirRevisaoPreco("117,90");
       await waitFor(cdp, "window.__pc.resolvePreview.length === 1");
       await cdp.evaluate("window.VFCentralMargemUi.getState().confirm.status = 'loading'");
-      await cdp.evaluate("document.querySelector('[data-promo-apply=\"P-DEAL\"]').click()");
+      await abrirRevisaoPromo("P-DEAL");
       await waitFor(cdp, "window.__pc.resolvePreview.length === 2");
       await cdp.evaluate("window.__pc.resolvePreview[0].go()");
       await sleep(150);
@@ -846,8 +971,8 @@ async function run() {
       await cdp.evaluate("window.__pc.applyMode = 'ok'; document.getElementById('cm-confirm-cancel').click()");
     });
 
-    await check("promoção: Participar abre o preview com tipo PROMOTION, desconto total, ML banca e seller banca", async () => {
-      await cdp.evaluate("document.querySelector('[data-promo-apply=\"P-DEAL\"]').click()");
+    await check("promoção: Revisar entrada abre o preview com tipo PROMOTION, desconto total, ML banca e seller banca", async () => {
+      await abrirRevisaoPromo("P-DEAL");
       await waitFor(cdp, "document.querySelector('#cm-confirm-body .cm-confirm__table')", "preview da promoção não abriu");
       const pv = await cdp.evaluate("window.__pc.calls.preview[window.__pc.calls.preview.length-1]");
       assert.strictEqual(pv.tipo, "PROMOTION");
@@ -871,43 +996,55 @@ async function run() {
       await waitFor(cdp, "document.querySelector('[data-cm-hist-empty]')", "estado vazio do histórico ausente");
     });
 
-    await check("troca rápida de item: promoções do item anterior que chegam tarde nunca aparecem no novo", async () => {
-      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.holdPromos['MLB1001'] = true");
+    await check("troca rápida de item: a Bancada do item anterior que chega tarde nunca aparece no novo", async () => {
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.holdBancada['MLB1001'] = true");
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
-      await waitFor(cdp, "typeof window.__pc.resolvePromos['MLB1001'] === 'function'");
+      await waitFor(cdp, "typeof window.__pc.resolveBancada['MLB1001'] === 'function'");
       await cdp.evaluate("document.getElementById('cm-drawer-next').click()");
-      await waitFor(cdp, "window.VFCentralMargemUi.getState().selectedItemId === 'MLB1002' && document.querySelector('[data-cm-promos=\"list\"]')", "item B não carregou suas promoções");
-      await cdp.evaluate("window.__pc.resolvePromos['MLB1001']()");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().selectedItemId === 'MLB1002' && document.querySelector('[data-cm-cenarios]')", "item B não carregou a Bancada");
+      await cdp.evaluate("window.__pc.resolveBancada['MLB1001']()");
       await sleep(150);
       assert.strictEqual(await st("s.selectedItemId"), "MLB1002");
       const txt = await drawerText();
       assert.ok(txt.includes("Oferta MLB1002") && !txt.includes("Oferta MLB1001"), "promoção do item anterior vazou para o novo");
     });
 
-    await check("preço mudou no ML desde a leitura da tabela: a tela mostra o vivo, avisa e usa-o como precoVisto", async () => {
-      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.livePrice['MLB1003'] = 62");
+    await check("preço mudou no ML desde a leitura da tabela: a Bancada parte da leitura da tabela e o PREVIEW mostra o preço vivo (precoVisto da tabela, compare-and-set no servidor)", async () => {
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.livePrice['MLB1003'] = 62; window.__pc.calls.preview.length = 0");
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"]').click()");
-      await waitFor(cdp, "document.querySelector('[data-cm-live-price]')", "aviso de preço vivo diferente ausente");
-      const aviso = (await cdp.evaluate("document.querySelector('[data-cm-live-price]').textContent")).replace(/\u00a0/g, " ");
-      assert.ok(aviso.includes("R$ 59,90") && aviso.includes("R$ 62,00"), aviso);
-      await typePrice("65,00");
-      await waitFor(cdp, "document.querySelector('[data-cm-sim=\"PRICE\"]')", "simulação não voltou");
-      const ultima = await cdp.evaluate("window.__pc.calls.sim[window.__pc.calls.sim.length-1]");
-      assert.strictEqual(ultima.precoVisto, 62, "o preço exibido (vivo) é o precoVisto — nunca o da tabela defasada");
-      assert.ok((await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent")).replace(/\u00a0/g, " ").includes("R$ 62,00"));
-      await cdp.evaluate("delete window.__pc.livePrice['MLB1003']");
+      await waitFor(cdp, "document.querySelector('[data-cm-cenarios]')", "Bancada do MLB1003 não carregou");
+      await typePrice("75,00");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('75,00') !== -1 && document.getElementById('cm-bancada-review').disabled === false", "simulação não voltou");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent")).replace(/\u00a0/g, " ").includes("R$ 59,90"), "o resumo mostra a leitura da tabela");
+      await cdp.evaluate("document.getElementById('cm-bancada-review').click()");
+      await waitFor(cdp, "document.querySelector('#cm-confirm-body .cm-confirm__table')", "preview não abriu");
+      const pv = await cdp.evaluate("window.__pc.calls.preview[0]");
+      assert.strictEqual(pv.precoVisto, 59.9, "o que a tela mostrava é o precoVisto");
+      assert.strictEqual(pv.novoPreco, 75);
+      const body = (await cdp.evaluate("document.getElementById('cm-confirm-body').textContent")).replace(/\u00a0/g, " ");
+      assert.ok(body.includes("R$ 62,00") && body.includes("R$ 75,00"), `o preview mostra o preço vivo → novo: ${body}`);
+      await cdp.evaluate("document.getElementById('cm-confirm-cancel').click(); delete window.__pc.livePrice['MLB1003']");
     });
 
-    await check("troca de conta fecha o drawer e descarta promoções em voo da conta anterior", async () => {
-      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.holdPromos['MLB1003'] = true");
+    await check("preço-alvo sem solução: 'sem preço viável p/ a meta' com o motivo, nunca um preço inventado", async () => {
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.alvoModo = 'sem-preco-viavel'");
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"]').click()");
-      await waitFor(cdp, "typeof window.__pc.resolvePromos['MLB1003'] === 'function'");
+      await waitFor(cdp, "document.querySelector('[data-cm-chip=\"sem-preco-viavel\"]')", "chip 'sem preço viável' ausente");
+      assert.ok((await cdp.evaluate("document.querySelector('[data-cm-chip=\"sem-preco-viavel\"]').title")).includes("a meta não é atingível"));
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-chip=\"alvo\"]'))"), false);
+      await cdp.evaluate("window.__pc.alvoModo = 'ok'");
+    });
+
+    await check("troca de conta fecha o drawer e descarta a Bancada em voo da conta anterior", async () => {
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer(); window.__pc.holdBancada['MLB1003'] = true");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"]').click()");
+      await waitFor(cdp, "typeof window.__pc.resolveBancada['MLB1003'] === 'function'");
       await cdp.evaluate("window.VF.context.setConta(11)");
       await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 11", "conta 11 não entrou");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer').classList.contains('is-open')"), false);
-      await cdp.evaluate("window.__pc.resolvePromos['MLB1003']()");
+      await cdp.evaluate("window.__pc.resolveBancada['MLB1003']()");
       await sleep(150);
-      assert.strictEqual(await st("s.promos"), null, "resposta da conta anterior não reidrata o estado");
+      assert.strictEqual(await st("s.bancada.data"), null, "resposta da conta anterior não reidrata o estado");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer-body').innerHTML"), "");
     });
 

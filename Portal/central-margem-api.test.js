@@ -653,6 +653,29 @@ async function run() {
     assert.strictEqual(erro.error, "fora da carteira");
   });
 
+  await test("client: /api/margem/simular (POST por anúncio, escopo da conta; falha vira erro explícito com o payload)", async () => {
+    const calls = [];
+    const client = api.createClient({
+      request(path, options) {
+        calls.push({ path, options });
+        return { ok: true, status: 200, data: { ok: true, mlb: options.body.mlb, atual: { preco: 110.48 }, cenarios: [{ tipo: "preco", veredito: "entrar" }] } };
+      },
+    });
+    const result = await client.simular({ clienteContaId: 900, mlb: "MLB1", cenarios: [{ tipo: "todas_promos" }, { tipo: "preco_alvo" }] });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.mlb, "MLB1");
+    assert.strictEqual(result.cenarios.length, 1);
+    assert.strictEqual(calls.length, 1);
+    assert.strictEqual(calls[0].path, "/api/margem/simular");
+    assert.strictEqual(calls[0].options.method, "POST");
+    assert.deepStrictEqual(calls[0].options.body, { cliente_conta_id: 900, mlb: "MLB1", cenarios: [{ tipo: "todas_promos" }, { tipo: "preco_alvo" }] });
+    const falho = api.createClient({ request: () => ({ ok: false, status: 403, error: "fora da carteira", data: { code: "FORA_DA_CARTEIRA" } }) });
+    const erro = await falho.simular({ clienteContaId: 1, mlb: "MLB1", cenarios: [{ tipo: "preco", preco: 10 }] });
+    assert.strictEqual(erro.ok, false);
+    assert.strictEqual(erro.status, 403);
+    assert.strictEqual(erro.error, "fora da carteira");
+  });
+
   await test("a tela não tem fórmula financeira: nada de computeMargin/simulatePrice nem conta de lucro no código", () => {
     const fs = require("fs");
     const path = require("path");

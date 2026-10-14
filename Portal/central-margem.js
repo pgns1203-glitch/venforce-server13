@@ -127,6 +127,7 @@
     oppsPage: 1,
     oppsFilters: { veredito: "", tipo: "" },
     oppsTipos: [],
+    bancada: null,
     promoSummary: null,
     promoSummarySeq: 0,
     promoTop: {},
@@ -1837,6 +1838,9 @@
     lc_por_unidade_cai: "LC por unidade cai",
     margem_abaixo_da_meta: "margem abaixo da meta",
     margem_abaixo_do_minimo: "margem abaixo do mínimo",
+    sem_preco_viavel: "sem preço viável para a meta",
+    meta_inviavel: "a meta não é atingível com estes custos",
+    dados_ausentes: "faltam dados para calcular",
   };
 
   function motivoTexto(codigo) {
@@ -2970,27 +2974,19 @@
     return entry && entry.available ? entry.value : null;
   }
 
-  function pricingAvailability() {
-    if (!state.client) return { ok: false, reason: "Selecione um cliente." };
-    if (!state.contaId) return { ok: false, reason: "Escolha a operação (conta Mercado Livre) no topo para precificar: a escrita é sempre por conta." };
-    if (typeof api.simulatePricing !== "function" || typeof api.previewPricing !== "function") {
-      return { ok: false, reason: "Precificação indisponível nesta leitura." };
-    }
-    return { ok: true };
-  }
-
-  function drawerKey() {
-    return [state.client && state.client.slug, state.contaId, state.selectedItemId].join("::");
-  }
-
   /** Novo item (ou novo contexto): tudo que é assíncrono do item anterior morre aqui. */
   function resetItemState(item) {
     state.drawerSeq += 1;
     if (state.pricing && state.pricing.abort) state.pricing.abort.abort();
     if (state.pricing && state.pricing.timer) root.clearTimeout(state.pricing.timer);
     if (state.pricing && state.pricing.pollTimer) root.clearTimeout(state.pricing.pollTimer);
-    state.pricing = { novoPreco: "", status: "idle", sim: null, error: null, localError: null, abort: null, timer: null, promoSim: null, aplicacao: null, pollTimer: null, precoAoVivo: null, precoTabela: null };
-    state.promos = null;
+    var b = state.bancada;
+    if (b && b.manual) {
+      if (b.manual.abort) b.manual.abort.abort();
+      if (b.manual.timer) root.clearTimeout(b.manual.timer);
+    }
+    state.pricing = { novoPreco: "", aplicacao: null, pollTimer: null, precoAoVivo: null, precoTabela: null };
+    state.bancada = novaBancada();
     state.history = null;
     state.evidenceVariable = state.evidenceVariable || "price";
     if (item) initScenario(item);
@@ -3016,30 +3012,31 @@
     state.pendingPromoId = opts && opts.promoId ? String(opts.promoId) : null;
     if (!mesmoItem) {
       resetItemState(item);
-      loadPromotions();
+      loadBancada(item);
     }
-    // "Subir p/ R$ X": o preço sugerido entra no ajuste manual e é simulado na hora.
+    // "Subir p/ R$ X": o preço sugerido entra no preço manual e é simulado na hora.
     if (opts && opts.novoPreco !== undefined && Number.isFinite(opts.novoPreco) && state.pricing) {
       state.pricing.novoPreco = opts.novoPreco.toFixed(2).replace(".", ",");
-      schedulePriceSimulation(0);
+      state.bancada.selecionado = "preco";
+      simularManual(0);
     }
+    applyPendingPromo();
     refs.drawerBackdrop.classList.add("is-open");
     refs.drawer.classList.add("is-open");
     document.body.classList.add("vf-no-scroll");
     renderDrawer();
     markSelectedRow();
     refs.drawer.focus();
-    applyPendingPromo();
   }
 
-  /** "Simular" da aba Promoções: assim que as promoções do anúncio carregam, simula a escolhida. */
+  /** "Simular" da aba Promoções / chip "Promo Y": assim que a bancada carrega, seleciona a promoção escolhida. */
   function applyPendingPromo() {
     var id = state.pendingPromoId;
-    if (!id || !state.promos || state.promos.status === "loading") return;
+    if (!id || !state.bancada || state.bancada.status === "loading" || state.bancada.status === "idle") return;
     state.pendingPromoId = null;
-    if (state.promos.status === "ok" && promoById(id)) {
+    if (state.bancada.status === "ok" && bancadaPromoPorId(id)) {
       state.drawerTab = "pricing";
-      simulatePromotion(id);
+      state.bancada.selecionado = id;
     }
   }
 
@@ -3070,7 +3067,7 @@
     state.selectedItemId = items[next].id;
     state.stubItem = null;
     resetItemState(items[next]);
-    loadPromotions();
+    loadBancada(items[next]);
     renderDrawer();
     markSelectedRow();
     refs.drawerBody.scrollTop = 0;
@@ -3115,16 +3112,12 @@
       '<a class="cm-link" href="' + escapeHtml(baseHref) + '">Ver na Base</a>';
 
     // Resumo essencial, sempre visível: pouco texto, números grandes.
-    var sim = state.pricing && state.pricing.sim;
     var aplicada = state.pricing && state.pricing.aplicacao;
     var precoAtual = currentPriceOf(item);
     var precoFoot = "leitura da tabela";
     if (aplicada && aplicada.precoConfirmado !== null && aplicada.precoConfirmado !== undefined) {
       precoAtual = aplicada.precoConfirmado;
       precoFoot = "confirmado pelo Mercado Livre";
-    } else if (sim && sim.atual && sim.atual.preco !== null && sim.atual.preco !== undefined) {
-      precoAtual = sim.atual.preco;
-      precoFoot = "confirmado ao vivo";
     } else if (state.pricing && state.pricing.precoAoVivo !== null && state.pricing.precoAoVivo !== undefined) {
       precoAtual = state.pricing.precoAoVivo;
       precoFoot = "confirmado ao vivo";
@@ -3273,7 +3266,260 @@
       "</section>";
   }
 
-  var PROMO_STATUS_TONE = { "ATIVA": "is-success", "ELEGÍVEL": "is-info", "PROGRAMADA": "is-neutral", "NÃO APLICADA": "is-warning" };
+  // --- Bancada ----------------------------------------------------------------
+  //
+  // O drawer é uma bancada: o estado ATUAL e um CENÁRIO lado a lado, em cascata
+  // (preço → −imposto → −comissão → −frete → −taxa fixa → −custo → +retorno ML
+  // = LC/un → margem). Todo número vem de POST /api/margem/simular (o núcleo do
+  // Motor com cotação REAL do Mercado Livre em cada preço); a tela não calcula
+  // nada. Cenários: Preço manual e cada promoção do anúncio (Promo Snapshot). O
+  // botão único "Revisar…" abre o preview (a avaliação de verdade é do servidor).
+
+  var BANCADA_LINHAS = [
+    { chave: "preco", rotulo: "Preço", sinal: "" },
+    { chave: "imposto", rotulo: "Imposto", sinal: "−" },
+    { chave: "comissao", rotulo: "Comissão", sinal: "−" },
+    { chave: "frete", rotulo: "Frete", sinal: "−" },
+    { chave: "taxa_fixa", rotulo: "Taxa fixa", sinal: "−" },
+    { chave: "custo", rotulo: "Custo", sinal: "−" },
+    { chave: "rebate", rotulo: "Retorno ML", sinal: "+" },
+  ];
+
+  function novaBancada() {
+    return {
+      status: "idle", data: null, error: null, selecionado: "preco", alvo: null,
+      manual: { status: "idle", resultado: null, atual: null, error: null, localError: null, seq: 0, timer: null, abort: null },
+    };
+  }
+
+  function bancadaDisponivel() {
+    if (!state.client) return { ok: false, reason: "Selecione um cliente." };
+    if (!state.contaId) return { ok: false, reason: "Escolha a operação (conta Mercado Livre) no topo para precificar: a escrita é sempre por conta." };
+    if (typeof api.simular !== "function" || typeof api.previewPricing !== "function") {
+      return { ok: false, reason: "Precificação indisponível nesta leitura." };
+    }
+    return { ok: true };
+  }
+
+  // Mantido com o nome antigo: o resto da tela só pergunta "dá para precificar?".
+  function pricingAvailability() {
+    return bancadaDisponivel();
+  }
+
+  function drawerKey() {
+    return [state.client && state.client.slug, state.contaId, state.selectedItemId].join("::");
+  }
+
+  function bancadaPromos() {
+    var d = state.bancada && state.bancada.data;
+    return d ? (d.cenarios || []).filter(function (c) { return c.tipo === "promo"; }) : [];
+  }
+
+  function promoIdDe(cenario) {
+    return String(cenario.promocao ? cenario.promocao.id : (cenario.entrada && cenario.entrada.promotion_id) || "");
+  }
+
+  function bancadaPromoPorId(id) {
+    var lista = bancadaPromos();
+    for (var i = 0; i < lista.length; i += 1) if (promoIdDe(lista[i]) === String(id) && lista[i].promocao) return lista[i];
+    return null;
+  }
+
+  /** Cenário em exibição: o preço manual ou uma promoção. */
+  function bancadaSelecionada() {
+    var b = state.bancada;
+    if (b.selecionado === "preco") return { tipo: "preco", resultado: b.manual.resultado, promo: null };
+    var promo = bancadaPromoPorId(b.selecionado);
+    return promo ? { tipo: "promo", resultado: promo, promo: promo } : { tipo: "preco", resultado: b.manual.resultado, promo: null };
+  }
+
+  function bancadaAtual() {
+    var b = state.bancada;
+    if (b.data && b.data.atual) return b.data.atual;
+    return b.manual.atual || null;
+  }
+
+  function renderBancada() {
+    if (state.selectedItemId && state.drawerTab === "pricing" && refs.drawer.classList.contains("is-open")) renderDrawer();
+  }
+
+  /**
+   * Lê, de uma vez, as promoções do anúncio (Promo Snapshot) e — se abaixo da meta — o preço-alvo cotado.
+   * `silent`: releitura em segundo plano (depois de uma escrita) — não troca a tela por "carregando" e
+   * não derruba o que o operador está digitando; se falhar, mantém o que já estava na tela.
+   */
+  function loadBancada(item, opts) {
+    var b = state.bancada;
+    var silent = Boolean(opts && opts.silent);
+    if (!item || !bancadaDisponivel().ok) return;
+    var financial = contract.financialResult(item);
+    var cenarios = [{ tipo: "todas_promos" }];
+    if (financial.key === "LOSS" || financial.key === "LOW_MARGIN") cenarios.push({ tipo: "preco_alvo" });
+    if (!silent) b.status = "loading";
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    api.simular({ clienteContaId: state.contaId, mlb: item.itemId, cenarios: cenarios }).then(function (result) {
+      if (seq !== state.drawerSeq || key !== drawerKey() || state.bancada !== b) return;
+      if (!result.ok) {
+        if (silent) return;
+        b.status = "error";
+        b.error = result.error || "Não foi possível montar a bancada.";
+      } else {
+        b.status = "ok";
+        b.data = result;
+        b.alvo = (result.cenarios || []).filter(function (c) { return c.tipo === "preco_alvo"; })[0] || null;
+      }
+      applyPendingPromo();
+      if (silent) updateBancadaResultado(true);
+      else renderBancada();
+    });
+  }
+
+  /** Depois de uma escrita confirmada e do snapshot recalculado: a composição "Atual" é a nova. */
+  function recarregarBancada() {
+    var item = findSelectedItem();
+    if (!item || !state.bancada || !bancadaDisponivel().ok) return;
+    loadBancada(item, { silent: true });
+    // O preço que o operador já digitou é recalculado contra a composição nova.
+    if (parsePriceInput(state.pricing.novoPreco).ok) simularManual(0);
+  }
+
+  /** Preço manual: valida localmente (sem lixo ao servidor) e simula com debounce. */
+  function simularManual(delay) {
+    var b = state.bancada;
+    var m = b.manual;
+    if (m.timer) root.clearTimeout(m.timer);
+    if (m.abort) m.abort.abort();
+    var parsed = parsePriceInput(state.pricing.novoPreco);
+    m.localError = parsed.ok || parsed.empty ? null : parsed.error;
+    m.seq += 1;
+    var seqManual = m.seq;
+    if (!parsed.ok) {
+      m.status = "idle";
+      m.resultado = null;
+      updateBancadaResultado();
+      return;
+    }
+    if (!bancadaDisponivel().ok) return;
+    m.status = "loading";
+    updateBancadaResultado();
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    var item = findSelectedItem();
+    m.timer = root.setTimeout(function () {
+      m.timer = null;
+      m.abort = typeof AbortController !== "undefined" ? new AbortController() : null;
+      api.simular({ clienteContaId: state.contaId, mlb: item.itemId, cenarios: [{ tipo: "preco", preco: parsed.value }] }, m.abort && m.abort.signal).then(function (result) {
+        if (seq !== state.drawerSeq || key !== drawerKey() || result.aborted || seqManual !== m.seq) return;
+        if (!result.ok) {
+          m.status = "error";
+          m.error = result.error || "Não foi possível simular este preço agora.";
+          m.resultado = null;
+        } else {
+          m.status = "ok";
+          m.error = null;
+          m.resultado = (result.cenarios || [])[0] || null;
+          m.atual = result.atual || m.atual;
+        }
+        updateBancadaResultado();
+      });
+    }, delay === undefined ? 400 : delay);
+  }
+
+  function money(v) { return formatMoney(v) || "—"; }
+
+  function cascataHtml(atual, r) {
+    if (!atual) return '<p class="cm-empty-note" data-cm-bancada="sem-atual">A composição de hoje não está disponível (sem leitura de margem deste anúncio).</p>';
+    r = r || {};
+    var cen = r.cenario || {};
+    var linhas = BANCADA_LINHAS.map(function (l) {
+      var a = atual[l.chave];
+      var c = cen[l.chave];
+      // Retorno ML só aparece quando existe em algum dos lados (o resto da cascata é sempre mostrado).
+      if (l.chave === "rebate" && !a && !c) return "";
+      return '<tr data-cm-linha="' + l.chave + '"><th scope="row">' + (l.sinal ? '<span class="cm-banc__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) + "</th>" +
+        '<td class="num">' + escapeHtml(money(a)) + '</td><td class="num">' + escapeHtml(money(c)) + "</td><td></td></tr>";
+    }).join("");
+    var deltaLc = r.delta_lc;
+    var tom = deltaLc === null || deltaLc === undefined ? "" : deltaLc > 0 ? " is-up" : deltaLc < 0 ? " is-down" : "";
+    return '<table class="cm-banc__tabela" data-cm-bancada-cascata><thead><tr><th></th><th class="num">Atual</th><th class="num">Cenário</th><th class="num">Δ</th></tr></thead><tbody>' + linhas +
+      '<tr class="cm-banc__total" data-cm-linha="lc"><th scope="row"><span class="cm-banc__sinal" aria-hidden="true">=</span> LC/un</th><td class="num">' + escapeHtml(money(atual.lc)) + '</td><td class="num"><strong>' + escapeHtml(money(cen.lc)) +
+      '</strong></td><td class="num' + tom + '">' + escapeHtml(deltaLc === null || deltaLc === undefined ? "—" : formatMoney(deltaLc, true)) + "</td></tr>" +
+      '<tr class="cm-banc__total" data-cm-linha="margem"><th scope="row">Margem</th><td class="num">' + escapeHtml(formatPercent(atual.margem_ratio) || "—") + '</td><td class="num"><strong>' + escapeHtml(formatPercent(cen.margem_ratio) || "—") +
+      '</strong></td><td class="num">' + escapeHtml(r.delta_margem_ratio === null || r.delta_margem_ratio === undefined ? "—" : formatPercent(r.delta_margem_ratio, true)) + "</td></tr></tbody></table>";
+  }
+
+  // Quanto a mais precisa vender para o LC TOTAL empatar com o de hoje (número do núcleo).
+  function empateHtml(r) {
+    if (!r || r.empate_volume === null || r.empate_volume === undefined) return "";
+    if (r.empate_volume > 0) return '<p class="cm-banc__empate" data-cm-empate>Precisa vender <strong>' + escapeHtml(formatPercent(r.empate_volume, true)) + "</strong> a mais para empatar o LC total de hoje.</p>";
+    return '<p class="cm-banc__empate" data-cm-empate>Empata o LC total de hoje mesmo vendendo <strong>' + escapeHtml(formatPercent(Math.abs(r.empate_volume)) || "") + "</strong> a menos.</p>";
+  }
+
+  function evidenciaBancadaHtml(r) {
+    var ev = r && r.evidencia;
+    if (!ev) return "";
+    var partes = [];
+    if (ev.comissao && ev.comissao.fonte === "ml_listing_prices") {
+      partes.push(ev.comissao.consultado_em ? "cotação ao vivo do Mercado Livre às " + formatShortDateTime(ev.comissao.consultado_em) : "cotação do Mercado Livre");
+    }
+    if (ev.preco && ev.preco.fonte === "promo_snapshot") partes.push("promoção lida em " + (formatShortDateTime(ev.preco.observado_em) === "—" ? "data desconhecida" : formatShortDateTime(ev.preco.observado_em)));
+    if (ev.preco && ev.preco.fonte === "busca_preco_alvo") partes.push("preço encontrado pela busca com cotações reais");
+    return partes.length ? '<p class="cm-banc__fonte">' + escapeHtml(partes.join(" · ")) + ".</p>" : "";
+  }
+
+  function vereditoBancadaHtml(r) {
+    if (!r) return "";
+    var ui = VEREDITO_UI[r.veredito] || VEREDITO_UI.bloqueado;
+    var flags = [];
+    var f = r.flags || {};
+    if (f.mudou_faixa_frete === true) flags.push('<span class="cm-promo-flag is-warn" data-cm-flag="faixa-frete">⚠ muda faixa de frete</span>');
+    if (f.ativa) flags.push('<span class="cm-promo-flag" data-cm-flag="ativa">ativa</span>');
+    if (f.rebate_ambiguo) flags.push('<span class="cm-promo-flag is-warn" data-cm-flag="rebate-ambiguo">retorno ambíguo</span>');
+    var motivo = r.motivo ? (r.veredito === "bloqueado" ? "bloqueado · " : "") + motivoTexto(r.motivo) : "";
+    return '<div class="cm-banc__veredito"><span class="vf-status ' + ui.tone + '" data-cm-veredito="' + escapeHtml(r.veredito) + '">' + escapeHtml(ui.label) + "</span>" +
+      (motivo ? '<span class="cm-promo-flag' + (r.veredito === "bloqueado" ? " is-warn" : "") + '" data-cm-motivo>' + escapeHtml(motivo) + "</span>" : "") + flags.join("") + "</div>";
+  }
+
+  function bancadaPrecoAlvoHtml(item) {
+    var b = state.bancada;
+    var chips = "";
+    if (b.alvo) {
+      var pa = b.alvo.preco_alvo || {};
+      chips += pa.encontrado
+        ? '<button class="cm-chip" type="button" data-price-chip="' + pa.preco + '" data-cm-chip="alvo" title="Menor preço que atinge a meta, com a cotação real do Mercado Livre em cada preço tentado">Subir p/ ' + escapeHtml(money(pa.preco)) + "</button>"
+        : '<span class="cm-chip is-static" data-cm-chip="sem-preco-viavel" title="' + escapeHtml(motivoTexto(pa.motivo) + (pa.causa ? ": " + motivoTexto(pa.causa) : "")) + '">sem preço viável p/ a meta</span>';
+    } else if (b.status === "loading") {
+      chips += '<span class="cm-chip is-static" data-cm-chip="calculando">calculando preço-alvo…</span>';
+    }
+    if (item.breakEvenPrice !== null && item.breakEvenPrice !== undefined) {
+      chips += '<button class="cm-chip" type="button" data-price-chip="' + item.breakEvenPrice + '" data-cm-chip="break-even" title="Preço de equilíbrio (LC zero) de referência do Motor">Break-even ' + escapeHtml(money(item.breakEvenPrice)) + "</button>";
+    }
+    return chips ? '<div class="cm-pp__chips">' + chips + "</div>" : "";
+  }
+
+  function bancadaSeletorHtml() {
+    var b = state.bancada;
+    var promos = bancadaPromos().filter(function (c) { return c.promocao; });
+    var opcao = function (id, rotulo, resultado, extra) {
+      var ativo = String(b.selecionado) === String(id);
+      var ui = resultado ? (VEREDITO_UI[resultado.veredito] || VEREDITO_UI.bloqueado) : null;
+      return '<button class="cm-banc__opcao' + (ativo ? " is-active" : "") + '" type="button" role="radio" aria-checked="' + (ativo ? "true" : "false") + '" data-cenario="' + escapeHtml(id) + '"' + (extra || "") + ">" +
+        "<span>" + escapeHtml(rotulo) + "</span>" + (ui ? '<span class="vf-status ' + ui.tone + '" data-cm-veredito="' + escapeHtml(resultado.veredito) + '">' + escapeHtml(ui.label) + "</span>" : "") + "</button>";
+    };
+    var html = opcao("preco", "Preço manual", null);
+    promos.forEach(function (c) { html += opcao(promoIdDe(c), c.promocao.nome || c.promocao.tipo || "Promoção", c, ""); });
+    return '<div class="cm-banc__cenarios" id="cm-banc-cenarios" role="radiogroup" aria-label="Cenário" data-cm-cenarios>' + html + "</div>";
+  }
+
+  function bancadaPromoInfoHtml(promo) {
+    var p = promo.promocao || {};
+    var periodo = [formatShortDate(p.inicio), formatShortDate(p.fim)].filter(Boolean).join(" – ");
+    return '<div class="cm-banc__promo" data-cm-promo-info="' + escapeHtml(promoIdDe(promo)) + '"><strong>' + escapeHtml(p.nome || p.tipo || "Promoção") + "</strong>" +
+      '<span class="cm-prod-meta">' + escapeHtml([p.tipo, p.status_exibicao || p.status, periodo].filter(Boolean).join(" · ")) + "</span>" +
+      '<dl class="cm-banc__banca"><div><dt>Preço</dt><dd>' + escapeHtml(money(promo.cenario && promo.cenario.preco)) + "</dd></div>" +
+      "<div><dt>Seller banca</dt><dd>" + escapeHtml(money(promo.seller_banca)) + "</dd></div><div><dt>ML banca</dt><dd>" + escapeHtml(money(promo.ml_banca)) + "</dd></div></dl></div>";
+  }
 
   function formatShortDate(value) {
     if (!value) return null;
@@ -3282,65 +3528,104 @@
     return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
   }
 
-  function promoCardHtml(promo, atual) {
-    var status = promo.statusExibicao || promo.status || "—";
-    var periodo = [formatShortDate(promo.inicio), formatShortDate(promo.fim)].filter(Boolean).join(" – ");
-    var escrita = promo.escrita || {};
-    var p = state.pricing;
-    var simAberta = p.promoSim && p.promoSim.id === String(promo.id);
-    var acao = escrita.suportada
-      ? '<button class="vf-btn vf-btn--primary vf-btn--sm" type="button" data-promo-apply="' + escapeHtml(promo.id) + '">' + (escrita.acao === "ALTERAR" ? "Alterar" : "Participar") + "</button>"
-      : '<span class="cm-sim-only" title="' + escapeHtml(escrita.motivo || "Somente simulação") + '">Somente simulação</span>';
-    var metric = function (label, value) { return '<div class="cm-promo__m"><span>' + escapeHtml(label) + "</span><strong>" + value + "</strong></div>"; };
-    var margemAtual = atual && atual.margem !== null && atual.margem !== undefined ? formatPercent(atual.margem) : "—";
-    var lcAtual = atual && atual.lucro !== null && atual.lucro !== undefined ? formatMoney(atual.lucro) : "—";
-    var simHtml = "";
-    if (simAberta) {
-      var ps = p.promoSim;
-      var editable = escrita.suportada;
-      simHtml = '<div class="cm-promo__sim">' +
-        (editable ? '<label class="cm-pp__field cm-pp__field--inline"><span class="cm-pp__label">Preço da oferta</span><input class="vf-input vf-input--sm cm-pp__input" data-promo-price="' + escapeHtml(promo.id) + '" inputmode="decimal" value="' + escapeHtml(ps.preco) + '"></label>' : "") +
-        (ps.localError ? '<p class="cm-field-error">' + escapeHtml(ps.localError) + "</p>"
-          : ps.status === "loading" ? '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Calculando no backend…</span></div>'
-            : ps.status === "error" ? '<p class="cm-field-error" role="alert">' + escapeHtml(ps.error || "Não foi possível simular.") + "</p>"
-              : ps.sim ? simResultHtml(ps.sim, "PROMOTION") : "") +
-        "</div>";
+  /** Miolo do cenário em exibição (cascata, empate, veredito, fonte) — redesenhado a cada resposta. */
+  function bancadaResultadoHtml() {
+    var b = state.bancada;
+    var sel = bancadaSelecionada();
+    var atual = bancadaAtual();
+    if (sel.tipo === "preco") {
+      var m = b.manual;
+      if (m.localError) return '<p class="cm-field-error" role="alert">' + escapeHtml(m.localError) + "</p>";
+      if (m.status === "loading") return '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Calculando no backend com a cotação real do Mercado Livre…</span></div>';
+      if (m.status === "error") return '<p class="cm-field-error" role="alert">' + escapeHtml(m.error || "Não foi possível simular.") + "</p>";
+      if (!m.resultado) return '<p class="cm-empty-note" data-cm-bancada="digite">Digite o novo preço para ver o cenário ao lado do atual.</p>';
     }
-    return '<article class="cm-promo" data-promo-id="' + escapeHtml(promo.id) + '">' +
-      '<header class="cm-promo__head"><div><strong>' + escapeHtml(promo.nome || promo.tipoLabel || promo.tipo || "Promoção") + "</strong>" +
-      '<span class="cm-promo__sub">' + escapeHtml([promo.tipoLabel || promo.tipo, periodo].filter(Boolean).join(" · ")) + "</span></div>" +
-      '<span class="vf-status ' + (PROMO_STATUS_TONE[status] || "is-neutral") + '" data-promo-status="' + escapeHtml(status) + '">' + escapeHtml(status) + "</span></header>" +
-      '<div class="cm-promo__grid">' +
-      metric("Preço", escapeHtml((formatMoney(promo.precoOriginal) || "—") + " → " + (formatMoney(promo.precoFinal) || "sem sugestão do ML"))) +
-      metric("Desconto", escapeHtml(promo.descontoReais === null || promo.descontoReais === undefined ? "—" : formatMoney(promo.descontoReais) + (promo.descontoPercentual !== null && promo.descontoPercentual !== undefined ? " (" + promo.descontoPercentual.toLocaleString("pt-BR") + "%)" : ""))) +
-      metric("Seller banca", escapeHtml(formatMoney(promo.sellerBanca) || "—")) +
-      metric("ML banca · retorno", escapeHtml(formatMoney(promo.mlBanca) || "R$ 0,00") + (promo.meliPercentage ? ' <small>' + escapeHtml(promo.meliPercentage.toLocaleString("pt-BR") + "%") + "</small>" : "")) +
-      metric("Margem", escapeHtml(margemAtual + " → " + (promo.margem === null || promo.margem === undefined ? "—" : formatPercent(promo.margem)))) +
-      metric("LC / un.", escapeHtml(lcAtual + " → " + (promo.lucro === null || promo.lucro === undefined ? "—" : formatMoney(promo.lucro)))) +
-      "</div>" +
-      '<div class="cm-promo__actions"><button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" data-promo-sim="' + escapeHtml(promo.id) + '"' + (promo.precoFinal === null || promo.precoFinal === undefined ? (escrita.suportada ? "" : " disabled") : "") + ">" + (simAberta ? "Recalcular" : "Simular") + "</button>" + acao + "</div>" +
-      simHtml + "</article>";
+    var r = sel.resultado;
+    return (sel.promo ? bancadaPromoInfoHtml(sel.promo) : "") + vereditoBancadaHtml(r) + cascataHtml(atual, r) + empateHtml(r) + evidenciaBancadaHtml(r);
   }
 
-  function promotionsHtml(item) {
-    var availability = pricingAvailability();
-    var body;
-    var promos = state.promos;
-    if (!availability.ok || typeof api.getItemPromotions !== "function") {
-      body = '<p class="cm-empty-note">' + escapeHtml(availability.ok ? "Promoções indisponíveis nesta leitura." : availability.reason) + "</p>";
-    } else if (!promos || promos.status === "loading") {
-      body = '<div class="vf-loading-state" role="status" data-cm-promos="loading"><span class="vf-spinner" aria-hidden="true"></span><span>Consultando promoções no Mercado Livre…</span></div>';
-    } else if (promos.status === "error") {
-      body = '<p class="cm-field-error" role="alert" data-cm-promos="error">' + escapeHtml(promos.error) + ' <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-promos-retry">Tentar de novo</button></p>';
-    } else if (promos.contaCorreta === false) {
-      body = gatesListHtml(promos.gates || [], false);
-    } else if (!promos.list.length) {
-      body = '<p class="cm-empty-note" data-cm-promos="empty">Nenhuma promoção disponível para este anúncio no Mercado Livre.</p>';
-    } else {
-      body = '<div class="cm-promos__list" data-cm-promos="list">' + promos.list.map(function (promo) { return promoCardHtml(promo, promos.atual); }).join("") + "</div>" +
-        (promos.escritaHabilitada ? "" : '<p class="cm-rollout-note">Escrita no Mercado Livre desligada para este cliente (rollout): simulação e preview funcionam; nada é enviado.</p>');
+  function bancadaBotaoHtml() {
+    var b = state.bancada;
+    var sel = bancadaSelecionada();
+    var r = sel.resultado;
+    var promo = sel.tipo === "promo";
+    var rotulo = promo ? "Revisar entrada na promoção" : "Revisar novo preço";
+    var pode = Boolean(r) && r.veredito !== "bloqueado" && bancadaDisponivel().ok && (promo || b.manual.status === "ok");
+    var motivo = !r ? "Escolha um cenário calculado." : r.veredito === "bloqueado" ? "Cenário bloqueado: " + motivoTexto(r.motivo) + "." : "";
+    return '<div class="cm-pp__actions"><button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-bancada-review" data-cm-review="' + (promo ? "PROMOTION" : "PRICE") + '"' + (pode ? "" : " disabled") +
+      (motivo ? ' title="' + escapeHtml(motivo) + '"' : "") + ">" + rotulo + "</button>" +
+      '<span class="cm-banc__nota">Abre o preview (relê o anúncio ao vivo e avalia os gates). A escrita no Mercado Livre depende da liberação do cliente — hoje desligada.</span></div>';
+  }
+
+  function bancadaHtml(item) {
+    var availability = bancadaDisponivel();
+    var b = state.bancada;
+    if (!availability.ok) {
+      return '<section class="cm-banc" aria-labelledby="cm-banc-title"><header class="cm-pp__head"><h3 id="cm-banc-title">Bancada</h3></header><p class="cm-empty-note">' + escapeHtml(availability.reason) + "</p></section>";
     }
-    return '<section class="cm-promos" aria-labelledby="cm-promos-title"><header class="cm-pp__head"><h3 id="cm-promos-title">Promoções do Mercado Livre</h3><span>margem e LC em cada oferta</span></header>' + body + "</section>";
+    var corpo;
+    if (b.status === "loading" && !b.data) {
+      corpo = '<div class="vf-loading-state" role="status" data-cm-bancada="loading"><span class="vf-spinner" aria-hidden="true"></span><span>Montando a bancada: promoções do anúncio e cotação real…</span></div>';
+    } else if (b.status === "error") {
+      corpo = '<p class="cm-field-error" role="alert" data-cm-bancada="erro">' + escapeHtml(b.error) + ' <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-bancada-retry">Tentar de novo</button></p>';
+    } else {
+      var semPromos = b.data && b.data.promocoes && b.data.promocoes.disponivel === false
+        ? '<p class="cm-prod-meta" data-cm-bancada="sem-promos">Promoções indisponíveis: ' + escapeHtml(motivoTexto(b.data.promocoes.motivo)) + ".</p>" : "";
+      var manual = b.selecionado === "preco"
+        ? '<div class="cm-pp__row"><div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(money(shownPrice(item))) + "</strong></div>" +
+          '<label class="cm-pp__field"><span class="cm-pp__label">Novo preço</span><input class="vf-input vf-input--sm cm-pp__input" id="cm-new-price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeHtml(state.pricing.novoPreco) + '"></label>' +
+          bancadaPrecoAlvoHtml(item) + "</div>"
+        : "";
+      var ap = state.pricing && state.pricing.aplicacao;
+      var defasado = ap && (ap.status === "aplicado" || ap.status === "divergente") && ["atualizado", "nao_aplicavel"].indexOf(ap.snapshotStatus) === -1
+        ? '<p class="cm-banc__nota" data-cm-bancada="atual-defasado">A coluna Atual ainda é a de antes da alteração; ela é atualizada quando a margem for recalculada.</p>' : "";
+      corpo = defasado + bancadaSeletorHtml() + semPromos + manual + '<div class="cm-banc__resultado" id="cm-banc-resultado" aria-live="polite">' + bancadaResultadoHtml() + "</div>" + '<div id="cm-banc-botao">' + bancadaBotaoHtml() + "</div>";
+    }
+    return '<section class="cm-banc" aria-labelledby="cm-banc-title" data-cm-bancada-status="' + escapeHtml(b.status) + '"><header class="cm-pp__head"><h3 id="cm-banc-title">Bancada</h3><span>atual × cenário · cálculo do Motor</span></header>' + corpo + "</section>";
+  }
+
+  function bindCenarios() {
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-cenario]"), function (botao) {
+      botao.addEventListener("click", function () {
+        state.bancada.selecionado = botao.getAttribute("data-cenario");
+        renderDrawer();
+      });
+    });
+  }
+
+  /** Redesenha só o resultado e o botão (o input não perde foco nem cursor); `comSeletor` também os chips de veredito. */
+  function updateBancadaResultado(comSeletor) {
+    if (state.drawerTab !== "pricing") return;
+    var host = el("cm-banc-resultado");
+    if (!host) { renderBancada(); return; }
+    if (comSeletor === true) {
+      var seletor = el("cm-banc-cenarios");
+      if (seletor) {
+        seletor.outerHTML = bancadaSeletorHtml();
+        bindCenarios();
+      }
+    }
+    host.innerHTML = bancadaResultadoHtml();
+    var botao = el("cm-banc-botao");
+    if (botao) {
+      botao.innerHTML = bancadaBotaoHtml();
+      var review = el("cm-bancada-review");
+      if (review) review.addEventListener("click", reviewDaBancada);
+    }
+  }
+
+  function reviewDaBancada() {
+    var sel = bancadaSelecionada();
+    var r = sel.resultado;
+    if (!r || r.veredito === "bloqueado") return;
+    if (sel.tipo === "promo") {
+      var p = sel.promo.promocao;
+      reviewPricing("PROMOTION", { id: p.id, nome: p.nome, tipo: p.tipo }, null);
+      return;
+    }
+    var parsed = parsePriceInput(state.pricing.novoPreco);
+    if (!parsed.ok) return;
+    reviewPricing("PRICE", null, parsed.value);
   }
 
   function advancedSimulationHtml(item) {
@@ -3370,7 +3655,7 @@
   }
 
   function renderPricingTab(item) {
-    refs.drawerBody.innerHTML = manualPricingHtml(item) + advancedSimulationHtml(item) + promotionsHtml(item);
+    refs.drawerBody.innerHTML = bancadaHtml(item) + advancedSimulationHtml(item);
     bindPricingControls(item);
     scheduleCalcs();
   }
@@ -3380,18 +3665,22 @@
     if (input) {
       input.addEventListener("input", function () {
         state.pricing.novoPreco = input.value;
-        schedulePriceSimulation();
+        simularManual();
       });
     }
     Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-price-chip]"), function (chip) {
       chip.addEventListener("click", function () {
         state.pricing.novoPreco = Number(chip.getAttribute("data-price-chip")).toFixed(2).replace(".", ",");
-        schedulePriceSimulation(0);
+        state.bancada.selecionado = "preco";
+        simularManual(0);
         renderDrawer();
       });
     });
-    var review = el("cm-pp-review");
-    if (review) review.addEventListener("click", function () { reviewPricing("PRICE", null); });
+    bindCenarios();
+    var review = el("cm-bancada-review");
+    if (review) review.addEventListener("click", reviewDaBancada);
+    var retry = el("cm-bancada-retry");
+    if (retry) retry.addEventListener("click", function () { loadBancada(item); renderDrawer(); });
     var adv = el("cm-adv");
     if (adv) adv.addEventListener("toggle", function () { state.advancedOpen = adv.open; });
     Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-scenario-value]"), function (field) {
@@ -3406,62 +3695,16 @@
     });
     var reset = el("cm-scenario-reset");
     if (reset) reset.addEventListener("click", function () { initScenario(item); state.advancedOpen = true; renderDrawer(); });
-    var retry = el("cm-promos-retry");
-    if (retry) retry.addEventListener("click", function () { loadPromotions(true); });
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-promo-sim]"), function (button) {
-      button.addEventListener("click", function () { simulatePromotion(button.getAttribute("data-promo-sim")); });
-    });
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-promo-price]"), function (field) {
-      field.addEventListener("change", function () {
-        var ps = state.pricing.promoSim;
-        if (!ps) return;
-        ps.preco = field.value;
-        simulatePromotion(field.getAttribute("data-promo-price"), true);
-      });
-    });
-    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-promo-apply]"), function (button) {
-      button.addEventListener("click", function () {
-        var id = button.getAttribute("data-promo-apply");
-        var promo = promoById(id);
-        if (!promo) return;
-        // Alterar uma oferta ativa exige escolher o novo preço antes: abre o
-        // editor da oferta em vez de pré-visualizar o preço que já está lá.
-        var ps = state.pricing && state.pricing.promoSim;
-        var alterar = promo.escrita && promo.escrita.acao === "ALTERAR";
-        if (alterar && !(ps && ps.id === String(promo.id) && ps.status === "ok")) {
-          simulatePromotion(id);
-          return;
-        }
-        reviewPricing("PROMOTION", promo);
-      });
-    });
-  }
-
-  function promoById(id) {
-    var list = (state.promos && state.promos.list) || [];
-    return list.find(function (promo) { return String(promo.id) === String(id); }) || null;
   }
 
   /**
-   * `precoVisto` = o preço que a tela está MOSTRANDO ao operador. Começa com
-   * o da tabela; quando o backend informa o preço vivo do ML e ele difere, a
-   * tela passa a exibir o vivo (com aviso) e é ele que vai no preview — o
-   * compare-and-set entre preview e aplicar continua valendo.
+   * `precoVisto` = o preço que a tela está MOSTRANDO ao operador. Vem da tabela
+   * (snapshot) ou, depois de uma escrita, do preço confirmado pelo ML; o
+   * compare-and-set entre preview e aplicar continua valendo no servidor.
    */
   function shownPrice(item) {
     var p = state.pricing;
     return p && p.precoAoVivo !== null && p.precoAoVivo !== undefined ? p.precoAoVivo : currentPriceOf(item);
-  }
-
-  function adoptLivePrice(livePrice) {
-    var p = state.pricing;
-    var item = findSelectedItem();
-    if (!p || !item || livePrice === null || livePrice === undefined) return false;
-    var mostrado = shownPrice(item);
-    if (mostrado !== null && Math.abs(Number(livePrice) - mostrado) < 0.005) return false;
-    p.precoTabela = currentPriceOf(item);
-    p.precoAoVivo = Number(livePrice);
-    return true;
   }
 
   function pricingParams(extra) {
@@ -3474,132 +3717,6 @@
     }, extra || {});
   }
 
-  /** Simulação ao vivo com debounce; resposta de outro item/conta ou digitação antiga é descartada. */
-  function schedulePriceSimulation(delay) {
-    var p = state.pricing;
-    if (!p) return;
-    if (p.timer) root.clearTimeout(p.timer);
-    if (p.abort) p.abort.abort();
-    var parsed = parsePriceInput(p.novoPreco);
-    p.localError = parsed.ok || parsed.empty ? null : parsed.error;
-    if (!parsed.ok) {
-      p.simSeq = (p.simSeq || 0) + 1; // resposta pendente de um preço válido anterior não volta
-      p.status = "idle";
-      p.sim = parsed.empty ? p.sim : null;
-      if (parsed.empty) p.sim = null;
-      updatePricingResult();
-      return;
-    }
-    if (!pricingAvailability().ok) return;
-    p.status = "loading";
-    updatePricingResult();
-    var seq = state.drawerSeq;
-    var key = drawerKey();
-    // Sequência própria da simulação: o abort nem sempre chega antes da
-    // resposta — a digitação mais recente é sempre a única que renderiza.
-    p.simSeq = (p.simSeq || 0) + 1;
-    var simSeq = p.simSeq;
-    p.timer = root.setTimeout(function () {
-      p.timer = null;
-      p.abort = typeof AbortController !== "undefined" ? new AbortController() : null;
-      api.simulatePricing(pricingParams({ tipo: "PRICE", novoPreco: parsed.value }), p.abort && p.abort.signal).then(function (result) {
-        if (seq !== state.drawerSeq || key !== drawerKey() || result.aborted || simSeq !== p.simSeq) return;
-        if (!result.ok) {
-          p.status = "error";
-          p.error = result.error;
-          p.sim = null;
-        } else {
-          p.status = "ok";
-          p.sim = result;
-          p.error = null;
-          // Preço do ML mudou desde a leitura da tabela: mostra o vivo e
-          // recalcula com ele (os gates passam a comparar com o que a tela exibe).
-          if (result.atual && adoptLivePrice(result.atual.preco)) {
-            renderDrawer();
-            schedulePriceSimulation(0);
-            return;
-          }
-        }
-        renderDrawerHeader(findSelectedItem());
-        updatePricingResult();
-      });
-    }, delay === undefined ? 400 : delay);
-  }
-
-  /** Re-renderiza só o resultado (não o input, para não perder o foco/cursor). */
-  function updatePricingResult() {
-    if (state.drawerTab !== "pricing") return;
-    var host = el("cm-pp-result");
-    var item = findSelectedItem();
-    if (!host || !item) return;
-    var temp = document.createElement("div");
-    temp.innerHTML = manualPricingHtml(item);
-    var fresh = temp.querySelector("#cm-pp-result");
-    host.innerHTML = fresh ? fresh.innerHTML : "";
-    var review = el("cm-pp-review");
-    var freshReview = temp.querySelector("#cm-pp-review");
-    if (review && freshReview) review.disabled = freshReview.disabled;
-    var chipsNow = temp.querySelector(".cm-pp__chips");
-    var chipsHost = refs.drawerBody.querySelector(".cm-pp__chips");
-    if (chipsNow && !chipsHost) {
-      refs.drawerBody.querySelector(".cm-pp__row").appendChild(chipsNow);
-      Array.prototype.forEach.call(chipsNow.querySelectorAll("[data-price-chip]"), function (chip) {
-        chip.addEventListener("click", function () {
-          state.pricing.novoPreco = Number(chip.getAttribute("data-price-chip")).toFixed(2).replace(".", ",");
-          schedulePriceSimulation(0);
-          renderDrawer();
-        });
-      });
-    }
-  }
-
-  function simulatePromotion(promotionId, keepPrice) {
-    var promo = promoById(promotionId);
-    var p = state.pricing;
-    if (!promo || !p) return;
-    if (!p.promoSim || p.promoSim.id !== String(promo.id)) {
-      p.promoSim = { id: String(promo.id), preco: promo.precoFinal === null || promo.precoFinal === undefined ? "" : String(promo.precoFinal).replace(".", ","), status: "idle", sim: null, error: null, localError: null };
-    }
-    var ps = p.promoSim;
-    var parsed = parsePriceInput(ps.preco);
-    ps.localError = parsed.ok ? null : parsed.empty ? "Informe o preço da oferta para simular." : parsed.error;
-    if (!parsed.ok || !pricingAvailability().ok) { renderDrawer(); return; }
-    ps.status = "loading";
-    ps.seq = (ps.seq || 0) + 1;
-    var promoSeq = ps.seq;
-    renderDrawer();
-    var seq = state.drawerSeq;
-    var key = drawerKey();
-    api.simulatePricing(pricingParams({ tipo: "PROMOTION", promotionId: promo.id, novoPreco: parsed.value })).then(function (result) {
-      if (seq !== state.drawerSeq || key !== drawerKey() || !state.pricing.promoSim || state.pricing.promoSim !== ps || promoSeq !== ps.seq) return;
-      ps.status = result.ok ? "ok" : "error";
-      ps.sim = result.ok ? result : null;
-      ps.error = result.ok ? null : result.error;
-      renderDrawer();
-    });
-  }
-
-  /** Promoções do ITEM ABERTO, em paralelo: o drawer abre antes do ML responder. */
-  function loadPromotions(force) {
-    if (!pricingAvailability().ok || typeof api.getItemPromotions !== "function") return;
-    var item = findSelectedItem();
-    if (!item) return;
-    if (state.promos && state.promos.status === "ok" && !force) return;
-    var seq = state.drawerSeq;
-    var key = drawerKey();
-    state.promos = { status: "loading" };
-    api.getItemPromotions({ clientSlug: state.client.slug, clienteContaId: state.contaId, itemId: item.itemId }).then(function (result) {
-      if (seq !== state.drawerSeq || key !== drawerKey()) return;
-      state.promos = result.ok
-        ? { status: "ok", list: result.promocoes || [], atual: result.atual || null, contaCorreta: result.contaCorreta !== false, gates: result.gates || [], escritaHabilitada: result.escritaHabilitada === true }
-        : { status: "error", error: result.error || "Não foi possível carregar as promoções." };
-      if (result.ok && result.atual) adoptLivePrice(result.atual.preco);
-      if (state.drawerTab === "pricing") renderDrawer();
-      applyPendingPromo();
-    });
-    if (state.drawerTab === "pricing" && refs.drawer.classList.contains("is-open")) renderDrawer();
-  }
-
   // --- Preview da alteração (confirmação humana) ------------------------------
 
   function newIdempotencyKey() {
@@ -3609,18 +3726,11 @@
 
   var confirmRequestSeq = 0;
 
-  function reviewPricing(kind, promo) {
+  function reviewPricing(kind, promo, novoPreco) {
     var p = state.pricing;
     if (!p || !pricingAvailability().ok) return;
-    var novoPreco = null;
-    if (kind === "PRICE") {
-      var parsed = parsePriceInput(p.novoPreco);
-      if (!parsed.ok) return;
-      novoPreco = parsed.value;
-    } else if (p.promoSim && p.promoSim.id === String(promo.id)) {
-      var parsedPromo = parsePriceInput(p.promoSim.preco);
-      novoPreco = parsedPromo.ok ? parsedPromo.value : null;
-    }
+    // PRICE: o preço digitado (já validado pela Bancada). PROMOTION: null — o servidor lê a oferta ao vivo.
+    if (novoPreco === undefined) novoPreco = null;
     if (state.confirm && state.confirm.status === "applying") return;
     abortConfirmRequest();
     state.confirm = { kind: kind, promo: promo, novoPreco: novoPreco, status: "loading", preview: null, error: null, idempotencyKey: newIdempotencyKey(), result: null };
@@ -3801,12 +3911,10 @@
         else toast("Aplicado no Mercado Livre: " + (formatMoney(aplicacao.precoConfirmado) || "") + " (valor confirmado pelo ML).", "is-success");
         if (seq === state.drawerSeq && state.pricing) {
           state.pricing.aplicacao = aplicacao;
-          // A simulação era do preço anterior: nunca continuar exibindo-a
-          // como "confirmada ao vivo" depois da escrita.
-          state.pricing.sim = null;
-          state.pricing.status = "idle";
+          // O cenário era do preço anterior: depois da escrita a bancada recomeça do preço novo.
           state.pricing.novoPreco = "";
-          state.pricing.promoSim = null;
+          state.bancada.manual = novaBancada().manual;
+          state.bancada.selecionado = "preco";
           if (c.kind === "PRICE" && aplicacao.precoConfirmado !== null && aplicacao.precoConfirmado !== undefined) {
             state.pricing.precoTabela = null;
             state.pricing.precoAoVivo = aplicacao.precoConfirmado;
@@ -3846,6 +3954,7 @@
           state.pricing.aplicacao = result.aplicacao;
           if (["atualizado", "falhou", "nao_aplicavel", "propagacao_pendente"].indexOf(result.aplicacao.snapshotStatus) !== -1) {
             renderDrawerHeader(findSelectedItem());
+            if (result.aplicacao.snapshotStatus === "atualizado") recarregarBancada();
             if (result.aplicacao.snapshotStatus === "atualizado" && isSnapshotMode()) {
               toast("Margem recalculada com o preço confirmado.", "is-success");
               loadSnapshotPage();

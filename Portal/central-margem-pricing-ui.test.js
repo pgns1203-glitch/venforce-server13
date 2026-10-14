@@ -331,6 +331,14 @@ const MOCK_CLIENT = `
             mensagem: "Primeira leitura das promoções desta conta em andamento (10 de 100 anúncios). A lista aparece sozinha quando terminar.",
             sync: { state: "syncing", processed: 10, total: 100, autoTrigger: "reutilizado" }, oportunidades: [] });
         }
+        // Fonte legada (enquanto existir): com a data real do diagnóstico e, sem ela, "data desconhecida".
+        if (window.__pc.oppsModo === "legado" || window.__pc.oppsModo === "legado-sem-data") {
+          return Promise.resolve({ ok: true, disponivel: true,
+            fonte: { tipo: "diagnostico_legado", geradoEm: window.__pc.oppsModo === "legado" ? "2026-09-29T08:00:00Z" : null, frescor: "atual" },
+            vendas: { realizado: null, realizado_motivo: "CENTRAL_VENDAS_FALHOU" },
+            criterio: "c.", page: 1, limit: 20, total: 1, hasNext: false,
+            oportunidades: [{ itemId: "MLBL1", titulo: "Legado 1", precoAtual: 100, margemAtual: 0.2, promocao: { nome: "Oferta", tipo: "DEAL" }, precoPromocao: 90, retornoMl: null, margemDepois: 0.1, unidades: null, receita: null, motivo: "", estimado: true }] });
+        }
         var stale = window.__pc.oppsModo === "stale";
         return Promise.resolve({ ok: true, disponivel: true,
           fonte: { tipo: stale ? "promo_snapshot" : undefined, geradoEm: "2026-09-29T08:00:00Z", frescor: stale ? "atencao" : "atual" },
@@ -769,6 +777,23 @@ async function run() {
       await waitFor(cdp, "document.querySelector('#cm-opps-host tr[data-opp]')", "lista do snapshot stale não apareceu");
       const meta = await cdp.evaluate("document.getElementById('cm-opportunities').innerText");
       assert.ok(meta.includes("promoções de") && meta.includes("desatualizado, atualizando"), meta);
+    });
+
+    await check("oportunidades pelo diagnóstico legado: badge com a data real; sem data → 'data desconhecida' (nunca '—'); vendas indisponíveis não viram '0 un.'", async () => {
+      await cdp.evaluate("window.__pc.oppsModo = 'legado'; window.VF.context.setConta(10)");
+      await waitFor(cdp, "document.getElementById('cm-opps-meta').textContent.indexOf('diagnóstico legado') !== -1 && document.querySelector('#cm-opps-host tr[data-opp]')", "lista legada não apareceu");
+      const comData = await cdp.evaluate("document.getElementById('cm-opps-meta').textContent");
+      assert.ok(comData.includes("diagnóstico legado de") && /29\/09/.test(comData), comData);
+      assert.ok(!comData.includes("data desconhecida"), comData);
+      const linha = await cdp.evaluate("document.querySelector('#cm-opps-host tr[data-opp]').textContent");
+      assert.ok(!/\b0 un\./.test(linha), `vendas indisponíveis viraram '0 un.': ${linha}`);
+
+      await cdp.evaluate("window.__pc.oppsModo = 'legado-sem-data'; window.VF.context.setConta(11)");
+      await waitFor(cdp, "document.getElementById('cm-opps-meta').textContent.indexOf('data desconhecida') !== -1", "badge sem data não mostrou 'data desconhecida'");
+      const semData = await cdp.evaluate("document.getElementById('cm-opps-meta').textContent");
+      assert.ok(semData.includes("diagnóstico legado de data desconhecida"), semData);
+      assert.ok(!/de —/.test(semData), semData);
+      await cdp.evaluate("window.__pc.oppsModo = null");
     });
 
     await check("oportunidades paginadas no SERVIDOR: a Central envia page/limit, mostra total e navega por hasNext; leitura herdada identificada", async () => {

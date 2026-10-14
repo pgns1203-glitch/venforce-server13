@@ -5,7 +5,7 @@
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://127.0.0.1:1/vf-test";
 
 const assert = require("assert");
-const { listarOportunidades } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
+const { listarOportunidades, motivoForaDoRanking, MOTIVO_FORA_DO_RANKING } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
 const { atualizarSnapshotDoItem } = require("../services/motorMargem/precificacao/precificacaoSnapshotItem");
 const { computeMargin } = require("../services/motorMargem/core/marginEngine");
 const { paginaReferencia, lerParametrosPagina } = require("./helpers/oportunidadesReferencia");
@@ -122,6 +122,57 @@ cenario("ranking explicável: com retorno ML > mais unidades > maior margem; mar
   assert.ok(/retorno ML/.test(mlb2.motivo));
   assert.strictEqual(r.oportunidades[1].precoPromocao, 95, "MLB3: a promoção de maior margem do mesmo item");
   assert.strictEqual(r.fonte.frescor, "atual");
+});
+
+cenario("motivoForaDoRanking: started/active = ativa; P' >= preço atual (ou sem preço atual) = sem_desconto_efetivo; senão elegível", () => {
+  assert.strictEqual(motivoForaDoRanking({ status: "started", precoPromo: 90, precoAtual: 100 }), MOTIVO_FORA_DO_RANKING.ATIVA);
+  assert.strictEqual(motivoForaDoRanking({ status: "ACTIVE", precoPromo: 90, precoAtual: 100 }), "ativa");
+  assert.strictEqual(motivoForaDoRanking({ status: "candidate", precoPromo: 100, precoAtual: 100 }), "sem_desconto_efetivo", "P' igual ao atual não é desconto");
+  assert.strictEqual(motivoForaDoRanking({ status: "candidate", precoPromo: 104, precoAtual: 100 }), "sem_desconto_efetivo");
+  assert.strictEqual(motivoForaDoRanking({ status: "pending", precoPromo: 90, precoAtual: null }), "sem_desconto_efetivo", "sem preço atual não afirma desconto");
+  assert.strictEqual(motivoForaDoRanking({ status: "candidate", precoPromo: 94.9 - 5.13, precoAtual: 94.9 }), null);
+  assert.strictEqual(motivoForaDoRanking({ status: null, precoPromo: 90, precoAtual: 100 }), null, "status vazio (legado) segue aceito");
+});
+
+cenario("fonte LEGADA: promoção started/active e P' >= preço atual ficam fora do ranking", async () => {
+  const itens = [
+    diagRow("MLB1", { preco: 90 }), // elegível
+    diagRow("MLB2", { preco: 90, status: "started" }), // ativa
+    diagRow("MLB3", { preco: 90, status: "active" }), // ativa
+    diagRow("MLB4", { preco: 100 }), // P' = preço atual
+    diagRow("MLB5", { preco: 105 }), // P' > preço atual
+    diagRow("MLB6", { preco: 90, status: "pending" }), // elegível
+  ];
+  const snaps = ["MLB1", "MLB2", "MLB3", "MLB4", "MLB5", "MLB6"].map((id) => snapRow(id));
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ itens, snaps })));
+  assert.strictEqual(r.fonte.tipo, "diagnostico_legado");
+  assert.deepStrictEqual(r.oportunidades.map((o) => o.itemId).sort(), ["MLB1", "MLB6"]);
+  assert.ok(r.oportunidades.every((o) => o.precoPromocao < o.precoAtual));
+  assert.strictEqual(r.total, 2);
+});
+
+cenario("fonte PROMO SNAPSHOT: mesma regra — started/active e P' >= preço atual fora; o resto entra", async () => {
+  const promos = [
+    { item_id: "MLB1", chave: "a", preco_promo: 90, retorno: 0, promo_status: "candidate" },
+    { item_id: "MLB2", chave: "b", preco_promo: 90, retorno: 3.3, promo_status: "started" },
+    { item_id: "MLB3", chave: "c", preco_promo: 90, retorno: 0, promo_status: "active" },
+    { item_id: "MLB4", chave: "d", preco_promo: 100, retorno: 0, promo_status: "candidate" },
+    { item_id: "MLB5", chave: "e", preco_promo: 99.99, retorno: 0, promo_status: "pending" },
+  ];
+  const snapPorItem = new Map(["MLB1", "MLB2", "MLB3", "MLB4", "MLB5"].map((id) => [id, snapRow(id)]));
+  const d = deps(fakeDb());
+  d.promo = {
+    estadoComAutoTrigger: async () => ({ estado: { state: "ready", hasSnapshot: true, snapshotRunId: 9, snapshotAt: new Date().toISOString(), total: 5, workerEnabled: true }, gatilho: { acao: "nenhuma" } }),
+    syncPublico: (e) => ({ ...e }),
+    listarPagina: async ({ vendasPorMlb, page, limit }) => {
+      const res = paginaReferencia({ promos, snapPorItem, vendasPorMlb, page, limit });
+      return { total: Number(res.rows[0].total_oportunidades), rows: res.rows.filter((x) => x.item_id) };
+    },
+  };
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, d);
+  assert.strictEqual(r.fonte.tipo, "promo_snapshot");
+  assert.deepStrictEqual(r.oportunidades.map((o) => o.itemId).sort(), ["MLB1", "MLB5"]);
+  assert.ok(r.oportunidades.every((o) => o.precoPromocao < o.precoAtual && !["started", "active"].includes(o.promocao.status)));
 });
 
 cenario("sem taxa de comissão ou imposto no snapshot: fica fora (nunca assume zero numa oportunidade)", async () => {

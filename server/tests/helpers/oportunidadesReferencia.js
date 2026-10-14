@@ -26,7 +26,7 @@ function paginaReferencia({ promos, snapPorItem, vendasPorMlb = new Map(), page,
     if (!(Number(p.preco_promo) > 0)) continue;
     if (snap.cost == null || snap.tax_rate == null || snap.commission_rate == null) continue;
     const c = montarCandidata({
-      itemId: String(p.item_id), promocao: p, precoPromo: Number(p.preco_promo), retornoMl: Number(p.retorno) || 0,
+      itemId: String(p.item_id), promocao: { ...p, status: String(p.promo_status || "").toLowerCase() || null }, precoPromo: Number(p.preco_promo), retornoMl: Number(p.retorno) || 0,
       snap, titulo: p.fonte_titulo || null, vendasPorMlb,
     });
     if (c) candidatas.push({ ...c, _snap: snap });

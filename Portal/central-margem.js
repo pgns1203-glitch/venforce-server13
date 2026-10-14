@@ -1729,9 +1729,12 @@
     if (fonte.itensHerdados) extra.push(formatInt(fonte.itensHerdados) + " com leitura anterior");
     var syncTxt = oppsSyncTexto(o);
     if (syncTxt) extra.push(syncTxt);
-    refs.oppsMeta.textContent = origem + (formatShortDateTime(fonte.geradoEm) || "—") + (extra.length ? " · " + extra.join(" · ") : "") + " · estimativa";
+    // Data real da fonte; sem data (ou inválida) diz "data desconhecida" — nunca "—".
+    var geradoTxt = fonte.geradoEm ? formatShortDateTime(fonte.geradoEm) : null;
+    if (!geradoTxt || geradoTxt === "—") geradoTxt = "data desconhecida";
+    refs.oppsMeta.textContent = origem + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "") + " · estimativa";
     if (!o.oportunidades || !o.oportunidades.length) {
-      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="vazio">Nenhuma promoção disponível com margem pós-promoção positiva nesta conta.</p>';
+      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="vazio">Nenhuma promoção disponível que baixe o preço com margem pós-promoção positiva nesta conta (promoções já ativas não contam).</p>';
       return;
     }
     // Promoção cuja leitura falhou no último run: é a última leitura boa.

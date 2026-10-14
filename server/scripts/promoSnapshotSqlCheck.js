@@ -249,7 +249,10 @@ check("paginação e filtros do snapshot no servidor", async ({ db }) => {
 // SQL ser comparada com a referência JS em todos os ramos.
 function linhaVariada(i) {
   const itemId = `MLB${i}`;
-  const base = linha(itemId, { id: `P-${i}`, preco: 60 + (i * 7) % 45, status: i % 17 === 0 ? "finished" : "candidate" });
+  // `started`/`active` (promoção em andamento) e preço >= o do snapshot (100)
+  // ficam fora do ranking: o SQL e a régua JS precisam concordar.
+  const status = i % 17 === 0 ? "finished" : i % 19 === 0 ? "started" : i % 31 === 0 ? "active" : "candidate";
+  const base = linha(itemId, { id: `P-${i}`, preco: 60 + (i * 7) % 45, status });
   base.subsidioMl = i % 5 === 0 ? (i % 3) + 1.5 : null;
   if (i % 23 === 0) base.precoFinal = null;
   const extra = i % 4 === 0 ? [{ ...linha(itemId, { id: `Q-${i}`, tipo: "SMART", preco: 70 + (i % 30) }), subsidioMl: i % 8 === 0 ? 2 : null }] : [];
@@ -287,7 +290,8 @@ check("Oportunidades paginadas NO BANCO: 5.000 anúncios → a consulta devolve 
 
   // Referência JS: todas as promoções disponíveis + snapshots, régua de montarCandidata.
   const todas = await pg.query(
-    `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.herdado AS promo_herdado
+    `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.herdado AS promo_herdado,
+            p.status AS promo_status
        FROM promo_snapshot_itens p
       WHERE p.run_id = $1 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`, [runId]);
   const snaps = await pg.query(`SELECT * FROM margin_projection_snapshots WHERE cliente_conta_id = 7`);
@@ -304,6 +308,10 @@ check("Oportunidades paginadas NO BANCO: 5.000 anúncios → a consulta devolve 
     const ref = paginaReferencia({ promos: todas.rows, snapPorItem, vendasPorMlb: vendas, page, limit });
     assert.strictEqual(sqlPg.total, totalRef, `total na página ${page}`);
     assert.ok(sqlPg.rows.length <= limit, "nunca mais que `limit` linhas saem do banco");
+    assert.ok(
+      sqlPg.rows.every((r) => !["started", "active"].includes(String(r.promo_status).toLowerCase()) && Number(r.preco_promo) < Number(r.price)),
+      "nenhuma promoção em andamento nem com P' >= preço atual no ranking"
+    );
     const esperado = ref.rows.filter((r) => r.item_id).map((r) => `${r.item_id}|${r.chave}|${Number(r.margem_depois)}`);
     const obtido = sqlPg.rows.map((r) => `${r.item_id}|${r.chave}|${Number(r.margem_depois)}`);
     assert.deepStrictEqual(obtido, esperado, `página ${page} idêntica à régua JS`);
@@ -317,7 +325,7 @@ check("Oportunidades paginadas NO BANCO: 5.000 anúncios → a consulta devolve 
   assert.strictEqual(pg3.rows.length, 20);
   assert.ok(pg3.rows.every((r) => r.snap_titulo !== "outra conta"));
   const q = sqlOportunidadesPaginadas({
-    fonteSql: `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno FROM promo_snapshot_itens p
+    fonteSql: `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.status AS promo_status FROM promo_snapshot_itens p
                 WHERE p.run_id = $1 AND p.cliente_conta_id = $2 AND p.seller_id = $3 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
     paramsFonte: [runId, 7, "555"], clienteContaId: 7, vendasPorMlb: vendas, page: 3, limit: 20,
   });

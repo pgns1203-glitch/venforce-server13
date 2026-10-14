@@ -14,6 +14,10 @@
 //   margem    = ROUND(lucro / preço, 6) > 0
 //   exige preço > 0, custo, imposto e taxa de comissão (frete/taxa fixa
 //   ausentes valem 0, como no Motor)
+//   fora do ranking: promoção `started`/`active` ("ativa") e P' >= preço
+//   atual do anúncio ("sem_desconto_efetivo")
+//
+// `fonteSql` precisa expor também `promo_status` (texto; nulo/vazio = aceito).
 // Ordem: com retorno ML > mais unidades > maior margem > item_id; dentro do
 // anúncio fica a promoção melhor pela mesma régua. A equivalência com a
 // régua JS é verificada contra Postgres real em
@@ -50,6 +54,10 @@ function sqlOportunidadesPaginadas({ fonteSql, paramsFonte = [], clienteContaId,
          AND s.item_id = pr.item_id AND s.catalog_missing_since IS NULL
         LEFT JOIN vendas v ON v.item_id = pr.item_id
        WHERE pr.preco_promo > 0 AND s.cost IS NOT NULL AND s.tax_rate IS NOT NULL AND s.commission_rate IS NOT NULL
+         -- Fora do ranking (precificacaoOportunidadesService.motivoForaDoRanking):
+         -- promoção em andamento = "ativa"; P' >= preço atual = "sem_desconto_efetivo".
+         AND LOWER(COALESCE(pr.promo_status, '')) NOT IN ('started', 'active')
+         AND s.price IS NOT NULL AND pr.preco_promo < s.price
     ),
     melhor AS (
       SELECT DISTINCT ON (c.item_id) c.*, ROUND(c.lucro / c.preco_promo, 6) AS margem_depois,

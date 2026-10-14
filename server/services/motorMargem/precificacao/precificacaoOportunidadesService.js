@@ -84,6 +84,25 @@ async function consultaOuVazio(db, sql, params) {
   }
 }
 
+// ─── Elegibilidade para o ranking ────────────────────────────────────────────
+// Oportunidade = promoção que o anúncio AINDA PODE entrar e que baixa o preço.
+//   - promoção já em andamento (`started`/`active`) → `ativa`: o anúncio já está
+//     nela, não é oportunidade (e o preço atual já é o promocional);
+//   - P' >= preço atual → `sem_desconto_efetivo`: entrar não baixaria o preço.
+// A mesma regra está espelhada em precificacaoOportunidadesSql (filtro no banco).
+const STATUS_PROMOCAO_ATIVA = new Set(["started", "active"]);
+const MOTIVO_FORA_DO_RANKING = { ATIVA: "ativa", SEM_DESCONTO: "sem_desconto_efetivo" };
+
+/** null = elegível; senão o motivo público de ficar fora do ranking. */
+function motivoForaDoRanking({ status, precoPromo, precoAtual }) {
+  if (STATUS_PROMOCAO_ATIVA.has(String(status || "").toLowerCase())) return MOTIVO_FORA_DO_RANKING.ATIVA;
+  const p = num(precoPromo);
+  const atual = num(precoAtual);
+  // Sem preço atual não há como afirmar desconto: fora, nunca "elegível por falta de dado".
+  if (p === null || atual === null || p >= atual) return MOTIVO_FORA_DO_RANKING.SEM_DESCONTO;
+  return null;
+}
+
 function motivoDa(linha) {
   const partes = [];
   if (linha.retornoMl) partes.push(`retorno ML de R$ ${linha.retornoMl.toFixed(2).replace(".", ",")}`);
@@ -95,6 +114,7 @@ function motivoDa(linha) {
 // Uma candidata a partir de (promoção, snapshot de margem) — mesma régua para
 // as duas fontes. null = fora (sem margem calculável/positiva).
 function montarCandidata({ itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false }) {
+  if (motivoForaDoRanking({ status: promocao && promocao.status, precoPromo, precoAtual: snap.price })) return null;
   const taxa = num(snap.commission_rate);
   const calc = computeMargin({
     price: precoPromo,
@@ -176,7 +196,7 @@ function periodoPublico(periodo) {
   return periodo ? { dateFrom: periodo.dateFrom, dateTo: periodo.dateTo, rotulo: periodo.rotulo || null } : null;
 }
 
-const CRITERIO = "Promoção disponível com margem pós-promoção positiva; ordem: com retorno ML, mais unidades vendidas, maior margem.";
+const CRITERIO = "Promoção disponível (que o anúncio ainda não está participando) que baixa o preço, com margem pós-promoção positiva; ordem: com retorno ML, mais unidades vendidas, maior margem.";
 
 // Linha da página (já filtrada/ordenada no banco) → oportunidade, com a
 // mesma régua de montarCandidata.
@@ -362,4 +382,4 @@ async function listarOportunidades(params = {}, deps = {}) {
   };
 }
 
-module.exports = { listarOportunidades, montarCandidata, ordenarDeduplicarPaginar };
+module.exports = { listarOportunidades, montarCandidata, ordenarDeduplicarPaginar, motivoForaDoRanking, MOTIVO_FORA_DO_RANKING };

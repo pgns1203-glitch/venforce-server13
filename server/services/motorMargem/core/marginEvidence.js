@@ -133,7 +133,24 @@ function createEvidenceBag() {
     return Array.from(byField.keys());
   }
 
-  return { add, list, fields };
+  // Insumo que a fonte entregou mas NÃO pode ser usado (ex.: alíquota da Base
+  // fora de [0, 1]). Não é evidência (não entra em nenhum cálculo) nem
+  // "ausente": o item vira UNVALIDATED com este motivo, em vez de assumir 0
+  // ou converter a escala em silêncio.
+  const invalidInputs = [];
+
+  function invalid(fieldKey, { code, reason, source = null, raw = null, observedAt = null } = {}) {
+    if (!fieldKey || !code) return null;
+    const entry = { field: fieldKey, code, reason: reason || code, source, raw, observedAt };
+    invalidInputs.push(entry);
+    return entry;
+  }
+
+  function listInvalid() {
+    return invalidInputs.slice();
+  }
+
+  return { add, list, fields, invalid, listInvalid };
 }
 
 // Escolhe a observação mais forte de um conjunto: maior força de fonte; empate

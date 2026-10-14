@@ -10,7 +10,7 @@
 
 const real = require("../../services/promoSnapshot/promoSnapshotRepository");
 const { MlTimeoutError } = require("../../utils/mlClient");
-const { paginaReferencia } = require("./oportunidadesReferencia");
+const { elegiveisReferencia } = require("./oportunidadesReferencia");
 
 class Relogio {
   constructor(inicio = Date.parse("2026-10-01T12:00:00Z")) { this.t = inicio; }
@@ -304,10 +304,10 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       return { total: todas.length, linhas: todas.slice((page - 1) * limit, page * limit).map(real.linhaPublica) };
     },
 
-    // Mesma régua/ordem/página da consulta real (referência JS).
-    async listarOportunidadesPaginadas({ clienteContaId, sellerId, runId, vendasPorMlb, page, limit }) {
-      reg("listarOportunidadesPaginadas");
-      if (!sellerId) throw new Error("listarOportunidadesPaginadas: sellerId é obrigatório");
+    // Mesma seleção da consulta real (referência JS): só elegíveis, sem cálculo.
+    async listarOportunidadesElegiveis({ clienteContaId, sellerId, runId }) {
+      reg("listarOportunidadesElegiveis");
+      if (!sellerId) throw new Error("listarOportunidadesElegiveis: sellerId é obrigatório");
       const promos = st.itens.filter((i) => i.run_id === runId && i.cliente_conta_id === clienteContaId && i.seller_id === String(sellerId) &&
         Number(i.preco_final) > 0 && ["candidate", "started", "active", "pending"].includes(i.status))
         .map((i) => ({
@@ -321,11 +321,9 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
         const s = marginSnaps.get(`${clienteContaId}:${p.item_id}`);
         if (s) snapPorItem.set(p.item_id, s);
       }
-      const { rows } = paginaReferencia({ promos, snapPorItem, vendasPorMlb, page, limit });
-      const total = rows.length ? Number(rows[0].total_oportunidades || 0) : 0;
-      const pagina = rows.filter((r) => r.item_id);
-      repo._linhasOportunidadesDevolvidas = pagina.length;
-      return { total, rows: pagina };
+      const { rows } = elegiveisReferencia({ promos, snapPorItem });
+      repo._linhasOportunidadesDevolvidas = rows.length;
+      return { rows };
     },
 
     async listarContasElegiveis({ limit, failedRetryMinutes }) {

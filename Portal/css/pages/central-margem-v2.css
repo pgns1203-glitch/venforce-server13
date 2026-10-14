@@ -2026,16 +2026,19 @@
 .vf-page-central-margem .cm-divs__crit { color: var(--vf-danger); font-weight: var(--vf-fw-semibold); }
 .vf-page-central-margem .cm-divs__scope { color: var(--vf-text-muted); }
 .vf-page-central-margem .cm-div-card[hidden],
-.vf-page-central-margem .cm-opps[hidden] { display: none; }
 
-.vf-page-central-margem .cm-opps__card { overflow: hidden; }
-.vf-page-central-margem .cm-opps-table { min-width: 880px; }
+.vf-page-central-margem .cm-opps-table { min-width: 940px; }
+.vf-page-central-margem .cm-opps-table th,
+.vf-page-central-margem .cm-opps-table td { padding-inline: 6px; vertical-align: top; }
+.vf-page-central-margem .cm-opps-table th { white-space: normal; line-height: 1.25; }
+.vf-page-central-margem .cm-opps-table td.num { white-space: nowrap; font-size: var(--vf-fs-2xs); }
+.vf-page-central-margem .cm-opps-table td:first-child { min-width: 150px; }
 .vf-page-central-margem .cm-opps-why { max-width: 280px; color: var(--vf-text-secondary); font-size: var(--vf-fs-2xs); }
 .vf-page-central-margem .cm-opps-herdada { color: var(--vf-warning-text, var(--vf-text-secondary)); }
 .vf-page-central-margem .cm-opps-pager { display: flex; align-items: center; justify-content: flex-end; gap: var(--vf-sp-2); padding: var(--vf-sp-2) var(--vf-sp-3); border-top: 1px solid var(--vf-border); }
 .vf-page-central-margem .cm-opps-pager__range { margin-right: auto; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
 .vf-page-central-margem .cm-opps-foot { margin: 0; padding: var(--vf-sp-2) var(--vf-sp-3); color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); border-top: 1px solid var(--vf-border); }
-.vf-page-central-margem .cm-opps__card > .cm-empty-note { margin: 0; padding: var(--vf-sp-3); }
+.vf-page-central-margem .cm-promos__host > .cm-empty-note { margin: 0; padding: var(--vf-sp-3); }
 
 .vf-page-central-margem .cm-link {
   color: var(--vf-primary-strong);
@@ -2451,3 +2454,47 @@
   color: var(--vf-warning-strong);
   font-size: var(--vf-fs-2xs);
 }
+
+
+/* ── Abas da Central (Precificar · Promoções · Diagnóstico) ───────────────
+   Mesma neutralização do drawer: `.vf-tabs` v1 vaza para a v2 e estica as abas. */
+.vf-page-central-margem .cm-sheet__tabs {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 0 var(--vf-sp-4);
+  border: 0;
+  border-bottom: 1px solid var(--vf-border);
+  border-radius: 0;
+  background: var(--vf-surface);
+}
+.vf-page-central-margem .cm-sheet__tabs .vf-tab {
+  flex: 0 0 auto;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* ── Aba Promoções ─────────────────────────────────────────────────────── */
+.vf-page-central-margem .cm-promos[hidden] { display: none; }
+.vf-page-central-margem .cm-promos__bar {
+  display: flex; align-items: center; flex-wrap: wrap; gap: var(--vf-sp-2);
+  padding: var(--vf-sp-2) var(--vf-sp-3); border-bottom: 1px solid var(--vf-border);
+}
+.vf-page-central-margem .cm-promos__badge { margin-right: auto; color: var(--vf-text-secondary); font-size: var(--vf-fs-xs); }
+.vf-page-central-margem .cm-promos__live { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
+.vf-page-central-margem .cm-promos__host { overflow-x: auto; }
+.vf-page-central-margem .cm-promo-arrow { color: var(--vf-text-muted); padding: 0 var(--vf-sp-1); }
+.vf-page-central-margem .cm-promo-delta { display: block; font-size: var(--vf-fs-2xs); }
+.vf-page-central-margem .cm-promo-delta.is-good { color: var(--vf-success-strong); }
+.vf-page-central-margem .cm-promo-delta.is-bad { color: var(--vf-danger-strong); }
+.vf-page-central-margem .cm-promo-flags { display: flex; flex-wrap: wrap; gap: var(--vf-sp-1); margin-top: var(--vf-sp-1); }
+.vf-page-central-margem .cm-promo-flag { font-size: var(--vf-fs-2xs); color: var(--vf-text-secondary); }
+.vf-page-central-margem .cm-promo-flag.is-warn { color: var(--vf-warning-text, var(--vf-text-secondary)); }
+.vf-page-central-margem .cm-promo-more {
+  display: inline-block; margin-top: var(--vf-sp-1); padding: 0; border: 0; background: none;
+  color: var(--vf-primary-strong); font-size: var(--vf-fs-2xs); cursor: pointer; text-decoration: underline;
+}
+.vf-page-central-margem .cm-promo-options > td { padding: 0; background: var(--vf-bg); }
+.vf-page-central-margem .cm-promo-options[hidden] { display: none; }
+.vf-page-central-margem .cm-promo-options table { width: 100%; }
+.vf-page-central-margem .cm-promo-options th,
+.vf-page-central-margem .cm-promo-options td { font-size: var(--vf-fs-2xs); }

@@ -304,9 +304,17 @@ function padraoBusca(termo) {
   return `%${String(termo).replace(/[\\%_]/g, "\\$&")}%`;
 }
 
+/**
+ * `statusOverrides` = { itemIds: string[], statuses: string[] } (paralelos):
+ * anúncios cujo status EFETIVO difere do persistido (ex.: o retorno ML de uma
+ * promoção em andamento tirou o anúncio de "Prejuízo" — margemAtualRebate).
+ * Com overrides, filtro por status, KPIs por status e ordenação por status
+ * passam a usar o status efetivo (`filtro.statusExpr`); sem overrides o SQL é
+ * exatamente o de antes (`status`).
+ */
 function montarFiltroSnapshots({
   clienteId, clienteContaId, marketplace = "meli", incluirForaDoCatalogo = false, somenteForaDoCatalogo = false,
-  status = null, refreshStatus = null, confianca = null, statusAnuncio = null, busca = null,
+  status = null, refreshStatus = null, confianca = null, statusAnuncio = null, busca = null, statusOverrides = null,
 }) {
   if (!clienteId) throw new Error("montarFiltroSnapshots: clienteId é obrigatório.");
   if (!clienteContaId) throw new Error("montarFiltroSnapshots: clienteContaId é obrigatório.");
@@ -315,13 +323,28 @@ function montarFiltroSnapshots({
   if (somenteForaDoCatalogo) condicoes.push("catalog_missing_since IS NOT NULL");
   else if (!incluirForaDoCatalogo) condicoes.push("catalog_missing_since IS NULL");
 
+  let statusExpr = "status";
+  const ids = statusOverrides && Array.isArray(statusOverrides.itemIds) ? statusOverrides.itemIds.map(String) : [];
+  const novos = statusOverrides && Array.isArray(statusOverrides.statuses) ? statusOverrides.statuses : [];
+  if (ids.length) {
+    if (ids.length !== novos.length || novos.some((v) => !STATUS_VALIDOS.includes(v))) {
+      throw new Error("montarFiltroSnapshots: statusOverrides inválido (listas paralelas de item e status válido).");
+    }
+    params.push(ids);
+    const iIds = params.length;
+    params.push(novos);
+    const iNovos = params.length;
+    // Item sem override → array_position é NULL → subscrito NULL → COALESCE cai no status persistido.
+    statusExpr = `COALESCE(($${iNovos}::text[])[array_position($${iIds}::text[], item_id)], status)`;
+  }
+
   function lista(coluna, valores, validos) {
     const aceitos = (Array.isArray(valores) ? valores : []).filter((v) => validos.includes(v));
     if (!aceitos.length) return;
     params.push(aceitos);
     condicoes.push(`${coluna} = ANY($${params.length}::text[])`);
   }
-  lista("status", status, STATUS_VALIDOS);
+  lista(statusExpr, status, STATUS_VALIDOS);
   lista("refresh_status", refreshStatus, REFRESH_STATUS_VALIDOS);
   lista("confidence_level", confianca, CONFIANCA_VALIDOS);
   // O escopo indexado de cliente+conta+marketplace é aplicado antes deste
@@ -335,7 +358,7 @@ function montarFiltroSnapshots({
     const n = params.length;
     condicoes.push(`(item_id ILIKE $${n} OR sku ILIKE $${n} OR titulo ILIKE $${n})`);
   }
-  return { condicoes, params };
+  return { condicoes, params, statusExpr };
 }
 
 // Ordenação por WHITELIST (M6). A chave pública vira um fragmento SQL fixo;
@@ -347,10 +370,21 @@ function montarFiltroSnapshots({
 const ORDENACOES = {
   margin_percent: "margin_percent",
   profit: "profit",
-  status: "array_position(ARRAY['UNVALIDATED','SUSPECT_DATA','LOSS','LOW_MARGIN','RECONCILING','HEALTHY']::text[], status)",
+  // __STATUS__ vira o status efetivo (filtro.statusExpr) em queryProjectionSnapshotsPage.
+  status: "array_position(ARRAY['UNVALIDATED','SUSPECT_DATA','LOSS','LOW_MARGIN','RECONCILING','HEALTHY']::text[], __STATUS__)",
   updated_at: "updated_at",
   calculated_at: "calculated_at",
   titulo: "titulo",
+  // Worklist da Central: prejuízo → abaixo da meta → resto, e dentro de cada grupo a
+  // maior receita realizada primeiro (ver ORDENACOES_COMPOSTAS; a direção é fixa).
+  worklist: "CASE WHEN __STATUS__ = 'LOSS' THEN 0 WHEN __STATUS__ = 'LOW_MARGIN' THEN 1 ELSE 2 END",
+};
+
+// Ordenações com mais de uma chave: a expressão acima vem primeiro (ASC) e
+// `__RECEITA__` vira a receita realizada por MLB (objeto JSON enviado como
+// parâmetro, lookup por chave — sem junção nem varredura de array).
+const ORDENACOES_COMPOSTAS = {
+  worklist: "__EXPR__ ASC, __RECEITA__ DESC, item_id ASC",
 };
 
 // Aliases do contrato ao vivo (motorMargemService.ORDENACOES).
@@ -369,6 +403,11 @@ function resolverOrdenacao({ ordenacao = null, direcao = null } = {}) {
     dir = dir || dirAlias;
   }
   if (!Object.prototype.hasOwnProperty.call(ORDENACOES, chave)) return null;
+  if (ORDENACOES_COMPOSTAS[chave]) {
+    // Direção fixa: pedir DESC numa ordem composta não tem significado.
+    if (dir && dir !== "ASC") return null;
+    return { chave, direcao: "ASC", orderBy: ORDENACOES_COMPOSTAS[chave].replace("__EXPR__", ORDENACOES[chave]) };
+  }
   if (!dir) dir = chave === "updated_at" || chave === "calculated_at" ? "DESC" : "ASC";
   if (dir !== "ASC" && dir !== "DESC") return null;
   return { chave, direcao: dir, orderBy: `${ORDENACOES[chave]} ${dir} NULLS LAST, item_id ASC` };
@@ -380,12 +419,19 @@ function resolverOrdenacao({ ordenacao = null, direcao = null } = {}) {
 // páginas).
 const ORDEM_PADRAO = resolverOrdenacao().orderBy;
 
-async function queryProjectionSnapshotsPage({ filtro, orderBy = ORDEM_PADRAO, limit, offset, db = pool }) {
-  const params = [...filtro.params, limit, offset];
+async function queryProjectionSnapshotsPage({ filtro, orderBy = ORDEM_PADRAO, limit, offset, receitas = null, db = pool }) {
+  const params = [...filtro.params];
+  let ordem = String(orderBy).replace(/__STATUS__/g, filtro.statusExpr || "status");
+  if (ordem.includes("__RECEITA__")) {
+    // Receita realizada por MLB como objeto JSON ({ "MLB1": 1234.5 }): sem receita conhecida = 0.
+    params.push(JSON.stringify(receitas || {}));
+    ordem = ordem.replace(/__RECEITA__/g, `COALESCE(($${params.length}::jsonb ->> item_id)::numeric, 0)`);
+  }
+  params.push(limit, offset);
   const result = await db.query(
     `/* ms:list */ SELECT * FROM margin_projection_snapshots
       WHERE ${filtro.condicoes.join(" AND ")}
-      ORDER BY ${orderBy}
+      ORDER BY ${ordem}
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
@@ -408,7 +454,7 @@ async function countProjectionSnapshotsFiltrado({ filtro, db = pool }) {
 // ativos/pausados e quantos têm margem calculável.
 async function summarizeProjectionSnapshots({ filtro, db = pool }) {
   const porStatus = STATUS_VALIDOS
-    .map((s) => `COUNT(*) FILTER (WHERE status = '${s}')::int AS "status_${s}"`)
+    .map((s) => `COUNT(*) FILTER (WHERE ${filtro.statusExpr || "status"} = '${s}')::int AS "status_${s}"`)
     .join(",\n            ");
   const porRefresh = ["fresh", "stale", "failed"]
     .map((s) => `COUNT(*) FILTER (WHERE refresh_status = '${s}')::int AS "refresh_${s}"`)
@@ -420,6 +466,7 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
             COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'active')::int AS anuncios_ativos,
             COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'paused')::int AS anuncios_pausados,
             COUNT(*) FILTER (WHERE margin IS NOT NULL)::int AS com_margem,
+            COALESCE(SUM(profit) FILTER (WHERE ${filtro.statusExpr || "status"} = 'LOSS'), 0) AS lc_prejuizo,
             MAX(calculated_at) AS ultimo_calculo
        FROM margin_projection_snapshots
       WHERE ${filtro.condicoes.join(" AND ")}`,
@@ -433,8 +480,28 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
     porRefreshStatus: { fresh: n(row.refresh_fresh), stale: n(row.refresh_stale), failed: n(row.refresh_failed) },
     anuncios: { total: n(row.total), ativos: n(row.anuncios_ativos), pausados: n(row.anuncios_pausados) },
     comMargem: n(row.com_margem),
+    // LC por unidade somado dos anúncios em Prejuízo (SEM o retorno ML dos que seguem em
+    // prejuízo: o serviço de leitura soma esse retorno).
+    lcPrejuizo: n(row.lc_prejuizo),
     ultimoCalculoEm: row.ultimo_calculo || null,
   };
+}
+
+// Linhas completas (já sanitizadas) de um LOTE de anúncios do catálogo atual
+// da conta — UMA query com `item_id = ANY`. Usada para reclassificar o status
+// dos anúncios cuja margem muda na leitura (retorno ML).
+async function listProjectionSnapshotsByItemIds({ clienteId, clienteContaId, marketplace = "meli", itemIds, db = pool }) {
+  if (!clienteId) throw new Error("listProjectionSnapshotsByItemIds: clienteId é obrigatório.");
+  if (!clienteContaId) throw new Error("listProjectionSnapshotsByItemIds: clienteContaId é obrigatório.");
+  const ids = Array.from(new Set((itemIds || []).filter(Boolean).map(String)));
+  if (!ids.length) return [];
+  const result = await db.query(
+    `/* ms:por-itens */ SELECT * FROM margin_projection_snapshots
+      WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3
+        AND catalog_missing_since IS NULL AND item_id = ANY($4::text[])`,
+    [clienteId, clienteContaId, marketplace, ids]
+  );
+  return result.rows.map(sanitizeSnapshot);
 }
 
 // Projeção persistida de um LOTE de anúncios (os que tiveram venda no
@@ -470,6 +537,7 @@ async function mapProjectionsForItems({ clienteId, clienteContaId, marketplace =
 
 module.exports = {
   mapProjectionsForItems,
+  listProjectionSnapshotsByItemIds,
   STATUS_VALIDOS,
   REFRESH_STATUS_VALIDOS,
   CONFIANCA_VALIDOS,

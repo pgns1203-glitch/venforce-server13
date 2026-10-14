@@ -1,52 +1,43 @@
 // server/tests/helpers/oportunidadesReferencia.js
-// Referência JS da consulta paginada das Oportunidades
-// (services/motorMargem/precificacao/precificacaoOportunidadesSql.js): mesma
-// régua (montarCandidata/computeMargin), 1 linha por anúncio, mesma ordem e
-// mesma página, no formato de linha que a consulta devolve. Os fakes usam
-// isto no lugar do banco; scripts/promoSnapshotSqlCheck.js confere o SQL real
-// contra esta referência.
-
-const {
-  montarCandidata,
-  ordenarDeduplicarPaginar,
-} = require("../../services/motorMargem/precificacao/precificacaoOportunidadesService");
+// Referência JS da consulta de ELEGÍVEIS das Oportunidades
+// (services/motorMargem/precificacao/precificacaoOportunidadesSql.js): o banco
+// só seleciona — promoção × Margin Snapshot da conta, sem promoção em
+// andamento (started/active), com P' < preço atual — e nenhuma conta
+// financeira. Os fakes usam isto no lugar do banco; scripts/promoSnapshotSqlCheck.js
+// confere o SQL real contra esta referência.
+//
+// O cálculo (LC', ΔLC, veredito), a ordem e a página são do serviço
+// (core.calcularCenario), não daqui.
 
 /**
- * promos: [{ item_id, chave, preco_promo, retorno, ...colunas da fonte }]
+ * promos: [{ item_id, chave, preco_promo, retorno, promo_status, ...colunas da fonte }]
  * snapPorItem: Map(item_id → linha de margin_projection_snapshots)
- * Devolve { rows } como o Postgres devolveria (linha-sentinela com
- * item_id null quando a página está vazia).
+ * anuncioPorItem: Map(item_id → { logistic_type }) — meli_anuncios do cliente
+ * Devolve { rows } como o Postgres devolveria (mesma ordem: item_id, chave).
  */
-function paginaReferencia({ promos, snapPorItem, vendasPorMlb = new Map(), page, limit }) {
-  const ordenadas = [...promos].sort((a, b) => (String(a.chave) < String(b.chave) ? -1 : String(a.chave) > String(b.chave) ? 1 : 0));
-  const candidatas = [];
-  for (const p of ordenadas) {
+function elegiveisReferencia({ promos, snapPorItem, anuncioPorItem = new Map() }) {
+  const porChave = (a, b) => (String(a.item_id) < String(b.item_id) ? -1 : String(a.item_id) > String(b.item_id) ? 1
+    : String(a.chave) < String(b.chave) ? -1 : String(a.chave) > String(b.chave) ? 1 : 0);
+  const rows = [];
+  for (const p of [...promos].sort(porChave)) {
     const snap = snapPorItem.get(String(p.item_id));
     if (!snap) continue;
     if (!(Number(p.preco_promo) > 0)) continue;
-    if (snap.cost == null || snap.tax_rate == null || snap.commission_rate == null) continue;
-    const c = montarCandidata({
-      itemId: String(p.item_id), promocao: p, precoPromo: Number(p.preco_promo), retornoMl: Number(p.retorno) || 0,
-      snap, titulo: p.fonte_titulo || null, vendasPorMlb,
+    if (["started", "active"].includes(String(p.promo_status || "").toLowerCase())) continue;
+    if (snap.price == null || !(Number(p.preco_promo) < Number(snap.price))) continue;
+    const anuncio = anuncioPorItem.get(String(p.item_id)) || null;
+    const meta = snap.quality_json && snap.quality_json.targetMargin;
+    rows.push({
+      ...p,
+      snap_titulo: snap.titulo, image_url: snap.image_url, price: snap.price, cost: snap.cost,
+      tax_rate: snap.tax_rate, fixed_fee: snap.fixed_fee, commission_rate: snap.commission_rate,
+      freight: snap.freight, margin: snap.margin, snap_commission: snap.commission, snap_profit: snap.profit,
+      snap_target_margin: meta === undefined || meta === null ? null : String(meta),
+      snap_calculated_at: snap.calculated_at || null,
+      anuncio_logistic_type: anuncio ? anuncio.logistic_type ?? null : null,
     });
-    if (c) candidatas.push({ ...c, _snap: snap });
   }
-  const { total, pagina } = ordenarDeduplicarPaginar(candidatas, { page, limit });
-  const rows = pagina.map((c) => ({
-    ...c.promocao,
-    snap_titulo: c._snap.titulo, image_url: c._snap.image_url, price: c._snap.price, cost: c._snap.cost,
-    tax_rate: c._snap.tax_rate, fixed_fee: c._snap.fixed_fee, commission_rate: c._snap.commission_rate,
-    freight: c._snap.freight, margin: c._snap.margin, unidades: c.unidades, margem_depois: c.margemDepois,
-    total_oportunidades: total,
-  }));
-  return { rows: rows.length ? rows : [{ total_oportunidades: total, item_id: null }] };
+  return { rows };
 }
 
-/** Parâmetros finais da consulta (conta, ids, unidades, limit, offset) → objeto. */
-function lerParametrosPagina(params, nFonte) {
-  const [clienteContaId, ids, unidades, limit, offset] = params.slice(nFonte);
-  const vendasPorMlb = new Map((ids || []).map((id, i) => [id, { unidades: unidades[i] }]));
-  return { clienteContaId, vendasPorMlb, limit, page: Math.floor(offset / limit) + 1 };
-}
-
-module.exports = { paginaReferencia, lerParametrosPagina };
+module.exports = { elegiveisReferencia };

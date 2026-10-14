@@ -71,7 +71,7 @@ async function ambiente(n) {
         return { rows: r[r.length - 1]?.rows || [], rowCount: r[r.length - 1]?.affectedRows };
       }
       const r = await pg.query(sql, params);
-      // Linhas que a consulta paginada das Oportunidades devolve ao Node.
+      // Linhas que a consulta de ELEGÍVEIS das Oportunidades devolve ao Node.
       if (/WITH promos AS/.test(sql)) contador.linhasOportunidades = r.rows.filter((x) => x.item_id != null).length;
       return { rows: r.rows, rowCount: r.affectedRows };
     },
@@ -80,12 +80,16 @@ async function ambiente(n) {
     CREATE TABLE clientes (id SERIAL PRIMARY KEY, slug TEXT, nome TEXT, ativo BOOLEAN DEFAULT true);
     CREATE TABLE cliente_contas (id SERIAL PRIMARY KEY, cliente_id INT REFERENCES clientes(id), marketplace TEXT, nome TEXT, ativo BOOLEAN DEFAULT true, external_account_id TEXT);
     CREATE TABLE margin_projection_snapshots (id SERIAL PRIMARY KEY, cliente_conta_id INT, marketplace TEXT, item_id TEXT, titulo TEXT, image_url TEXT,
-      price NUMERIC, cost NUMERIC, tax_rate NUMERIC, fixed_fee NUMERIC, commission_rate NUMERIC, freight NUMERIC, margin NUMERIC, catalog_missing_since TIMESTAMPTZ);
+      price NUMERIC, cost NUMERIC, tax_rate NUMERIC, fixed_fee NUMERIC, commission_rate NUMERIC, freight NUMERIC, margin NUMERIC, catalog_missing_since TIMESTAMPTZ,
+      commission NUMERIC, profit NUMERIC, quality_json JSONB, calculated_at TIMESTAMPTZ);
+    CREATE TABLE meli_anuncios (cliente_id INTEGER NOT NULL, item_id TEXT NOT NULL, logistic_type TEXT, UNIQUE (cliente_id, item_id));
     CREATE INDEX ON margin_projection_snapshots (cliente_conta_id, marketplace, item_id);
     INSERT INTO clientes (id, slug, nome) VALUES (3, 'loja-a', 'Loja A');
     INSERT INTO cliente_contas (id, cliente_id, marketplace, nome, external_account_id) VALUES (7, 3, 'meli', 'A', '555');
-    INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, freight, margin)
-      SELECT 7, 'meli', 'MLB' || (1000000 + g), 'Produto ' || g, 100, 40, 0.1, 0, 0.12, 10, 0.2 FROM generate_series(1, ${n}) g;
+    INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, commission, freight, margin)
+      SELECT 7, 'meli', 'MLB' || (1000000 + g), 'Produto ' || g, 100, 40, 0.1, 0, 0.12, 12, 10, 0.2 FROM generate_series(1, ${n}) g;
+    INSERT INTO meli_anuncios (cliente_id, item_id, logistic_type)
+      SELECT 3, 'MLB' || (1000000 + g), CASE WHEN g % 4 = 0 THEN 'custom' ELSE 'xd_drop_off' END FROM generate_series(1, ${n}) g;
   `);
   await schemaEnsure.ensurePromoSnapshotSchema(db);
   const { itens, saleInfo } = catalogo(n);
@@ -159,12 +163,12 @@ async function main() {
   const ultimaPag = Math.max(1, Math.ceil(op1.r.total / 20));
   const opU = await lerOportunidades(amb, ultimaPag);
   const sn = await lerSnapshot(amb, run.id);
-  // Plano da consulta REAL das Oportunidades (filtro + 1/anúncio + ordem + LIMIT no banco).
-  const { sqlOportunidadesPaginadas } = require("../services/motorMargem/precificacao/precificacaoOportunidadesSql");
-  const q = sqlOportunidadesPaginadas({
-    fonteSql: `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno FROM promo_snapshot_itens p
+  // Plano da consulta REAL das Oportunidades (só seleciona as elegíveis; cálculo, ordem e página são do serviço).
+  const { sqlOportunidadesElegiveis } = require("../services/motorMargem/precificacao/precificacaoOportunidadesSql");
+  const q = sqlOportunidadesElegiveis({
+    fonteSql: `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.status AS promo_status FROM promo_snapshot_itens p
                 WHERE p.run_id = $1 AND p.cliente_conta_id = $2 AND p.seller_id = $3 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
-    paramsFonte: [run.id, 7, "555"], clienteContaId: 7, vendasPorMlb: new Map(), page: 50, limit: 20,
+    paramsFonte: [run.id, 7, "555"], clienteContaId: 7, clienteId: 3,
   });
   const plano = await amb.pg.query(`EXPLAIN ANALYZE ${q.sql}`, q.params);
 
@@ -194,7 +198,7 @@ async function main() {
   console.log(`  escritas no ML ............................ ${amb.ml.escritas().length}`);
   console.log(`  heap: antes ${mb(s.heapAntes)} MB · pico ${mb(s.pico)} MB · Δ pico ${mb(s.pico - s.heapAntes)} MB`);
   console.log(`\nLeitura (Central)`);
-  console.log(`  Oportunidades página 1 .................... ${op1.ms.toFixed(1)} ms · ${op1.queries} consultas · ${op1.linhasDoBanco} linhas do banco · total=${op1.r.total} hasNext=${op1.r.hasNext}`);
+  console.log(`  Oportunidades página 1 .................... ${op1.ms.toFixed(1)} ms · ${op1.queries} consultas · ${op1.linhasDoBanco} elegíveis lidas do banco (cálculo + ordem + página no serviço) · total=${op1.r.total} hasNext=${op1.r.hasNext}`);
   console.log(`  Oportunidades página 50 ................... ${op2.ms.toFixed(1)} ms · ${op2.queries} consultas · ${op2.linhasDoBanco} linhas do banco`);
   console.log(`  Oportunidades última página (${ultimaPag}) ........ ${opU.ms.toFixed(1)} ms · ${opU.linhasDoBanco} linhas do banco · hasNext=${opU.r.hasNext}`);
   console.log(`  Oportunidades com ${Math.floor(N / 10)} anúncios ........... ${opP.ms.toFixed(1)} ms · ${opP.queries} consultas  ← mesmo nº de consultas (sem N+1)`);
@@ -203,7 +207,8 @@ async function main() {
   console.log(`\nEstimativa com ML real: ${chamadasMl} GETs espaçados em ≥${intervalo} ms (PROMO_SNAPSHOT_REQUEST_INTERVAL_MS) ≈ ${Math.ceil((chamadasMl * intervalo) / 60000)} min por conta, fora a latência de cada GET com ${resolvePromoSnapshotConfig({}).itemConcurrency} em paralelo.`);
 
   if (op1.queries !== opP.queries) { console.error("FALHOU: consultas das Oportunidades cresceram com o catálogo"); process.exitCode = 1; }
-  if (op1.linhasDoBanco > 20 || op2.linhasDoBanco > 20) { console.error("FALHOU: Oportunidades trouxeram mais que a página do banco"); process.exitCode = 1; }
+  // O banco devolve só as elegíveis (sem cálculo): nunca mais que as promoções disponíveis do snapshot.
+  if (op1.linhasDoBanco > linhas.rows[0].n) { console.error("FALHOU: Oportunidades trouxeram mais linhas do que o snapshot tem"); process.exitCode = 1; }
   if (amb.ml.escritas().length) { console.error("FALHOU: houve escrita no ML"); process.exitCode = 1; }
   await amb.pg.close();
   await pequeno.pg.close();

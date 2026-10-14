@@ -30,6 +30,8 @@ const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const { flagLigada } = require("./marginSnapshotConfig");
 const { redigirSegredos } = require("./marginSnapshotSanitize");
+const { logEvento } = require("./marginSnapshotLog");
+const { carregarRebatesDaConta, calcularStatusOverrides, margemAtualComRebate, reclassificarStatus } = require("./margemAtualRebate");
 const periodoRealizado = require("./marginRealizadoPeriodo");
 const { agregarKpisRealizados } = require("./marginRealizadoKpis");
 
@@ -95,7 +97,7 @@ function lerOrdenacao(params = {}, repo = snapshotRepository) {
   if (!ordem) {
     throw api.criarErroHttp(
       400,
-      "Ordenação inválida. Aceitas: margin_percent, profit, status, updated_at, calculated_at, titulo (ASC|DESC).",
+      "Ordenação inválida. Aceitas: margin_percent, profit, status, updated_at, calculated_at, titulo (ASC|DESC) e worklist (prejuízo → abaixo da meta → maior receita).",
       "ORDENACAO_INVALIDA"
     );
   }
@@ -150,12 +152,22 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
     const filtroFora = repo.montarFiltroSnapshots({
       clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, somenteForaDoCatalogo: true,
     });
+    // Placar por status EFETIVO: o anúncio que o retorno ML tirou de "Prejuízo"
+    // não conta como Prejuízo (mesma reclassificação dos itens da tabela).
+    const efetivo = await statusEfetivoDaConta({ cliente, conta, deps, db });
+    const filtroEfetivo = repo.montarFiltroSnapshots({
+      clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, statusOverrides: efetivo.overrides,
+    });
     const [agregado, fora] = await Promise.all([
-      repo.summarizeProjectionSnapshots({ filtro, db }),
+      repo.summarizeProjectionSnapshots({ filtro: filtroEfetivo, db }),
       repo.countProjectionSnapshotsFiltrado({ filtro: filtroFora, db }),
     ]);
-    const { ultimoCalculoEm, ...placar } = agregado;
-    kpis = placar;
+    const { ultimoCalculoEm, lcPrejuizo, ...placar } = agregado;
+    kpis = {
+      ...placar,
+      // LC/un somado dos anúncios em Prejuízo, já com o retorno ML dos que seguem em prejuízo.
+      lcPrejuizo: Math.round((lcPrejuizo + efetivo.overrides.rebateEmPrejuizo + Number.EPSILON) * 100) / 100,
+    };
     foraDoCatalogo = fora.total;
   }
 
@@ -186,6 +198,25 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
 // Composição do item: projetada (snapshot) + realizada (Central de Vendas)
 // ---------------------------------------------------------------------------
 
+// Motivos pelos quais o realizado do período NÃO pode ser afirmado. Nos dois
+// casos o contrato é `realizado: null` + `realizado_motivo`: receita, unidades,
+// pedidos e lucro ficam null — "não sabemos" nunca vira "R$ 0 / 0 vendas".
+const MOTIVO_REALIZADO = {
+  CENTRAL_VENDAS_FALHOU: "CENTRAL_VENDAS_FALHOU",
+  SEM_SINCRONIZACAO: "SEM_SINCRONIZACAO",
+};
+
+const MENSAGEM_REALIZADO = {
+  CENTRAL_VENDAS_FALHOU:
+    "A leitura de vendas da Central de Vendas falhou para este período. O realizado está indisponível — nenhum valor foi zerado.",
+  SEM_SINCRONIZACAO:
+    "Nenhuma sincronização de vendas cobre este período. O realizado está indisponível — não é zero.",
+};
+
+function realizadoIndisponivel(motivo) {
+  return { motivo, mensagem: MENSAGEM_REALIZADO[motivo] };
+}
+
 async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo, periodo = null }, deps = {}) {
   const db = deps.db || pool;
   // Lazy: motorMargemService carrega adapters do ML — só a política de
@@ -193,28 +224,60 @@ async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo, pe
   const motor = require("./motorMargemService");
   // Período do REALIZADO: explícito, `periodo=YYYY-MM` (parâmetro global do
   // Shell) ou o padrão "últimos 30 dias até ontem" (marginRealizadoPeriodo).
+  // Período inválido continua sendo erro do chamador (fora do try abaixo).
   const periodoResolvido = periodoRealizado.resolverPeriodoRealizado({ dateFrom, dateTo, periodo, now: deps.now || new Date() });
-  const includeLegacy = await motor.resolverIncludeLegacy({ clienteId: cliente.id, contaId: conta.id }, deps);
-  const vendasRaw = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
-    {
-      clienteSlug: cliente.slug,
+
+  let vendasRaw;
+  let agregado;
+  try {
+    const includeLegacy = await motor.resolverIncludeLegacy({ clienteId: cliente.id, contaId: conta.id }, deps);
+    vendasRaw = await (deps.carregarVendas || centralVendas.carregarVendasDoPeriodo)(
+      {
+        clienteSlug: cliente.slug,
+        dateFrom: periodoResolvido.dateFrom,
+        dateTo: periodoResolvido.dateTo,
+        marketplace: MARKETPLACE,
+        clienteContaId: conta.id,
+        includeLegacy,
+      },
+      db
+    );
+    agregado = (deps.agregarPorMlb || centralVendas.agregarPorMlb)({
+      pedidosTodos: vendasRaw.pedidosTodos || vendasRaw.pedidos,
+      pedidosResultado: vendasRaw.pedidos,
+      itens: vendasRaw.itens,
+      componentes: vendasRaw.componentes,
+    });
+  } catch (err) {
+    // A Central de Vendas falhou: o realizado fica INDISPONÍVEL (null +
+    // motivo). Derrubar a leitura inteira esconderia o projetado, que não
+    // depende dela; zerar mentiria.
+    logEvento(deps.logger, "error", "margin_snapshot.realizado_indisponivel", {
+      motivo: MOTIVO_REALIZADO.CENTRAL_VENDAS_FALHOU,
+      clienteId: cliente.id,
+      clienteContaId: conta.id,
       dateFrom: periodoResolvido.dateFrom,
       dateTo: periodoResolvido.dateTo,
-      marketplace: MARKETPLACE,
-      clienteContaId: conta.id,
-      includeLegacy,
-    },
-    db
-  );
-  const agregado = (deps.agregarPorMlb || centralVendas.agregarPorMlb)({
-    pedidosTodos: vendasRaw.pedidosTodos || vendasRaw.pedidos,
-    pedidosResultado: vendasRaw.pedidos,
-    itens: vendasRaw.itens,
-    componentes: vendasRaw.componentes,
-  });
+      erro: err && err.message,
+    });
+    return {
+      periodo: periodoResolvido,
+      sincronizado: false,
+      pedidosNoPeriodo: null,
+      porMlb: new Map(),
+      reembolsoPorMlb: new Map(),
+      semMlb: null,
+      reembolsos: null,
+      cobertura: null,
+      fallbackObservedAt: null,
+      indisponivel: realizadoIndisponivel(MOTIVO_REALIZADO.CENTRAL_VENDAS_FALHOU),
+    };
+  }
+
+  const sincronizado = vendasRaw.sincronizado === true;
   return {
     periodo: periodoResolvido,
-    sincronizado: vendasRaw.sincronizado === true,
+    sincronizado,
     pedidosNoPeriodo: Array.isArray(vendasRaw.pedidos) ? vendasRaw.pedidos.length : 0,
     porMlb: agregado.porMlb,
     reembolsoPorMlb: agregado.reembolsoPorMlb,
@@ -224,6 +287,8 @@ async function carregarRealizadaDoPeriodo({ cliente, conta, dateFrom, dateTo, pe
     // o que ficou de fora) — nunca "sem venda" quando o mês não foi coberto.
     cobertura: periodoRealizado.resumirCobertura({ competencias: vendasRaw.competencias || [] }),
     fallbackObservedAt: vendasRaw.importSnapshotAt || null,
+    // Nenhum import cobre o período: não há realizado para afirmar (≠ zero venda).
+    indisponivel: sincronizado ? null : realizadoIndisponivel(MOTIVO_REALIZADO.SEM_SINCRONIZACAO),
   };
 }
 
@@ -258,7 +323,8 @@ function percentual(margin) {
 /**
  * Monta o item no mesmo contrato que a Central já consome (fields/quality/
  * projected/realized + aliases planos), com:
- *  - projected: EXATAMENTE os números da linha do snapshot (sem recálculo);
+ *  - projected: os números da linha do snapshot; a ÚNICA correção é o retorno
+ *    ML de promoção em andamento (margemAtualRebate), aplicado na leitura;
  *  - fields: evidências projetadas persistidas + evidências realizadas da
  *    Central de Vendas, resolvidas pelo núcleo (divergência previsto ×
  *    realizado incluída);
@@ -266,7 +332,7 @@ function percentual(margin) {
  *  - status/confiança: os do snapshot (classificação da PROJETADA —
  *    `statusBase: "projected"`).
  */
-function comporItem(row, realizada, deps = {}) {
+function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndisponivel = null) {
   const computeMargin = deps.computeMargin || core.computeMargin;
   const bag = core.createEvidenceBag();
 
@@ -286,6 +352,7 @@ function comporItem(row, realizada, deps = {}) {
 
   const fields = core.resolveAllFields(bag);
   const hasOrders = Boolean(realizado);
+  const realizadoMotivo = realizada.indisponivel ? realizada.indisponivel.motivo : null;
 
   // Mesmo cálculo do realizado de buildMarginItem: só com venda; valores
   // REALIZED de cada variável — nunca caindo para o projetado.
@@ -300,10 +367,17 @@ function comporItem(row, realizada, deps = {}) {
   }
 
   const quality = row.quality || {};
+  // Margem atual com o retorno ML da promoção em andamento (mesmo módulo da
+  // tabela, do drawer e das Oportunidades). Sem rebate = a linha do snapshot.
+  const atual = margemAtualComRebate(row, rebateInfo, rebateIndisponivel);
+  // O status acompanha a margem exibida: reclassificado pela MESMA classifyStatus
+  // do núcleo (null = o do snapshot continua valendo).
+  const reclass = reclassificarStatus(row, atual);
+  const statusItem = reclass ? reclass.status : row.status;
   const projected = {
-    profit: row.profit,
-    margin: row.margin,
-    marginPercent: row.marginPercent,
+    profit: atual.profit,
+    margin: atual.margin,
+    marginPercent: atual.rebate === null ? row.marginPercent : percentual(atual.margin),
     computable: row.margin !== null,
     strict: (row.assumed || []).length === 0 && row.margin !== null,
     missing: row.missing || [],
@@ -336,13 +410,23 @@ function comporItem(row, realizada, deps = {}) {
     // Reembolso é conciliação: fica visível, nunca entra na margem.
     reembolso: reembolsoInfo ? { total: reembolsoInfo.reembolsoTotal, pedidos: reembolsoInfo.pedidos } : null,
   };
+  // O painel Projetado × Realizado compara COMPONENTES (preço, comissão, frete…)
+  // que não carregam o retorno ML: ele segue com a margem persistida, para a
+  // soma dos componentes fechar com o número exibido ali.
+  const projetadoPersistido = { ...projected, profit: row.profit, margin: row.margin, marginPercent: row.marginPercent };
   const projectedVsRealized = core.buildProjectedVsRealized({
     fields,
-    projected,
+    projected: projetadoPersistido,
     realized,
     sales,
     coverage: sales.cobertura,
   });
+
+  // Integridade do dado lida da linha (preço × custo PROJETADOS) pela mesma
+  // regra do núcleo — vale também para linhas calculadas antes da regra
+  // existir, sem reprocessar o snapshot. O STATUS persistido só muda no
+  // próximo cálculo; a integridade já aparece.
+  const integrity = core.detectIntegrityIssue({ price: row.price, cost: row.cost });
 
   return {
     identity: {
@@ -355,9 +439,12 @@ function comporItem(row, realizada, deps = {}) {
       realized: realizedContrato,
       target: { marginTarget: quality.targetMargin ?? null },
       // Mesmo erro de projeção do Motor ao vivo (marginItem.margin.projectionError).
-      projectionError: core.compareMargins(projected.margin, realized.margin),
+      projectionError: core.compareMargins(projetadoPersistido.margin, realized.margin),
     },
-    projectedVsRealized,
+    // Realizado indisponível: nada de "NO_SALES" (afirmaria que não vendeu).
+    projectedVsRealized: realizadoMotivo ? null : projectedVsRealized,
+    realizado: realizadoMotivo ? null : undefined,
+    realizado_motivo: realizadoMotivo,
     quality: {
       confidence: row.confidenceLevel,
       confidenceByField: quality.confidenceByField || {},
@@ -365,10 +452,15 @@ function comporItem(row, realizada, deps = {}) {
       divergences,
       hasConflict: quality.hasConflict === true,
       hasDrift: divergences.some((d) => d.type === "DRIFT"),
-      status: row.status,
-      statusLabel: quality.statusLabel || null,
-      statusSeverity: quality.statusSeverity || null,
-      statusReasons: quality.statusReasons || [],
+      status: statusItem,
+      statusLabel: reclass ? reclass.label : quality.statusLabel || null,
+      statusSeverity: reclass ? reclass.severity : quality.statusSeverity || null,
+      statusReasons: reclass ? reclass.reasons : quality.statusReasons || [],
+      // Transparência: o status persistido era outro; o retorno ML da promoção
+      // em andamento mudou a margem e, com ela, a classificação.
+      statusReclassificado: reclass ? { de: reclass.de, para: reclass.status, motivo: "retorno_ml" } : null,
+      integrityCode: integrity ? integrity.code : null,
+      integrityReason: integrity ? integrity.reason : null,
     },
     statusBase: "projected",
     sales,
@@ -394,16 +486,19 @@ function comporItem(row, realizada, deps = {}) {
     titulo: row.titulo,
     image: row.imageUrl,
     marketplace: row.marketplace,
-    status: row.status,
+    status: statusItem,
     confidence: row.confidenceLevel,
     confianca: row.confidenceLevel,
-    problema: (quality.statusReasons || [])[0] || null,
+    problema: (integrity && integrity.reason) || (reclass ? reclass.reasons : quality.statusReasons || [])[0] || null,
     targetMargin: quality.targetMargin ?? null,
     projected: {
       margin: projected.margin,
       profit: projected.profit,
       estimated: projected.margin !== null && projected.assumed.length > 0,
       note: projected.assumed.length ? `Assumido 0 para: ${projected.assumed.join(", ")}.` : null,
+      // Retorno ML da promoção em andamento já somado à margem acima (null = nenhum).
+      rebate: atual.rebate,
+      rebateMotivo: atual.rebateMotivo,
     },
     realized: {
       margin: realizedContrato.margin,
@@ -419,6 +514,37 @@ function comporItem(row, realizada, deps = {}) {
 // Lista paginada
 // ---------------------------------------------------------------------------
 
+// Seller ML da conta (identidade do Promo Snapshot = conta + seller). Sem
+// seller não há promoção conhecida: a margem fica a do snapshot.
+async function sellerDaConta(conta, deps, db) {
+  try {
+    const contas = deps.clienteContaService || require("../clienteContas/clienteContaService");
+    const completa = await contas.obterConta(conta.id, db);
+    return completa && completa.external_account_id ? String(completa.external_account_id) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/**
+ * Retorno ML das promoções em andamento da CONTA (uma consulta) e os status que
+ * ele muda. Lido uma vez por requisição e usado por tudo que mostra status:
+ * itens da página, filtro por status, ordenação e KPIs (obterResumo).
+ *
+ * @returns {Promise<{ rebates: {porItem: Map, indisponivel: string|null}, overrides: {itemIds: string[], statuses: string[]} }>}
+ */
+async function statusEfetivoDaConta({ cliente, conta, deps, db }) {
+  const repo = deps.snapshotRepository || snapshotRepository;
+  const seller = await sellerDaConta(conta, deps, db);
+  const rebates = await carregarRebatesDaConta({
+    clienteContaId: conta.id, sellerId: seller, db, promoRepo: deps.promoRepository, logger: deps.logger,
+  });
+  const overrides = await calcularStatusOverrides({
+    clienteId: cliente.id, clienteContaId: conta.id, rebates: rebates.porItem, snapshotRepo: repo, db,
+  });
+  return { rebates, overrides };
+}
+
 async function listarItens(params = {}, deps = {}) {
   const env = deps.env || process.env;
   const { clienteSlug, clienteContaId } = params;
@@ -432,9 +558,6 @@ async function listarItens(params = {}, deps = {}) {
   const { cliente, conta } = await api.resolverContaDoCliente({ clienteSlug, clienteContaId }, deps);
   const pag = paginacao(params);
   const { estado, runAtivo, ultimoRun } = await carregarEstado({ cliente, conta }, deps);
-  const filtro = repo.montarFiltroSnapshots({
-    clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, ...filtros,
-  });
 
   const base = {
     ok: true,
@@ -459,14 +582,29 @@ async function listarItens(params = {}, deps = {}) {
     };
   }
 
-  const [linhas, contagem] = await Promise.all([
-    repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit: pag.limit, offset: pag.offset, db }),
-    repo.countProjectionSnapshotsFiltrado({ filtro, db }),
-  ]);
+  // Status EFETIVO (com o retorno ML das promoções em andamento): o filtro por
+  // status, a contagem, a ordenação e os itens da página usam o mesmo.
+  const efetivo = await statusEfetivoDaConta({ cliente, conta, deps, db });
+  const filtro = repo.montarFiltroSnapshots({
+    clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, ...filtros, statusOverrides: efetivo.overrides,
+  });
+
+  // O realizado vem ANTES da página: a ordem `worklist` usa a receita realizada por MLB.
   const realizada = await carregarRealizadaDoPeriodo(
     { cliente, conta, dateFrom: params.dateFrom, dateTo: params.dateTo, periodo: params.periodo },
     deps
   );
+  const receitas = {};
+  for (const [mlb, venda] of realizada.porMlb || []) {
+    const receita = venda && Number(venda.receita);
+    if (Number.isFinite(receita)) receitas[mlb] = receita;
+  }
+  const [linhas, contagem] = await Promise.all([
+    repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit: pag.limit, offset: pag.offset, receitas, db }),
+    repo.countProjectionSnapshotsFiltrado({ filtro, db }),
+  ]);
+
+  const rebates = efetivo.rebates;
 
   return {
     ...base,
@@ -475,6 +613,10 @@ async function listarItens(params = {}, deps = {}) {
       sincronizado: realizada.sincronizado,
       pedidosNoPeriodo: realizada.pedidosNoPeriodo,
       cobertura: coberturaPublica(realizada.cobertura),
+      // Realizado indisponível: null + motivo (nunca 0 pedidos / "sem venda").
+      ...(realizada.indisponivel
+        ? { realizado: null, realizado_motivo: realizada.indisponivel.motivo, realizado_mensagem: realizada.indisponivel.mensagem }
+        : {}),
     },
     paginacao: {
       page: pag.page,
@@ -483,7 +625,7 @@ async function listarItens(params = {}, deps = {}) {
       totalPaginas: Math.max(Math.ceil(contagem.total / pag.limit), 1),
     },
     ultimoCalculoEm: contagem.ultimoCalculoEm,
-    itens: linhas.map((row) => comporItem(row, realizada, deps)),
+    itens: linhas.map((row) => comporItem(row, realizada, deps, rebates.porItem.get(String(row.itemId)) || null, rebates.indisponivel)),
   };
 }
 
@@ -512,12 +654,17 @@ async function obterRealizado(params = {}, deps = {}) {
   const projecoes = await (repo.mapProjectionsForItems
     ? repo.mapProjectionsForItems({ clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, itemIds: Array.from(realizada.porMlb.keys()), db })
     : new Map());
-  const kpis = agregarKpisRealizados({
-    porMlb: realizada.porMlb,
-    semMlb: realizada.semMlb,
-    pedidosNoPeriodo: realizada.pedidosNoPeriodo,
-    projecoes,
-  });
+  // Realizado indisponível (Central de Vendas falhou / nada sincronizado):
+  // sem KPIs. Agregar um período vazio devolveria receita 0, 0 pedidos e
+  // 0 produtos com venda — afirmaria "não vendeu" sem saber.
+  const kpis = realizada.indisponivel
+    ? null
+    : agregarKpisRealizados({
+        porMlb: realizada.porMlb,
+        semMlb: realizada.semMlb,
+        pedidosNoPeriodo: realizada.pedidosNoPeriodo,
+        projecoes,
+      });
 
   let syncAtivo = null;
   try {
@@ -529,7 +676,11 @@ async function obterRealizado(params = {}, deps = {}) {
   }
 
   const cobertura = coberturaPublica(realizada.cobertura);
+  const indisponivel = realizada.indisponivel
+    ? { realizado: null, realizado_motivo: realizada.indisponivel.motivo, realizado_mensagem: realizada.indisponivel.mensagem }
+    : {};
   return {
+    ...indisponivel,
     ok: true,
     habilitado: true,
     modo: "snapshot",
@@ -537,12 +688,12 @@ async function obterRealizado(params = {}, deps = {}) {
     conta,
     marketplace: MARKETPLACE,
     periodo: periodoPublico(realizada),
-    cobertura: { ...cobertura, competencias: realizada.cobertura.competencias },
+    cobertura: cobertura ? { ...cobertura, competencias: realizada.cobertura.competencias } : null,
     freshness: {
-      estado: cobertura.estado,
-      sincronizadoAte: cobertura.sincronizadoAte,
-      ultimaPublicacaoEm: cobertura.ultimaPublicacaoEm,
-      ultimoImportEm: cobertura.ultimoImportEm,
+      estado: cobertura ? cobertura.estado : "INDISPONIVEL",
+      sincronizadoAte: cobertura ? cobertura.sincronizadoAte : null,
+      ultimaPublicacaoEm: cobertura ? cobertura.ultimaPublicacaoEm : null,
+      ultimoImportEm: cobertura ? cobertura.ultimoImportEm : null,
       syncEmAndamento: Boolean(syncAtivo),
       syncAtivo,
     },
@@ -552,6 +703,8 @@ async function obterRealizado(params = {}, deps = {}) {
 }
 
 module.exports = {
+  sellerDaConta,
+  statusEfetivoDaConta,
   obterRealizado,
   LIMIT_PADRAO,
   LIMIT_MAX,

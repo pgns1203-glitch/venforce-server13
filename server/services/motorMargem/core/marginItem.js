@@ -18,7 +18,7 @@ const {
   round2,
 } = require("./marginEngine");
 const { buildConfidenceReport, LEVELS } = require("./marginConfidence");
-const { classifyStatus, DEFAULT_TARGET_MARGIN } = require("./marginStatus");
+const { classifyStatus, detectIntegrityIssue, DEFAULT_TARGET_MARGIN } = require("./marginStatus");
 const { buildProjectedVsRealized } = require("./marginComparison");
 
 // REQUISITO FINANCEIRO CRÍTICO: o realizado NUNCA cai para o projetado/Base
@@ -88,7 +88,20 @@ function buildMarginItem(params = {}) {
     [FIELDS.COMMISSION]: valueForKind(fields[FIELDS.COMMISSION], EVIDENCE_KINDS.PROJECTED),
     [FIELDS.FREIGHT]: valueForKind(fields[FIELDS.FREIGHT], EVIDENCE_KINDS.PROJECTED),
   };
-  const projected = computeMargin(projectedInputs);
+  const invalidInputs = typeof bag.listInvalid === "function" ? bag.listInvalid() : [];
+  const projectedCalc = computeMargin(projectedInputs);
+  // Insumo inválido (ex.: alíquota da Base fora de [0, 1]): a margem projetada
+  // NÃO é calculada — nem com 0 assumido, nem com o valor "consertado".
+  const projected = invalidInputs.length
+    ? {
+        ...projectedCalc,
+        computable: false,
+        profit: null,
+        margin: null,
+        missing: Array.from(new Set([...projectedCalc.missing, ...invalidInputs.map((entry) => entry.field)])),
+        strict: false,
+      }
+    : projectedCalc;
 
   // ── Margem realizada (o que a venda entregou) ─────────────────────────────
   // Só existe com pedido: sem venda não há realizado — e "0" seria mentira.
@@ -156,7 +169,15 @@ function buildMarginItem(params = {}) {
   }
 
   // ── Estado ────────────────────────────────────────────────────────────────
+  // Integridade avaliada sobre os mesmos insumos da margem exibida (realizada
+  // quando existe, senão projetada).
+  const integrityIssue = detectIntegrityIssue({
+    price: displayed.inputs ? displayed.inputs[FIELDS.PRICE] : null,
+    cost: displayed.inputs ? displayed.inputs[FIELDS.COST] : null,
+  });
   const status = classifyStatus({
+    integrityIssue,
+    invalidInputs,
     margin: displayed.margin,
     computable: displayed.computable,
     missing: displayed.missing,
@@ -287,6 +308,10 @@ function buildMarginItem(params = {}) {
       statusLabel: status.label,
       statusSeverity: status.severity,
       statusReasons: status.reasons,
+      // Problema de dado independente do status (ex.: custo_suspeito); null = nenhum.
+      integrityCode: integrityIssue ? integrityIssue.code : null,
+      invalidInputs: invalidInputs.map(({ field, code, reason, raw }) => ({ field, code, reason, raw })),
+      integrityReason: integrityIssue ? integrityIssue.reason : null,
     },
   };
 }

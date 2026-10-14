@@ -917,6 +917,98 @@ cenario("35. clienteContaId ausente no run nunca é auto-resolvido — falha exp
   await assert.rejects(() => processMarginSnapshotRun({ id: 1, clienteId: 1, clienteContaId: null, marketplace: "meli" }, {}), /clienteContaId/);
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// COTAÇÃO INCOMPLETA (comissão/frete não retornados pelo ML — ex.: 429)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Mesmo formato de `item.diagnostico` do motorMargemService.
+function comDiagnostico(item, { faltantes = [], logisticType = "fulfillment" } = {}) {
+  item.diagnostico = { faltantesMeliApi: faltantes, logisticType };
+  return item;
+}
+
+// Cotação falhou: comissão e frete ausentes (o núcleo assume 0 → margem inflada).
+function itemCotacaoFalhou(id) {
+  return comDiagnostico(itemComEvidencias({ itemId: id, commission: null, freight: null }), { faltantes: ["comissao", "frete"] });
+}
+
+function itemCompleto(id) {
+  return comDiagnostico(itemComEvidencias({ itemId: id }));
+}
+
+cenario("36. cotação incompleta é repescada no fim do run e grava os valores da 2ª leitura", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const run = await criarRunRunning(db);
+  const chamadas = [];
+  const resultado = await processMarginSnapshotRun(run, depsRun(db, {
+    ids: ["MLB1", "MLB2"],
+    enrichBatch: fakeEnrichBatch({
+      chamadas,
+      gerarItem: (id) => (id === "MLB2" && chamadas.length === 1 ? itemCotacaoFalhou(id) : itemCompleto(id)),
+    }),
+  }));
+
+  assert.strictEqual(chamadas.length, 2, "1 lote + 1 repescagem");
+  assert.deepStrictEqual(chamadas[1].itemIds, ["MLB2"], "a repescagem pede só o item incompleto");
+  const linha = await snapshot(db, "MLB2");
+  assert.strictEqual(linha.commission, 12);
+  assert.strictEqual(linha.freight, 20);
+  assert.strictEqual(resultado.successItems, 2);
+  assert.strictEqual(resultado.failedItems, 0);
+  assert.strictEqual(resultado.stats.cotacaoIncompleta, 1);
+  assert.strictEqual(resultado.stats.cotacaoIncompletaRecuperada, 1);
+});
+
+cenario("37. cotação que continua incompleta NÃO sobrescreve o snapshot anterior (valores preservados, failed)", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const run1 = await criarRunRunning(db);
+  await processMarginSnapshotRun(run1, depsRun(db, { ids: ["MLB9"], enrichBatch: fakeEnrichBatch({ gerarItem: itemCompleto }) }));
+  await runRepository.updateRunStatus({ runId: run1.id, status: "completed", db });
+  const antes = await snapshot(db, "MLB9");
+
+  const run2 = await criarRunRunning(db);
+  const resultado = await processMarginSnapshotRun(run2, depsRun(db, {
+    ids: ["MLB9", "MLB10"],
+    enrichBatch: fakeEnrichBatch({ gerarItem: (id) => (id === "MLB9" ? itemCotacaoFalhou(id) : itemCompleto(id)) }),
+  }));
+
+  const depois = await snapshot(db, "MLB9");
+  assert.strictEqual(depois.marginPercent, antes.marginPercent, "margem inflada (comissão/frete = 0) nunca é gravada");
+  assert.strictEqual(depois.commission, 12);
+  assert.strictEqual(depois.refreshStatus, "failed");
+  assert.match(depois.lastError, /Comissão ou frete/);
+  assert.strictEqual(resultado.successItems, 1);
+  assert.strictEqual(resultado.failedItems, 1);
+});
+
+cenario("38. item novo com cotação sempre incompleta fica sem snapshot (nunca com margem inflada)", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const run = await criarRunRunning(db);
+  await processMarginSnapshotRun(run, depsRun(db, {
+    ids: ["MLB7", "MLB8"],
+    enrichBatch: fakeEnrichBatch({ gerarItem: (id) => (id === "MLB7" ? itemCotacaoFalhou(id) : itemCompleto(id)) }),
+  }));
+  assert.strictEqual(await snapshot(db, "MLB7"), null);
+  assert.ok(await snapshot(db, "MLB8"));
+});
+
+cenario("39. frete ausente com envio combinável (not_specified/custom) é fato, não falha — grava direto", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const run = await criarRunRunning(db);
+  const chamadas = [];
+  await processMarginSnapshotRun(run, depsRun(db, {
+    ids: ["MLB5"],
+    enrichBatch: fakeEnrichBatch({
+      chamadas,
+      gerarItem: (id) => comDiagnostico(itemComEvidencias({ itemId: id, freight: null }), { faltantes: ["frete"], logisticType: "not_specified" }),
+    }),
+  }));
+  assert.strictEqual(chamadas.length, 1, "sem repescagem");
+  const linha = await snapshot(db, "MLB5");
+  assert.ok(linha);
+  assert.strictEqual(linha.freight, null);
+});
+
 // ── Runner ───────────────────────────────────────────────────────────────
 
 async function main() {

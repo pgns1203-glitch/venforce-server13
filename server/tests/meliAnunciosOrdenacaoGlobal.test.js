@@ -441,7 +441,7 @@ async function run() {
     chamadasMontarItens.length = 0;
     snapshotHandler = () => new Map([
       ["MLB-A1", { marginPercent: 35.5, profit: 20, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:34:00Z", origemJob: "manual_cli" }],
-      ["MLB-A2", { marginPercent: 24.4, profit: 10, computable: true, status: "HEALTHY", calculadoEm: "2026-09-28T03:30:00Z", origemJob: "manual_cli" }],
+      ["MLB-A2", { marginPercent: 24.4, profit: 10, computable: true, status: "LOW_MARGIN", calculadoEm: "2026-09-28T03:30:00Z", origemJob: "manual_cli" }],
       ["MLB-A3", { marginPercent: 80, profit: 1, computable: false, status: "UNVALIDATED", calculadoEm: null, origemJob: "manual_cli" }],
       ["MLB-B", { marginPercent: 15, profit: 3, computable: true, status: "HEALTHY", calculadoEm: null, origemJob: "manual_cli" }],
     ]);
@@ -454,6 +454,8 @@ async function run() {
     assert.strictEqual(familia.margemProjetadaMinPercent, 24.4, "sem ordenarPor: faixa já vem — mínimo dos filhos computáveis");
     assert.strictEqual(familia.margemProjetadaMaxPercent, 35.5, "máximo dos filhos computáveis (UNVALIDATED de 80% nunca entra)");
     assert.strictEqual(familia.margemProjetadaMediaPercent, 29.95, "média simples dos computáveis — mesma regra do ranking");
+    assert.strictEqual(familia.margemProjetadaMinStatus, "LOW_MARGIN", "status do filho que deu o MÍNIMO — a célula pinta essa ponta com a cor dele");
+    assert.strictEqual(familia.margemProjetadaMaxStatus, "HEALTHY", "status do filho que deu o MÁXIMO (o UNVALIDATED de 80% nunca vira a ponta)");
     assert.strictEqual(familia.margemProjetadaProfit, 31, "soma de profit dos filhos com snapshot (informativo)");
     assert.strictEqual(familia.margemProjetadaCalculadaEm, "2026-09-28T03:34:00Z", "calculadaEm da família = snapshot mais recente dos filhos");
     const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");

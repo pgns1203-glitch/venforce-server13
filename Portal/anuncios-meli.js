@@ -1865,7 +1865,10 @@
   //
   // Empilhado em DUAS linhas — mínimo em cima, máximo embaixo — com a MESMA
   // classe (`.am-margem__valor`): os dois são margens válidas, nenhum é
-  // "secundário". Antes o mínimo usava um estilo apagado/menor inspirado no
+  // "secundário". Cada ponta leva a cor do status do Motor do filho que a
+  // gerou (`margemProjetadaMinStatus`/`MaxStatus`, mesma MARGEM_CLASSE da
+  // célula do item) — antes era sempre `is-neutral` e a família ficava preta
+  // enquanto o mesmo % num anúncio avulso aparecia verde. Antes o mínimo usava um estilo apagado/menor inspirado no
   // preço riscado e parecia um valor antigo/desabilitado. `data-faixa`
   // (min/max) só identifica a linha, sem estilo próprio. Min === Max (1 único
   // filho computável) mostra só UM valor, nunca duas linhas iguais.
@@ -1875,10 +1878,12 @@
       var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
       var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo). A ordenação por margem usa a média." +
         margemCalculadaEmFrase(f.margemProjetadaCalculadaEm, f.margemProjetadaFonte);
+      var classeMin = MARGEM_CLASSE[f.margemProjetadaMinStatus] || "is-neutral";
+      var classeMax = MARGEM_CLASSE[f.margemProjetadaMaxStatus] || "is-neutral";
       var linhas = min === max
-        ? '<span class="am-margem__valor is-neutral" data-faixa="unico">' + max + "</span>"
-        : '<span class="am-margem__valor is-neutral" data-faixa="min">' + min + "</span>" +
-          '<span class="am-margem__valor is-neutral" data-faixa="max">' + max + "</span>";
+        ? '<span class="am-margem__valor ' + classeMax + '" data-faixa="unico">' + max + "</span>"
+        : '<span class="am-margem__valor ' + classeMin + '" data-faixa="min">' + min + "</span>" +
+          '<span class="am-margem__valor ' + classeMax + '" data-faixa="max">' + max + "</span>";
       return '<span class="am-margem am-margem--faixa" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
         linhas + infoDotHtml(tip) +
       "</span>";

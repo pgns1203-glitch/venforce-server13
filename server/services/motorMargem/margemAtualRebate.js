@@ -19,6 +19,15 @@
 //   - Promo Snapshot ilegível → margem do snapshot + motivo
 //                               PROMO_SNAPSHOT_INDISPONIVEL.
 // Nunca zera, nunca estima.
+//
+// STATUS: a margem muda, então o status financeiro (Prejuízo / Margem baixa /
+// Saudável) é reclassificado com a MESMA classifyStatus do núcleo, sobre a
+// margem já com o rebate (reclassificarStatus). A tabela, o drawer e os KPIs
+// (placar por status, filtro por status) usam este resultado: um anúncio
+// persistido como Prejuízo que o retorno ML deixa positivo não aparece nem
+// conta como Prejuízo. Só status que dependem da margem (LOSS, LOW_MARGIN,
+// HEALTHY) são reclassificados — dado suspeito/não validado não depende do
+// retorno e fica como o snapshot calculou.
 
 const core = require("./core");
 const { logEvento } = require("./marginSnapshotLog");
@@ -87,4 +96,89 @@ function margemAtualComRebate(linha, info, indisponivel = null) {
   return { margin: calc.margin, profit: calc.profit, rebate: info.rebate, rebateMotivo: null };
 }
 
-module.exports = { carregarRebatesAtivos, margemAtualComRebate, MOTIVO_REBATE };
+const STATUS_PELA_MARGEM = ["LOSS", "LOW_MARGIN", "HEALTHY"];
+
+/**
+ * Status financeiro com a margem já somada ao rebate, pela MESMA classifyStatus
+ * do núcleo. Devolve null quando nada muda (sem rebate aplicado, status que não
+ * depende da margem, ou mesma classificação); senão { status, label, severity,
+ * reasons, de }.
+ *
+ * Os demais insumos são os que o snapshot usou ao classificar (a leitura é da
+ * PROJETADA, sem pedidos): confiança e conflito persistidos, meta do snapshot.
+ *
+ * @param {object} linha  linha do snapshot (status, confidenceLevel, missing, quality)
+ * @param {{margin:number|null, rebate:number|null}} atual  retorno de margemAtualComRebate
+ */
+function reclassificarStatus(linha, atual) {
+  if (!atual || atual.rebate === null || atual.rebate === undefined) return null;
+  if (!STATUS_PELA_MARGEM.includes(linha.status)) return null;
+  const quality = linha.quality || {};
+  const meta = num(quality.targetMargin);
+  const novo = core.classifyStatus({
+    margin: atual.margin,
+    computable: atual.margin !== null && atual.margin !== undefined,
+    missing: linha.missing || [],
+    confidenceLevel: linha.confidenceLevel,
+    hasConflict: quality.hasConflict === true,
+    hasOrders: false,
+    settlementPending: false,
+    targetMargin: meta === null ? core.DEFAULT_TARGET_MARGIN : meta,
+  });
+  if (novo.status === linha.status) return null;
+  return { status: novo.status, label: novo.label, severity: novo.severity, reasons: novo.reasons, de: linha.status };
+}
+
+/**
+ * Rebates ativos da CONTA inteira — uma consulta. Mesmo contrato de falha de
+ * carregarRebatesAtivos (nunca derruba a leitura).
+ */
+async function carregarRebatesDaConta({ clienteContaId, sellerId, db, promoRepo, logger = null }) {
+  if (!sellerId) return { porItem: new Map(), indisponivel: null };
+  try {
+    const repo = promoRepo || require("../promoSnapshot/promoSnapshotRepository");
+    const porItem = await repo.mapRebatesAtivosDaConta({ clienteContaId, sellerId }, db);
+    return { porItem, indisponivel: null };
+  } catch (err) {
+    if (err && err.code === "42P01") return { porItem: new Map(), indisponivel: null };
+    logEvento(logger, "error", "margin_snapshot.rebate_indisponivel", {
+      motivo: MOTIVO_REBATE.PROMO_SNAPSHOT_INDISPONIVEL,
+      clienteContaId,
+      erro: err && err.message,
+    });
+    return { porItem: new Map(), indisponivel: MOTIVO_REBATE.PROMO_SNAPSHOT_INDISPONIVEL };
+  }
+}
+
+/**
+ * Status efetivos que DIFEREM do persistido, para a conta inteira: é o que o
+ * filtro/KPIs/ordenação do repositório recebem (`statusOverrides`). Lê só as
+ * linhas dos anúncios com rebate (uma consulta) e aplica reclassificarStatus.
+ *
+ * @returns {Promise<{ itemIds: string[], statuses: string[] }>}
+ */
+async function calcularStatusOverrides({ clienteId, clienteContaId, rebates, snapshotRepo, db }) {
+  const comRebate = Array.from(rebates.entries()).filter(([, info]) => info && info.rebate !== null && info.rebate !== undefined);
+  if (!comRebate.length) return { itemIds: [], statuses: [] };
+  const linhas = await snapshotRepo.listProjectionSnapshotsByItemIds({
+    clienteId, clienteContaId, itemIds: comRebate.map(([itemId]) => itemId), db,
+  });
+  const itemIds = [];
+  const statuses = [];
+  for (const linha of linhas) {
+    const atual = margemAtualComRebate(linha, rebates.get(String(linha.itemId)));
+    const novo = reclassificarStatus(linha, atual);
+    if (novo) { itemIds.push(String(linha.itemId)); statuses.push(novo.status); }
+  }
+  return { itemIds, statuses };
+}
+
+module.exports = {
+  carregarRebatesAtivos,
+  carregarRebatesDaConta,
+  calcularStatusOverrides,
+  margemAtualComRebate,
+  reclassificarStatus,
+  MOTIVO_REBATE,
+  STATUS_PELA_MARGEM,
+};

@@ -817,6 +817,20 @@ async function listarLinhasSnapshot({ clienteContaId, sellerId, runId, page, lim
 async function mapRebatesAtivosPorItem({ clienteContaId, marketplace = "meli", sellerId, itemIds }, db = pool) {
   const ids = Array.from(new Set((itemIds || []).map((x) => String(x)).filter(Boolean)));
   if (!clienteContaId || !sellerId || !ids.length) return new Map();
+  return lerRebatesAtivos({ clienteContaId, marketplace, sellerId, itemIds: ids }, db);
+}
+
+/**
+ * Mesmo contrato, para a CONTA inteira (todos os anúncios com promoção em
+ * andamento com retorno ML). Uma consulta; o resultado é limitado pelo
+ * catálogo da conta (um item por linha).
+ */
+async function mapRebatesAtivosDaConta({ clienteContaId, marketplace = "meli", sellerId }, db = pool) {
+  if (!clienteContaId || !sellerId) return new Map();
+  return lerRebatesAtivos({ clienteContaId, marketplace, sellerId, itemIds: null }, db);
+}
+
+async function lerRebatesAtivos({ clienteContaId, marketplace, sellerId, itemIds }, db) {
   const r = await db.query(
     `SELECT p.item_id::text AS item_id,
             COUNT(*)::int AS promocoes,
@@ -825,11 +839,11 @@ async function mapRebatesAtivosPorItem({ clienteContaId, marketplace = "meli", s
        JOIN promo_snapshot_itens p
          ON p.run_id = c.current_run_id AND p.cliente_conta_id = c.cliente_conta_id AND p.seller_id = c.seller_id
       WHERE c.cliente_conta_id = $1 AND c.marketplace = $2 AND c.seller_id = $3
-        AND p.item_id = ANY($4::text[])
+        AND ($4::text[] IS NULL OR p.item_id = ANY($4::text[]))
         AND LOWER(COALESCE(p.status, '')) IN ('started', 'active')
         AND p.subsidio_ml > 0
       GROUP BY p.item_id`,
-    [clienteContaId, marketplace, String(sellerId), ids]
+    [clienteContaId, marketplace, String(sellerId), itemIds]
   );
   return new Map(r.rows.map((row) => {
     const promocoes = Number(row.promocoes || 0);
@@ -938,6 +952,7 @@ module.exports = {
   listarLinhasSnapshot,
   listarOportunidadesPaginadas,
   mapRebatesAtivosPorItem,
+  mapRebatesAtivosDaConta,
   listarContasElegiveis,
   linhaPublica,
   COLUNAS_ITEM,

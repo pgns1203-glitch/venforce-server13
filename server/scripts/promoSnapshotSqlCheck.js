@@ -359,6 +359,13 @@ check("rebates ativos (SQL real): UMA consulta; só started/active com subsídio
   for (const id of ["MLB3", "MLB4", "MLB5", "MLB6"]) assert.strictEqual(mapa.has(id), false, `${id}: sem promoção em andamento com retorno`);
   assert.strictEqual((await repo.mapRebatesAtivosPorItem({ clienteContaId: 7, sellerId: "999", itemIds: ["MLB1"] }, db)).size, 0, "outro seller nunca");
   assert.strictEqual((await repo.mapRebatesAtivosPorItem({ clienteContaId: 8, sellerId: "555", itemIds: ["MLB1"] }, db)).size, 0, "outra conta nunca");
+
+  // Conta inteira (KPIs/filtro por status): mesmo resultado, sem lista de itens.
+  const conta = await repo.mapRebatesAtivosDaConta({ clienteContaId: 7, sellerId: "555" }, db);
+  assert.deepStrictEqual(Array.from(conta.keys()).sort(), ["MLB1", "MLB2"]);
+  assert.deepStrictEqual(conta.get("MLB1"), { promocoes: 1, rebate: 3.3 });
+  assert.deepStrictEqual(conta.get("MLB2"), { promocoes: 2, rebate: null });
+  assert.strictEqual((await repo.mapRebatesAtivosDaConta({ clienteContaId: 7, sellerId: "999" }, db)).size, 0, "outro seller nunca");
 });
 
 // ─── Auditoria: achados 1, 2 e 6 contra Postgres real ───────────────────────

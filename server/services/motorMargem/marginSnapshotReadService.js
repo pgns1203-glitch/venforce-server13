@@ -31,7 +31,7 @@ const settlement = require("./adapters/settlementEvidenceAdapter");
 const { flagLigada } = require("./marginSnapshotConfig");
 const { redigirSegredos } = require("./marginSnapshotSanitize");
 const { logEvento } = require("./marginSnapshotLog");
-const { carregarRebatesAtivos, margemAtualComRebate } = require("./margemAtualRebate");
+const { carregarRebatesDaConta, calcularStatusOverrides, margemAtualComRebate, reclassificarStatus } = require("./margemAtualRebate");
 const periodoRealizado = require("./marginRealizadoPeriodo");
 const { agregarKpisRealizados } = require("./marginRealizadoKpis");
 
@@ -152,8 +152,14 @@ async function obterResumo({ clienteSlug, clienteContaId }, deps = {}) {
     const filtroFora = repo.montarFiltroSnapshots({
       clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, somenteForaDoCatalogo: true,
     });
+    // Placar por status EFETIVO: o anúncio que o retorno ML tirou de "Prejuízo"
+    // não conta como Prejuízo (mesma reclassificação dos itens da tabela).
+    const efetivo = await statusEfetivoDaConta({ cliente, conta, deps, db });
+    const filtroEfetivo = repo.montarFiltroSnapshots({
+      clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, statusOverrides: efetivo.overrides,
+    });
     const [agregado, fora] = await Promise.all([
-      repo.summarizeProjectionSnapshots({ filtro, db }),
+      repo.summarizeProjectionSnapshots({ filtro: filtroEfetivo, db }),
       repo.countProjectionSnapshotsFiltrado({ filtro: filtroFora, db }),
     ]);
     const { ultimoCalculoEm, ...placar } = agregado;
@@ -360,6 +366,10 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
   // Margem atual com o retorno ML da promoção em andamento (mesmo módulo da
   // tabela, do drawer e das Oportunidades). Sem rebate = a linha do snapshot.
   const atual = margemAtualComRebate(row, rebateInfo, rebateIndisponivel);
+  // O status acompanha a margem exibida: reclassificado pela MESMA classifyStatus
+  // do núcleo (null = o do snapshot continua valendo).
+  const reclass = reclassificarStatus(row, atual);
+  const statusItem = reclass ? reclass.status : row.status;
   const projected = {
     profit: atual.profit,
     margin: atual.margin,
@@ -438,10 +448,13 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
       divergences,
       hasConflict: quality.hasConflict === true,
       hasDrift: divergences.some((d) => d.type === "DRIFT"),
-      status: row.status,
-      statusLabel: quality.statusLabel || null,
-      statusSeverity: quality.statusSeverity || null,
-      statusReasons: quality.statusReasons || [],
+      status: statusItem,
+      statusLabel: reclass ? reclass.label : quality.statusLabel || null,
+      statusSeverity: reclass ? reclass.severity : quality.statusSeverity || null,
+      statusReasons: reclass ? reclass.reasons : quality.statusReasons || [],
+      // Transparência: o status persistido era outro; o retorno ML da promoção
+      // em andamento mudou a margem e, com ela, a classificação.
+      statusReclassificado: reclass ? { de: reclass.de, para: reclass.status, motivo: "retorno_ml" } : null,
       integrityCode: integrity ? integrity.code : null,
       integrityReason: integrity ? integrity.reason : null,
     },
@@ -469,10 +482,10 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
     titulo: row.titulo,
     image: row.imageUrl,
     marketplace: row.marketplace,
-    status: row.status,
+    status: statusItem,
     confidence: row.confidenceLevel,
     confianca: row.confidenceLevel,
-    problema: (integrity && integrity.reason) || (quality.statusReasons || [])[0] || null,
+    problema: (integrity && integrity.reason) || (reclass ? reclass.reasons : quality.statusReasons || [])[0] || null,
     targetMargin: quality.targetMargin ?? null,
     projected: {
       margin: projected.margin,
@@ -509,6 +522,25 @@ async function sellerDaConta(conta, deps, db) {
   }
 }
 
+/**
+ * Retorno ML das promoções em andamento da CONTA (uma consulta) e os status que
+ * ele muda. Lido uma vez por requisição e usado por tudo que mostra status:
+ * itens da página, filtro por status, ordenação e KPIs (obterResumo).
+ *
+ * @returns {Promise<{ rebates: {porItem: Map, indisponivel: string|null}, overrides: {itemIds: string[], statuses: string[]} }>}
+ */
+async function statusEfetivoDaConta({ cliente, conta, deps, db }) {
+  const repo = deps.snapshotRepository || snapshotRepository;
+  const seller = await sellerDaConta(conta, deps, db);
+  const rebates = await carregarRebatesDaConta({
+    clienteContaId: conta.id, sellerId: seller, db, promoRepo: deps.promoRepository, logger: deps.logger,
+  });
+  const overrides = await calcularStatusOverrides({
+    clienteId: cliente.id, clienteContaId: conta.id, rebates: rebates.porItem, snapshotRepo: repo, db,
+  });
+  return { rebates, overrides };
+}
+
 async function listarItens(params = {}, deps = {}) {
   const env = deps.env || process.env;
   const { clienteSlug, clienteContaId } = params;
@@ -522,9 +554,6 @@ async function listarItens(params = {}, deps = {}) {
   const { cliente, conta } = await api.resolverContaDoCliente({ clienteSlug, clienteContaId }, deps);
   const pag = paginacao(params);
   const { estado, runAtivo, ultimoRun } = await carregarEstado({ cliente, conta }, deps);
-  const filtro = repo.montarFiltroSnapshots({
-    clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, ...filtros,
-  });
 
   const base = {
     ok: true,
@@ -549,6 +578,13 @@ async function listarItens(params = {}, deps = {}) {
     };
   }
 
+  // Status EFETIVO (com o retorno ML das promoções em andamento): o filtro por
+  // status, a contagem, a ordenação e os itens da página usam o mesmo.
+  const efetivo = await statusEfetivoDaConta({ cliente, conta, deps, db });
+  const filtro = repo.montarFiltroSnapshots({
+    clienteId: cliente.id, clienteContaId: conta.id, marketplace: MARKETPLACE, ...filtros, statusOverrides: efetivo.overrides,
+  });
+
   const [linhas, contagem] = await Promise.all([
     repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit: pag.limit, offset: pag.offset, db }),
     repo.countProjectionSnapshotsFiltrado({ filtro, db }),
@@ -558,16 +594,7 @@ async function listarItens(params = {}, deps = {}) {
     deps
   );
 
-  // Retorno ML das promoções em andamento: UMA consulta para a página inteira.
-  const seller = await sellerDaConta(conta, deps, db);
-  const rebates = await carregarRebatesAtivos({
-    clienteContaId: conta.id,
-    sellerId: seller,
-    itemIds: linhas.map((row) => row.itemId),
-    db,
-    promoRepo: deps.promoRepository,
-    logger: deps.logger,
-  });
+  const rebates = efetivo.rebates;
 
   return {
     ...base,
@@ -667,6 +694,7 @@ async function obterRealizado(params = {}, deps = {}) {
 
 module.exports = {
   sellerDaConta,
+  statusEfetivoDaConta,
   obterRealizado,
   LIMIT_PADRAO,
   LIMIT_MAX,

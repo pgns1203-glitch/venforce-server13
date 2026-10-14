@@ -119,6 +119,55 @@ check("leitura: filtros ANY, busca literal (ILIKE com escape), whitelist de orde
   assert.strictEqual(kpis.porStatus.LOSS, 10);
 });
 
+check("status EFETIVO (overrides do retorno ML): filtro, contagem, KPIs e ordenação por status em Postgres real", async ({ db }) => {
+  const mk = (itemId, status, margem) => ({
+    clienteId: 1, clienteContaId: 2, itemId, titulo: itemId, status, profit: margem, margin: margem / 100, marginPercent: margem, quality: { evidencias: {} },
+  });
+  // Conta 2 já tem 30 itens do check anterior; usa itens novos e filtra por busca para isolar.
+  await repo.upsertProjectionSnapshot({ ...mk("EFET1", "LOSS", -5), titulo: "efet-a" }, db);
+  await repo.upsertProjectionSnapshot({ ...mk("EFET2", "LOSS", -5), titulo: "efet-b" }, db);
+  await repo.upsertProjectionSnapshot({ ...mk("EFET3", "LOSS", -5), titulo: "efet-c" }, db);
+  await repo.upsertProjectionSnapshot({ ...mk("EFET4", "HEALTHY", 20), titulo: "efet-d" }, db);
+  const overrides = { itemIds: ["EFET1", "EFET2"], statuses: ["LOW_MARGIN", "HEALTHY"] };
+  const base = { clienteId: 1, clienteContaId: 2, busca: "efet-" };
+
+  const ids = async (filtro, ordenacao = null) => (await repo.queryProjectionSnapshotsPage({
+    filtro, orderBy: repo.resolverOrdenacao({ ordenacao, direcao: "ASC" }).orderBy, limit: 50, offset: 0, db,
+  })).map((i) => i.itemId);
+
+  // Sem override: SQL de sempre, persistido.
+  const semOv = repo.montarFiltroSnapshots({ ...base, status: ["LOSS"] });
+  assert.strictEqual(semOv.statusExpr, "status");
+  assert.deepStrictEqual((await ids(semOv)).sort(), ["EFET1", "EFET2", "EFET3"]);
+
+  // Com override: o filtro por status vê o EFETIVO.
+  assert.deepStrictEqual((await ids(repo.montarFiltroSnapshots({ ...base, status: ["LOSS"], statusOverrides: overrides }))).sort(), ["EFET3"]);
+  assert.deepStrictEqual((await ids(repo.montarFiltroSnapshots({ ...base, status: ["LOW_MARGIN"], statusOverrides: overrides }))).sort(), ["EFET1"], "persistido LOSS, efetivo LOW_MARGIN");
+  assert.deepStrictEqual((await ids(repo.montarFiltroSnapshots({ ...base, status: ["HEALTHY"], statusOverrides: overrides }))).sort(), ["EFET2", "EFET4"]);
+  const fOv = repo.montarFiltroSnapshots({ ...base, status: ["LOSS", "LOW_MARGIN"], statusOverrides: overrides });
+  assert.strictEqual((await repo.countProjectionSnapshotsFiltrado({ filtro: fOv, db })).total, 2, "contagem acompanha o filtro efetivo");
+
+  // KPIs: cada anúncio conta uma vez, pelo status efetivo.
+  const k = await repo.summarizeProjectionSnapshots({ filtro: repo.montarFiltroSnapshots({ ...base, statusOverrides: overrides }), db });
+  assert.deepStrictEqual([k.total, k.porStatus.LOSS, k.porStatus.LOW_MARGIN, k.porStatus.HEALTHY], [4, 1, 1, 2]);
+  const kPersistido = await repo.summarizeProjectionSnapshots({ filtro: repo.montarFiltroSnapshots(base), db });
+  assert.deepStrictEqual([kPersistido.porStatus.LOSS, kPersistido.porStatus.HEALTHY], [3, 1]);
+
+  // Ordenação por status usa o efetivo (precedência de AÇÃO: LOSS antes de LOW_MARGIN antes de HEALTHY).
+  const ord = await ids(repo.montarFiltroSnapshots({ ...base, statusOverrides: overrides }), "status");
+  assert.strictEqual(ord[0], "EFET3");
+  assert.strictEqual(ord[1], "EFET1");
+  assert.deepStrictEqual(ord.slice(2).sort(), ["EFET2", "EFET4"]);
+
+  // Linhas completas de um lote (para reclassificar), só do catálogo atual.
+  const lote = await repo.listProjectionSnapshotsByItemIds({ clienteId: 1, clienteContaId: 2, itemIds: ["EFET1", "EFET9"], db });
+  assert.deepStrictEqual(lote.map((l) => l.itemId), ["EFET1"]);
+
+  // Listas paralelas inconsistentes ou status inválido são recusados antes do SQL.
+  assert.throws(() => repo.montarFiltroSnapshots({ ...base, statusOverrides: { itemIds: ["A"], statuses: [] } }), /statusOverrides inválido/);
+  assert.throws(() => repo.montarFiltroSnapshots({ ...base, statusOverrides: { itemIds: ["A"], statuses: ["NAO_EXISTE"] } }), /statusOverrides inválido/);
+});
+
 check("fan-out de Base: vínculo da conta e vínculo legado client-level", async ({ db }) => {
   const a = await triggers.resolverContasAfetadasPorBase({ baseId: 1 }, db);
   assert.deepStrictEqual(a.map((c) => c.clienteContaId), [2]);

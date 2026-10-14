@@ -9,7 +9,7 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://127.0.0.1:1/d
 const assert = require("assert");
 const core = require("../services/motorMargem/core");
 const read = require("../services/motorMargem/marginSnapshotReadService");
-const { margemAtualComRebate, carregarRebatesAtivos, MOTIVO_REBATE } = require("../services/motorMargem/margemAtualRebate");
+const { margemAtualComRebate, carregarRebatesAtivos, reclassificarStatus, MOTIVO_REBATE } = require("../services/motorMargem/margemAtualRebate");
 const promoRepo = require("../services/promoSnapshot/promoSnapshotRepository");
 const { listarOportunidades } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
 const { paginaReferencia, lerParametrosPagina } = require("./helpers/oportunidadesReferencia");
@@ -144,17 +144,77 @@ cenario("promo started com subsídio 3,30: tabela, drawer e Oportunidades têm a
   assert.strictEqual(r.oportunidades[0].margemAtualRebate, 3.3);
 });
 
-cenario("listarItens (a tabela de verdade): rebate lido em UMA consulta para a página e somado só no anúncio com promoção em andamento", async () => {
+// ── Status acompanha a margem exibida (tabela, drawer e KPIs) ────────────────
+
+// Anúncio que o snapshot persistiu como Prejuízo (custo 60 sobre preço 89,77).
+const INSUMOS_LOSS = { price: 89.77, cost: 60, taxRate: 0.1, fixedFee: 0, commission: 12.1, freight: 15 };
+const LOSS_CALC = core.computeMargin(INSUMOS_LOSS);
+
+function linhaLoss(extra = {}) {
+  return {
+    ...linha(), ...INSUMOS_LOSS, profit: LOSS_CALC.profit, margin: LOSS_CALC.margin, marginPercent: Math.round(LOSS_CALC.margin * 10000) / 100,
+    status: "LOSS", ...extra,
+  };
+}
+
+cenario("premissa: sem rebate o anúncio é Prejuízo; 8,00 de retorno deixa a margem > 0 mas abaixo da meta; 20,00 deixa saudável", () => {
+  assert.ok(LOSS_CALC.margin < 0);
+  assert.ok(core.computeMargin({ ...INSUMOS_LOSS, rebate: 8 }).margin > 0 && core.computeMargin({ ...INSUMOS_LOSS, rebate: 8 }).margin < 0.1);
+  assert.ok(core.computeMargin({ ...INSUMOS_LOSS, rebate: 20 }).margin >= 0.1);
+});
+
+cenario("reclassificarStatus: LOSS persistido + rebate que deixa margem > 0 → não é mais Prejuízo (mesma classifyStatus do núcleo)", () => {
+  const l = linhaLoss();
+  const baixo = reclassificarStatus(l, margemAtualComRebate(l, { promocoes: 1, rebate: 8 }));
+  assert.strictEqual(baixo.status, "LOW_MARGIN");
+  assert.strictEqual(baixo.de, "LOSS");
+  assert.deepStrictEqual(baixo.reasons, core.classifyStatus({ margin: core.computeMargin({ ...INSUMOS_LOSS, rebate: 8 }).margin, computable: true, confidenceLevel: "HIGH", targetMargin: 0.1 }).reasons, "o motivo vem do núcleo");
+  const ok = reclassificarStatus(l, margemAtualComRebate(l, { promocoes: 1, rebate: 20 }));
+  assert.strictEqual(ok.status, "HEALTHY");
+  // Rebate insuficiente: continua Prejuízo (nada a reclassificar).
+  assert.strictEqual(reclassificarStatus(l, margemAtualComRebate(l, { promocoes: 1, rebate: 1 })), null);
+  // Sem rebate / ambíguo / indisponível: nunca reclassifica.
+  assert.strictEqual(reclassificarStatus(l, margemAtualComRebate(l, undefined)), null);
+  assert.strictEqual(reclassificarStatus(l, margemAtualComRebate(l, { promocoes: 2, rebate: null })), null);
+  assert.strictEqual(reclassificarStatus(l, margemAtualComRebate(l, { promocoes: 1, rebate: 8 }, "PROMO_SNAPSHOT_INDISPONIVEL")), null);
+  // Status que não dependem da margem não mudam com o retorno.
+  for (const status of ["UNVALIDATED", "SUSPECT_DATA", "RECONCILING"]) {
+    const x = linhaLoss({ status });
+    assert.strictEqual(reclassificarStatus(x, margemAtualComRebate(x, { promocoes: 1, rebate: 20 })), null, status);
+  }
+  // Confiança baixa persistida: o dado continua suspeito (status SUSPECT_DATA já seria o persistido, mas a regra do núcleo se mantém).
+  const baixaConf = linhaLoss({ status: "LOSS", confidenceLevel: "LOW" });
+  assert.strictEqual(reclassificarStatus(baixaConf, margemAtualComRebate(baixaConf, { promocoes: 1, rebate: 20 })).status, "SUSPECT_DATA");
+});
+
+cenario("comporItem (tabela e drawer): LOSS persistido + rebate → status exibido não é Prejuízo, com margem, motivo e rastro da reclassificação", () => {
+  const item = read.comporItem(linhaLoss(), SEM_VENDAS, {}, { promocoes: 1, rebate: 8 });
+  const margem = core.computeMargin({ ...INSUMOS_LOSS, rebate: 8 });
+  assert.strictEqual(item.projected.margin, margem.margin);
+  assert.ok(item.projected.margin > 0);
+  assert.strictEqual(item.status, "LOW_MARGIN");
+  assert.strictEqual(item.quality.status, "LOW_MARGIN");
+  assert.strictEqual(item.quality.statusLabel, "Margem baixa");
+  assert.deepStrictEqual(item.quality.statusReclassificado, { de: "LOSS", para: "LOW_MARGIN", motivo: "retorno_ml" });
+  assert.ok(!/negativa/i.test(item.problema), item.problema);
+  // Sem rebate: o status persistido segue valendo, sem rastro.
+  const sem = read.comporItem(linhaLoss(), SEM_VENDAS, {}, null);
+  assert.strictEqual(sem.status, "LOSS");
+  assert.strictEqual(sem.quality.statusReclassificado, null);
+});
+
+// Conta com 5 anúncios; o snapshot persistiu 4 como Prejuízo.
+async function contaComRebates({ rebates }) {
   const db = makeMarginSnapshotFakeDb();
-  const base = { clienteId: 1, clienteContaId: 5, marketplace: "meli", baseId: 9, confidenceLevel: "HIGH", quality: {}, missing: [], assumed: [], divergences: [],
-    observedAt: new Date("2026-10-13T06:00:00Z"), calculatedAt: new Date("2026-10-13T06:00:05Z"), runId: 1, refreshStatus: "fresh", lastError: null, status: "HEALTHY" };
-  const mk = (itemId) => ({ ...base, itemId, sku: itemId, titulo: itemId, ...INSUMOS, profit: SEM_REBATE.profit, margin: SEM_REBATE.margin, marginPercent: Math.round(SEM_REBATE.margin * 10000) / 100 });
-  await snapshotRepository.upsertProjectionSnapshot(mk("MLB1"), db);
-  await snapshotRepository.upsertProjectionSnapshot(mk("MLB2"), db);
+  const base = { clienteId: 1, clienteContaId: 5, marketplace: "meli", baseId: 9, confidenceLevel: "HIGH", quality: { targetMargin: 0.1 }, missing: [], assumed: [], divergences: [],
+    observedAt: new Date("2026-10-13T06:00:00Z"), calculatedAt: new Date("2026-10-13T06:00:05Z"), runId: 1, refreshStatus: "fresh", lastError: null };
+  const loss = (itemId) => ({ ...base, itemId, sku: itemId, titulo: itemId, ...INSUMOS_LOSS, profit: LOSS_CALC.profit, margin: LOSS_CALC.margin, marginPercent: Math.round(LOSS_CALC.margin * 10000) / 100, status: "LOSS" });
+  const sao = { ...base, itemId: "MLB5", sku: "MLB5", titulo: "MLB5", ...INSUMOS, profit: SEM_REBATE.profit, margin: SEM_REBATE.margin, marginPercent: Math.round(SEM_REBATE.margin * 10000) / 100, status: "HEALTHY" };
+  for (const id of ["MLB1", "MLB2", "MLB3", "MLB4"]) await snapshotRepository.upsertProjectionSnapshot(loss(id), db);
+  await snapshotRepository.upsertProjectionSnapshot(sao, db);
   const { run } = await runService.enqueueMarginSnapshotRun({ clienteId: 1, clienteSlug: "loja-a", clienteContaId: 5, reason: "manual_refresh", db });
   await runRepository.updateRunStatus({ runId: run.id, status: "running", db });
   await runRepository.updateRunStatus({ runId: run.id, status: "completed", db });
-
   const consultas = [];
   const deps = {
     db,
@@ -164,18 +224,83 @@ cenario("listarItens (a tabela de verdade): rebate lido em UMA consulta para a p
     contarContasAtivas: async () => 2,
     carregarVendas: async () => ({ sincronizado: true, pedidos: [], pedidosTodos: [], itens: [], componentes: [], imports: [{ id: 1 }], competencias: [] }),
     promoRepository: {
-      mapRebatesAtivosPorItem: async (args) => { consultas.push(args); return new Map([["MLB1", { promocoes: 1, rebate: 3.3 }]]); },
+      mapRebatesAtivosDaConta: async (args) => { consultas.push(args); return new Map(rebates); },
     },
   };
+  return { db, deps, consultas };
+}
+
+// MLB1: 8,00 → margem baixa · MLB2: 20,00 → saudável · MLB3: 1,00 → segue Prejuízo · MLB4: sem promoção · MLB5: saudável com 3,30.
+const REBATES_CONTA = [
+  ["MLB1", { promocoes: 1, rebate: 8 }], ["MLB2", { promocoes: 1, rebate: 20 }], ["MLB3", { promocoes: 1, rebate: 1 }], ["MLB5", { promocoes: 1, rebate: 3.3 }],
+];
+
+cenario("listarItens (a tabela de verdade): UMA consulta de rebates da conta; status efetivo só onde o retorno muda a classificação", async () => {
+  const { deps, consultas } = await contaComRebates({ rebates: REBATES_CONTA });
   const r = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5 }, deps);
-  assert.strictEqual(consultas.length, 1, "UMA consulta de rebates para a página inteira");
+  assert.strictEqual(consultas.length, 1, "UMA consulta de rebates por requisição (nunca por item)");
   assert.deepStrictEqual([consultas[0].clienteContaId, consultas[0].sellerId], [5, "555"]);
-  assert.deepStrictEqual(consultas[0].itemIds.slice().sort(), ["MLB1", "MLB2"]);
   const porId = Object.fromEntries(r.itens.map((i) => [i.itemId, i]));
-  assert.strictEqual(porId.MLB1.projected.margin, COM_REBATE.margin, "em promoção com retorno: margem atual inclui o rebate");
-  assert.strictEqual(porId.MLB1.projected.rebate, 3.3);
-  assert.strictEqual(porId.MLB2.projected.margin, SEM_REBATE.margin, "sem promoção: margem do snapshot");
-  assert.strictEqual(porId.MLB2.projected.rebate, null);
+  assert.deepStrictEqual(
+    Object.fromEntries(Object.entries(porId).map(([id, i]) => [id, i.status])),
+    { MLB1: "LOW_MARGIN", MLB2: "HEALTHY", MLB3: "LOSS", MLB4: "LOSS", MLB5: "HEALTHY" }
+  );
+  assert.strictEqual(porId.MLB1.projected.margin, core.computeMargin({ ...INSUMOS_LOSS, rebate: 8 }).margin);
+  assert.strictEqual(porId.MLB1.projected.rebate, 8);
+  assert.strictEqual(porId.MLB3.projected.margin, core.computeMargin({ ...INSUMOS_LOSS, rebate: 1 }).margin, "rebate aplicado mesmo sem mudar o status");
+  assert.strictEqual(porId.MLB4.projected.rebate, null);
+  assert.strictEqual(porId.MLB5.projected.margin, COM_REBATE.margin);
+});
+
+cenario("KPIs (placar da conta): o anúncio que o retorno ML tirou de Prejuízo NÃO conta como Prejuízo", async () => {
+  const { deps } = await contaComRebates({ rebates: REBATES_CONTA });
+  const resumo = await read.obterResumo({ clienteSlug: "loja-a", clienteContaId: 5 }, deps);
+  assert.strictEqual(resumo.estado, "ready");
+  // Persistido: 4 Prejuízo + 1 Saudável. Efetivo: MLB1 → Margem baixa, MLB2 → Saudável.
+  assert.deepStrictEqual(
+    { LOSS: resumo.kpis.porStatus.LOSS, LOW_MARGIN: resumo.kpis.porStatus.LOW_MARGIN, HEALTHY: resumo.kpis.porStatus.HEALTHY },
+    { LOSS: 2, LOW_MARGIN: 1, HEALTHY: 2 }
+  );
+  assert.strictEqual(resumo.kpis.total, 5);
+  const somaStatus = Object.values(resumo.kpis.porStatus).reduce((a, b) => a + b, 0);
+  assert.strictEqual(somaStatus, 5, "cada anúncio conta uma única vez");
+});
+
+cenario("filtro e ordenação por status usam o status EFETIVO (a lista bate com o placar)", async () => {
+  const { deps } = await contaComRebates({ rebates: REBATES_CONTA });
+  const ids = (r) => r.itens.map((i) => i.itemId).sort();
+  const loss = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, status: "LOSS" }, deps);
+  assert.deepStrictEqual(ids(loss), ["MLB3", "MLB4"], "MLB1/MLB2 saíram de Prejuízo");
+  assert.strictEqual(loss.paginacao.total, 2, "a contagem acompanha o filtro");
+  const baixa = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, status: "LOW_MARGIN" }, deps);
+  assert.deepStrictEqual(ids(baixa), ["MLB1"], "persistido como Prejuízo, efetivo Margem baixa");
+  assert.ok(baixa.itens.every((i) => i.status === "LOW_MARGIN"), "o que o filtro mostra é o que a linha exibe");
+  const saudavel = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, status: "HEALTHY" }, deps);
+  assert.deepStrictEqual(ids(saudavel), ["MLB2", "MLB5"]);
+  const ordenado = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5, ordenacao: "status", direcao: "ASC" }, deps);
+  assert.deepStrictEqual(ordenado.itens.map((i) => i.status), ["LOSS", "LOSS", "LOW_MARGIN", "HEALTHY", "HEALTHY"], "Prejuízo primeiro (precedência do núcleo), por status efetivo");
+});
+
+cenario("sem promoção em andamento com retorno: nenhum override — SQL, KPIs e itens idênticos ao snapshot", async () => {
+  const { deps } = await contaComRebates({ rebates: [] });
+  const resumo = await read.obterResumo({ clienteSlug: "loja-a", clienteContaId: 5 }, deps);
+  assert.deepStrictEqual([resumo.kpis.porStatus.LOSS, resumo.kpis.porStatus.HEALTHY], [4, 1]);
+  const filtro = snapshotRepository.montarFiltroSnapshots({ clienteId: 1, clienteContaId: 5 });
+  assert.strictEqual(filtro.statusExpr, "status", "sem override o SQL é o de sempre");
+  assert.strictEqual(filtro.params.length, 3);
+});
+
+cenario("Promo Snapshot ilegível: KPIs e itens ficam com o status persistido (nunca meio-corrigidos) e a falha vai ao log", async () => {
+  const { deps } = await contaComRebates({ rebates: [] });
+  const logs = [];
+  deps.promoRepository = { mapRebatesAtivosDaConta: async () => { throw new Error("db fora"); } };
+  deps.logger = { error: (l) => logs.push(l) };
+  const resumo = await read.obterResumo({ clienteSlug: "loja-a", clienteContaId: 5 }, deps);
+  assert.strictEqual(resumo.kpis.porStatus.LOSS, 4);
+  const r = await read.listarItens({ clienteSlug: "loja-a", clienteContaId: 5 }, deps);
+  assert.ok(r.itens.every((i) => i.status === (i.itemId === "MLB5" ? "HEALTHY" : "LOSS")));
+  assert.ok(r.itens.every((i) => i.projected.rebateMotivo === "PROMO_SNAPSHOT_INDISPONIVEL"));
+  assert.ok(logs.length >= 1);
 });
 
 (async () => {

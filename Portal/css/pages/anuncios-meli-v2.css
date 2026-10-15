@@ -4141,8 +4141,19 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 .am-reb-celula__rebate { font-weight: var(--vf-fw-medium); color: var(--vf-success); }
 /* Margem · lucro na promoção com rebate: mesmo peso visual do preço, para
    comparar direto com a coluna Hoje. */
-.am-reb-celula__metricas { font-weight: var(--vf-fw-semibold); color: var(--vf-text); white-space: nowrap; }
-.am-reb-celula__ganho { font-size: var(--vf-fs-xs); color: var(--vf-text-muted); white-space: nowrap; }
+/* Margem | lucro em duas colunas (Hoje e Com rebate com a mesma largura de
+   coluna); o ganho de cada medida fica exatamente abaixo dela. */
+.am-reb-celula__par {
+  display: grid;
+  grid-template-columns: minmax(64px, max-content) max-content;
+  column-gap: var(--vf-sp-4);
+  row-gap: 2px;
+  white-space: nowrap;
+}
+.am-reb-celula__par--fraco { color: var(--vf-text-muted); }
+.am-reb-celula__metricas, .am-reb-celula__ganho { display: contents; }
+.am-reb-celula__metricas > span { font-weight: var(--vf-fw-semibold); color: var(--vf-text); }
+.am-reb-celula__ganho > .am-reb-ganho { font-size: var(--vf-fs-xs); }
 
 .am-reb-ganho { font-weight: var(--vf-fw-semibold); color: var(--vf-text-muted); white-space: nowrap; }
 .am-reb-ganho.is-pos { color: var(--vf-success); }

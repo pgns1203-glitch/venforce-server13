@@ -435,8 +435,8 @@ async function run() {
       assert.strictEqual(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-ganho]`)), "+1,8 p.p.+R$ 1,09/un");
       const xs = await cdp.evaluate(`JSON.stringify(Array.from(document.querySelectorAll('${REC("MLB-R1")} .am-reb-celula--nova .am-reb-celula__par > span > span')).map(n => Math.round(n.getBoundingClientRect().left)))`);
       const [xMargem, xLucro, xGanhoM, xGanhoL] = JSON.parse(xs);
-      assert.strictEqual(xGanhoM, xMargem, "ganho de margem alinhado sob a margem");
-      assert.strictEqual(xGanhoL, xLucro, "ganho de lucro alinhado sob o lucro");
+      assert.strictEqual(xGanhoM - xMargem, 8, "ganho de margem na diagonal, logo à direita da margem");
+      assert.strictEqual(xGanhoL - xLucro, 8, "ganho de lucro na diagonal, logo à direita do lucro");
       assert.ok(!/Ganho/.test(await cdp.evaluate(texto(".am-reb-tab__cab"))), "sem coluna Ganho");
     });
     await check("V2 — Escolha: 'Manter como está' por padrão; margem e lucro lado a lado + opção extra", async () => {

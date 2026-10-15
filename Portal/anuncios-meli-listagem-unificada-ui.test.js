@@ -2722,13 +2722,15 @@ async function run() {
           { tipo: "familia", key: "fam:FAM-COR", family_id: "FAM-COR", family_name: "Camiseta Pesca",
             titulo: "Camiseta Pesca", margemProjetadaPercent: null, margemProjetadaComputable: false,
             margemProjetadaMinPercent: 4.2, margemProjetadaMaxPercent: 23.8,
-            margemProjetadaMinStatus: "LOW_MARGIN", margemProjetadaMaxStatus: "HEALTHY", cover: { thumbnail: null } },
+            margemProjetadaMinStatus: "LOW_MARGIN", margemProjetadaMaxStatus: "HEALTHY",
+            margemProjetadaMinProfit: -1.5, margemProjetadaMaxProfit: 14.26, cover: { thumbnail: null } },
           { tipo: "familia", key: "fam:FAM-UNI", family_id: "FAM-UNI", family_name: "Kit Camisetas",
             titulo: "Kit Camisetas", margemProjetadaPercent: null, margemProjetadaComputable: false,
             margemProjetadaMinPercent: 23.8, margemProjetadaMaxPercent: 23.8,
             margemProjetadaMinStatus: "HEALTHY", margemProjetadaMaxStatus: "HEALTHY", cover: { thumbnail: null } },
           { tipo: "item", item_id: "MLB-COR-I", key: "item:MLB-COR-I", titulo: "Item avulso", status: "active",
-            margemProjetadaPercent: 23.6, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY", cover: { thumbnail: null } },
+            margemProjetadaPercent: 23.6, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY",
+            margemProjetadaProfit: 28.3, cover: { thumbnail: null } },
         ],
         paginacao: { page: 1, limit: 20, total: 3, totalPaginas: 1 },
       });
@@ -2748,11 +2750,19 @@ async function run() {
           maxSuccess: !!(max && max.classList.contains('is-success')),
           uniSuccess: !!(uni && uni.classList.contains('is-success')),
           mesmaCorDoItem: !!(uni && item && getComputedStyle(uni).color === getComputedStyle(item).color),
+          lucroItem: (function(){ var l = document.querySelector('.am-row[data-item="MLB-COR-I"] .am-margem__lucro'); return l ? { t: l.textContent.trim(), ok: l.classList.contains('is-success') } : null; })(),
+          lucroMin: (function(){ var l = min && min.parentElement.querySelector('.am-margem__lucro'); return l ? { t: l.textContent.trim(), ok: l.classList.contains('is-warning') } : null; })(),
+          lucroMax: (function(){ var l = max && max.parentElement.querySelector('.am-margem__lucro'); return l ? { t: l.textContent.trim(), ok: l.classList.contains('is-success') } : null; })(),
+          lucroUniAusente: !(uni && uni.parentElement.querySelector('.am-margem__lucro')),
         }; })()`);
       assert.ok(estado.minWarning, "mínimo vindo de filho LOW_MARGIN usa a cor de margem baixa");
       assert.ok(estado.maxSuccess, "máximo vindo de filho HEALTHY usa a cor de saudável");
       assert.ok(estado.uniSuccess, "faixa de um ponto só também ganha a cor do status");
       assert.ok(estado.mesmaCorDoItem, "família saudável e item avulso saudável têm a MESMA cor");
+      assert.deepStrictEqual(estado.lucroItem, { t: "R$ 28,30", ok: true }, "item mostra o lucro por unidade embaixo do %, na mesma cor");
+      assert.deepStrictEqual(estado.lucroMin, { t: "−R$ 1,50", ok: true }, "ponta mínima mostra o lucro do filho dela (negativo com sinal de menos), na cor dela");
+      assert.deepStrictEqual(estado.lucroMax, { t: "R$ 14,26", ok: true }, "ponta máxima mostra o lucro do filho dela");
+      assert.ok(estado.lucroUniAusente, "sem profit no snapshot não inventa lucro (nunca R$ 0,00)");
       ordenarPorGlobalHandler = null;
       console.log("  ✓ 39a2b");
     });

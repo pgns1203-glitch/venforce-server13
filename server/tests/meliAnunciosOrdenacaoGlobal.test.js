@@ -456,6 +456,8 @@ async function run() {
     assert.strictEqual(familia.margemProjetadaMediaPercent, 29.95, "média simples dos computáveis — mesma regra do ranking");
     assert.strictEqual(familia.margemProjetadaMinStatus, "LOW_MARGIN", "status do filho que deu o MÍNIMO — a célula pinta essa ponta com a cor dele");
     assert.strictEqual(familia.margemProjetadaMaxStatus, "HEALTHY", "status do filho que deu o MÁXIMO (o UNVALIDATED de 80% nunca vira a ponta)");
+    assert.strictEqual(familia.margemProjetadaMinProfit, 10, "lucro (R$/un) do MESMO filho que deu o mínimo — nunca a soma da família");
+    assert.strictEqual(familia.margemProjetadaMaxProfit, 20, "lucro (R$/un) do MESMO filho que deu o máximo");
     assert.strictEqual(familia.margemProjetadaProfit, 31, "soma de profit dos filhos com snapshot (informativo)");
     assert.strictEqual(familia.margemProjetadaCalculadaEm, "2026-09-28T03:34:00Z", "calculadaEm da família = snapshot mais recente dos filhos");
     const itemAvulso = res.corpo.anuncios.find((a) => a.tipo === "item");

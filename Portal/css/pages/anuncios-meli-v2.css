@@ -3347,6 +3347,11 @@
     max-width: none;
   }
 
+  /* Radar de subsídios: largura inteira quando a barra empilha. */
+  .vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-reb-abrir {
+    flex: 1 1 auto;
+  }
+
   /* A rolagem horizontal da tabela não depende mais de ponto de quebra:
      vale em qualquer largura abaixo de --am-min-w (ver .am-listagem). */
 }
@@ -3930,7 +3935,108 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
    cards margem × lucro, Sem ganho, Descartados) → participação. Layout =
    canvas "A + B" aprovado. Ver anuncios-meli.js, "PROMOÇÕES COM REBATE".
    Só tokens da Fundação. */
-.am-reb-abrir { white-space: nowrap; }
+/* Botão "Radar de subsídios" na barra da lista — modelo D (verde-dinheiro,
+   mesmo verde do "+R$ x de rebate"). Ocupa a altura inteira da barra: a
+   barra e as ações esticam, os demais itens das ações seguem no rodapé. */
+.vf-page-anuncios-meli .am-filtros {
+  align-items: stretch;
+}
+
+.vf-page-anuncios-meli .am-filtros .vf-toolbar__actions {
+  align-items: flex-end;
+}
+
+.vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-reb-abrir {
+  align-self: stretch;
+}
+
+.am-reb-abrir {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-success);
+  color: var(--vf-text-on-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 6px 16px -6px rgba(15, 122, 82, 0.5);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.am-reb-abrir:hover:not(:disabled) {
+  background: var(--vf-success-strong);
+}
+
+.am-reb-abrir:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: var(--vf-focus-offset);
+}
+
+.am-reb-abrir__ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.am-reb-abrir__txt {
+  display: grid;
+  gap: 2px;
+}
+
+.am-reb-abrir__titulo {
+  font-family: var(--vf-font-display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.am-reb-abrir__sub {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.am-reb-abrir__seta {
+  flex: none;
+  margin-left: 6px;
+  transition: transform 0.15s;
+}
+
+.am-reb-abrir:hover:not(:disabled) .am-reb-abrir__seta {
+  transform: translateX(3px);
+}
+
+.am-reb-abrir:disabled {
+  cursor: not-allowed;
+  background: var(--vf-disabled-bg);
+  color: var(--vf-text-disabled);
+  box-shadow: none;
+}
+
+.am-reb-abrir:disabled .am-reb-abrir__sub {
+  color: var(--vf-text-disabled);
+}
+
+.am-reb-abrir:disabled .am-reb-abrir__ico {
+  background: var(--vf-surface);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-reb-abrir,
+  .am-reb-abrir__seta {
+    transition: none;
+  }
+}
 
 .am-reb-overlay {
   position: fixed;

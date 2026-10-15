@@ -4896,7 +4896,7 @@
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
     overlay.setAttribute("aria-labelledby", "am-reb-titulo");
-    overlay.innerHTML = '<aside class="am-reb-box" aria-label="Promoções com rebate"></aside>';
+    overlay.innerHTML = '<aside class="am-reb-box" aria-label="Radar de subsídios"></aside>';
     document.body.appendChild(overlay);
     document.body.classList.add("vf-no-scroll");
     REB = {
@@ -5374,7 +5374,7 @@
 
     if (reb.avisoFechar) {
       rodape = '<div class="am-reb-confirma" role="alert">' +
-        '<p class="am-reb-confirma__txt">A participação continua no Mercado Livre mesmo se você fechar. Reabra "Promoções com rebate" para acompanhar.</p>' +
+        '<p class="am-reb-confirma__txt">A participação continua no Mercado Livre mesmo se você fechar. Reabra o "Radar de subsídios" para acompanhar.</p>' +
         '<div class="am-reb-confirma__acoes">' +
           '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-mesmo" data-reb-acao="fechar-mesmo">Fechar mesmo assim</button>' +
           '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-continuar" data-reb-acao="continuar">Continuar acompanhando</button>' +
@@ -5388,7 +5388,7 @@
 
     box.innerHTML = '<header class="am-reb-head' + (abas ? " tem-abas" : "") + '">' +
         '<div class="am-reb-head__topo"><div class="am-reb-head__txt">' +
-          '<h2 class="am-reb-titulo" id="am-reb-titulo" tabindex="-1">Promoções com rebate</h2>' +
+          '<h2 class="am-reb-titulo" id="am-reb-titulo" tabindex="-1">Radar de subsídios</h2>' +
           '<p class="am-reb-sub">' + rebSubtituloHtml() + "</p></div>" +
           '<button type="button" class="am-reb-x" id="am-reb-x" data-reb-acao="fechar" aria-label="Fechar">' + icFechar() + "</button></div>" +
         (abas ? rebAbasHtml() : "") +

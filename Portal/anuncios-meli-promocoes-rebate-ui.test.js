@@ -346,9 +346,12 @@ async function run() {
     await abrirPagina(cdp, porta);
 
     // ── Botão e passo 1 ──────────────────────────────────────────────────────
-    await check("P1 — botão 'Promoções com rebate' na barra da lista, habilitado com cliente+conta", async () => {
+    await check("P1 — botão 'Radar de subsídios' na barra da lista, habilitado com cliente+conta", async () => {
       await waitFor(cdp, `${q("#am-reb-abrir")} && !${q("#am-reb-abrir")}.disabled`, "botão não habilitou");
-      assert.strictEqual(await cdp.evaluate(texto("#am-reb-abrir")), "Promoções com rebate");
+      assert.strictEqual(await cdp.evaluate(texto("#am-reb-abrir .am-reb-abrir__titulo")), "Radar de subsídios");
+      // Ocupa a altura inteira da barra (menos o padding dela).
+      assert.ok(await cdp.evaluate(`(() => { const b = document.querySelector("#am-reb-abrir").getBoundingClientRect();
+        const t = document.querySelector(".am-filtros").getBoundingClientRect(); return b.height >= t.height - 34; })()`), "botão não cobre a altura da barra");
       assert.ok(await cdp.evaluate(`!!document.querySelector(".am-filtros .vf-toolbar__actions #am-reb-abrir")`), "fica nas ações da barra da lista");
     });
     await check("P2 — fica desabilitado no modo 'Editar custos' e volta ao sair", async () => {

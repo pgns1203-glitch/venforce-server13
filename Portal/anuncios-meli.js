@@ -5506,14 +5506,17 @@
           '<span role="cell" class="am-reb-celula">' +
             '<span class="am-reb-celula__forte">' + formatMoeda(hoje.preco) +
               (rebNum(hoje.subsidioMl) > 0 ? ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(hoje.subsidioMl) + " ML</span>" : "") + "</span>" +
-            '<span class="am-reb-celula__fraco">' + rebPct(hoje.margemPercent) + " · " + formatMoeda(hoje.lucro) + "</span>" +
+            '<span class="am-reb-celula__par am-reb-celula__par--fraco">' +
+              "<span>" + rebPct(hoje.margemPercent) + "</span><span>" + formatMoeda(hoje.lucro) + "</span></span>" +
             '<span class="am-reb-celula__fraco" data-reb-hoje-nome>' + escapeHtml(hoje.nome || "") + "</span></span>" +
           '<span role="cell" class="am-reb-celula am-reb-celula--nova">' + (c
             ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(c.subsidioMl) + " ML</span></span>" +
-              '<span class="am-reb-celula__metricas" data-reb-com-rebate>' + rebPct(c.margemPercent) + " · " + formatMoeda(c.lucro) + "</span>" +
-              // Ganho logo abaixo dos valores: quanto a margem e o lucro sobem.
-              '<span class="am-reb-celula__ganho" data-reb-ganho>' + rebGanhoHtml(c.ganhoMargemPp, "pp") +
-                '<span aria-hidden="true"> · </span>' + rebGanhoHtml(c.ganhoLucro, "rs", "/un") + "</span>" +
+              // Margem e lucro em duas colunas; o ganho de cada um fica logo
+              // abaixo do próprio valor.
+              '<span class="am-reb-celula__par">' +
+                '<span class="am-reb-celula__metricas" data-reb-com-rebate><span>' + rebPct(c.margemPercent) + "</span><span>" + formatMoeda(c.lucro) + "</span></span>" +
+                '<span class="am-reb-celula__ganho" data-reb-ganho>' + rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs", "/un") + "</span>" +
+              "</span>" +
               '<span class="am-reb-celula__fraco"' + (c.tipoLabel ? ' title="' + escapeAttr(c.tipoLabel) + '"' : "") + ">" + escapeHtml(c.nome || c.promotionId) + "</span>"
             : "—") + "</span>" +
           "</div>";

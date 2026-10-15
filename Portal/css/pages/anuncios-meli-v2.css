@@ -503,6 +503,29 @@
   gap: var(--vf-sp-3);
 }
 
+/* "Anúncio" começa na borda da foto, não na do título: o rótulo ocupa as
+   colunas da miniatura + anúncio e o span vazio da miniatura sai da grade
+   (continua no DOM — os testes leem os spans do cabeçalho por posição). */
+.vf-page-anuncios-meli .am-listagem__head > span:first-child {
+  display: none;
+}
+
+.vf-page-anuncios-meli .am-listagem__head > .am-listagem__head-anuncio {
+  grid-column: 1 / span 2;
+}
+
+/* Score VenForce: rótulo (10ª coluna) e medidor centralizados na coluna.
+   justify-self (não text-align): o rótulo é mais largo que a coluna e
+   assim transborda igual para os dois lados, com o centro no do medidor. */
+.vf-page-anuncios-meli .am-listagem__head > span:nth-child(10) {
+  justify-self: center;
+}
+
+.vf-page-anuncios-meli .am-listagem .am-gauge {
+  justify-self: center;
+  align-items: center;
+}
+
 .vf-page-anuncios-meli .am-listagem__head-rotulo {
   font-weight: inherit;
 }

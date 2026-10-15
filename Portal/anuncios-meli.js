@@ -3688,7 +3688,17 @@
       if (!id || CUSTOS.cache[id] !== undefined || CUSTOS.emVoo[id]) return;
       if (faltam.indexOf(id) < 0) faltam.push(id);
     });
-    if (!faltam.length) return;
+    if (!faltam.length) {
+      // Página só com famílias (ou já lida): ninguém pergunta pela Base e o
+      // botão "Editar custos" ficaria escondido até expandir uma família.
+      // Uma leitura sem itens só resolve a Base (o servidor aceita itemIds
+      // vazio). Uma vez por conta: o flag mora no CUSTOS, recriado na troca.
+      if (CUSTOS.base === undefined && !CUSTOS.sondandoBase) {
+        CUSTOS.sondandoBase = true;
+        lerLoteCustos([]);
+      }
+      return;
+    }
     for (var i = 0; i < faltam.length; i += CUSTO_LOTE_MAX) {
       lerLoteCustos(faltam.slice(i, i + CUSTO_LOTE_MAX));
     }

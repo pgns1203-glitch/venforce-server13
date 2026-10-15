@@ -270,6 +270,7 @@ const SERVIDOR = {
   margemLidas: [],
   planilhasBaixadas: [],
   previas: [],
+  soFamilias: false, // página só com famílias (nenhum MLB solto)
 };
 
 // Prévia que o "servidor" devolve para qualquer planilha enviada: uma linha
@@ -370,7 +371,10 @@ function wireInterception(cdp, excecoes) {
     }
     const family = pathname.match(/^\/anuncios-meli\/familias\/([^/]+)/);
     if (family) return respond({ ok: true, cliente: N97, familia: DETALHE_CONTA_42[decodeURIComponent(family[1])] });
-    if (pathname === "/anuncios-meli/familias") return respond({ ok: true, cliente: N97, anuncios: LINHAS_CONTA_42, paginacao: { page: 1, limit: 20, total: LINHAS_CONTA_42.length, totalPaginas: 1 } });
+    if (pathname === "/anuncios-meli/familias") {
+      const linhas = SERVIDOR.soFamilias ? LINHAS_CONTA_42.filter((l) => l.tipo === "familia") : LINHAS_CONTA_42;
+      return respond({ ok: true, cliente: N97, anuncios: linhas, paginacao: { page: 1, limit: 20, total: linhas.length, totalPaginas: 1 } });
+    }
     if (pathname === "/anuncios-meli/performance") {
       const qs = u.searchParams;
       const metricas7d = {}, margem = {};
@@ -720,6 +724,19 @@ async function run() {
     });
 
     // ── Sem Base ───────────────────────────────────────────────────────────
+    await check("F1 — página só com famílias: 'Editar custos' aparece sem expandir nenhuma", async () => {
+      SERVIDOR.soFamilias = true;
+      try {
+        await cdp.send("Page.navigate", { url: `http://127.0.0.1:${porta}/anuncios-meli.html?cliente=n97&conta=42` });
+        await waitFor(cdp, `document.querySelector('.am-row--grupo[data-familia="FAM-1"]')`, "lista só com famílias não renderizou");
+        assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('#am-catalogo-container .am-row--grupo[aria-expanded="true"]').length`), 0);
+        await waitFor(cdp, q('[data-custos-acao="entrar"]'), "split de custos não apareceu sem expandir");
+        assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('#am-catalogo-container .am-row--grupo[aria-expanded="true"]').length`), 0, "não pode depender de expandir");
+      } finally {
+        SERVIDOR.soFamilias = false;
+      }
+    });
+
     await check("B1 — sem Base vinculada: aviso com 'Vincular base', sem '+ Custo' nem 'Editar custos'", async () => {
       SERVIDOR.base = null;
       await abrirPagina(cdp, porta);

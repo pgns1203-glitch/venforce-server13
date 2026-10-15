@@ -237,11 +237,24 @@ const MOCK_CLIENT = `
     function simularResposta(mlb, cenarios) {
       var atualLin = lin(PRECO_TABELA[mlb]);
       var saida = [];
+      // Fonte única (fontePromocoes): o mesmo objeto que a aba recebe. Sem dado (nem snapshot nem legado) não há promoção;
+      // do diagnóstico legado a promoção chega marcada como estimativa.
+      var fp = window.__pc.fp || null;
+      var semDados = Boolean(fp && !(fp.ultimoBom || fp.legado));
       cenarios.forEach(function (c) {
-        if (c.tipo === "todas_promos") promosDe(mlb).forEach(function (pr) { saida.push(cenarioDaPromo(pr, atualLin)); });
-        else if (c.tipo === "promo") {
-          var achada = promosDe(mlb).filter(function (pr) { return pr.id === c.promotion_id; })[0];
-          if (achada) saida.push(cenarioDaPromo(achada, atualLin, c.hipotese || null));
+        if (c.tipo === "todas_promos") {
+          if (!semDados) promosDe(mlb).forEach(function (pr) {
+            var cen = cenarioDaPromo(pr, atualLin);
+            if (fp && fp.legado) { cen.promocao.estimativa = true; cen.promocao.fonte = "diagnostico_legado"; }
+            saida.push(cen);
+          });
+        } else if (c.tipo === "promo") {
+          var achada = semDados ? null : promosDe(mlb).filter(function (pr) { return pr.id === c.promotion_id; })[0];
+          if (achada) {
+            var cenP = cenarioDaPromo(achada, atualLin, c.hipotese || null);
+            if (fp && fp.legado) { cenP.promocao.estimativa = true; cenP.promocao.fonte = "diagnostico_legado"; }
+            saida.push(cenP);
+          }
         } else if (c.tipo === "preco") {
           if (c.preco < 70) saida.push(bloqueadoCen("preco", { tipo: "preco", preco: c.preco }, atualLin, "comissao_indisponivel"));
           else saida.push(resCenario("preco", Object.assign({ tipo: "preco", preco: c.preco }, c.hipotese ? { hipotese: c.hipotese } : {}), atualLin, lin(c.preco, hipLin(c.hipotese)),
@@ -257,7 +270,10 @@ const MOCK_CLIENT = `
         ok: true, mlb: mlb, item: { mlb: mlb, ml_promos_url: "https://www.mercadolivre.com.br/anuncios/lista/promos?page=1&search=" + mlb.replace("MLB", "") },
         atual: Object.assign({ bloqueios: [], rebate_motivo: null }, atualLin),
         meta: { margem_alvo: 0.1, margem_minima: 0 },
-        promocoes: cenarios.some(function (c) { return c.tipo === "todas_promos"; }) ? { disponivel: true, motivo: null, snapshot_em: "2026-10-14T08:00:00Z", parcial: false } : null,
+        promocoes: cenarios.some(function (c) { return c.tipo === "todas_promos"; })
+          ? (semDados ? { disponivel: false, motivo: "sem_snapshot_promocoes", snapshot_em: null, parcial: null } : { disponivel: true, motivo: null, snapshot_em: "2026-10-14T08:00:00Z", parcial: false })
+          : null,
+        fontePromocoes: fp || undefined,
         cotacoes: { consultas: 3, precos_distintos: 3, limite_excedido: 0, maximo_por_requisicao: 40 },
         cenarios: saida,
       };
@@ -438,6 +454,18 @@ const MOCK_CLIENT = `
           }
           return Promise.resolve({ ok: true, disponivel: true, fonte: { tipo: "promo_snapshot", geradoEm: "2026-09-29T08:00:00Z", frescor: "atual", parcial: true, itensHerdados: 1 },
             sync: { state: "partial", autoTrigger: "nenhuma" }, criterio: "c.", page: params.page, limit: params.limit, total: total, hasNext: ini + params.limit < total, oportunidades: itens, tipos: [{ tipo: "DEAL", total: 45 }], cotacao: { modo: viva ? "viva" : "estimada" } });
+        }
+        // Fonte única: a resposta já traz fontePromocoes (a tela só a renderiza).
+        if (window.__pc.oppsModo === "fp") {
+          var fp = window.__pc.fp;
+          var syncFp = { state: fp.estado === "sincronizando" ? "syncing" : "never_synced", autoTrigger: "nenhuma" };
+          if (!(fp.ultimoBom || fp.legado)) {
+            return Promise.resolve({ ok: true, disponivel: false, motivo: "SEM_SNAPSHOT_PROMOCOES", mensagem: fp.rotulo, fontePromocoes: fp, sync: syncFp, oportunidades: [] });
+          }
+          return Promise.resolve({ ok: true, disponivel: true,
+            fonte: { tipo: fp.legado ? "diagnostico_legado" : "promo_snapshot", geradoEm: (fp.legado || fp.ultimoBom).geradoEm, frescor: "atual" },
+            fontePromocoes: fp, sync: syncFp, criterio: "c.", page: 1, limit: 20, total: 1, hasNext: false, tipos: [{ tipo: "DEAL", total: 1 }],
+            oportunidades: [opp("MLBF1", "Fonte 1", {})] });
         }
         // Promo Snapshot: primeira leitura em andamento (sem snapshot ainda).
         if (window.__pc.oppsModo === "syncing") {
@@ -1421,6 +1449,93 @@ async function run() {
       assert.strictEqual(r[0], "Atualizado: sem data registrada");
       assert.strictEqual(r[1], "Atualizado: sem data registrada");
       assert.ok(/^Atualizado \d{2}\/\d{2} \d{2}:\d{2}$/.test(r[2]), r[2]);
+    });
+
+    // ── Fonte única: a aba Promoções e a Bancada leem o MESMO fontePromocoes ──────────────
+    const FP_BASE = { motivo: null, atualizando: false, falha: null, progresso: null, ultimoBom: null, legado: null, origemDados: null };
+    const FP_BOM = { runId: 5, geradoEm: "2026-10-10T12:00:00Z", parcial: false, itensSemLeitura: 0, itensHerdados: 0 };
+    const FP_CASOS = [
+      { nome: "sem snapshot", exato: "Primeira sincronização pendente",
+        fp: { ...FP_BASE, estado: "primeira_sincronizacao_pendente", rotulo: "Primeira sincronização pendente" } },
+      { nome: "sincronizando", exato: "Sincronizando promoções…",
+        fp: { ...FP_BASE, estado: "sincronizando", rotulo: "Sincronizando promoções…", atualizando: true } },
+      { nome: "stale", inicia: "Promo Snapshot · ", termina: " · atualizando",
+        fp: { ...FP_BASE, estado: "desatualizado", rotulo: "atualizando", atualizando: true, ultimoBom: FP_BOM, origemDados: "promo_snapshot" } },
+      { nome: "falhou", inicia: "Promo Snapshot · ", termina: " · falha na atualização · erro do Mercado Livre",
+        fp: { ...FP_BASE, estado: "falhou", rotulo: "falha na atualização · erro do Mercado Livre", motivo: "PROMO_SNAPSHOT_ML_ERRO", falha: { codigo: "PROMO_SNAPSHOT_ML_ERRO", motivo: "erro do Mercado Livre" }, ultimoBom: FP_BOM, origemDados: "promo_snapshot" } },
+      { nome: "fora do piloto", exato: "Promoções automáticas não ativadas para esta conta",
+        fp: { ...FP_BASE, estado: "fora_do_piloto", rotulo: "Promoções automáticas não ativadas para esta conta", motivo: "FORA_DO_PILOTO" } },
+      { nome: "legado", inicia: "diagnóstico legado · ", termina: " · Primeira sincronização pendente",
+        fp: { ...FP_BASE, estado: "primeira_sincronizacao_pendente", rotulo: "Primeira sincronização pendente", legado: { diagnosticoId: 91, geradoEm: "2026-10-09T09:00:00Z", parcial: false }, origemDados: "diagnostico_legado" } },
+    ];
+    const normalizar = (t) => String(t).replace(/ /g, " ").replace(/\s+/g, " ").trim();
+
+    async function lerLinhaAba(fp) {
+      await cdp.evaluate(`window.__pc.fp = ${JSON.stringify(fp)}; window.__pc.oppsModo = 'fp'`);
+      await cdp.evaluate("document.querySelector('[data-view=promotions]').click()");
+      await cdp.evaluate("window.VF.context.setConta(11)");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 11", "conta 11 não entrou");
+      await cdp.evaluate("window.VF.context.setConta(10)");
+      await waitFor(cdp, "window.VFCentralMargemUi.getState().contaId === 10 && document.getElementById('cm-opps-meta').textContent.length > 0", "linha de fonte da aba não apareceu");
+      // O badge da aba tem o rótulo "Lista: " (padrão da tela); a fonte única é o que vem depois.
+      return normalizar(await cdp.evaluate("document.getElementById('cm-opps-meta').textContent")).replace(/^Lista: /, "");
+    }
+    async function abrirBancadaDoItem() {
+      await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
+      await waitFor(cdp, "document.querySelector('tr[data-item-id=\"MLB1001\"]')", "linha MLB1001 ausente");
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-promo-fonte]')", "linha de fonte da Bancada não apareceu");
+    }
+    const fecharDrawer = () => cdp.evaluate("document.getElementById('cm-drawer-close').click()");
+
+    await check("fonte única: aba Promoções e Bancada mostram a MESMA linha nos 5 estados e no legado (e a aba cai na mesma frase quando não há lista)", async () => {
+      for (const caso of FP_CASOS) {
+        const aba = await lerLinhaAba(caso.fp);
+        await abrirBancadaDoItem();
+        const bancada = normalizar(await cdp.evaluate("document.querySelector('[data-cm-promo-fonte]').textContent"));
+        const estadoBancada = await cdp.evaluate("document.querySelector('[data-cm-promo-fonte]').getAttribute('data-cm-promo-estado')");
+        assert.strictEqual(bancada, aba, `${caso.nome}: aba "${aba}" × Bancada "${bancada}"`);
+        assert.strictEqual(estadoBancada, caso.fp.estado, `${caso.nome}: estado exposto na Bancada`);
+        if (caso.exato) assert.strictEqual(aba, caso.exato, caso.nome);
+        else {
+          assert.ok(aba.startsWith(caso.inicia) && aba.endsWith(caso.termina), `${caso.nome}: "${aba}"`);
+          assert.ok(!aba.includes("—") && !aba.includes("data desconhecida"), `${caso.nome}: data real, nunca '—': "${aba}"`);
+        }
+        // Sem lista (sem snapshot/legado): a aba mostra a frase no lugar da tabela, a Bancada só o Preço manual.
+        if (!(caso.fp.ultimoBom || caso.fp.legado)) {
+          assert.strictEqual(await cdp.evaluate("document.querySelectorAll('[data-cenario]').length"), 1, `${caso.nome}: Bancada sem promoções`);
+        } else {
+          assert.ok(await cdp.evaluate("document.querySelectorAll('[data-cenario]').length") > 1, `${caso.nome}: Bancada com promoções`);
+        }
+        await fecharDrawer();
+      }
+      await lerLinhaAba(FP_CASOS[0].fp);
+      const host = normalizar(await cdp.evaluate("document.getElementById('cm-opps-host').textContent"));
+      assert.strictEqual(host, "Primeira sincronização pendente", "no lugar da tabela: a mesma frase");
+    });
+
+    await check("Bancada com promoções do diagnóstico legado: ESTIMATIVA marcada e Revisar entrada (Participar) desabilitado; com snapshot, habilitado", async () => {
+      await cdp.evaluate("window.__pc.fp = " + JSON.stringify(FP_CASOS[5].fp) + "; window.__pc.oppsModo = 'fp'");
+      await abrirBancadaDoItem();
+      assert.ok(await cdp.evaluate("document.querySelectorAll('[data-cenario][data-cm-estimativa]').length") >= 1, "opções do legado marcadas como estimativa");
+      await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cenario=\"P-DEAL\"] [data-cm-flag=estimativa]')", "marca de estimativa não apareceu no card");
+      const info = normalizar(await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').textContent"));
+      assert.ok(info.includes("estimativa") && info.includes("diagnóstico legado"), info);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true, "legado: Participar desabilitado");
+      assert.ok(normalizar(await cdp.evaluate("document.getElementById('cm-bancada-review').title")).includes("estimativa"), "o motivo está no botão");
+      assert.ok(normalizar(await cdp.evaluate("document.getElementById('cm-banc-botao').textContent")).includes("sincronização"), "o motivo também está visível, não só no tooltip");
+      await fecharDrawer();
+
+      await cdp.evaluate("window.__pc.fp = " + JSON.stringify(FP_CASOS[2].fp));
+      await abrirBancadaDoItem();
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('[data-cenario][data-cm-estimativa]').length"), 0);
+      await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cenario=\"P-DEAL\"]')");
+      assert.ok(!normalizar(await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').textContent")).includes("estimativa"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), false, "snapshot (mesmo stale): Participar segue pelas regras de sempre");
+      await fecharDrawer();
+      await cdp.evaluate("window.__pc.fp = null; window.__pc.oppsModo = null");
     });
 
     console.log(`# ${checks} smoke tests de UI (precificação) concluídos`);

@@ -1691,6 +1691,7 @@ cenario("fonte única 3/5 — stale: último bom + 'atualizando' + data, nas dua
   assert.strictEqual(fonte.origemDados, "promo_snapshot");
   assert.strictEqual(fonte.ultimoBom.runId, amb.conta(7).current_run_id);
   assert.ok(fonte.ultimoBom.geradoEm);
+  assert.deepStrictEqual([fonte.ultimoBom.parcial, fonte.ultimoBom.itensSemLeitura, fonte.ultimoBom.itensHerdados], [false, 0, 0], "o último bom informa parcial e leituras herdadas");
   assert.strictEqual(fonte.legado, null);
   assert.strictEqual(aba.oportunidades.length, 3);
   assert.strictEqual(bancada.promocoes.disponivel, true);

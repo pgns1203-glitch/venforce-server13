@@ -19,6 +19,9 @@
   if (!contract) return;
 
   var api = root.__VF_CENTRAL_MARGEM_API_CLIENT__ || contract.createClient();
+  // Linha de fonte das promoções — a MESMA na aba Promoções e na Bancada (o servidor devolve o mesmo
+  // `fontePromocoes` nas duas respostas). Ausente (servidor antigo), as telas usam o texto de antes.
+  var promoFonte = root.VFCentralMargemPromoFonte || null;
 
   var CONFIDENCE_META = {
     HIGH: { label: "Alta", className: "is-success" },
@@ -1885,8 +1888,14 @@
   }
 
   function oppsSincronizando(o) {
+    if (promoFonte && o && o.fontePromocoes) return promoFonte.sincronizando(o.fontePromocoes, o.sync && o.sync.autoTrigger);
     var sync = o && o.sync;
     return Boolean(sync && (sync.state === "syncing" || (sync.state === "never_synced" && sync.autoTrigger === "enfileirado")));
+  }
+
+  /** Linha de fonte das promoções (aba e Bancada): "" sem fontePromocoes. */
+  function promoFonteLinha(fp) {
+    return promoFonte && fp ? promoFonte.linha(fp, { formatDate: formatShortDateTime }) : "";
   }
 
   function oppsParams(cotacao) {
@@ -2182,6 +2191,8 @@
     if (promo.grupo === "ativa") return Object.assign(base, { title: "Esta promoção já está ativa neste anúncio." });
     if (promo.grupo === "participa") return Object.assign(base, { title: "Você já participa desta promoção (ela não forma o preço agora)." });
     if (promo.grupo !== "pode") return Object.assign(base, { title: (promo.escrita && promo.escrita.motivo) || "Só pelo Mercado Livre: a inscrição é feita no painel do Mercado Livre." });
+    // Lista do diagnóstico legado = estimativa: sem leitura atual do ML, não dá para participar (igual à Bancada).
+    if (promoEhEstimativa(promo)) return Object.assign(base, { title: MOTIVO_ESTIMATIVA });
     if (veredito === "bloqueado") return Object.assign(base, { title: "Bloqueado: " + (motivoTexto(motivo) || "sem motivo informado") + "." });
     if (veredito === "nao_entrar") return Object.assign(base, { title: "Veredito “Não entrar”: " + (motivoTexto(motivo) || "a promoção não compensa") + "." });
     if (veredito !== "entrar" && veredito !== "entrar_se_girar") return Object.assign(base, { title: "Sem veredito para participar." });
@@ -2317,9 +2328,11 @@
       return;
     }
     if (!o.disponivel) {
-      refs.oppsMeta.textContent = oppsSyncTexto(o) || "promoções da conta";
-      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel" data-cm-opps-sync="' + escapeHtml((o.sync && o.sync.state) || "") + '">' +
-        escapeHtml(o.mensagem || "Nenhuma promoção sincronizada para esta conta ainda.") + "</p>";
+      var linhaFonte = promoFonteLinha(o.fontePromocoes);
+      refs.oppsMeta.textContent = linhaFonte || oppsSyncTexto(o) || "promoções da conta";
+      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel" data-cm-opps-sync="' + escapeHtml((o.sync && o.sync.state) || "") + '"' +
+        (o.fontePromocoes ? ' data-cm-promo-estado="' + escapeHtml(o.fontePromocoes.estado) + '"' : "") + ">" +
+        escapeHtml(linhaFonte || o.mensagem || "Nenhuma promoção sincronizada para esta conta ainda.") + "</p>";
       refs.resultCount.textContent = "—";
       return;
     }
@@ -2335,7 +2348,8 @@
     // Data real da fonte; sem data (ou inválida) diz "data desconhecida" — nunca "—".
     var geradoTxt = fonte.geradoEm ? formatShortDateTime(fonte.geradoEm) : null;
     if (!geradoTxt || geradoTxt === "—") geradoTxt = "data desconhecida";
-    refs.oppsMeta.textContent = "Lista: " + origem + " · " + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "");
+    // Com fontePromocoes a linha é a da fonte única (a mesma da Bancada); sem ela, o texto de antes.
+    refs.oppsMeta.textContent = "Lista: " + (promoFonteLinha(o.fontePromocoes) || (origem + " · " + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "")));
     refs.resultCount.textContent = formatInt(o.total || 0) + (Number(o.total) === 1 ? " anúncio" : " anúncios");
     if (!o.oportunidades || !o.oportunidades.length) {
       var filtrado = state.oppsFilters.veredito || state.oppsFilters.tipo;
@@ -3827,6 +3841,13 @@
     return chips ? '<div class="cm-pp__chips">' + chips + "</div>" : "";
   }
 
+  /** Promoção do diagnóstico legado: estimativa (sem leitura de hoje no Mercado Livre). */
+  function promoEhEstimativa(promocao) {
+    return promoFonte ? promoFonte.estimativa(promocao) : Boolean(promocao && promocao.estimativa === true);
+  }
+
+  var MOTIVO_ESTIMATIVA = "É só uma estimativa do diagnóstico legado: sem leitura atual do Mercado Livre, não dá para participar. Aguarde a sincronização das promoções desta conta.";
+
   /** Sem preço sugerido pelo Mercado Livre: o card não é selecionável e diz por quê. */
   function cardDesabilitado(cenario) {
     return cenario.veredito === "bloqueado" && cenario.motivo === "promocao_sem_preco";
@@ -3844,6 +3865,7 @@
     var id = promoIdDe(c);
     var ativo = String(b.selecionado) === String(id);
     var desabilitado = cardDesabilitado(c);
+    var estimada = promoEhEstimativa(p);
     var cen = c.cenario || {};
     var periodo = [formatShortDate(p.inicio), formatShortDate(p.fim)].filter(Boolean).join(" – ");
     var statusTxt = p.status_exibicao || p.status || "";
@@ -3853,11 +3875,12 @@
       : '<span class="cm-banc__num">' + escapeHtml(money(cen.preco)) + "</span>" +
         (c.desconto_ratio !== null && c.desconto_ratio !== undefined ? '<span class="cm-banc__pct" data-cm-desc-pct>' + (c.desconto_ratio < 0 ? "+" : "−") + escapeHtml(formatPercent(Math.abs(c.desconto_ratio))) + "</span>" : "");
     var num = function (valor, fmt) { return desabilitado || valor === null || valor === undefined ? "—" : escapeHtml(fmt(valor)); };
-    return '<button class="cm-banc__card' + (ativo ? " is-active" : "") + (desabilitado ? " is-disabled" : "") + '" type="button" role="radio" aria-checked="' + (ativo ? "true" : "false") + '" data-cenario="' + escapeHtml(id) + '"' +
+    return '<button class="cm-banc__card' + (ativo ? " is-active" : "") + (desabilitado ? " is-disabled" : "") + '" type="button" role="radio" aria-checked="' + (ativo ? "true" : "false") + '" data-cenario="' + escapeHtml(id) + '"' + (estimada ? " data-cm-estimativa" : "") +
       (desabilitado ? ' disabled aria-disabled="true" title="' + escapeHtml(motivoDesab) + '"' : "") + ">" +
       '<span class="cm-banc__c-nome"><strong>' + escapeHtml(p.nome || p.tipo || "Promoção") + "</strong>" +
         '<span class="cm-banc__c-meta">' + (statusTxt ? '<span class="vf-status ' + (PROMO_STATUS_TOM[statusTxt] || "is-empty") + '">' + escapeHtml(statusTxt) + "</span>" : "") +
-        (periodo ? "<span>" + escapeHtml(periodo) + "</span>" : "") + "</span></span>" +
+        (periodo ? "<span>" + escapeHtml(periodo) + "</span>" : "") +
+        (estimada ? '<span class="cm-promo-flag is-warn" data-cm-flag="estimativa" title="' + escapeHtml(MOTIVO_ESTIMATIVA) + '">estimativa · diagnóstico legado</span>' : "") + "</span></span>" +
       '<span class="cm-banc__c-col cm-banc__c-preco">' + preco + "</span>" +
       '<span class="cm-banc__c-col" data-cm-subsidio>' + num(c.ml_banca, money) + "</span>" +
       '<span class="cm-banc__c-col" data-cm-card-lc>' + num(cen.lc, money) + "</span>" +
@@ -3937,6 +3960,8 @@
       var motivoMl = p.escrita && p.escrita.motivo ? p.escrita.motivo : "A inscrição/alteração desta promoção é feita no painel do Mercado Livre.";
       return { kind: "ml", rotulo: "Abrir no Mercado Livre", href: url, disabled: !url, title: url ? motivoMl : "Sem link do Mercado Livre para este anúncio." };
     }
+    // Promoção do diagnóstico legado é só estimativa: Participar fica desabilitado até haver leitura atual.
+    if (promoEhEstimativa(p)) return { kind: "promocao", rotulo: "Participar desta promoção", href: null, disabled: true, title: MOTIVO_ESTIMATIVA, estimativa: true };
     var vered = r ? r.veredito : null;
     var liberado = (vered === "entrar" || vered === "entrar_se_girar") && bancadaDisponivel().ok;
     var motivoPart = "";
@@ -3962,10 +3987,13 @@
       botao = '<button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-bancada-review" data-cm-review="' + (spec.kind === "promocao" ? "PROMOTION" : "PRICE") + '"' + (spec.disabled ? " disabled" : "") +
         (spec.title ? ' title="' + escapeHtml(spec.title) + '"' : "") + ">" + spec.rotulo + "</button>";
     }
+    var estimativa = spec.kind === "promocao" && spec.estimativa === true;
     var nota = spec.kind === "ml"
       ? "A Central só escreve o que tem preview, fingerprint e auditoria; esta promoção é resolvida no painel do Mercado Livre."
       : "Abre o preview: relê o anúncio ao vivo e avalia os gates. Nada vai ao Mercado Livre sem a sua confirmação — e só se a escrita estiver liberada para o cliente.";
-    return '<div class="cm-pp__actions">' + botao + '<span class="cm-banc__nota">' + escapeHtml(nota) + "</span></div>";
+    return '<div class="cm-pp__actions">' + botao +
+      (estimativa ? '<span class="cm-banc__nota" data-cm-bancada="estimativa">' + escapeHtml(MOTIVO_ESTIMATIVA) + "</span>" : "") +
+      '<span class="cm-banc__nota">' + escapeHtml(nota) + "</span></div>";
   }
 
   function bancadaHtml(item) {
@@ -3980,8 +4008,13 @@
     } else if (b.status === "error") {
       corpo = '<p class="cm-field-error" role="alert" data-cm-bancada="erro">' + escapeHtml(b.error) + ' <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-bancada-retry">Tentar de novo</button></p>';
     } else {
-      var semPromos = b.data && b.data.promocoes && b.data.promocoes.disponivel === false
-        ? '<p class="cm-prod-meta" data-cm-bancada="sem-promos">Promoções indisponíveis: ' + escapeHtml(motivoTexto(b.data.promocoes.motivo)) + ".</p>" : "";
+      // Fonte única: a mesma linha da aba Promoções (estado, último bom, falha, legado). Servidor antigo: o aviso de antes.
+      var fp = b.data && b.data.fontePromocoes;
+      var linhaFonte = promoFonteLinha(fp);
+      var semPromos = linhaFonte
+        ? '<p class="cm-prod-meta" data-cm-promo-fonte data-cm-promo-estado="' + escapeHtml(fp.estado) + '">' + escapeHtml(linhaFonte) + "</p>"
+        : b.data && b.data.promocoes && b.data.promocoes.disponivel === false
+          ? '<p class="cm-prod-meta" data-cm-bancada="sem-promos">Promoções indisponíveis: ' + escapeHtml(motivoTexto(b.data.promocoes.motivo)) + ".</p>" : "";
       var ap = state.pricing && state.pricing.aplicacao;
       var defasado = ap && (ap.status === "aplicado" || ap.status === "divergente") && ["atualizado", "nao_aplicavel"].indexOf(ap.snapshotStatus) === -1
         ? '<p class="cm-banc__nota" data-cm-bancada="atual-defasado">A coluna Hoje ainda é a de antes da alteração; ela é atualizada quando a margem for recalculada.</p>' : "";

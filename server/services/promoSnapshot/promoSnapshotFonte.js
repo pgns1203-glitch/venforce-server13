@@ -114,7 +114,13 @@ function montarFontePromocoes({ estado, config, clienteSlug, legado = null }) {
       ? { processados: numeroOuNulo(estado.processed) || 0, total: numeroOuNulo(estado.total) }
       : null,
     ultimoBom: temSnapshot
-      ? { runId: estado.snapshotRunId, geradoEm: estado.snapshotAt, parcial: estado.partial === true }
+      ? {
+        runId: estado.snapshotRunId,
+        geradoEm: estado.snapshotAt,
+        parcial: estado.partial === true,
+        itensSemLeitura: Number(estado.itemsWithoutRead) || 0,
+        itensHerdados: Number(estado.itemsInherited) || 0,
+      }
       : null,
     legado: usaLegado
       ? { diagnosticoId: Number(legado.id), geradoEm: legado.createdAt, parcial: legado.parcial === true }

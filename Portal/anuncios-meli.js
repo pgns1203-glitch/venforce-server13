@@ -5509,9 +5509,10 @@
               (rebNum(hoje.subsidioMl) > 0 ? ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(hoje.subsidioMl) + " ML</span>" : "") + "</span>" +
             '<span class="am-reb-celula__fraco">' + rebPct(hoje.margemPercent) + " · " + formatMoeda(hoje.lucro) + "</span>" +
             '<span class="am-reb-celula__fraco" data-reb-hoje-nome>' + escapeHtml(hoje.nome || "") + "</span></span>" +
-          '<span role="cell" class="am-reb-celula">' + (c
+          '<span role="cell" class="am-reb-celula am-reb-celula--nova">' + (c
             ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(c.subsidioMl) + " ML</span></span>" +
-              '<span class="am-reb-celula__fraco">' + escapeHtml(c.nome || c.promotionId) + (c.tipoLabel ? " · " + escapeHtml(c.tipoLabel) : "") + "</span>"
+              '<span class="am-reb-celula__metricas" data-reb-com-rebate>' + rebPct(c.margemPercent) + " · " + formatMoeda(c.lucro) + "</span>" +
+              '<span class="am-reb-celula__fraco"' + (c.tipoLabel ? ' title="' + escapeAttr(c.tipoLabel) + '"' : "") + ">" + escapeHtml(c.nome || c.promotionId) + "</span>"
             : "—") + "</span>" +
           '<span role="cell" class="am-reb-celula am-reb-celula--ganho">' + (c
             ? rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs", "/un")
@@ -5551,27 +5552,26 @@
     return '<span class="am-reb-delta am-reb-ganho' + (n > 0 ? " is-pos" : n < 0 ? " is-neg" : "") + '">' + txt + "</span>";
   }
 
+  // Rebate pequeno sob o preço de venda — só quando a promoção tem subsídio.
   function rebRebateHtml(subsidio, pct) {
-    if (!(rebNum(subsidio) > 0)) return '<span class="am-reb-rebate am-reb-rebate--sem">Sem rebate</span>';
-    return '<span class="am-reb-rebate"><span>Rebate ML' + (rebNum(pct) !== null ? " " + rebPct(pct) : "") + "</span>" +
-      '<span class="am-reb-rebate__valor">+' + formatMoeda(subsidio) + "/un</span></span>";
+    if (!(rebNum(subsidio) > 0)) return "";
+    return '<span class="am-reb-rebate"><span>+' + formatMoeda(subsidio) + "/un</span>" +
+      '<span class="am-reb-rebate__taxa">Rebate ML' + (rebNum(pct) !== null ? " " + rebPct(pct) : "") + "</span></span>";
   }
 
   function rebOpcaoHtml(o, nomeRadio, id, itemId, atual) {
     var sel = atual === o.valor;
     return '<label class="am-reb-opcao' + (sel ? " is-selecionada" : "") + '" for="' + id + '">' +
       '<span class="am-reb-opcao__cab"><input type="radio" id="' + id + '" name="' + nomeRadio + '" value="' + escapeAttr(o.valor) + '" data-reb-escolha="' + escapeAttr(itemId) + '"' +
-        (sel ? " checked" : "") + '><span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
+        (sel ? " checked" : "") + '><span class="am-reb-opcao__nome" title="' + escapeAttr(o.promo || "") + '">' + escapeHtml(o.promo || "") + "</span>" +
+        '<span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
       '<span class="am-reb-metricas">' +
+        '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Preço de venda</span>' +
+          '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebRebateHtml(o.subsidio, o.pct) + "</span>" +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Margem</span>' +
           '<span class="am-reb-metrica__valor">' + rebPct(o.margem) + "</span>" + rebDeltaHtml(o.dMargem, "pp") + "</span>" +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Lucro/un</span>' +
           '<span class="am-reb-metrica__valor">' + formatMoeda(o.lucro) + "</span>" + rebDeltaHtml(o.dLucro, "rs") + "</span>" +
-      "</span>" +
-      '<span class="am-reb-opcao__rodape">' +
-        '<span class="am-reb-opcao__promo"><span class="am-reb-opcao__nome">' + escapeHtml(o.promo || "") + "</span>" +
-          '<span class="am-reb-opcao__preco">' + formatMoeda(o.preco) + "</span></span>" +
-        rebRebateHtml(o.subsidio, o.pct) +
       "</span></label>";
   }
 

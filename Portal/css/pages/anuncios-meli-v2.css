@@ -4117,7 +4117,7 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 
 .am-reb-tab__linha {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 150px 210px 110px;
+  grid-template-columns: 32px minmax(0, 1fr) 160px 220px 110px;
   gap: var(--vf-sp-3);
   align-items: center;
   padding: 14px 0;
@@ -4140,6 +4140,9 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 .am-reb-celula__forte { font-weight: var(--vf-fw-semibold); }
 .am-reb-celula__fraco { color: var(--vf-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .am-reb-celula__rebate { font-weight: var(--vf-fw-medium); color: var(--vf-success); }
+/* Margem · lucro na promoção com rebate: mesmo peso visual do preço, para
+   comparar direto com a coluna Hoje. */
+.am-reb-celula__metricas { font-weight: var(--vf-fw-semibold); color: var(--vf-text); white-space: nowrap; }
 .am-reb-celula--ganho { align-items: flex-end; font-weight: var(--vf-fw-semibold); }
 
 .am-reb-ganho { font-weight: var(--vf-fw-semibold); color: var(--vf-text-muted); white-space: nowrap; }
@@ -4211,7 +4214,7 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 
 .am-reb-opcoes {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
   gap: 10px;
   margin: 0;
   padding: 0;
@@ -4242,11 +4245,23 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   font-size: 13px;
   font-weight: var(--vf-fw-semibold);
 }
-.am-reb-opcao__cab input { margin: 0; accent-color: var(--vf-primary); }
+.am-reb-opcao__cab input { flex: none; margin: 0; accent-color: var(--vf-primary); }
+.am-reb-opcao__nome { flex: 1 1 auto; min-width: 0; color: var(--vf-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.am-reb-opcao__rotulo {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-neutral);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  white-space: nowrap;
+}
+.am-reb-opcao.is-selecionada .am-reb-opcao__rotulo { background: var(--vf-surface); color: var(--vf-primary); }
 
 .am-reb-metricas {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--vf-sp-2);
   padding: 10px 12px 12px;
 }
@@ -4280,35 +4295,17 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 .am-reb-delta.is-pos { background: var(--vf-success-bg); color: var(--vf-success-strong); }
 .am-reb-delta.is-neg { background: var(--vf-danger-bg); color: var(--vf-danger-strong); }
 
-.am-reb-opcao__rodape {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 12px;
-  border-top: 1px solid var(--vf-border);
-  font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
-}
-
-.am-reb-opcao__promo { display: flex; justify-content: space-between; gap: var(--vf-sp-2); min-width: 0; }
-.am-reb-opcao__nome { font-weight: var(--vf-fw-semibold); color: var(--vf-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.am-reb-opcao__preco { flex: none; font-variant-numeric: tabular-nums; }
-
+/* Rebate pequeno sob o preço de venda (só quando a promoção tem subsídio) */
 .am-reb-rebate {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--vf-sp-2);
-  padding: 5px var(--vf-sp-2);
-  border: 1px solid var(--vf-success-border);
-  border-radius: 8px;
-  background: var(--vf-success-bg);
-  color: var(--vf-success-strong);
+  flex-direction: column;
+  font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-semibold);
+  line-height: 1.3;
+  color: var(--vf-success-strong);
+  white-space: nowrap;
 }
-.am-reb-rebate__valor { font-family: var(--vf-font-display); font-size: 13px; font-weight: var(--vf-fw-bold); white-space: nowrap; }
-.am-reb-rebate--sem { justify-content: flex-start; border-color: transparent; background: var(--vf-neutral-bg); color: var(--vf-neutral); }
+.am-reb-rebate__taxa { font-weight: var(--vf-fw-medium); color: var(--vf-success); }
 
 /* Abas Sem ganho / Descartados e execução */
 .am-reb-lista { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }

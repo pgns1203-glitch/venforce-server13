@@ -3355,11 +3355,6 @@
   .vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-custos-acoes-slot {
     flex: 1 1 100%;
   }
-
-  .am-custos-menu {
-    left: 0;
-    width: auto;
-  }
   /* Radar de subsídios: largura inteira quando a barra empilha. */
   .vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-reb-abrir {
     flex: 1 1 auto;
@@ -3783,11 +3778,13 @@
   color: rgba(255, 255, 255, 0.82);
 }
 
+/* Mesma largura do split: ancorado nas duas bordas de .am-custos-acoes. */
 .am-custos-menu {
   position: absolute;
   top: calc(100% + 6px);
+  left: 0;
   right: 0;
-  width: 300px;
+  min-width: 0;
   display: grid;
   gap: 2px;
   padding: 6px;

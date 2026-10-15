@@ -3347,6 +3347,19 @@
     max-width: none;
   }
 
+  /* Split de custos e Radar: largura inteira quando a barra empilha. */
+  .vf-page-anuncios-meli .am-filtros .vf-toolbar__actions {
+    flex-wrap: wrap;
+  }
+
+  .vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-custos-acoes-slot {
+    flex: 1 1 100%;
+  }
+
+  .am-custos-menu {
+    left: 0;
+    width: auto;
+  }
   /* Radar de subsídios: largura inteira quando a barra empilha. */
   .vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-reb-abrir {
     flex: 1 1 auto;
@@ -3669,23 +3682,179 @@
   justify-content: flex-end;
 }
 
-/* Aviso "N sem custo nesta página": mesma caixa (altura, borda, raio,
-   fonte) dos campos de busca e ordenação, no tom de atenção. */
-.vf-page-anuncios-meli .am-custos-acoes__aviso {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-  height: var(--vf-control-h);
-  padding: 0 var(--vf-sp-3);
-  border: 1px solid var(--vf-warning-border);
+/* Split "Editar custos" (modelo B aprovado): roxo da marca, altura inteira
+   da barra como o Radar de subsídios; o corpo entra no modo de edição, a
+   seta abre o menu com "Importar base de custo". */
+.vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-custos-acoes-slot {
+  align-self: stretch;
+  display: flex;
+}
+
+.vf-page-anuncios-meli .am-filtros .am-custos-acoes {
+  position: relative;
+  align-items: stretch;
+  flex: 1 1 auto;
+}
+
+.am-custos-split {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 56px;
   border-radius: var(--vf-radius-sm);
-  background: var(--vf-warning-bg);
-  color: var(--vf-warning-strong);
-  font-family: var(--vf-font-body);
-  font-size: var(--vf-control-fs);
-  font-weight: var(--vf-fw-medium);
-  line-height: 1;
+  background: var(--vf-primary);
+  box-shadow: 0 6px 16px -6px rgba(var(--vf-primary-rgb), 0.5);
+}
+
+.am-custos-split__main,
+.am-custos-split__seta {
+  border: 0;
+  background: transparent;
+  color: var(--vf-text-on-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.am-custos-split__main {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  text-align: left;
+  border-radius: var(--vf-radius-sm) 0 0 var(--vf-radius-sm);
+}
+
+.am-custos-split__seta {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 0 var(--vf-radius-sm) var(--vf-radius-sm) 0;
+}
+
+.am-custos-split__seta svg {
+  transition: transform 0.15s;
+}
+
+.am-custos-split__seta[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.am-custos-split__main:hover,
+.am-custos-split__seta:hover,
+.am-custos-split__seta[aria-expanded="true"] {
+  background: var(--vf-primary-hover);
+}
+
+.am-custos-split__main:focus-visible,
+.am-custos-split__seta:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: var(--vf-focus-offset);
+}
+
+.am-custos-split__ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.am-custos-split__txt {
+  display: grid;
+  gap: 2px;
+}
+
+.am-custos-split__titulo {
+  font-family: var(--vf-font-display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 1.15;
   white-space: nowrap;
+}
+
+.am-custos-split__sub {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.am-custos-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: 300px;
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+}
+
+.am-custos-menu[hidden] {
+  display: none;
+}
+
+.am-custos-menu__opc {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--vf-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.am-custos-menu__opc:hover,
+.am-custos-menu__opc:focus-visible {
+  background: var(--vf-surface-hover);
+  outline: none;
+}
+
+.am-custos-menu__ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
+.am-custos-menu__titulo {
+  display: block;
+  font-weight: 700;
+  font-size: 0.875rem;
+}
+
+.am-custos-menu__desc {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  line-height: 1.35;
+  color: var(--vf-text-muted);
+}
+
+.am-custos-menu__sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--vf-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-custos-split__main,
+  .am-custos-split__seta,
+  .am-custos-split__seta svg {
+    transition: none;
+  }
 }
 
 .vf-page-anuncios-meli .am-custos-aviso {

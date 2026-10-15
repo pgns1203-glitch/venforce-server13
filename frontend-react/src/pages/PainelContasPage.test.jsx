@@ -468,7 +468,7 @@ describe("acesso por Squad", () => {
     }));
     render(<PainelContasPage />);
     expect(screen.getByText(/não está liberado para você/i)).toBeInTheDocument();
-    expect(screen.getByText(/coordena um Squad ou é gestor de um cliente/i)).toBeInTheDocument();
+    expect(screen.getByText(/coordena ou é gestor de um Squad/i)).toBeInTheDocument();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("button", { name: /tentar de novo/i })).toBeNull();
   });
@@ -485,6 +485,7 @@ describe("acesso por Squad", () => {
     expect(descreverAcesso({ tipo: "admin" })).toBe("todos os Squads");
     expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [{ nome: "A" }, { nome: "B" }], clientesComoGestor: 0 })).toBe("Squads que você coordena: A, B");
     expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [], clientesComoGestor: 3 })).toBe("gestor de 3 clientes");
+    expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [], squadsGeridos: [{ nome: "Squad 4" }], clientesComoGestor: 0 })).toBe("Squad em que você é gestor: Squad 4");
     expect(descreverAcesso(null)).toBeNull();
   });
 });

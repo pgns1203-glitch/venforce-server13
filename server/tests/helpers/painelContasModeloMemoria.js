@@ -97,8 +97,9 @@ function portfolioInterno(m, userId) {
 }
 
 // Espelho em memória das queries de painelContasAcesso.
+// Coordenador e gestor do Squad têm a mesma carteira no Painel.
 function coordenadosDe(m, userId) {
-  return m.members.filter((x) => x.user_id === userId && x.ativo && x.funcao === "coordenador"
+  return m.members.filter((x) => x.user_id === userId && x.ativo && ["coordenador", "gestor"].includes(x.funcao)
     && m.squads.some((sq) => sq.id === x.squad_id && sq.ativo)).map((x) => x.squad_id);
 }
 function clientesPainel(m, userId) {
@@ -127,7 +128,7 @@ function instalarMock(m) {
     if (q.includes("painelAcesso:ADMIN_TODOS")) { contar("authz"); return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
     if (q.includes("painelAcesso:SQUADS_COORDENADOS")) {
       contar("authz");
-      return { rows: coordenadosDe(m, params[0]).map((id) => m.squads.find((sq) => sq.id === id)).map(({ id, nome, slug }) => ({ id, nome, slug })) };
+      return { rows: coordenadosDe(m, params[0]).map((id) => m.squads.find((sq) => sq.id === id)).map(({ id, nome, slug }) => ({ id, nome, slug, funcao: m.members.find((x) => x.user_id === params[0] && x.squad_id === id).funcao })) };
     }
     if (q.includes("painelAcesso:CLIENTES_COORDENADOS")) { contar("authz"); return { rows: clientesPainel(m, params[0]).porSquad.map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
     if (q.includes("painelAcesso:CLIENTES_GESTOR")) { contar("authz"); return { rows: clientesPainel(m, params[0]).porGestor.map(({ id, slug, nome }) => ({ id, slug, nome })) }; }

@@ -158,6 +158,8 @@ export function descreverAcesso(acesso) {
   const partes = [];
   const squads = (acesso.squadsCoordenados || []).map((s) => s.nome);
   if (squads.length) partes.push(`${squads.length === 1 ? "Squad que você coordena" : "Squads que você coordena"}: ${squads.join(", ")}`);
+  const geridos = (acesso.squadsGeridos || []).map((s) => s.nome);
+  if (geridos.length) partes.push(`${geridos.length === 1 ? "Squad em que você é gestor" : "Squads em que você é gestor"}: ${geridos.join(", ")}`);
   if (acesso.clientesComoGestor > 0) {
     partes.push(`gestor de ${acesso.clientesComoGestor} ${acesso.clientesComoGestor === 1 ? "cliente" : "clientes"}`);
   }
@@ -264,7 +266,7 @@ export default function PainelContasPage() {
           <Vazio
             icone="⊘"
             titulo="O Painel de Contas não está liberado para você"
-            descricao="O Painel mostra a carteira de quem coordena um Squad ou é gestor de um cliente. Se você deveria ver esta carteira, fale com o administrador."
+            descricao="O Painel mostra a carteira de quem coordena ou é gestor de um Squad. Se você deveria ver esta carteira, fale com o administrador."
           />
         )}
 

@@ -30,6 +30,9 @@ const matches = (query, ...values) => normal(values.join(" ")).includes(normal(q
 const squadPorId = id => STATE.squads.find(s => String(s.id) === String(id));
 const isLegado = s => Number(s.id) === 8 || normal(s.slug).includes("legado");
 const canManage = id => !!STATE.allowed[id];
+// Ordem crescente de hierarquia (a lista ordena do fim para o começo).
+const FUNCOES = ["membro", "gestor", "coordenador"];
+const FUNCAO_ROTULO = { membro: "Membro", gestor: "Gestor", coordenador: "Coordenador" };
 const people = id => STATE.membrosPorSquad[id];
 const clients = id => STATE.clientesPorSquad[id];
 const squadName = id => squadPorId(id)?.nome || "Squad";
@@ -468,12 +471,12 @@ function renderPeople() {
   const rows = people(id); const state = contentState("people", rows);
   if (state) { $("sq-membros-wrap").innerHTML = state; return; }
   const q = $("sq-people-search").value, filter = $("sq-people-filter").value;
-  const filtered = rows.filter(m => matches(q, m.user_nome, m.user_email) && (filter === "all" || (filter === "primary" ? m.is_primary : filter === "invalid" ? !["membro", "coordenador"].includes(m.funcao) : m.funcao === filter)))
-    .sort((a,b) => Number(b.funcao === "coordenador") - Number(a.funcao === "coordenador") || String(a.user_nome).localeCompare(String(b.user_nome), "pt-BR"));
+  const filtered = rows.filter(m => matches(q, m.user_nome, m.user_email) && (filter === "all" || (filter === "primary" ? m.is_primary : filter === "invalid" ? !FUNCOES.includes(m.funcao) : m.funcao === filter)))
+    .sort((a,b) => FUNCOES.indexOf(b.funcao) - FUNCOES.indexOf(a.funcao) || String(a.user_nome).localeCompare(String(b.user_nome), "pt-BR"));
   $("sq-membros-wrap").innerHTML = filtered.length ? `<ul class="sq-people">${filtered.map(m => {
-    const name = esc(m.user_nome), uid = esc(m.user_id), valid = ["membro", "coordenador"].includes(m.funcao);
+    const name = esc(m.user_nome), uid = esc(m.user_id), valid = FUNCOES.includes(m.funcao);
     return `<li class="sq-person" data-person="${uid}"><div class="sq-person-identity"><strong>${name}</strong><span>${esc(m.user_email)}</span></div>
-      <div class="sq-person-role">${ADMIN && canManage(id) ? `<label class="sq-sr-only" for="sq-role-${uid}">Função de ${name}</label><select id="sq-role-${uid}" class="vf-select sq-funcao-select" data-uid="${uid}" data-original="${esc(m.funcao)}">${!valid ? '<option value="" selected>Função não definida</option>' : ""}<option value="membro" ${m.funcao === "membro" ? "selected" : ""}>Membro</option><option value="coordenador" ${m.funcao === "coordenador" ? "selected" : ""}>Coordenador</option></select>` : `<span class="sq-role-label">${m.funcao === "coordenador" ? "Coordenador" : valid ? "Membro" : "Função não definida"}</span>`}</div>
+      <div class="sq-person-role">${ADMIN && canManage(id) ? `<label class="sq-sr-only" for="sq-role-${uid}">Função de ${name}</label><select id="sq-role-${uid}" class="vf-select sq-funcao-select" data-uid="${uid}" data-original="${esc(m.funcao)}">${!valid ? '<option value="" selected>Função não definida</option>' : ""}<option value="membro" ${m.funcao === "membro" ? "selected" : ""}>Membro</option><option value="gestor" ${m.funcao === "gestor" ? "selected" : ""}>Gestor</option><option value="coordenador" ${m.funcao === "coordenador" ? "selected" : ""}>Coordenador</option></select>` : `<span class="sq-role-label">${valid ? FUNCAO_ROTULO[m.funcao] : "Função não definida"}</span>`}</div>
       <div class="sq-person-primary">${m.is_primary ? '<span class="sq-primary">Squad principal</span>' : canManage(id) ? `<button type="button" class="sq-text-button" data-action="principal" data-uid="${uid}" aria-label="Definir este Squad como principal de ${name}">Definir principal</button>` : '<span class="sq-hint">Outro Squad principal</span>'}</div>
       ${canManage(id) ? `<button type="button" class="sq-remove" data-action="remover" data-uid="${uid}" aria-label="Remover ${name} deste Squad">Remover</button>` : ""}</li>`;
   }).join("")}</ul>` : `<div class="sq-empty"><h4>${rows.length ? "Nenhuma pessoa encontrada" : "A equipe começa aqui"}</h4><p>${rows.length ? "Ajuste a busca ou o filtro de função." : "Nenhum membro neste squad. Use Adicionar pessoa para compor a equipe."}</p></div>`;
@@ -561,8 +564,8 @@ function memberAction(action, uid) {
 }
 async function changeRole(select) {
   const sid = STATE.squadAbertoId, uid = select.dataset.uid, value = select.value;
-  if (!ADMIN || !canManage(sid) || !["membro", "coordenador"].includes(value)) return;
-  const success = await mutate({ path: `/squads/${sid}/membros/${uid}/funcao`, method: "PATCH", body: { funcao: value }, message: `${personName(sid, uid)} agora tem a função de ${value} em ${squadName(sid)}.`, button: $("sq-btn-add-member") });
+  if (!ADMIN || !canManage(sid) || !FUNCOES.includes(value)) return;
+  const success = await mutate({ path: `/squads/${sid}/membros/${uid}/funcao`, method: "PATCH", body: { funcao: value }, message: `${personName(sid, uid)} agora tem a função de ${FUNCAO_ROTULO[value].toLowerCase()} em ${squadName(sid)}.`, button: $("sq-btn-add-member") });
   if (!success) select.value = select.dataset.original;
 }
 function renderUserOptions() {

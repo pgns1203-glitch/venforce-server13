@@ -63,7 +63,7 @@
               <div id="sq-detail-status" class="sq-detail-status" role="status"></div>
               <section id="sq-people-section" class="sq-section" aria-labelledby="sq-people-title">
                 <div class="sq-section-title"><div><h3 id="sq-people-title">Pessoas <span id="sq-people-count"></span></h3></div><button type="button" id="sq-btn-add-member" class="vf-btn vf-btn--secondary">+ Adicionar pessoa</button></div>
-                <div class="sq-toolbar"><label for="sq-people-search">Buscar pessoa<input id="sq-people-search" class="vf-input" type="search" placeholder="Nome ou e-mail…"></label><label for="sq-people-filter">Mostrar<select id="sq-people-filter" class="vf-select"><option value="all">Todas as pessoas</option><option value="coordenador">Coordenadores</option><option value="primary">Squad principal</option><option value="invalid">Função não definida</option></select></label></div>
+                <div class="sq-toolbar"><label for="sq-people-search">Buscar pessoa<input id="sq-people-search" class="vf-input" type="search" placeholder="Nome ou e-mail…"></label><label for="sq-people-filter">Mostrar<select id="sq-people-filter" class="vf-select"><option value="all">Todas as pessoas</option><option value="coordenador">Coordenadores</option><option value="gestor">Gestores</option><option value="primary">Squad principal</option><option value="invalid">Função não definida</option></select></label></div>
                 <div id="sq-membros-wrap"></div>
                 <p class="sq-principal-help"><strong>Squad principal</strong> é o padrão de organização da pessoa. Ela continua participando dos outros Squads.</p>
               </section>
@@ -158,6 +158,7 @@
           <label for="sq-add-funcao">Função</label>
           <select id="sq-add-funcao" class="vf-select">
             <option value="membro">Membro</option>
+            <option value="gestor">Gestor</option>
             <option value="coordenador">Coordenador</option>
           </select>
         </div>

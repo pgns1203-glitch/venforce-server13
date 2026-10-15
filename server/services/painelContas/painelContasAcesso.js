@@ -5,13 +5,13 @@
 //
 //   admin        → todos os clientes ativos.
 //   coordenador  → clientes ativos cujo Squad VIGENTE (cliente_squad_history,
-//                  fim_em IS NULL) é um Squad ATIVO em que o usuário tem
-//                  membership ativa com funcao = 'coordenador'.
-//   gestor       → clientes ativos em que o usuário é responsável ativo com
-//                  papel = 'gestor' (cliente_responsaveis). Hoje não há
-//                  nenhum gestor ativo cadastrado: ninguém ganha acesso por
-//                  suposição, mas o vínculo correto passa a valer sozinho
-//                  quando existir.
+//   e gestor       fim_em IS NULL) é um Squad ATIVO em que o usuário tem
+//   do Squad       membership ativa com funcao 'coordenador' ou 'gestor'
+//                  (gestor liberado em 15/10/2026: cada Squad tem 1 gestor e a
+//                  carteira dele é a do Squad).
+//   gestor do    → clientes ativos em que o usuário é responsável ativo com
+//   cliente        papel = 'gestor' (cliente_responsaveis). Vale sozinho
+//                  quando o vínculo existir (hoje a tabela está vazia).
 //   demais       → sem acesso (auxiliar, designer, membro comum, sem vínculo).
 //
 // Não existe role "coordenador" nem "gestor": são vínculos reais do banco
@@ -36,6 +36,7 @@ function erro(statusCode, code, mensagem, extra = {}) {
  * @returns {Promise<{
  *   tipo: "admin"|"carteira"|"nenhum",
  *   squadsCoordenados: Array<{id:number,nome:string,slug:string}>,
+ *   squadsGeridos: Array<{id:number,nome:string,slug:string}>,
  *   clientesComoGestor: number,
  *   clientes: Array<{id:number,slug:string,nome:string}>,
  * }>}
@@ -47,21 +48,21 @@ async function resolverEscopoPainel(user = {}, db = pool) {
        SELECT c.id, c.slug, c.nome FROM clientes c
         WHERE c.ativo = true ORDER BY c.nome ASC`
     );
-    return { tipo: "admin", squadsCoordenados: [], clientesComoGestor: 0, clientes: rows };
+    return { tipo: "admin", squadsCoordenados: [], squadsGeridos: [], clientesComoGestor: 0, clientes: rows };
   }
 
   const userId = Number(user?.id);
   if (!Number.isInteger(userId) || userId <= 0) {
-    return { tipo: "nenhum", squadsCoordenados: [], clientesComoGestor: 0, clientes: [] };
+    return { tipo: "nenhum", squadsCoordenados: [], squadsGeridos: [], clientesComoGestor: 0, clientes: [] };
   }
 
   const [coordenados, clientesCoordenados, clientesGestor] = await Promise.all([
     db.query(
       `/* painelAcesso:SQUADS_COORDENADOS */
-       SELECT s.id, s.nome, s.slug
+       SELECT s.id, s.nome, s.slug, sm.funcao
          FROM squad_members sm
          JOIN squads s ON s.id = sm.squad_id AND s.ativo = true
-        WHERE sm.user_id = $1 AND sm.ativo = true AND sm.funcao = 'coordenador'
+        WHERE sm.user_id = $1 AND sm.ativo = true AND sm.funcao IN ('coordenador', 'gestor')
         ORDER BY s.nome ASC`,
       [userId]
     ),
@@ -72,7 +73,7 @@ async function resolverEscopoPainel(user = {}, db = pool) {
          JOIN clientes c ON c.id = csh.cliente_id AND c.ativo = true
          JOIN squads s ON s.id = csh.squad_id AND s.ativo = true
          JOIN squad_members sm ON sm.squad_id = s.id
-          AND sm.user_id = $1 AND sm.ativo = true AND sm.funcao = 'coordenador'
+          AND sm.user_id = $1 AND sm.ativo = true AND sm.funcao IN ('coordenador', 'gestor')
         WHERE csh.fim_em IS NULL`,
       [userId]
     ),
@@ -91,9 +92,11 @@ async function resolverEscopoPainel(user = {}, db = pool) {
   const clientes = [...porId.values()].sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR"));
   const temVinculo = coordenados.rows.length > 0 || clientesGestor.rows.length > 0;
 
+  const squad = (s) => ({ id: Number(s.id), nome: s.nome, slug: s.slug });
   return {
     tipo: temVinculo ? "carteira" : "nenhum",
-    squadsCoordenados: coordenados.rows.map((s) => ({ id: Number(s.id), nome: s.nome, slug: s.slug })),
+    squadsCoordenados: coordenados.rows.filter((s) => s.funcao !== "gestor").map(squad),
+    squadsGeridos: coordenados.rows.filter((s) => s.funcao === "gestor").map(squad),
     clientesComoGestor: clientesGestor.rows.length,
     clientes,
   };
@@ -120,7 +123,7 @@ async function assertClienteNoPainel(user, ref, db = pool) {
                 FROM cliente_squad_history csh
                 JOIN squads s ON s.id = csh.squad_id AND s.ativo = true
                 JOIN squad_members sm ON sm.squad_id = s.id
-                 AND sm.user_id = $1 AND sm.ativo = true AND sm.funcao = 'coordenador'
+                 AND sm.user_id = $1 AND sm.ativo = true AND sm.funcao IN ('coordenador', 'gestor')
                WHERE csh.cliente_id = $2 AND csh.fim_em IS NULL)
          OR EXISTS (
               SELECT 1 FROM cliente_responsaveis r

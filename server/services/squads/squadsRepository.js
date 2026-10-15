@@ -20,6 +20,7 @@ const migrationsDir = path.join(__dirname, "..", "..", "sql", "migrations");
 const migrationFiles = [
   "20260827_squads_foundation.sql",       // S — squads/members/history/responsaveis
   "20260828_cliente_responsaveis_p24.sql", // P2.4 — colunas de encerramento/auditoria
+  "20261015_squad_members_funcao_gestor.sql", // funcao 'gestor' no CHECK de squad_members
 ];
 
 let _ensured = false;

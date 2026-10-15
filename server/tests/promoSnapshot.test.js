@@ -1566,6 +1566,250 @@ cenario("allowlist no POST /sync: conta fora da lista → FORA_DO_PILOTO, nada e
   assert.strictEqual((await read.solicitarSync({ clienteSlug: "loja-b", clienteContaId: 9 }, depsLeitura(vazio))).motivo, "PILOTO_VAZIO");
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fonte única: a aba Promoções (listarOportunidades) e a Bancada (simular) leem
+// o MESMO estado do Promo Snapshot e mostram o MESMO rótulo
+// ─────────────────────────────────────────────────────────────────────────────
+
+const margemSimular = require("../services/motorMargem/margemSimularService");
+
+// Catálogos com ids MLB numéricos (o simulador valida ^MLB\d+$): conta 7 → MLB1xxxx, conta 8 → MLB2xxxx.
+function ambienteFonte(opts = {}) {
+  return ambiente({ sellers: { 555: { itens: catalogo("1", 3) }, 666: { itens: catalogo("2", 2) }, 777: { itens: catalogo("3", 1) } }, ...opts });
+}
+
+const DIAGNOSTICO = { id: 91, created_at: "2026-10-10T12:00:00.000Z", parcial: false, itens_scaneados: 40 };
+
+// Banco falso da Central + diagnóstico LEGADO opcional (cabeçalho, elegíveis da aba e itens da Bancada).
+function bancoComLegado({ diagnostico = null, itensLegado = [] } = {}) {
+  const consultasDb = [];
+  return {
+    consultasDb,
+    async query(sql, params) {
+      consultasDb.push({ sql, params });
+      if (/FROM promocoes_diagnosticos\b/.test(sql)) {
+        if (!diagnostico) { const e = new Error("relation does not exist"); e.code = "42P01"; throw e; }
+        return { rows: [diagnostico] };
+      }
+      if (/FROM promocoes_diagnostico_itens/.test(sql)) return { rows: itensLegado };
+      if (/FROM promo_snapshot_contas c/.test(sql)) return { rows: [] };
+      throw new Error("SQL inesperado: " + sql.slice(0, 80));
+    },
+  };
+}
+
+function depsAba(amb, db, extra = {}) {
+  return { ...depsLeitura(amb), db, carregarRealizada: async () => ({ porMlb: new Map(), periodo: null }), ...extra };
+}
+
+function depsBancada(amb, db) {
+  return {
+    db, env: amb.env, now: amb.base.now, logger: amb.logger,
+    assertContaNaCarteira: async (user, contaId) => {
+      const c = amb.contas[Number(contaId)];
+      return { contaId: c.id, clienteId: c.cliente_id, clienteSlug: c.cliente_slug };
+    },
+    obterConta: async (id) => amb.contas[Number(id)],
+    snapshotRepo: {
+      getProjectionSnapshot: async ({ itemId }) => ({
+        itemId, titulo: `Produto ${itemId}`, sku: null, baseId: 1, price: 100, cost: 40, taxRate: 0.1, fixedFee: 0, commission: 12, commissionRate: 0.12, freight: 10,
+        calculatedAt: "2026-10-13T06:00:00.000Z", quality: { targetMargin: 0.1 }, catalogMissingSince: null,
+      }),
+    },
+    obterAnuncio: async (clienteId, itemId) => {
+      const conta = Object.values(amb.contas).find((c) => c.cliente_id === clienteId && itemId.startsWith(c.external_account_id === "555" ? "MLB1" : "MLB2"));
+      return { item_id: itemId, ml_user_id: conta ? conta.external_account_id : null, listing_type_id: "gold_special", category_id: "MLB1", logistic_type: "xd_drop_off" };
+    },
+    promoService: service,
+    promoRepo: amb.repo,
+    carregarRebates: async () => ({ porItem: new Map(), indisponivel: null }),
+    buscarComissaoEFrete: async (a) => ({ comissaoValor: Math.round(a.precoEfetivo * 0.12 * 100) / 100, comissaoPercentual: 0.12, fretePrevisto: 10 }),
+    mlFetch: async () => ({ ok: true, status: 200, data: {} }),
+  };
+}
+
+const USER_FONTE = { id: 1, role: "admin" };
+async function lerAba(amb, db, contaId = 7) {
+  const c = amb.contas[contaId];
+  return listarOportunidades({ clienteSlug: c.cliente_slug, clienteContaId: contaId, autoTrigger: false }, depsAba(amb, db));
+}
+async function lerBancada(amb, db, contaId = 7, mlb = "MLB10001") {
+  return margemSimular.simular({ user: USER_FONTE, body: { cliente_conta_id: contaId, mlb, cenarios: [{ tipo: "todas_promos" }] } }, depsBancada(amb, db));
+}
+async function lerAmbas(amb, { db = bancoComLegado(), contaId = 7, mlb = "MLB10001" } = {}) {
+  const aba = await lerAba(amb, db, contaId);
+  const bancada = await lerBancada(amb, db, contaId, mlb);
+  assert.ok(aba.fontePromocoes, "a aba traz fontePromocoes");
+  assert.ok(bancada.fontePromocoes, "a Bancada traz fontePromocoes");
+  assert.deepStrictEqual(bancada.fontePromocoes, aba.fontePromocoes, "aba e Bancada: MESMO objeto de fonte");
+  return { aba, bancada, fonte: aba.fontePromocoes };
+}
+
+cenario("fonte única 1/5 — sem snapshot: as duas dizem 'Primeira sincronização pendente' e não mostram promoção", async () => {
+  const amb = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  const { aba, bancada, fonte } = await lerAmbas(amb);
+  assert.strictEqual(fonte.estado, "primeira_sincronizacao_pendente");
+  assert.strictEqual(fonte.rotulo, "Primeira sincronização pendente");
+  assert.strictEqual(fonte.ultimoBom, null);
+  assert.strictEqual(fonte.legado, null);
+  assert.strictEqual(aba.disponivel, false);
+  assert.strictEqual(aba.mensagem, fonte.rotulo, "a mensagem da aba é o rótulo canônico");
+  assert.strictEqual(bancada.promocoes.disponivel, false);
+  assert.strictEqual(bancada.cenarios[0].motivo, "sem_snapshot_promocoes");
+  assert.strictEqual(amb.ml.chamadas.length, 0);
+});
+
+cenario("fonte única 2/5 — sincronizando: as duas dizem 'Sincronizando promoções…' (com o último bom, se houver)", async () => {
+  const amb = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  await amb.enfileirar(7);
+  const a = await lerAmbas(amb);
+  assert.strictEqual(a.fonte.estado, "sincronizando");
+  assert.strictEqual(a.fonte.rotulo, "Sincronizando promoções…");
+  assert.strictEqual(a.fonte.atualizando, true);
+  assert.strictEqual(a.fonte.ultimoBom, null);
+
+  const amb2 = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  await amb2.rodar(7);
+  amb2.relogio.avancar(400);
+  await amb2.enfileirar(7);
+  const b = await lerAmbas(amb2);
+  assert.strictEqual(b.fonte.estado, "sincronizando");
+  assert.strictEqual(b.fonte.rotulo, "Sincronizando promoções…");
+  assert.ok(b.fonte.ultimoBom && b.fonte.ultimoBom.geradoEm, "ainda mostra a data do último bom");
+  assert.strictEqual(b.aba.oportunidades.length, 3, "serve o último bom enquanto sincroniza");
+  assert.strictEqual(b.bancada.promocoes.disponivel, true);
+});
+
+cenario("fonte única 3/5 — stale: último bom + 'atualizando' + data, nas duas", async () => {
+  const amb = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  await amb.rodar(7);
+  amb.relogio.avancar(400);
+  const { aba, bancada, fonte } = await lerAmbas(amb);
+  assert.strictEqual(fonte.estado, "desatualizado");
+  assert.strictEqual(fonte.rotulo, "atualizando");
+  assert.strictEqual(fonte.atualizando, true);
+  assert.strictEqual(fonte.origemDados, "promo_snapshot");
+  assert.strictEqual(fonte.ultimoBom.runId, amb.conta(7).current_run_id);
+  assert.ok(fonte.ultimoBom.geradoEm);
+  assert.strictEqual(fonte.legado, null);
+  assert.strictEqual(aba.oportunidades.length, 3);
+  assert.strictEqual(bancada.promocoes.disponivel, true);
+  assert.strictEqual(bancada.promocoes.snapshot_em, fonte.ultimoBom.geradoEm, "mesma data nas duas");
+  assert.strictEqual(aba.fonte.geradoEm, fonte.ultimoBom.geradoEm);
+});
+
+cenario("fonte única 4/5 — falhou: último bom (se houver) + 'falha na atualização · motivo', nas duas", async () => {
+  const amb = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  await amb.rodar(7);
+  amb.relogio.avancar(400);
+  amb.procDeps.mlFetch = async (c, p, o) => (p.startsWith("/users/") ? F.erro500() : amb.ml.mlFetch(c, p, o));
+  await amb.enfileirar(7);
+  await amb.worker.runOnce();
+  const { aba, bancada, fonte } = await lerAmbas(amb);
+  assert.strictEqual(fonte.estado, "falhou");
+  assert.ok(/^falha na atualização · .+/.test(fonte.rotulo), fonte.rotulo);
+  assert.ok(fonte.falha && fonte.falha.codigo, "traz o código da falha");
+  assert.ok(fonte.rotulo.includes(fonte.falha.motivo));
+  assert.ok(fonte.ultimoBom && fonte.ultimoBom.geradoEm, "mantém o último bom");
+  assert.strictEqual(aba.oportunidades.length, 3);
+  assert.strictEqual(bancada.promocoes.disponivel, true);
+
+  // Falhou sem nunca ter um bom: só o rótulo da falha, sem promoções.
+  const vazio = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  vazio.procDeps.mlFetch = async () => F.erro500();
+  await vazio.enfileirar(7);
+  await vazio.worker.runOnce();
+  const v = await lerAmbas(vazio);
+  assert.strictEqual(v.fonte.estado, "falhou");
+  assert.strictEqual(v.fonte.ultimoBom, null);
+  assert.ok(/^falha na atualização · /.test(v.fonte.rotulo));
+  assert.strictEqual(v.aba.disponivel, false);
+  assert.strictEqual(v.bancada.promocoes.disponivel, false);
+});
+
+cenario("fonte única 5/5 — fora do piloto: as duas dizem 'Promoções automáticas não ativadas para esta conta'", async () => {
+  const amb = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3), env: { PROMO_SNAPSHOT_CLIENTES: "loja-b" } });
+  const { aba, bancada, fonte } = await lerAmbas(amb);
+  assert.strictEqual(fonte.estado, "fora_do_piloto");
+  assert.strictEqual(fonte.rotulo, "Promoções automáticas não ativadas para esta conta");
+  assert.strictEqual(fonte.motivo, "FORA_DO_PILOTO");
+  assert.strictEqual(aba.mensagem, fonte.rotulo);
+  assert.strictEqual(bancada.promocoes.disponivel, false);
+  // Worker desligado e lista vazia: mesmo rótulo, motivos diferentes.
+  const off = await lerAmbas(ambienteFonte({ marginSnaps: snapsPara(7, "1", 3), env: { PROMO_SNAPSHOT_WORKER_ENABLED: "false" } }));
+  assert.deepStrictEqual([off.fonte.estado, off.fonte.motivo, off.fonte.rotulo], ["fora_do_piloto", "WORKER_DESABILITADO", fonte.rotulo]);
+  const vazio = await lerAmbas(ambienteFonte({ marginSnaps: snapsPara(7, "1", 3), env: { PROMO_SNAPSHOT_CLIENTES: "" } }));
+  assert.deepStrictEqual([vazio.fonte.estado, vazio.fonte.motivo], ["fora_do_piloto", "PILOTO_VAZIO"]);
+  // Nenhum dos dois enfileira nada.
+  assert.strictEqual(amb.repo._st.runs.length, 0);
+});
+
+cenario("fonte única — conta com snapshot fora do piloto: mostra o último bom e o rótulo de não ativada", async () => {
+  const amb = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  await amb.rodar(7);
+  amb.procDeps.env = { ...amb.env, PROMO_SNAPSHOT_CLIENTES: "loja-b" };
+  const foraAmb = { ...amb, env: { ...amb.env, PROMO_SNAPSHOT_CLIENTES: "loja-b" }, base: { ...amb.base, env: { ...amb.env, PROMO_SNAPSHOT_CLIENTES: "loja-b" } } };
+  const { aba, fonte } = await lerAmbas(foraAmb);
+  assert.strictEqual(fonte.estado, "fora_do_piloto");
+  assert.ok(fonte.ultimoBom && fonte.ultimoBom.geradoEm);
+  assert.strictEqual(aba.oportunidades.length, 3);
+});
+
+cenario("fonte única — legado só se a conta NÃO tem snapshot: 'diagnóstico legado · data' igual nas duas; na Bancada vira estimativa", async () => {
+  const itensLegado = [{ chave: "501", item_id: "MLB10001", preco_promo: 90, retorno: 4, nome: "Campanha antiga", promo_id: "CMP-1", tipo: "DEAL", status: "candidate" }];
+  const amb = ambienteFonte({ marginSnaps: snapsPara(7, "1", 3) });
+  const db = bancoComLegado({ diagnostico: DIAGNOSTICO, itensLegado });
+  const { aba, bancada, fonte } = await lerAmbas(amb, { db });
+  assert.strictEqual(fonte.estado, "primeira_sincronizacao_pendente", "o estado do Promo Snapshot continua valendo");
+  assert.strictEqual(fonte.origemDados, "diagnostico_legado");
+  assert.ok(fonte.legado && fonte.legado.diagnosticoId === 91 && fonte.legado.geradoEm, "traz a data do diagnóstico");
+  assert.strictEqual(aba.fonte.tipo, "diagnostico_legado");
+  assert.strictEqual(aba.fonte.geradoEm, fonte.legado.geradoEm);
+  assert.strictEqual(bancada.promocoes.disponivel, true);
+  assert.strictEqual(bancada.promocoes.origem, "diagnostico_legado");
+  assert.strictEqual(bancada.promocoes.snapshot_em, fonte.legado.geradoEm);
+  const promo = bancada.cenarios.find((c) => c.tipo === "promo");
+  assert.ok(promo, "a promoção do legado aparece na Bancada");
+  assert.strictEqual(promo.promocao.estimativa, true);
+  assert.strictEqual(promo.promocao.fonte, "diagnostico_legado");
+  assert.strictEqual(promo.promocao.id, "CMP-1");
+  assert.strictEqual(promo.cenario.preco, 90);
+  assert.strictEqual(promo.evidencia.preco.fonte, "diagnostico_legado");
+
+  // Com snapshot, o legado é ignorado — mesmo existindo diagnóstico.
+  await amb.rodar(7);
+  const antes = db.consultasDb.length;
+  const com = await lerAmbas(amb, { db });
+  assert.strictEqual(com.fonte.legado, null);
+  assert.strictEqual(com.fonte.origemDados, "promo_snapshot");
+  assert.strictEqual(com.aba.fonte.tipo, "promo_snapshot");
+  assert.ok(!com.bancada.cenarios.some((c) => c.promocao && c.promocao.estimativa === true));
+  assert.ok(!db.consultasDb.slice(antes).some((c) => /promocoes_diagnostico/.test(c.sql)), "com snapshot nem consulta o legado (cabeçalho nem itens)");
+});
+
+cenario("fonte única — isolamento: 2 contas ML do MESMO cliente têm fonte, run e promoções próprios", async () => {
+  const amb = ambienteFonte({ marginSnaps: new Map([...snapsPara(7, "1", 3), ...snapsPara(8, "2", 2)]) });
+  await amb.rodar(7);
+  await amb.enfileirar(8); // a conta B está sincronizando pela 1ª vez; a A está atualizada
+  const a = await lerAmbas(amb, { contaId: 7, mlb: "MLB10001" });
+  const b = await lerAmbas(amb, { contaId: 8, mlb: "MLB20001" });
+  assert.strictEqual(a.fonte.estado, "atualizado");
+  assert.strictEqual(a.fonte.rotulo, "");
+  assert.strictEqual(b.fonte.estado, "sincronizando");
+  assert.strictEqual(b.fonte.ultimoBom, null, "a conta B não herda o snapshot da A");
+  assert.strictEqual(b.aba.disponivel, false);
+  assert.strictEqual(b.bancada.promocoes.disponivel, false);
+  assert.ok(a.aba.oportunidades.every((o) => o.itemId.startsWith("MLB1")));
+  assert.notStrictEqual(a.fonte.ultimoBom.runId, undefined);
+  // A conta A sincronizando não contamina a B depois que a B termina.
+  await amb.worker.runOnce();
+  const b2 = await lerAmbas(amb, { contaId: 8, mlb: "MLB20001" });
+  assert.strictEqual(b2.fonte.estado, "atualizado");
+  assert.strictEqual(b2.fonte.ultimoBom.runId, amb.conta(8).current_run_id);
+  assert.notStrictEqual(b2.fonte.ultimoBom.runId, a.fonte.ultimoBom.runId);
+  assert.ok(b2.aba.oportunidades.every((o) => o.itemId.startsWith("MLB2")));
+});
+
 async function main() {
   let ok = 0;
   for (const c of casos) {

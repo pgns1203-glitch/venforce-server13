@@ -9,7 +9,11 @@
 //                          + retorno ML da promoção em andamento (a mesma
 //                          correção de leitura da tabela: margemAtualRebate)
 //   promoções ............ Promo Snapshot da conta (P' = preço final do ML,
-//                          retorno ML = subsídio, status bruto)
+//                          retorno ML = subsídio, status bruto). Só se a conta
+//                          NÃO tem snapshot: o diagnóstico legado da tela antiga,
+//                          como ESTIMATIVA (promocao.estimativa = true; a tela
+//                          não oferece Participar). `fontePromocoes` é o MESMO
+//                          objeto que a aba Promoções devolve (fonte única).
 //   comissão'/frete' ..... cotação REAL em P' (listing_prices / shipping
 //                          free), uma por (MLB, P') por requisição
 //   alíquota/custo/taxa .. do snapshot (Base)
@@ -24,6 +28,9 @@ const core = require("./core");
 const { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao } = require("./margemCotacaoEmP");
 const { carregarRebatesAtivos, margemAtualComRebate, MOTIVO_REBATE } = require("./margemAtualRebate");
 const { classificarPromocao, urlPromocoesMl } = require("./precificacao/promocaoClassificacao");
+const { resolvePromoSnapshotConfig } = require("../promoSnapshot/promoSnapshotConfig");
+const { montarFontePromocoes } = require("../promoSnapshot/promoSnapshotFonte");
+const legadoPromo = require("../promoSnapshot/promoSnapshotLegado");
 
 const MAX_CENARIOS = 20;
 const MAX_PROMOS_POR_ITEM = 60;
@@ -65,6 +72,7 @@ function defaults(deps = {}) {
     obterAnuncio: deps.obterAnuncio || ((clienteId, itemId) => require("../meliAnuncios/meliAnunciosService").obterAnuncio(clienteId, itemId)),
     promoService: deps.promoService || require("../promoSnapshot/promoSnapshotService"),
     promoRepo: deps.promoRepo || require("../promoSnapshot/promoSnapshotRepository"),
+    promoLegado: deps.promoLegado || legadoPromo,
     buscarComissaoEFrete: deps.buscarComissaoEFrete || require("../shared/marketplaceCurrentQuoteService").buscarComissaoEFrete,
     mlFetch: deps.mlFetch || require("../../utils/mlClient").mlFetch,
     carregarRebates: deps.carregarRebates || carregarRebatesAtivos,
@@ -233,15 +241,20 @@ function metaDoSnapshot(snapshot) {
   return { margem_alvo: core.DEFAULT_TARGET_MARGIN, margem_minima: 0, fonte: "padrao_do_motor", motivo: bruta === null ? "meta_nao_informada" : "meta_fora_da_faixa" };
 }
 
-async function carregarPromocoes(escopo, mlb, d, estado) {
+async function carregarPromocoes(escopo, mlb, d, estado, diagnostico = null) {
   if (!estado || !estado.hasSnapshot) {
-    return { disponivel: false, motivo: core.MOTIVOS.SEM_SNAPSHOT_PROMOCOES, linhas: [], estado };
+    // Fonte única: sem snapshot, o diagnóstico legado (se existir) entra como ESTIMATIVA.
+    if (diagnostico) {
+      const linhas = await d.promoLegado.listarPromocoesLegadoDoItem({ db: d.db, diagnostico, itemId: mlb, limit: MAX_PROMOS_POR_ITEM });
+      return { disponivel: true, motivo: null, linhas, estado, origem: "diagnostico_legado", diagnostico };
+    }
+    return { disponivel: false, motivo: core.MOTIVOS.SEM_SNAPSHOT_PROMOCOES, linhas: [], estado, origem: null, diagnostico: null };
   }
   const { linhas } = await d.promoRepo.listarLinhasSnapshot({
     clienteContaId: escopo.conta.id, sellerId: escopo.sellerId, runId: estado.snapshotRunId,
     page: 1, limit: MAX_PROMOS_POR_ITEM, itemId: mlb,
   }, d.db);
-  return { disponivel: true, motivo: null, linhas, estado };
+  return { disponivel: true, motivo: null, linhas, estado, origem: "promo_snapshot", diagnostico: null };
 }
 
 function promocaoPublica(linha, opcoes = {}) {
@@ -272,6 +285,9 @@ function promocaoPublica(linha, opcoes = {}) {
     // Em que grupo a promoção aparece e o que a Central consegue fazer com ela.
     grupo: classe.grupo,
     escrita: classe.escrita,
+    // Diagnóstico legado = estimativa: sem leitura de hoje no ML, a Bancada não oferece Participar.
+    estimativa: linha.estimativa === true,
+    fonte: linha.estimativa === true ? "diagnostico_legado" : "promo_snapshot",
   };
 }
 
@@ -419,9 +435,9 @@ function calcularTarefa(tarefa, ctx) {
     evidencia.hipotese = true;
   }
   if (tarefa.tipo === "promo") {
-    evidencia.preco = { fonte: "promo_snapshot", observado_em: tarefa.promocao.observado_em, fonte_do_preco: tarefa.promocao.preco_final_fonte };
+    evidencia.preco = { fonte: tarefa.promocao.fonte, observado_em: tarefa.promocao.observado_em, fonte_do_preco: tarefa.promocao.preco_final_fonte };
     evidencia.rebate = {
-      fonte: "promo_snapshot",
+      fonte: tarefa.promocao.fonte,
       observado_em: tarefa.promocao.observado_em,
       informado: tarefa.rebate_informado === true,
       motivo: tarefa.rebate_informado === true ? null : "ml_nao_informou_retorno",
@@ -580,9 +596,16 @@ async function simular({ user, body } = {}, deps = {}) {
       { db: d.db, repo: d.promoRepo, now: d.now, env: d.env, logger: d.logger }
     )
     : null;
+  // Fonte única: o legado só é consultado se a conta NÃO tem snapshot.
+  const diagnosticoLegado = precisaPromo && !(estadoPromo && estadoPromo.hasSnapshot)
+    ? await d.promoLegado.obterDiagnosticoLegado({ db: d.db, clienteId: escopo.clienteId, sellerId: escopo.sellerId })
+    : null;
   const promocoes = precisaPromo
-    ? await carregarPromocoes(escopo, pedido.mlb, d, estadoPromo)
-    : { disponivel: null, motivo: null, linhas: [], estado: null };
+    ? await carregarPromocoes(escopo, pedido.mlb, d, estadoPromo, diagnosticoLegado)
+    : { disponivel: null, motivo: null, linhas: [], estado: null, origem: null, diagnostico: null };
+  const fontePromocoes = precisaPromo
+    ? montarFontePromocoes({ estado: estadoPromo, config: resolvePromoSnapshotConfig(d.env), clienteSlug: escopo.clienteSlug, legado: diagnosticoLegado })
+    : null;
 
   const tarefas = montarTarefas(pedido.cenarios, promocoes, { tiposComEscrita: d.tiposComEscrita });
 
@@ -646,11 +669,17 @@ async function simular({ user, body } = {}, deps = {}) {
       ? {
           disponivel: promocoes.disponivel,
           motivo: promocoes.motivo,
-          snapshot_em: promocoes.estado ? iso(promocoes.estado.snapshotAt) : null,
+          origem: promocoes.origem,
+          snapshot_em: promocoes.origem === "diagnostico_legado"
+            ? iso(promocoes.diagnostico.createdAt)
+            : promocoes.estado ? iso(promocoes.estado.snapshotAt) : null,
           run_id: promocoes.estado ? promocoes.estado.snapshotRunId : null,
-          parcial: promocoes.estado ? promocoes.estado.partial === true : null,
+          parcial: promocoes.origem === "diagnostico_legado"
+            ? promocoes.diagnostico.parcial === true
+            : promocoes.estado ? promocoes.estado.partial === true : null,
         }
       : null,
+    fontePromocoes,
     cotacoes: {
       consultas: estatisticas.chamadas,
       precos_distintos: estatisticas.precos_distintos,

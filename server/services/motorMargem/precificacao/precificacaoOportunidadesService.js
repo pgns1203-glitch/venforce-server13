@@ -12,6 +12,10 @@
 // concluído da tela antiga Promoções ML (compatibilidade, marcado como
 // `diagnostico_legado`) — a Central não depende mais dessa tela.
 //
+// FONTE ÚNICA: toda resposta traz `fontePromocoes` (promoSnapshotFonte), o
+// MESMO objeto que a Bancada (POST /simular) devolve: estado de sincronização,
+// rótulo, último bom, falha e legado. A tela só o renderiza.
+//
 // Abrir/paginar dispara o auto-trigger (ensureFreshPromoSnapshot): só
 // enfileira em background, nunca espera o scan.
 //
@@ -41,6 +45,9 @@ const { carregarRebatesDaConta, MOTIVO_REBATE } = require("../margemAtualRebate"
 const { sqlOportunidadesElegiveis, lerLinhas } = require("./precificacaoOportunidadesSql");
 const { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao, mapComLimite } = require("../margemCotacaoEmP");
 const { classificarPromocao } = require("./promocaoClassificacao");
+const { resolvePromoSnapshotConfig } = require("../../promoSnapshot/promoSnapshotConfig");
+const { montarFontePromocoes } = require("../../promoSnapshot/promoSnapshotFonte");
+const { obterDiagnosticoLegado, STATUS_SQL, STATUS_ACEITOS_SQL } = require("../../promoSnapshot/promoSnapshotLegado");
 
 const FRESCO_MIN = 360; // 6h — mesmos limiares de promocoesDiagnosticoService
 const ANTIGO_MIN = 1440; // 24h
@@ -92,6 +99,7 @@ function defaults(deps = {}) {
     carregarRealizada:
       deps.carregarRealizada || require("../marginSnapshotReadService").carregarRealizadaDoPeriodo,
     now: deps.now || (() => new Date()),
+    env: deps.env || process.env,
     // Cotação AO VIVO da página (só com ?cotacao=viva) — injetável nos testes.
     buscarComissaoEFrete: deps.buscarComissaoEFrete || ((...a) => require("../../shared/marketplaceCurrentQuoteService").buscarComissaoEFrete(...a)),
     mlFetch: deps.mlFetch || ((...a) => require("../../../utils/mlClient").mlFetch(...a)),
@@ -113,16 +121,6 @@ function defaults(deps = {}) {
         (deps.repo || require("../../promoSnapshot/promoSnapshotRepository")).listarOportunidadesElegiveis(args, deps.db || pool),
     },
   };
-}
-
-async function consultaOuVazio(db, sql, params) {
-  try {
-    return (await db.query(sql, params)).rows;
-  } catch (err) {
-    // Tabela do diagnóstico ainda não criada (nunca rodou nesta instalação).
-    if (err && err.code === "42P01") return null;
-    throw err;
-  }
 }
 
 // ─── Elegibilidade para o ranking ────────────────────────────────────────────
@@ -555,7 +553,7 @@ async function respostaDaLista({ base, candidatas, pag, veredito, tipo, cotacao,
 }
 
 // ─── Fonte principal: Promo Snapshot ─────────────────────────────────────────
-async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, params, deps, pag, veredito, tipo, cotacao }) {
+async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, fontePromocoes, params, deps, pag, veredito, tipo, cotacao }) {
   const { vendasPorMlb, periodo, indisponivel } = await carregarVendas(d, cliente, conta, params, deps);
   const { rows } = await d.promo.listarElegiveis({ clienteId: cliente.id, clienteContaId: conta.id, sellerId, runId: estado.snapshotRunId });
   // Retorno ML das promoções EM ANDAMENTO da conta — uma consulta (a margem
@@ -592,6 +590,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
         ...frescor(estado.snapshotAt, d.now().getTime()),
       },
       sync,
+      fontePromocoes,
       criterio: CRITERIO,
       periodo: periodoPublico(periodo),
       ...vendasPublico(indisponivel),
@@ -603,36 +602,27 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
 }
 
 // ─── Compatibilidade: diagnóstico da tela antiga ─────────────────────────────
-async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params, deps, pag, veredito, tipo, cotacao }) {
-  const head = await consultaOuVazio(
-    d.db,
-    `SELECT id, created_at, parcial, itens_scaneados
-       FROM promocoes_diagnosticos
-      WHERE cliente_id = $1 AND seller_id = $2 AND status = 'concluido'
-      ORDER BY created_at DESC, id DESC
-      LIMIT 1`,
-    [cliente.id, sellerId]
-  );
-  if (!head || !head.length) return null;
-  const diag = head[0];
+async function oportunidadesDoLegado({ d, cliente, conta, sellerId, diagnostico, sync, fontePromocoes, params, deps, pag, veredito, tipo, cotacao }) {
+  const diag = diagnostico;
   const base = {
     ok: true,
     disponivel: true,
     fonte: {
       tipo: "diagnostico_legado",
       diagnosticoId: Number(diag.id),
-      geradoEm: diag.created_at,
+      geradoEm: diag.createdAt,
       parcial: diag.parcial === true,
-      itensVarridos: num(diag.itens_scaneados),
-      ...frescor(diag.created_at, d.now().getTime()),
+      itensVarridos: num(diag.itensScaneados),
+      ...frescor(diag.createdAt, d.now().getTime()),
     },
     sync,
+    fontePromocoes,
     criterio: CRITERIO,
   };
   const { vendasPorMlb, periodo, indisponivel } = await carregarVendas(d, cliente, conta, params, deps);
   // Mesma consulta de elegíveis; status vem do payload da linha
   // (status || statusPromocao), vazio = aceito, como na tela antiga.
-  const statusSql = `LOWER(COALESCE(NULLIF(i.payload_raw->>'status', ''), i.payload_raw->>'statusPromocao', ''))`;
+  const statusSql = STATUS_SQL;
   const { sql, params: valores } = sqlOportunidadesElegiveis({
     fonteSql: `
       SELECT i.item_id::text AS item_id, i.id::text AS chave, i.preco_promocao AS preco_promo, i.retorno_ml AS retorno,
@@ -641,7 +631,7 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
         FROM promocoes_diagnostico_itens i
        WHERE i.diagnostico_id = $1 AND i.item_id IS NOT NULL AND i.item_id <> ''
          AND i.preco_promocao IS NOT NULL AND i.preco_promocao > 0
-         AND (${statusSql} = '' OR ${statusSql} IN ('candidate','started','active','pending'))`,
+         AND ${STATUS_ACEITOS_SQL}`,
     paramsFonte: [diag.id],
     clienteId: cliente.id,
     clienteContaId: conta.id,
@@ -650,6 +640,8 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
   const rebates = await carregarRebatesDaConta({ clienteContaId: conta.id, sellerId, db: d.db, promoRepo: deps.promoRepository, logger: deps.logger });
   const candidatas = rows.map((r) => candidataDaLinha(r, comClasse({
     id: r.promo_id || null, chave: r.chave || null, nome: r.promo_nome || null, tipo: r.promo_tipo || null, status: r.promo_status || null,
+    // Diagnóstico antigo: preço e retorno da época do scan, não o estado de hoje no ML.
+    estimativa: true,
   }, d), vendasPorMlb, Boolean(indisponivel), rebates, { fonte: "diagnostico_legado", observadaEm: diag.created_at })).filter(Boolean);
   return respostaDaLista({
     d, cliente, sellerId, tipo, cotacao,
@@ -658,21 +650,6 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
     pag,
     veredito,
   });
-}
-
-function mensagemSemFonte(estado) {
-  if (!estado) return "Nenhuma promoção sincronizada para esta conta ainda.";
-  if (estado.state === "syncing") {
-    const prog = estado.total ? ` (${estado.processed || 0} de ${estado.total} anúncios)` : "";
-    return `Primeira leitura das promoções desta conta em andamento${prog}. A lista aparece sozinha quando terminar.`;
-  }
-  if (estado.state === "failed") {
-    return `A última leitura das promoções desta conta falhou${estado.errorCode ? ` (${estado.errorCode})` : ""}. O backend tenta de novo automaticamente.`;
-  }
-  if (!estado.workerEnabled) {
-    return "A sincronização automática de promoções ainda não está ligada neste ambiente; nenhuma promoção foi lida para esta conta.";
-  }
-  return "Primeira leitura das promoções desta conta enfileirada. A lista aparece sozinha quando terminar.";
 }
 
 async function listarOportunidades(params = {}, deps = {}) {
@@ -711,18 +688,25 @@ async function listarOportunidades(params = {}, deps = {}) {
     if (!(err && err.code === "42P01")) throw err;
   }
 
-  const ctx = { d, cliente, conta, sellerId, estado, sync, params, deps, pag, veredito, tipo, cotacao };
-  if (estado && estado.hasSnapshot) return oportunidadesDoSnapshot(ctx);
+  // Fonte única: o legado só é consultado (e só entra no estado) se a conta NÃO tem snapshot.
+  const temSnapshot = Boolean(estado && estado.hasSnapshot);
+  const diagnostico = temSnapshot ? null : await obterDiagnosticoLegado({ db: d.db, clienteId: cliente.id, sellerId });
+  const fontePromocoes = montarFontePromocoes({
+    estado, config: resolvePromoSnapshotConfig(d.env), clienteSlug: cliente.slug, legado: diagnostico,
+  });
 
-  const legado = await oportunidadesDoLegado(ctx);
-  if (legado) return legado;
+  const ctx = { d, cliente, conta, sellerId, estado, diagnostico, sync, fontePromocoes, params, deps, pag, veredito, tipo, cotacao };
+  if (temSnapshot) return oportunidadesDoSnapshot(ctx);
+  if (diagnostico) return oportunidadesDoLegado(ctx);
 
   return {
     ok: true,
     disponivel: false,
     motivo: "SEM_SNAPSHOT_PROMOCOES",
-    mensagem: mensagemSemFonte(estado),
+    // O mesmo texto da Bancada: o rótulo canônico da fonte única.
+    mensagem: fontePromocoes.rotulo,
     sync,
+    fontePromocoes,
     page: pag.page,
     limit: pag.limit,
     total: 0,

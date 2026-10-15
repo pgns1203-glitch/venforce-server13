@@ -5505,12 +5505,15 @@
           '<span role="cell">' + rebAnuncioHtml(it) + "</span>" +
           '<span role="cell" class="am-reb-celula">' +
             '<span class="am-reb-celula__forte">' + formatMoeda(hoje.preco) +
-              (rebNum(hoje.subsidioMl) > 0 ? ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(hoje.subsidioMl) + " ML</span>" : "") + "</span>" +
+              "</span>" +
+            (rebNum(hoje.subsidioMl) > 0 ? '<span class="am-reb-celula__rebate">+' + formatMoeda(hoje.subsidioMl) + " de rebate</span>" : "") +
             '<span class="am-reb-celula__par am-reb-celula__par--fraco">' +
               "<span>" + rebPct(hoje.margemPercent) + "</span><span>" + formatMoeda(hoje.lucro) + "</span></span>" +
             '<span class="am-reb-celula__fraco" data-reb-hoje-nome>' + escapeHtml(hoje.nome || "") + "</span></span>" +
           '<span role="cell" class="am-reb-celula am-reb-celula--nova">' + (c
-            ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(c.subsidioMl) + " ML</span></span>" +
+            ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + "</span>" +
+              // Rebate na diagonal, logo abaixo e à direita do preço (como os ganhos).
+              (rebNum(c.subsidioMl) > 0 ? '<span class="am-reb-celula__rebate" data-reb-rebate>+' + formatMoeda(c.subsidioMl) + " de rebate</span>" : "") +
               // Margem e lucro em duas colunas; o ganho de cada um fica logo
               // abaixo do próprio valor.
               '<span class="am-reb-celula__par">' +

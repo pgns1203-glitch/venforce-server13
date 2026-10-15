@@ -428,7 +428,9 @@ async function run() {
       assert.match(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-hoje-nome]`)), /Vendex - Outubro/, "o hoje mostra o nome da promoção que forma o preço");
       const linha = await cdp.evaluate(texto(REC("MLB-R1")));
       assert.match(linha, /MLB-R1/); assert.match(linha, /R\$ 99,90/); assert.match(linha, /12,3%/); assert.match(linha, /R\$ 12,29/);
-      assert.match(linha, /Smart Outubro/); assert.match(linha, /R\$ 94,90/); assert.match(linha, /\+ R\$ 4,99 ML/);
+      assert.match(linha, /Smart Outubro/); assert.match(linha, /R\$ 94,90/); assert.match(linha, /\+R\$ 4,99 de rebate/); assert.ok(!/ ML/.test(linha), "sem '+ R$ x ML'");
+      const xr = JSON.parse(await cdp.evaluate(`JSON.stringify([${q(`${REC("MLB-R1")} .am-reb-celula--nova .am-reb-celula__forte`)}, ${q(`${REC("MLB-R1")} [data-reb-rebate]`)}].map(n => Math.round(n.getBoundingClientRect().left)))`));
+      assert.strictEqual(xr[1] - xr[0], 8, "rebate na diagonal, logo à direita do preço");
       assert.strictEqual(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-com-rebate]`)), "14,1%R$ 13,38", "margem e lucro na promoção com rebate, lado a lado com o Hoje");
       assert.match(linha, /\+1,8 p\.p\./); assert.match(linha, /\+R\$ 1,09/);
       assert.ok(await cdp.evaluate(`!!document.querySelector('${REC("MLB-R1")} [data-reb-ganho] .am-reb-ganho.is-pos')`), "ganho embaixo dos valores com rebate");

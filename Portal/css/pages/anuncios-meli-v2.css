@@ -424,12 +424,12 @@
      painel expandido juntos). Nunca overflow:hidden aqui — ele cortava
      Score e Ação calados em qualquer card abaixo de ~1330px. */
   --am-pad-x: var(--vf-sp-4);
-  --am-gap: var(--vf-sp-2);
+  --am-gap: var(--vf-sp-3); /* respiro entre colunas */
   --am-c-thumb: 44px;
   --am-c-anuncio: 156px;
   --am-c-status: 68px;
   --am-c-preco: 124px; /* faixa: vigente + cheio riscado lado a lado */
-  --am-c-estoque: 64px; /* "sem venda 7d" da cobertura */
+  --am-c-estoque: 56px;
   --am-c-vendidos: 60px;
   --am-c-fat: 84px;
   --am-c-metricas: 96px; /* "🛒 123 · 10,5%" */
@@ -452,15 +452,15 @@
 .vf-page-anuncios-meli .am-listagem > * {
   --am-cols:
     var(--am-c-thumb)
-    minmax(var(--am-c-anuncio), 4fr)
+    minmax(var(--am-c-anuncio), 3fr)
     minmax(var(--am-c-status), 0.8fr)
-    minmax(var(--am-c-preco), 1.2fr)
-    minmax(var(--am-c-estoque), 0.6fr)
-    minmax(var(--am-c-vendidos), 0.6fr)
-    minmax(var(--am-c-fat), 0.9fr)
-    minmax(var(--am-c-metricas), 1.1fr)
-    minmax(var(--am-c-margem), 1.2fr)
-    minmax(var(--am-c-score), 0.5fr)
+    minmax(var(--am-c-preco), 1.1fr)
+    minmax(var(--am-c-estoque), 0.7fr)
+    minmax(var(--am-c-vendidos), 0.7fr)
+    minmax(var(--am-c-fat), 1fr)
+    minmax(var(--am-c-metricas), 1fr)
+    minmax(var(--am-c-margem), 1.1fr)
+    minmax(var(--am-c-score), 0.4fr)
     var(--am-c-acao);
   --am-min-w: calc(
     var(--am-c-thumb) + var(--am-c-anuncio) + var(--am-c-status) +
@@ -4365,30 +4365,6 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   padding: 0 4px;
   font-size: var(--vf-fs-2xs);
   line-height: 1.4;
-}
-
-/* Estoque + cobertura (dias de estoque no ritmo dos últ. 7d). */
-.vf-page-anuncios-meli .am-estoque-cel,
-.vf-page-anuncios-meli .am-estoque[data-estoque-cobertura] {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-}
-
-.vf-page-anuncios-meli .am-cobertura {
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-medium);
-  white-space: nowrap;
-}
-
-.vf-page-anuncios-meli .am-cobertura.is-neutral { color: var(--vf-text-muted); }
-.vf-page-anuncios-meli .am-cobertura.is-warning { color: var(--vf-warning-strong); }
-.vf-page-anuncios-meli .am-cobertura.is-danger  { color: var(--vf-danger-strong); }
-
-/* Alinha a cobertura com o número do botão de estoque (que tem recuo). */
-.vf-page-anuncios-meli .am-estoque[data-estoque-cobertura] .am-cobertura-alvo {
-  padding-left: var(--vf-sp-1);
 }
 
 /* Cabeçalho com período: Vendidos (total), Faturamento (janela do Motor) e

@@ -124,11 +124,7 @@
       faturamentoEmVoo: {},
       faturamentoPorFamiliaCache: {},
       faturamentoValorPorFamiliaCache: {},
-      // Unidades vendidas e preço MÉDIO vendido no período do faturamento
-      // ({ unidades, precoMedio }), mesma chave dos caches acima; e o
-      // período (dias) que a resposta disse — o cabeçalho mostra.
-      faturamentoDetalheCache: {},
-      faturamentoDetalhePorFamiliaCache: {},
+      // Período (dias) que a resposta do faturamento disse — o cabeçalho mostra.
       faturamentoPeriodoDias: null,
       faturamentoFamiliaEmVoo: {},
       curvaAbcCache: {},
@@ -560,7 +556,6 @@
     AM.state.familyFetchFalhou = {};
     AM.state.faturamentoPorFamiliaCache = {};
     AM.state.faturamentoFamiliaEmVoo = {};
-    AM.state.faturamentoDetalhePorFamiliaCache = {};
     AM.state.precoAoVivoCache = {};
     AM.familiaEpoca++;
   }
@@ -804,10 +799,6 @@
           var chave = linha.tipo === "familia" ? linha.family_id : linha.item_id;
           if (linha.faturamentoPercentual !== undefined) cacheItem[chave] = linha.faturamentoPercentual;
           if (linha.faturamentoValor !== undefined) cacheValor[chave] = linha.faturamentoValor;
-          if (linha.faturamentoUnidades !== undefined || linha.faturamentoPrecoMedio !== undefined) {
-            var cacheDet = linha.tipo === "familia" ? AM.state.faturamentoDetalhePorFamiliaCache : AM.state.faturamentoDetalheCache;
-            cacheDet[chave] = { unidades: linha.faturamentoUnidades, precoMedio: linha.faturamentoPrecoMedio };
-          }
           if (linha.faturamentoPeriodoDias != null) registrarPeriodoFaturamento({ periodoDias: linha.faturamentoPeriodoDias });
           if (linha.curvaAbc !== undefined) cacheAbc[chave] = linha.curvaAbc;
         });
@@ -1117,12 +1108,6 @@
     };
   }
 
-  // Menor preço vigente da família (referência do "↓" do faturamento).
-  function precoMinimoGrupo(f) {
-    var ext = extremosPrecoGrupo(f);
-    return ext ? ext.min.atual : null;
-  }
-
   // Valor único: a MESMA célula do MLB (riscado em cima, vigente embaixo).
   // Faixa: mesmo desenho da faixa de margem (margemFaixaFamiliaHtml) —
   // mínimo em cima, máximo embaixo, cada vigente com o seu cheio riscado
@@ -1200,7 +1185,7 @@
       // % faturamento CONSOLIDADO da família — vem pronto do backend
       // (dados.faturamento.porFamilia), mesma regra da Curva ABC acima:
       // nunca o percentual de um filho isolado.
-      faturamentoAgregadoCelulaHtml(f.family_id, precoMinimoGrupo(f)) +
+      faturamentoAgregadoCelulaHtml(f.family_id) +
       // Métricas 7d: soma dos filhos, buscada sozinha em BACKGROUND assim
       // que a família aparece na página — não depende de expandir (ver
       // carregarMetricasDosGruposVisiveis/metricas7dAgregadoCelulaHtml).
@@ -1802,7 +1787,7 @@
       celulaPrecoHtml(a, "am-mlb__preco") +
       celulaEstoqueHtml(a, "am-mlb__num") +
       '<span class="am-mlb__num" title="Total vendido desde a criação do anúncio">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
-      faturamentoCelulaHtml(a.item_id, precoAtualECheioDoItem(a).atual) +
+      faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a) +
       score +
@@ -2121,19 +2106,12 @@
   // "—" fixo até lá — nunca um spinner para um dado que ninguém pediu ainda.
   // `abcHtml`: a Curva ABC mora ao lado do %, que é o dado que a define
   // (antes ficava solta entre os badges do título).
-  // `ctx` (opcional): { pedido, detalhe: { unidades, precoMedio }, precoRef }.
-  //   - pedido: o faturamento desta linha já foi pedido e voltou — aí "—"
-  //     quer dizer "sem venda no período", e diz isso no title (antes era
-  //     igual ao "ainda não pedido").
-  //   - detalhe: 3ª linha "N un"; o title explica valor ÷ unidades.
-  //   - precoRef: preço atual da linha (na família, o MENOR). Preço médio
-  //     vendido abaixo dele ganha "↓" — é o que explica um faturamento que
-  //     não bate com preço × unidades (venda em promoção/desconto).
-  function faturamentoConteudoHtml(v, valorAbsoluto, abcHtml, ctx) {
-    ctx = ctx || {};
-    var periodo = periodoFaturamentoTexto();
+  // `pedido`: o faturamento desta linha já foi pedido e voltou — aí "—" quer
+  // dizer "sem venda no período", e diz isso no title (antes era igual ao
+  // "ainda não pedido").
+  function faturamentoConteudoHtml(v, valorAbsoluto, abcHtml, pedido) {
     if (v === null || v === undefined) {
-      var tituloVazio = ctx.pedido ? ' title="Sem venda ' + escapeAttr(periodo) + '"' : "";
+      var tituloVazio = pedido ? ' title="Sem venda ' + escapeAttr(periodoFaturamentoTexto()) + '"' : "";
       return '<span class="am-faturamento__topo"><span class="am-faturamento__vazio"' + tituloVazio + ">—</span>" + (abcHtml || "") + "</span>";
     }
     // Backend manda FRAÇÃO 0–1 (receita/receitaTotalPeriodo — ver
@@ -2149,28 +2127,7 @@
     // faturamento absoluto").
     return '<span class="am-faturamento__topo"><span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
         (abcHtml || "") + "</span>" +
-      '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>" +
-      unidadesFaturamentoHtml(valorAbsoluto, ctx.detalhe, ctx.precoRef, periodo);
-  }
-
-  // Tolerância do "↓": arredondamento de centavos não pode acender o aviso —
-  // só uma diferença real (> 2%).
-  var FATURAMENTO_MEDIO_TOLERANCIA = 0.98;
-
-  function unidadesFaturamentoHtml(valorAbsoluto, detalhe, precoRef, periodo) {
-    if (!detalhe || detalhe.unidades === null || detalhe.unidades === undefined) return "";
-    var un = Number(detalhe.unidades);
-    var medio = detalhe.precoMedio != null ? Number(detalhe.precoMedio) : null;
-    var ref = precoRef != null && precoRef !== "" ? Number(precoRef) : null;
-    var abaixo = medio != null && ref != null && ref > 0 && medio < ref * FATURAMENTO_MEDIO_TOLERANCIA;
-    var titulo = "Faturado " + periodo + ": " + formatMoeda(valorAbsoluto) + " em " + plural(un, "unidade", "unidades") +
-      (medio != null ? " (média de " + formatMoeda(medio) + "/un)" : "") + "." +
-      (abaixo
-        ? " O preço médio vendido ficou abaixo do preço atual (" + formatMoeda(ref) +
-          ") — houve venda em promoção, com desconto ou a um preço anterior."
-        : "");
-    return '<span class="am-faturamento__un' + (abaixo ? " is-abaixo" : "") + '" title="' + escapeAttr(titulo) + '">' +
-      escapeHtml(un.toLocaleString("pt-BR") + " un") + (abaixo ? " ↓" : "") + "</span>";
+      '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>";
   }
 
   // "nos últimos 30 dias" — o período que a resposta do faturamento disse.
@@ -2188,46 +2145,25 @@
     if (alvo) alvo.textContent = "últ. " + d + " dias";
   }
 
-  function detalheFaturamento(fat, prefixo, chave) {
-    if (!fat) return null;
-    var un = fat[prefixo + "Unidades"], medio = fat[prefixo + "PrecoMedio"];
-    if (!un && !medio) return null;
-    return {
-      unidades: un && un[chave] != null ? un[chave] : null,
-      precoMedio: medio && medio[chave] != null ? medio[chave] : null,
-    };
-  }
-
   function abcItemHtml(itemId) {
     return '<span data-abc-item="' + escapeAttr(itemId) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[itemId]) + "</span>";
   }
 
-  function faturamentoItemCtx(itemId, precoRef) {
-    return {
-      pedido: Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId),
-      detalhe: AM.state.faturamentoDetalheCache[itemId] || null,
-      precoRef: precoRef,
-    };
-  }
-
-  // `precoRef`: preço atual do anúncio (mesma regra da célula de preço) —
-  // fica gravado em data-preco-ref para o repaint ao vivo.
-  function faturamentoCelulaHtml(itemId, precoRef) {
+  function faturamentoCelulaHtml(itemId) {
     var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId)
       ? AM.state.faturamentoCache[itemId] : null;
     var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, itemId)
       ? AM.state.faturamentoValorCache[itemId] : null;
-    return '<span class="am-faturamento" data-faturamento-item="' + escapeAttr(itemId) +
-      '" data-preco-ref="' + escapeAttr(precoRef == null ? "" : precoRef) + '">' +
-      faturamentoConteudoHtml(v, valor, abcItemHtml(itemId), faturamentoItemCtx(itemId, precoRef)) + "</span>";
+    return '<span class="am-faturamento" data-faturamento-item="' + escapeAttr(itemId) + '">' +
+      faturamentoConteudoHtml(v, valor, abcItemHtml(itemId),
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId)) + "</span>";
   }
 
   // Percentual CONSOLIDADO da família — soma dos filhos sobre o faturamento
   // total do período, calculada pelo backend (dados.faturamento.porFamilia).
   // Nunca o percentual de um filho isolado. Valor absoluto segue a mesma
-  // regra (dados.faturamento.porFamiliaValor). `precoRef` é o MENOR preço
-  // atual da família: médio abaixo dele é venda abaixo de qualquer preço atual.
-  function faturamentoAgregadoCelulaHtml(familyId, precoRef) {
+  // regra (dados.faturamento.porFamiliaValor).
+  function faturamentoAgregadoCelulaHtml(familyId) {
     var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId)
       ? AM.state.faturamentoPorFamiliaCache[familyId] : null;
     var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorPorFamiliaCache, familyId)
@@ -2236,11 +2172,7 @@
       '" title="Percentual consolidado da família sobre o faturamento total do período">' +
       faturamentoConteudoHtml(v, valor,
         '<span data-abc-familia="' + escapeAttr(familyId) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[familyId]) + "</span>",
-        {
-          pedido: Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId),
-          detalhe: AM.state.faturamentoDetalhePorFamiliaCache[familyId] || null,
-          precoRef: precoRef,
-        }) + "</span>";
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId)) + "</span>";
   }
 
   // Busca metricas7d, margem e/ou composição da margem para os item_id
@@ -2408,7 +2340,6 @@
           pendentesFaturamento.forEach(function (id) {
             AM.state.faturamentoCache[id] = porItem[id] != null ? porItem[id] : null;
             AM.state.faturamentoValorCache[id] = porItemValor[id] != null ? porItemValor[id] : null;
-            AM.state.faturamentoDetalheCache[id] = detalheFaturamento(dados.faturamento, "porItem", id);
           });
         }
         if (pendentesCurvaAbc.length) {
@@ -2467,7 +2398,6 @@
       pendentes.forEach(function (familyId) {
         AM.state.faturamentoPorFamiliaCache[familyId] = porFamilia[familyId] != null ? porFamilia[familyId] : null;
         AM.state.faturamentoValorPorFamiliaCache[familyId] = porFamiliaValor[familyId] != null ? porFamiliaValor[familyId] : null;
-        AM.state.faturamentoDetalhePorFamiliaCache[familyId] = detalheFaturamento(dados && dados.ok ? dados.faturamento : null, "porFamilia", familyId);
         AM.state.curvaAbcPorFamiliaCache[familyId] = porFamiliaAbc[familyId] || null;
         repintarLinhaDoGrupo(familyId);
       });
@@ -2895,10 +2825,8 @@
       if (!alvo[id]) return;
       var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) ? AM.state.faturamentoCache[id] : null;
       var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, id) ? AM.state.faturamentoValorCache[id] : null;
-      var cacheRef = AM.state.performanceCache[id];
-      var ref = cacheRef && cacheRef.margem && cacheRef.margem.precoAtual != null
-        ? cacheRef.margem.precoAtual : cel.getAttribute("data-preco-ref");
-      cel.innerHTML = faturamentoConteudoHtml(v, valor, abcItemHtml(id), faturamentoItemCtx(id, ref));
+      cel.innerHTML = faturamentoConteudoHtml(v, valor, abcItemHtml(id),
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id));
     });
     // Curva ABC — tag própria (data-abc-item), separada dos badges estáticos
     // (ver curvaAbcBadgeHtml/badgesAnuncioHtml): chega assíncrona, então
@@ -3612,7 +3540,7 @@
       // mesma razão de fundo (ver estoqueItemHtml acima).
       estoqueItemHtml +
       '<span class="am-row__num" title="Total vendido desde a criação do anúncio">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
-      faturamentoCelulaHtml(a.item_id, precoAtualECheioDoItem(a).atual) +
+      faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a) +
       scoreGaugeHtml(a.score_venforce) +

@@ -1475,10 +1475,12 @@ async function run() {
           selo: f1.querySelector('.am-status-misto .vf-status').textContent.trim(),
           detalhe: det ? Array.from(det.children).map(function(e){ return e.textContent; }) : null,
           cobertura: document.querySelectorAll('.am-cobertura').length,
+          unidadesFat: document.querySelectorAll('.am-faturamento__un').length,
         }; })()`);
       assert.strictEqual(r.selo, "Misto");
       assert.deepStrictEqual(r.detalhe, ["3 ativos", "1 pausado"], "só os status com contagem, um por linha");
       assert.strictEqual(r.cobertura, 0, "a coluna de estoque mostra só o número (cobertura removida a pedido)");
+      assert.strictEqual(r.unidadesFat, 0, "o faturamento não mostra mais 'N un ↓' (confundia o usuário)");
     });
 
     await check("10b2 — família 1 variação = 1 anúncio mostra um número só; Curva ABC mora no faturamento; score é selo compacto", async () => {

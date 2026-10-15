@@ -431,7 +431,9 @@ async function run() {
       assert.match(linha, /Smart Outubro/); assert.match(linha, /R\$ 94,90/); assert.match(linha, /\+ R\$ 4,99 ML/);
       assert.strictEqual(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-com-rebate]`)), "14,1% · R$ 13,38", "margem e lucro na promoção com rebate, lado a lado com o Hoje");
       assert.match(linha, /\+1,8 p\.p\./); assert.match(linha, /\+R\$ 1,09/);
-      assert.ok(await cdp.evaluate(`!!document.querySelector('${REC("MLB-R1")} .am-reb-ganho.is-pos')`));
+      assert.ok(await cdp.evaluate(`!!document.querySelector('${REC("MLB-R1")} [data-reb-ganho] .am-reb-ganho.is-pos')`), "ganho embaixo dos valores com rebate");
+      assert.strictEqual(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-ganho]`)), "+1,8 p.p. · +R$ 1,09/un");
+      assert.ok(!/Ganho/.test(await cdp.evaluate(texto(".am-reb-tab__cab"))), "sem coluna Ganho");
     });
     await check("V2 — Escolha: 'Manter como está' por padrão; margem e lucro lado a lado + opção extra", async () => {
       await clicar(cdp, '[data-reb-aba="escolha"]');
@@ -444,18 +446,18 @@ async function run() {
       const card = await cdp.evaluate(texto('.am-reb-escolha[data-reb-item="MLB-E1"]'));
       assert.match(card, /Copo inox 500ml/); assert.match(card, /MLB-E1/);
       assert.ok(!/Rebate ML/.test(await cdp.evaluate(texto('.am-reb-escolha[data-reb-item="MLB-E1"] .am-reb-opcao'))), "a Vendex sem subsídio não mostra rebate");
-      assert.match(card, /Rebate ML 5,0%/); assert.match(card, /\+R\$ 4,99\/un/);
+      assert.match(card, /\+R\$ 4,99\/un/); assert.ok(!/Rebate ML/.test(card), "sem a linha 'Rebate ML x%' sob o rebate");
       const nomes = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-reb-escolha[data-reb-item="MLB-E1"] .am-reb-opcao__cab .am-reb-opcao__nome')).map(n => n.textContent)`);
       assert.deepStrictEqual(nomes, ["Vendex - Outubro", "Smart margem", "Preço competitivo", "Estoque parado"], "nome da promoção no topo de cada card");
       const colunas = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-reb-escolha[data-reb-item="MLB-E1"] label.am-reb-opcao:nth-of-type(2) .am-reb-metrica__rotulo')).map(n => n.textContent)`);
       assert.deepStrictEqual(colunas, ["Preço de venda", "Margem", "Lucro/un"]);
       const preco = await cdp.evaluate(texto('.am-reb-escolha[data-reb-item="MLB-E1"] label.am-reb-opcao:nth-of-type(2) .am-reb-metrica'));
-      assert.match(preco, /R\$ 92,00/); assert.match(preco, /\+R\$ 4,99\/un\s*Rebate ML 5,0%/, "rebate pequeno junto do preço de venda");
+      assert.match(preco, /R\$ 92,00/); assert.match(preco, /\+R\$ 4,99\/un/, "rebate pequeno junto do preço de venda");
       assert.match(card, /Margem/i); assert.match(card, /Lucro\/un/i); assert.match(card, /atual/);
       assert.match(card, /Vendex - Outubro/, "'Manter como está' mostra a referência quando é ela que forma o preço");
       const cardJa = await cdp.evaluate(texto('.am-reb-escolha[data-reb-item="MLB-E2"] .am-reb-opcao'));
       assert.match(cardJa, /Manter como está/); assert.match(cardJa, /Smart já ativa/); assert.match(cardJa, /R\$ 96,00/);
-      assert.match(cardJa, /Rebate ML 3,0%/, "já em rebate: a 1ª opção traz o rebate da promoção ativa");
+      assert.match(cardJa, /\+R\$ 3,00\/un/, "já em rebate: a 1ª opção traz o rebate da promoção ativa");
       await foto(cdp, "rebate-03b-escolha");
       assert.ok(await cdp.evaluate(`!!document.querySelector('.am-reb-escolha[data-reb-item="MLB-E1"] .am-reb-ganho.is-neg')`), "perda pintada");
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('.am-reb-escolha label.am-reb-opcao:not([for])').length`), 0, "toda opção tem label");

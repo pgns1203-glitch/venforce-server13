@@ -4731,27 +4731,19 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 /* ID da família: fora da linha, como ação discreta de copiar que só
    aparece no hover/foco da linha. */
 .vf-page-anuncios-meli .am-row__copiar-id {
-  padding: 0 4px;
+  padding: 0;
+  font: inherit;
   font-family: var(--vf-font-mono);
-  font-size: var(--vf-fs-2xs);
-  color: var(--vf-text-muted);
-  cursor: pointer;
+  color: inherit;
+  cursor: copy;
   background: none;
-  border: 1px solid var(--vf-border);
+  border: 0;
   border-radius: var(--vf-radius-sm);
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-.vf-page-anuncios-meli .am-row:hover .am-row__copiar-id,
-.vf-page-anuncios-meli .am-row:focus-within .am-row__copiar-id,
-.vf-page-anuncios-meli .am-row__copiar-id:focus-visible {
-  opacity: 1;
 }
 
 .vf-page-anuncios-meli .am-row__copiar-id:hover {
   color: var(--vf-text);
-  border-color: var(--vf-border-strong);
+  text-decoration: underline;
 }
 
 .vf-page-anuncios-meli .am-row__copiar-id:focus-visible {

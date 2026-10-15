@@ -1180,12 +1180,12 @@
         '<h3 class="am-row__titulo">' + escapeHtml(rotulo) + "</h3>" +
         '<div class="am-row__ids">' +
           contagemHtml +
-          // O identificador do AGRUPADOR (family_id) é um número longo que
-          // quase ninguém lê: sai da linha e vira um botão de copiar discreto
-          // (aparece no hover/foco da linha). MLBU não aparece em lugar nenhum.
+          // O identificador do AGRUPADOR (family_id), sempre visível e sem
+          // rótulo: só "#<id>". Clicar nele copia o ID (sem expandir a
+          // família). MLBU não aparece em lugar nenhum.
           '<button type="button" class="am-row__copiar-id" data-copiar-familia="' + escapeAttr(f.family_id) + '" ' +
-            'title="Família ' + escapeAttr(f.family_id) + ' — copiar ID" ' +
-            'aria-label="Copiar o ID da família ' + escapeAttr(f.family_id) + '">ID</button>' +
+            'title="Copiar ID" ' +
+            'aria-label="Copiar o ID da família ' + escapeAttr(f.family_id) + '">#' + escapeHtml(f.family_id) + '</button>' +
         "</div>" +
       "</div>" +
       statusGrupoHtml(f) +

@@ -1447,7 +1447,7 @@ async function run() {
       );
     });
 
-    await check("10b — o ID do agrupador sai do texto da linha e vira um botão de copiar que NÃO expande a família", async () => {
+    await check("10b — o ID do agrupador aparece só como '#<id>' e clicar nele copia sem expandir a família", async () => {
       const ids = await cdp.evaluate(`(function(){
         var linha = document.querySelector('${linhaFam("FAM-1")}');
         var ids = linha.querySelector('.am-row__ids');
@@ -1456,12 +1456,11 @@ async function run() {
         if (btn) btn.click();
         return { texto: ids.innerText, mono: ids.querySelectorAll('.vf-mono').length,
           copiar: btn ? btn.getAttribute('data-copiar-familia') : null,
-          titulo: btn ? btn.getAttribute('title') : null,
+          btnTexto: btn ? btn.textContent.trim() : null,
           expandiu: linha.getAttribute('aria-expanded') !== antes }; })()`);
-      assert.strictEqual(ids.mono, 0, `o family_id não pode mais ocupar a linha: ${JSON.stringify(ids)}`);
-      assert.ok(!/FAM-1/.test(ids.texto), "o family_id não aparece como texto da linha");
+      assert.strictEqual(ids.btnTexto, "#FAM-1", `o ID aparece só como #<id>, sem rótulo: ${JSON.stringify(ids)}`);
+      assert.ok(!/Família/.test(ids.texto), "nenhum rótulo junto do ID");
       assert.strictEqual(ids.copiar, "FAM-1", "o botão de copiar carrega o family_id");
-      assert.ok(/FAM-1/.test(ids.titulo), "o family_id fica legível no title do botão");
       assert.strictEqual(ids.expandiu, false, "copiar o ID não pode abrir/fechar a família");
       assert.ok(/3 variações/.test(ids.texto) && /4 anúncios/.test(ids.texto),
         "variações ≠ anúncios: os dois números continuam na linha");

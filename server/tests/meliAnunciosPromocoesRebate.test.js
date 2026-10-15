@@ -303,13 +303,14 @@ async function run() {
     assert.strictEqual(r.status, "recomendado");
     assert.strictEqual(r.titulo, "Camiseta");
     assert.strictEqual(r.thumbnail, "http://img/1.jpg");
-    assert.deepStrictEqual(r.referencia, { preco: 100, subsidioMl: 0, margemPercent: 16, lucro: 16 });
+    assert.deepStrictEqual(r.referencia, { preco: 100, subsidioMl: 0, meliPercentage: null, margemPercent: 16, lucro: 16 });
     assert.strictEqual(r.candidatas.length, 1, "P-RUIM (90, subsídio 1) piora as duas medidas → fora");
     const c = r.candidatas[0];
     assert.deepStrictEqual(
       { promotionId: c.promotionId, tipo: c.tipo, preco: c.preco, subsidioMl: c.subsidioMl, margemPercent: c.margemPercent, lucro: c.lucro, ganhoMargemPp: c.ganhoMargemPp, ganhoLucro: c.ganhoLucro, melhorMargem: c.melhorMargem, melhorLucro: c.melhorLucro },
       { promotionId: "P-OK", tipo: "SMART", preco: 95, subsidioMl: 5, margemPercent: 18, lucro: 17.1, ganhoMargemPp: 2, ganhoLucro: 1.1, melhorMargem: true, melhorLucro: true }
     );
+    assert.strictEqual(c.meliPercentage, 5, "taxa de rebate do ML exposta para a tela");
     assert.deepStrictEqual(r.sugestao, { porMargem: "P-OK", porLucro: "P-OK" });
     ok("avaliarItem: caminho completo → recomendado com números da fórmula do Motor");
   }

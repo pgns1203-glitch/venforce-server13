@@ -4733,13 +4733,13 @@
   function rebSinal(n) { return n > 0 ? "+" : n < 0 ? "−" : ""; }
 
   // Ganho com sinal e cor de status (verde ganho / vermelho perda / neutro).
-  function rebGanhoHtml(v, tipo) {
+  function rebGanhoHtml(v, tipo, sufixo) {
     var n = rebNum(v);
     if (n === null) return '<span class="am-reb-ganho">—</span>';
     var abs = Math.abs(n);
     var txt = tipo === "pp"
       ? rebSinal(n) + abs.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " p.p."
-      : rebSinal(n) + "R$ " + abs.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      : rebSinal(n) + "R$ " + abs.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (sufixo || "");
     var classe = n > 0 ? " is-pos" : n < 0 ? " is-neg" : "";
     return '<span class="am-reb-ganho' + classe + '">' + txt + "</span>";
   }
@@ -4823,33 +4823,50 @@
 
   // "Preferir margem/lucro em todos": só nos itens de Escolha, e só quando a
   // sugestão daquele critério melhora o próprio critério — senão a referência.
+  // "ref" = Manter só a referência em todos.
   function rebPreferir(criterio) {
     rebItens("escolha").forEach(function (it) {
+      if (criterio === "ref") { REB.escolhas[it.itemId] = ""; return; }
       var s = it.sugestao || {};
       var c = rebCandidata(it, criterio === "margem" ? s.porMargem : s.porLucro);
       var ganho = c ? rebNum(criterio === "margem" ? c.ganhoMargemPp : c.ganhoLucro) : null;
       REB.escolhas[it.itemId] = c && ganho !== null && ganho > 0 ? c.promotionId : "";
     });
+    REB.preferencia = criterio;
     REB.confirmando = false;
     renderRebate();
+  }
+
+  // Aba aberta quando a prévia chega: a primeira que tem anúncio.
+  function rebAbaInicial() {
+    var ordem = ["recomendado", "escolha", "sem_ganho", "descartado"];
+    for (var i = 0; i < ordem.length; i++) if (rebItens(ordem[i]).length) return ordem[i];
+    return "recomendado";
+  }
+
+  // Nome curto da referência para rótulos ("Vendex" quando é a Vendex).
+  function rebNomeCurtoRef() {
+    var nome = (REB && REB.job && REB.job.referencia && REB.job.referencia.nome) || "";
+    return /vendex/i.test(nome) ? "Vendex" : "referência";
   }
 
   // --- Abrir / fechar --------------------------------------------------------------
   function abrirRebate() {
     if (!AM.clienteAtual || REB || (CUSTOS && CUSTOS.modo)) return;
     var overlay = document.createElement("div");
-    overlay.className = "am-reb-overlay vf-overlay is-open";
+    overlay.className = "am-reb-overlay";
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
     overlay.setAttribute("aria-labelledby", "am-reb-titulo");
-    overlay.innerHTML = '<div class="am-reb-box vf-modal vf-modal--lg"></div>';
+    overlay.innerHTML = '<aside class="am-reb-box" aria-label="Promoções com rebate"></aside>';
     document.body.appendChild(overlay);
     document.body.classList.add("vf-no-scroll");
     REB = {
       overlay: overlay, chave: rebChaveConta(), focoAnterior: document.activeElement,
       passo: "referencia", referencias: null, padraoId: null, refId: "", erroRefs: null,
       jobId: null, job: null, erro: null, iniciando: false,
-      escolhas: {}, confirmando: false, enviando: false, erroExecutar: null,
+      escolhas: {}, aba: "recomendado", preferencia: null,
+      confirmando: false, enviando: false, erroExecutar: null,
       enviadas: [], pollsParado: 0, executou: false, avisoFechar: false,
       timer: null, seq: 0,
     };
@@ -4935,13 +4952,21 @@
       case "recarregar-refs": carregarReferenciasRebate(); break;
       case "analisar": iniciarAnaliseRebate(); break;
       case "voltar-ref":
+      case "trocar-ref":
         REB.passo = "referencia"; REB.erro = null; REB.job = null; REB.jobId = null;
+        REB.confirmando = false; REB.escolhas = {};
         delete rebJobEmCurso[REB.chave];
         renderRebate(); rebFocarInicio();
         if (!REB.referencias) carregarReferenciasRebate();
         break;
       case "preferir-margem": rebPreferir("margem"); break;
       case "preferir-lucro": rebPreferir("lucro"); break;
+      case "preferir-ref": rebPreferir("ref"); break;
+      case "aba":
+        REB.aba = b.getAttribute("data-reb-aba") || "recomendado";
+        renderRebate();
+        rebFocar('[data-reb-aba="' + REB.aba + '"]');
+        break;
       case "participar":
         if (!rebEscolhasSelecionadas().length) return;
         REB.confirmando = true; REB.erroExecutar = null; renderRebate();
@@ -4961,6 +4986,15 @@
     if (!REB) return;
     var t = e.target;
     if (t.id === "am-reb-ref") { REB.refId = t.value; renderRebate(); return; }
+    if (t.hasAttribute("data-reb-todos")) {
+      rebItens("recomendado").forEach(function (it) {
+        var s = it.sugestao || {};
+        REB.escolhas[it.itemId] = t.checked ? (s.porMargem || s.porLucro || "") : "";
+      });
+      REB.confirmando = false;
+      renderRebate();
+      return;
+    }
     var chk = t.getAttribute("data-reb-marcar");
     if (chk) {
       var it = rebItemPorId(chk);
@@ -4973,6 +5007,7 @@
     var radio = t.getAttribute("data-reb-escolha");
     if (radio && t.checked) {
       REB.escolhas[radio] = t.value;
+      REB.preferencia = null;
       REB.confirmando = false;
       renderRebate();
     }
@@ -5117,6 +5152,8 @@
           delete rebJobEmCurso[reb.chave];
           reb.passo = "previa";
           reb.escolhas = rebEscolhasIniciais();
+          reb.aba = rebAbaInicial();
+          reb.preferencia = null;
           renderRebate();
           rebFocarInicio();
           return;
@@ -5234,22 +5271,15 @@
   }
 
   // --- Render ------------------------------------------------------------------------
-  var REB_PASSOS = [
-    { chave: "referencia", rotulo: "Referência" },
-    { chave: "analisando", rotulo: "Análise" },
-    { chave: "previa", rotulo: "Prévia" },
-    { chave: "execucao", rotulo: "Participação" },
+  // Painel lateral (layout "A + B" aprovado no canvas): cabeçalho com a
+  // referência, abas na prévia (Recomendados em tabela, Escolher em cards
+  // margem × lucro, Sem ganho, Descartados) e rodapé fixo com o total.
+  var REB_ABAS = [
+    { chave: "recomendado", rotulo: "Recomendados" },
+    { chave: "escolha", rotulo: "Escolher margem ou lucro" },
+    { chave: "sem_ganho", rotulo: "Sem ganho" },
+    { chave: "descartado", rotulo: "Descartados" },
   ];
-
-  function rebPassosHtml() {
-    var atual = 0;
-    REB_PASSOS.forEach(function (p, i) { if (p.chave === REB.passo) atual = i; });
-    return '<ol class="am-reb-passos" aria-label="Etapas">' + REB_PASSOS.map(function (p, i) {
-      var estado = i < atual ? " is-feito" : i === atual ? " is-atual" : "";
-      return '<li class="am-reb-passos__item' + estado + '"' + (i === atual ? ' aria-current="step"' : "") + ">" +
-        '<span class="am-reb-passos__n">' + (i + 1) + "</span> " + p.rotulo + "</li>";
-    }).join("") + "</ol>";
-  }
 
   function rebBannerHtml(tipo, msg) {
     return '<div class="vf-banner is-' + tipo + '"' + (tipo === "danger" ? ' role="alert"' : ' role="status"') +
@@ -5263,6 +5293,33 @@
       '<div class="vf-progress" role="progressbar" aria-label="' + escapeAttr(rotulo) + '" aria-valuemin="0" aria-valuemax="' + t + '" aria-valuenow="' + p + '">' +
         '<div class="vf-progress__bar" style="width:' + pct + '%"></div></div>' +
       '<p class="am-reb-progresso__txt" aria-live="polite">' + (t > 0 ? p + " de " + t + " anúncios" : "Preparando…") + "</p></div>";
+  }
+
+  function rebSubtituloHtml() {
+    var reb = REB;
+    if (reb.passo === "referencia") return "Escolha a promoção de referência para comparar.";
+    var job = reb.job || {};
+    var nomeRef = (job.referencia && job.referencia.nome) || (rebRefSelecionada() || {}).nome || "";
+    var txt = "Comparando com <strong>" + escapeHtml(nomeRef || "a referência") + "</strong>";
+    if (reb.passo === "previa") {
+      var total = rebItens().length;
+      txt += " · " + total + (total === 1 ? " anúncio analisado" : " anúncios analisados") +
+        ' · <button type="button" class="am-reb-link" id="am-reb-trocar" data-reb-acao="trocar-ref">trocar referência</button>';
+    }
+    return txt;
+  }
+
+  function rebAbasHtml() {
+    var res = (REB.job && REB.job.resultado) || {};
+    var r = res.resumo || {};
+    return '<div class="am-reb-abas" role="tablist" aria-label="Grupos" data-reb-resumo>' + REB_ABAS.map(function (a) {
+      var n = r[a.chave] != null ? r[a.chave] : rebItens(a.chave).length;
+      var ativa = REB.aba === a.chave;
+      return '<button type="button" role="tab" class="am-reb-aba' + (ativa ? " is-active" : "") + '" id="am-reb-aba-' + a.chave + '"' +
+        ' aria-selected="' + (ativa ? "true" : "false") + '" aria-controls="am-reb-painel" tabindex="' + (ativa ? "0" : "-1") + '"' +
+        ' data-reb-acao="aba" data-reb-aba="' + a.chave + '">' + a.rotulo +
+        ' <span class="am-reb-aba__n">' + n + "</span></button>";
+    }).join("") + "</div>";
   }
 
   function renderRebate() {
@@ -5281,28 +5338,29 @@
       rodape = '<div class="am-reb-confirma" role="alert">' +
         '<p class="am-reb-confirma__txt">A participação continua no Mercado Livre mesmo se você fechar. Reabra "Promoções com rebate" para acompanhar.</p>' +
         '<div class="am-reb-confirma__acoes">' +
-          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-mesmo" data-reb-acao="fechar-mesmo">Fechar mesmo assim</button>' +
-          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-continuar" data-reb-acao="continuar">Continuar acompanhando</button>' +
+          '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-mesmo" data-reb-acao="fechar-mesmo">Fechar mesmo assim</button>' +
+          '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-continuar" data-reb-acao="continuar">Continuar acompanhando</button>' +
         "</div></div>";
     }
 
-    var scroll = box.querySelector(".vf-modal__body");
+    var scroll = box.querySelector(".am-reb-corpo");
     var scrollTop = scroll ? scroll.scrollTop : 0;
-    var abertos = {};
-    box.querySelectorAll("details[data-reb-grupo]").forEach(function (d) { abertos[d.getAttribute("data-reb-grupo")] = d.open; });
+    var chaveRender = p + ":" + (p === "previa" ? reb.aba : "");
+    var abas = p === "previa";
 
-    box.innerHTML = '<div class="vf-modal__header">' +
-        '<h3 class="vf-modal__title" id="am-reb-titulo" tabindex="-1">Promoções com rebate</h3>' +
-        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-x" data-reb-acao="fechar" aria-label="Fechar">' + icFechar() + "</button></div>" +
-      '<div class="vf-modal__body">' + rebPassosHtml() + corpo + "</div>" +
-      '<div class="vf-modal__footer am-reb-rodape">' + rodape + "</div>";
+    box.innerHTML = '<header class="am-reb-head' + (abas ? " tem-abas" : "") + '">' +
+        '<div class="am-reb-head__topo"><div class="am-reb-head__txt">' +
+          '<h2 class="am-reb-titulo" id="am-reb-titulo" tabindex="-1">Promoções com rebate</h2>' +
+          '<p class="am-reb-sub">' + rebSubtituloHtml() + "</p></div>" +
+          '<button type="button" class="am-reb-x" id="am-reb-x" data-reb-acao="fechar" aria-label="Fechar">' + icFechar() + "</button></div>" +
+        (abas ? rebAbasHtml() : "") +
+      "</header>" +
+      '<div class="am-reb-corpo"' + (abas ? ' id="am-reb-painel" role="tabpanel" aria-labelledby="am-reb-aba-' + reb.aba + '"' : "") + ">" + corpo + "</div>" +
+      '<footer class="am-reb-rodape">' + rodape + "</footer>";
 
-    box.querySelectorAll("details[data-reb-grupo]").forEach(function (d) {
-      if (abertos[d.getAttribute("data-reb-grupo")]) d.open = true;
-    });
-    var novoScroll = box.querySelector(".vf-modal__body");
-    if (novoScroll && p === reb.ultimoPassoRender) novoScroll.scrollTop = scrollTop;
-    reb.ultimoPassoRender = p;
+    var novoScroll = box.querySelector(".am-reb-corpo");
+    if (novoScroll && chaveRender === reb.ultimoPassoRender) novoScroll.scrollTop = scrollTop;
+    reb.ultimoPassoRender = chaveRender;
     if (focoId) {
       var n = document.getElementById(focoId);
       if (n && reb.overlay.contains(n)) n.focus();
@@ -5343,175 +5401,213 @@
   function rebRodapeReferenciaHtml() {
     var reb = REB;
     var pode = !!rebRefSelecionada() && !reb.iniciando;
-    return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-cancelar" data-reb-acao="fechar">Cancelar</button>' +
-      '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-analisar" data-reb-acao="analisar"' + (pode ? "" : " disabled") + ">" +
-      (reb.iniciando ? "Iniciando…" : "Analisar") + "</button>";
+    return '<div class="am-reb-rodape__acoes">' +
+      '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-cancelar" data-reb-acao="fechar">Cancelar</button>' +
+      '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-analisar" data-reb-acao="analisar"' + (pode ? "" : " disabled") + ">" +
+      (reb.iniciando ? "Iniciando…" : "Analisar") + "</button></div>";
   }
 
   function rebPassoAnalisandoHtml() {
     var reb = REB;
     var job = reb.job || {};
-    var nomeRef = (job.referencia && job.referencia.nome) || (rebRefSelecionada() || {}).nome || "";
-    if (reb.erro) {
-      return rebBannerHtml("danger", reb.erro);
-    }
+    if (reb.erro) return rebBannerHtml("danger", reb.erro);
     var prog = job.progresso || {};
-    return '<p class="am-reb-intro">Analisando os anúncios ativos em <strong>' + escapeHtml(nomeRef || "na referência") + "</strong>: " +
-      "promoções com subsídio, preço menor e margem e lucro cotados ao vivo no Mercado Livre.</p>" +
+    return '<p class="am-reb-intro">Procurando promoções com subsídio e preço menor, com margem e lucro cotados ao vivo no Mercado Livre.</p>' +
       rebProgressoHtml(prog.processados, prog.total, "Progresso da análise") +
       '<p class="vf-field__hint">Pode levar alguns minutos em contas grandes. Se fechar, a análise continua e você retoma ao reabrir.</p>';
   }
 
   function rebRodapeAnalisandoHtml() {
     if (REB.erro) {
-      return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-erro" data-reb-acao="fechar">Fechar</button>' +
-        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-voltar" data-reb-acao="voltar-ref">Voltar</button>';
+      return '<div class="am-reb-rodape__acoes">' +
+        '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-erro" data-reb-acao="fechar">Fechar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-voltar" data-reb-acao="voltar-ref">Voltar</button></div>';
     }
-    return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-an" data-reb-acao="fechar">Fechar</button>';
+    return '<div class="am-reb-rodape__acoes"><button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-an" data-reb-acao="fechar">Fechar</button></div>';
   }
 
-  function rebLinhaReferenciaHtml(ref) {
-    ref = ref || {};
-    return '<div class="am-reb-valores">' +
-      '<span class="am-reb-valores__preco">' + formatMoeda(ref.preco) + "</span>" +
-      '<span class="am-reb-valores__det">' + rebPct(ref.margemPercent) + " · " + formatMoeda(ref.lucro) + "/un</span>" +
-      (rebNum(ref.subsidioMl) ? '<span class="am-reb-valores__det">Subsídio ' + formatMoeda(ref.subsidioMl) + "</span>" : "") +
-      "</div>";
-  }
-
-  function rebCandidataHtml(c) {
-    return '<div class="am-reb-valores">' +
-      '<span class="am-reb-valores__nome">' + escapeHtml(c.nome || c.promotionId) +
-        (c.tipoLabel || c.tipo ? ' <span class="vf-tag is-neutral">' + escapeHtml(c.tipoLabel || c.tipo) + "</span>" : "") + "</span>" +
-      '<span class="am-reb-valores__preco">' + formatMoeda(c.preco) + ' <span class="am-reb-valores__sub">subsídio ML ' + formatMoeda(c.subsidioMl) + "</span></span>" +
-      '<span class="am-reb-valores__det">' + rebPct(c.margemPercent) + " · " + formatMoeda(c.lucro) + "/un</span>" +
-      '<span class="am-reb-valores__ganhos">' + rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs") + "</span>" +
-      "</div>";
-  }
-
+  // --- Prévia ------------------------------------------------------------------------
   function rebPassoPreviaHtml() {
     var reb = REB;
-    var res = (reb.job && reb.job.resultado) || {};
-    var rec = rebItens("recomendado"), esc = rebItens("escolha"), sem = rebItens("sem_ganho"), desc = rebItens("descartado");
-    var r = res.resumo || { recomendado: rec.length, escolha: esc.length, sem_ganho: sem.length, descartado: desc.length };
-    var nomeRef = (reb.job.referencia && reb.job.referencia.nome) || "";
-    var html = '<p class="am-reb-intro">Referência: <strong>' + escapeHtml(nomeRef) + "</strong> — continua ativa em todos os anúncios.</p>" +
-      '<ul class="am-reb-resumo" data-reb-resumo aria-label="Resumo da análise">' +
-        '<li><strong>' + (r.recomendado || 0) + "</strong> recomendados</li>" +
-        '<li><strong>' + (r.escolha || 0) + "</strong> para escolher</li>" +
-        '<li><strong>' + (r.sem_ganho || 0) + "</strong> sem ganho</li>" +
-        '<li><strong>' + (r.descartado || 0) + "</strong> descartados</li>" +
-      "</ul>";
+    var html = "";
     if (reb.erroExecutar) html += rebBannerHtml("danger", reb.erroExecutar);
-
-    if (!rec.length && !esc.length) {
+    var rec = rebItens("recomendado"), esc = rebItens("escolha");
+    if (!rec.length && !esc.length && (reb.aba === "recomendado" || reb.aba === "escolha")) {
       html += estadoHtml("empty", "Nenhuma promoção com rebate melhora estes anúncios agora",
-        "Veja abaixo os motivos. A referência continua como está.");
+        "Veja os motivos nas abas Sem ganho e Descartados. A referência continua como está.");
+      return html;
     }
-
-    if (rec.length) {
-      html += '<section class="am-reb-grupo" data-reb-grupo-sec="recomendado" aria-labelledby="am-reb-g-rec">' +
-        '<h4 class="am-reb-grupo__titulo" id="am-reb-g-rec">Recomendados <span class="am-reb-grupo__n">' + rec.length + "</span></h4>" +
-        '<p class="vf-field__hint">A mesma promoção melhora margem e lucro. Já vêm marcados.</p>' +
-        '<div class="vf-table-wrap am-reb-tabela"><table class="vf-table vf-table--compact">' +
-        '<thead><tr><th class="am-reb-col-chk"><span class="vf-visually-hidden">Participar</span></th><th>Anúncio</th><th>Na referência</th><th>Promoção sugerida</th></tr></thead><tbody>' +
-        rec.map(function (it, i) {
-          var s = it.sugestao || {};
-          var c = rebCandidata(it, s.porMargem || s.porLucro) || (it.candidatas || [])[0];
-          var marcado = !!(c && reb.escolhas[it.itemId] === c.promotionId);
-          var idChk = "am-reb-chk-" + i;
-          return '<tr data-reb-item="' + escapeAttr(it.itemId) + '"' + (marcado ? ' class="is-selecionado"' : "") + ">" +
-            '<td class="am-reb-col-chk"><label class="vf-check"><input type="checkbox" id="' + idChk + '" data-reb-marcar="' + escapeAttr(it.itemId) + '"' +
-              (marcado ? " checked" : "") + (c ? "" : " disabled") + '><span class="vf-visually-hidden">Participar com ' + escapeHtml(it.titulo || it.itemId) + "</span></label></td>" +
-            "<td>" + rebAnuncioHtml(it) + "</td>" +
-            "<td>" + rebLinhaReferenciaHtml(it.referencia) + "</td>" +
-            "<td>" + (c ? rebCandidataHtml(c) : "—") + "</td></tr>";
-        }).join("") + "</tbody></table></div></section>";
+    if (reb.aba === "recomendado") return html + rebAbaRecomendadosHtml(rec);
+    if (reb.aba === "escolha") return html + rebAbaEscolhaHtml(esc);
+    if (reb.aba === "sem_ganho") {
+      return html + rebAbaListaHtml("sem_ganho", rebItens("sem_ganho"), "Nenhuma promoção com subsídio melhora margem nem lucro destes anúncios.");
     }
+    return html + rebAbaListaHtml("descartado", rebItens("descartado"), "");
+  }
 
-    if (esc.length) {
-      html += '<section class="am-reb-grupo" data-reb-grupo-sec="escolha" aria-labelledby="am-reb-g-esc">' +
-        '<div class="am-reb-grupo__head"><h4 class="am-reb-grupo__titulo" id="am-reb-g-esc">Escolha <span class="am-reb-grupo__n">' + esc.length + "</span></h4>" +
-        '<div class="am-reb-cluster">' +
-          '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-reb-pref-margem" data-reb-acao="preferir-margem">Preferir margem em todos</button>' +
-          '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-reb-pref-lucro" data-reb-acao="preferir-lucro">Preferir lucro em todos</button>' +
-        "</div></div>" +
-        '<p class="vf-field__hint">A promoção que dá mais margem não é a que dá mais lucro (ou uma delas piora a outra medida). Escolha por anúncio.</p>' +
-        '<ul class="am-reb-escolhas">' + esc.map(function (it, i) { return rebEscolhaItemHtml(it, i); }).join("") + "</ul></section>";
-    }
+  function rebAbaRecomendadosHtml(rec) {
+    if (!rec.length) return '<p class="am-reb-vazio">Nenhum anúncio em que a mesma promoção melhore margem e lucro.</p>';
+    var reb = REB;
+    var todos = rec.every(function (it) { return !!reb.escolhas[it.itemId]; });
+    return '<div class="am-reb-tab" role="table" aria-label="Anúncios recomendados" data-reb-grupo-sec="recomendado">' +
+      '<div class="am-reb-tab__linha am-reb-tab__cab" role="row">' +
+        '<span role="columnheader"><input type="checkbox" id="am-reb-todos" data-reb-todos aria-label="Selecionar todos"' + (todos ? " checked" : "") + "></span>" +
+        '<span role="columnheader">Anúncio</span>' +
+        '<span role="columnheader">Hoje na ' + rebNomeCurtoRef() + "</span>" +
+        '<span role="columnheader">Com rebate</span>' +
+        '<span role="columnheader" class="am-reb-col-ganho">Ganho</span>' +
+      "</div>" +
+      rec.map(function (it, i) {
+        var s = it.sugestao || {};
+        var c = rebCandidata(it, s.porMargem || s.porLucro) || (it.candidatas || [])[0];
+        var marcado = !!(c && reb.escolhas[it.itemId] === c.promotionId);
+        var ref = it.referencia || {};
+        return '<div class="am-reb-tab__linha" role="row" data-reb-item="' + escapeAttr(it.itemId) + '">' +
+          '<span role="cell"><input type="checkbox" id="am-reb-chk-' + i + '" data-reb-marcar="' + escapeAttr(it.itemId) + '"' +
+            (marcado ? " checked" : "") + (c ? "" : " disabled") + ' aria-label="Participar com ' + escapeAttr(it.titulo || it.itemId) + '"></span>' +
+          '<span role="cell">' + rebAnuncioHtml(it) + "</span>" +
+          '<span role="cell" class="am-reb-celula">' +
+            '<span class="am-reb-celula__forte">' + formatMoeda(ref.preco) + "</span>" +
+            '<span class="am-reb-celula__fraco">' + rebPct(ref.margemPercent) + " · " + formatMoeda(ref.lucro) + "</span></span>" +
+          '<span role="cell" class="am-reb-celula">' + (c
+            ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(c.subsidioMl) + " ML</span></span>" +
+              '<span class="am-reb-celula__fraco">' + escapeHtml(c.nome || c.promotionId) + (c.tipoLabel ? " · " + escapeHtml(c.tipoLabel) : "") + "</span>"
+            : "—") + "</span>" +
+          '<span role="cell" class="am-reb-celula am-reb-celula--ganho">' + (c
+            ? rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs", "/un")
+            : "") + "</span>" +
+          "</div>";
+      }).join("") + "</div>";
+  }
 
-    if (sem.length) html += rebDetalhesHtml("sem_ganho", "Sem ganho", sem, "Nenhuma promoção com subsídio melhora margem nem lucro.");
-    if (desc.length) html += rebDetalhesHtml("descartado", "Descartados", desc, "");
-    return html;
+  function rebAbaEscolhaHtml(esc) {
+    if (!esc.length) return '<p class="am-reb-vazio">Nenhum anúncio pedindo escolha entre margem e lucro.</p>';
+    var pref = REB.preferencia;
+    var btn = function (id, acao, chave, rotulo) {
+      var ativo = pref === chave;
+      return '<button type="button" role="radio" class="am-reb-rapida__btn' + (ativo ? " is-active" : "") + '" id="' + id + '" data-reb-acao="' + acao + '"' +
+        ' aria-checked="' + (ativo ? "true" : "false") + '">' + (ativo ? icCheck(14) : "") + rotulo + "</button>";
+    };
+    var n = esc.length;
+    return '<section class="am-reb-rapida" aria-labelledby="am-reb-rapida-t">' +
+        '<div class="am-reb-rapida__txt"><span class="am-reb-rapida__titulo" id="am-reb-rapida-t">Escolha rápida para ' +
+          (n === 1 ? "o anúncio" : "os " + n + " anúncios") + "</span>" +
+          '<span class="am-reb-rapida__dica">Marca a mesma opção em todos. Depois você ainda pode trocar card a card.</span></div>' +
+        '<div class="am-reb-rapida__btns" role="radiogroup" aria-labelledby="am-reb-rapida-t">' +
+          btn("am-reb-pref-margem", "preferir-margem", "margem", "Maior margem") +
+          btn("am-reb-pref-lucro", "preferir-lucro", "lucro", "Maior lucro") +
+          btn("am-reb-pref-ref", "preferir-ref", "ref", "Manter só a " + rebNomeCurtoRef()) +
+        "</div></section>" +
+      esc.map(function (it, i) { return rebEscolhaItemHtml(it, i); }).join("");
+  }
+
+  function rebDeltaHtml(v, tipo) {
+    var n = rebNum(v);
+    if (n === null) return '<span class="am-reb-delta">atual</span>';
+    var abs = Math.abs(n);
+    var txt = tipo === "pp"
+      ? rebSinal(n) + abs.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " p.p."
+      : rebSinal(n) + "R$ " + abs.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return '<span class="am-reb-delta am-reb-ganho' + (n > 0 ? " is-pos" : n < 0 ? " is-neg" : "") + '">' + txt + "</span>";
+  }
+
+  function rebRebateHtml(subsidio, pct) {
+    if (!(rebNum(subsidio) > 0)) return '<span class="am-reb-rebate am-reb-rebate--sem">Sem rebate</span>';
+    return '<span class="am-reb-rebate"><span>Rebate ML' + (rebNum(pct) !== null ? " " + rebPct(pct) : "") + "</span>" +
+      '<span class="am-reb-rebate__valor">+' + formatMoeda(subsidio) + "/un</span></span>";
+  }
+
+  function rebOpcaoHtml(o, nomeRadio, id, itemId, atual) {
+    var sel = atual === o.valor;
+    return '<label class="am-reb-opcao' + (sel ? " is-selecionada" : "") + '" for="' + id + '">' +
+      '<span class="am-reb-opcao__cab"><input type="radio" id="' + id + '" name="' + nomeRadio + '" value="' + escapeAttr(o.valor) + '" data-reb-escolha="' + escapeAttr(itemId) + '"' +
+        (sel ? " checked" : "") + '><span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
+      '<span class="am-reb-metricas">' +
+        '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Margem</span>' +
+          '<span class="am-reb-metrica__valor">' + rebPct(o.margem) + "</span>" + rebDeltaHtml(o.dMargem, "pp") + "</span>" +
+        '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Lucro/un</span>' +
+          '<span class="am-reb-metrica__valor">' + formatMoeda(o.lucro) + "</span>" + rebDeltaHtml(o.dLucro, "rs") + "</span>" +
+      "</span>" +
+      '<span class="am-reb-opcao__rodape">' +
+        '<span class="am-reb-opcao__promo"><span class="am-reb-opcao__nome">' + escapeHtml(o.promo || "") + "</span>" +
+          '<span class="am-reb-opcao__preco">' + formatMoeda(o.preco) + "</span></span>" +
+        rebRebateHtml(o.subsidio, o.pct) +
+      "</span></label>";
   }
 
   function rebEscolhaItemHtml(it, i) {
     var s = it.sugestao || {};
     var atual = REB.escolhas[it.itemId] || "";
     var nome = "am-reb-esc-" + i;
-    var opcoes = [];
+    var ref = it.referencia || {};
+    var nomeRef = (REB.job && REB.job.referencia && REB.job.referencia.nome) || "Referência";
+    var opcoes = [{
+      valor: "", rotulo: "Só a " + rebNomeCurtoRef(), margem: ref.margemPercent, lucro: ref.lucro, dMargem: null, dLucro: null,
+      promo: nomeRef, preco: ref.preco, subsidio: ref.subsidioMl, pct: ref.meliPercentage,
+    }];
     var vistos = {};
     function add(pid, rotulo) {
       var c = rebCandidata(it, pid);
       if (!c || vistos[pid]) return;
       vistos[pid] = true;
-      opcoes.push({ c: c, rotulo: rotulo });
+      opcoes.push({
+        valor: c.promotionId, rotulo: rotulo, margem: c.margemPercent, lucro: c.lucro, dMargem: c.ganhoMargemPp, dLucro: c.ganhoLucro,
+        promo: c.nome || c.promotionId, preco: c.preco, subsidio: c.subsidioMl, pct: c.meliPercentage,
+      });
     }
     if (s.porMargem && s.porMargem === s.porLucro) add(s.porMargem, "Maior margem e lucro");
     add(s.porMargem, "Maior margem");
     add(s.porLucro, "Maior lucro");
     (it.candidatas || []).forEach(function (c) { add(c.promotionId, "Outra opção"); });
 
-    var html = '<li class="am-reb-escolha" data-reb-item="' + escapeAttr(it.itemId) + '">' +
-      '<div class="am-reb-escolha__topo">' + rebAnuncioHtml(it) +
-        '<div class="am-reb-escolha__ref"><span class="am-reb-rotulo">Na referência</span>' + rebLinhaReferenciaHtml(it.referencia) + "</div></div>" +
-      '<fieldset class="am-reb-opcoes"><legend class="vf-visually-hidden">Promoção para ' + escapeHtml(it.titulo || it.itemId) + "</legend>";
-    opcoes.forEach(function (o, k) {
-      var id = nome + "-" + k;
-      html += '<label class="am-reb-opcao' + (atual === o.c.promotionId ? " is-selecionada" : "") + '" for="' + id + '">' +
-        '<span class="vf-radio"><input type="radio" id="' + id + '" name="' + nome + '" value="' + escapeAttr(o.c.promotionId) + '" data-reb-escolha="' + escapeAttr(it.itemId) + '"' +
-          (atual === o.c.promotionId ? " checked" : "") + "><span class=\"am-reb-opcao__rotulo\">" + escapeHtml(o.rotulo) + "</span></span>" +
-        rebCandidataHtml(o.c) + "</label>";
-    });
-    var idRef = nome + "-ref";
-    html += '<label class="am-reb-opcao am-reb-opcao--ref' + (atual === "" ? " is-selecionada" : "") + '" for="' + idRef + '">' +
-      '<span class="vf-radio"><input type="radio" id="' + idRef + '" name="' + nome + '" value="" data-reb-escolha="' + escapeAttr(it.itemId) + '"' +
-        (atual === "" ? " checked" : "") + '><span class="am-reb-opcao__rotulo">Manter só a referência</span></span>' +
-      '<span class="vf-field__hint">Nada muda neste anúncio.</span></label>';
-    html += "</fieldset></li>";
-    return html;
+    return '<article class="am-reb-escolha" data-reb-item="' + escapeAttr(it.itemId) + '">' +
+      '<div class="am-reb-escolha__topo">' + rebThumbHtml(it.thumbnail) +
+        '<h3 class="am-reb-escolha__titulo">' + escapeHtml(it.titulo || "Anúncio sem título") + "</h3>" +
+        '<span class="am-reb-escolha__id vf-mono">' + escapeHtml(it.itemId) + "</span></div>" +
+      '<fieldset class="am-reb-opcoes"><legend class="vf-visually-hidden">Promoção para ' + escapeHtml(it.titulo || it.itemId) + "</legend>" +
+        opcoes.map(function (o, k) { return rebOpcaoHtml(o, nome, nome + "-" + k, it.itemId, atual); }).join("") +
+      "</fieldset></article>";
   }
 
-  function rebDetalhesHtml(chave, titulo, itens, dica) {
-    return '<details class="am-reb-detalhes" data-reb-grupo="' + chave + '"><summary>' + titulo + " (" + itens.length + ")</summary>" +
-      (dica ? '<p class="vf-field__hint">' + escapeHtml(dica) + "</p>" : "") +
-      '<ul class="am-reb-lista">' + itens.map(function (it) {
+  function rebAbaListaHtml(chave, itens, dica) {
+    if (!itens.length) return '<p class="am-reb-vazio">Nenhum anúncio neste grupo.</p>';
+    return (dica ? '<p class="am-reb-intro">' + escapeHtml(dica) + "</p>" : "") +
+      '<ul class="am-reb-lista" data-reb-grupo="' + chave + '">' + itens.map(function (it) {
         var m = rebMotivoTexto(it);
         return '<li class="am-reb-lista__item" data-reb-item="' + escapeAttr(it.itemId) + '">' + rebAnuncioHtml(it) +
           (m ? '<span class="am-reb-lista__motivo">' + escapeHtml(m) + "</span>" : "") + "</li>";
-      }).join("") + "</ul></details>";
+      }).join("") + "</ul>";
   }
 
   function rebRodapePreviaHtml() {
     var reb = REB;
-    var n = rebEscolhasSelecionadas().length;
-    var rotulo = n === 1 ? "1 participação selecionada" : n + " participações selecionadas";
+    var sel = rebEscolhasSelecionadas();
+    var n = sel.length;
+    var nRec = sel.filter(function (x) { var it = rebItemPorId(x.itemId); return it && it.status === "recomendado"; }).length;
+    var nEsc = n - nRec;
+    var nomeRef = (reb.job.referencia && reb.job.referencia.nome) || "referência";
     if (reb.confirmando && n) {
-      var nomeRef = (reb.job.referencia && reb.job.referencia.nome) || "de referência";
       return '<div class="am-reb-confirma" role="alertdialog" aria-labelledby="am-reb-confirma-txt">' +
         '<p class="am-reb-confirma__txt" id="am-reb-confirma-txt">Participar de ' + n + (n === 1 ? " promoção em 1 anúncio" : " promoções em " + n + " anúncios") +
           "? A promoção <strong>" + escapeHtml(nomeRef) + "</strong> permanece ativa em todos — nada nela é alterado.</p>" +
         '<div class="am-reb-confirma__acoes">' +
-          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-cancelar-conf" data-reb-acao="cancelar-confirmacao"' + (reb.enviando ? " disabled" : "") + ">Voltar</button>" +
-          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-confirmar" data-reb-acao="confirmar"' + (reb.enviando ? " disabled" : "") + ">" +
+          '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-cancelar-conf" data-reb-acao="cancelar-confirmacao"' + (reb.enviando ? " disabled" : "") + ">Voltar</button>" +
+          '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-confirmar" data-reb-acao="confirmar"' + (reb.enviando ? " disabled" : "") + ">" +
             (reb.enviando ? "Enviando…" : "Confirmar participação") + "</button>" +
         "</div></div>";
     }
-    return '<span class="am-reb-contador" data-reb-contador aria-live="polite">' + rotulo + "</span>" +
-      '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-prev" data-reb-acao="fechar">Fechar</button>' +
-      '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-participar" data-reb-acao="participar"' + (n ? "" : " disabled") + ">Participar</button>";
+    var det = nRec + (nRec === 1 ? " recomendada" : " recomendadas") + " + " + nEsc + (nEsc === 1 ? " escolhida" : " escolhidas") +
+      " · a " + escapeHtml(nomeRef) + " continua ativa em todos.";
+    return '<div class="am-reb-resumo-sel">' +
+        '<span class="am-reb-contador" data-reb-contador aria-live="polite">' + (n === 1 ? "1 participação selecionada" : n + " participações selecionadas") + "</span>" +
+        '<span class="am-reb-resumo-sel__det">' + det + "</span></div>" +
+      '<div class="am-reb-rodape__acoes">' +
+        '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-prev" data-reb-acao="fechar">Cancelar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-participar" data-reb-acao="participar"' + (n ? "" : " disabled") + ">" +
+          (n ? "Participar de " + n : "Participar") + "</button></div>";
   }
 
+  // --- Execução ------------------------------------------------------------------------
   function rebPassoExecucaoHtml() {
     var reb = REB;
     var ex = (reb.job && reb.job.execucao) || {};
@@ -5551,13 +5647,14 @@
   function rebRodapeExecucaoHtml() {
     var reb = REB;
     if (rebProcessando()) {
-      return '<span class="am-reb-contador">Gravando no Mercado Livre…</span>' +
-        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-exec" data-reb-acao="fechar">Fechar</button>';
+      return '<div class="am-reb-resumo-sel"><span class="am-reb-contador">Gravando no Mercado Livre…</span></div>' +
+        '<div class="am-reb-rodape__acoes"><button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-exec" data-reb-acao="fechar">Fechar</button></div>';
     }
     var nFalhas = rebFalhas().length;
-    return (nFalhas ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-reb-retentar" data-reb-acao="retentar"' + (reb.enviando ? " disabled" : "") + ">" +
+    return '<div class="am-reb-rodape__acoes">' +
+      (nFalhas ? '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-retentar" data-reb-acao="retentar"' + (reb.enviando ? " disabled" : "") + ">" +
         (reb.enviando ? "Enviando…" : "Tentar de novo as falhas (" + nFalhas + ")") + "</button>" : "") +
-      '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-fechar-final" data-reb-acao="fechar">Fechar</button>';
+      '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-fechar-final" data-reb-acao="fechar">Fechar</button></div>';
   }
 
   function bindPaginacao(prefixo, pag, irPara) {

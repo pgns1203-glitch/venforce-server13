@@ -330,6 +330,9 @@ function montarUnidadesVendidasGlobal(resultadoVendas, itemIds, porFamiliaItens)
 //    que deu o mínimo/máximo — a célula da família pinta cada ponta da faixa
 //    com a MESMA cor que esse filho teria na própria linha (nunca uma regra de
 //    cor nova inventada no frontend a partir do %).
+//  - `porFamiliaMinProfit`/`porFamiliaMaxProfit`: `profit` (R$ por unidade,
+//    no preço atual) desse MESMO filho — o lucro exibido ao lado de cada
+//    ponta da faixa. Nunca a soma `porFamiliaProfit`, que mistura unidades.
 //  - `porFamiliaMediaPercent`: MÉDIA SIMPLES de `marginPercent` dos mesmos
 //    filhos — o valor usado para RANKING (`porFamilia`, o campo que o
 //    comparator genérico de `listarAgrupadoOrdenadoPorMotor` lê). Diferente
@@ -379,6 +382,8 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
   const porFamiliaMaxPercent = {};
   const porFamiliaMinStatus = {};
   const porFamiliaMaxStatus = {};
+  const porFamiliaMinProfit = {};
+  const porFamiliaMaxProfit = {};
   const porFamiliaMediaPercent = {};
   const porFamiliaProfit = {};
   const porFamiliaCalculadoEm = {};
@@ -393,6 +398,8 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
     let max = null;
     let minStatus = null;
     let maxStatus = null;
+    let minProfit = null;
+    let maxProfit = null;
     let somaMargem = 0;
     let qtdMargem = 0;
     for (const itemId of itensDaFamilia) {
@@ -406,8 +413,9 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
       if (s.computable && s.marginPercent != null) {
         somaMargem += s.marginPercent;
         qtdMargem += 1;
-        if (min == null || s.marginPercent < min) { min = s.marginPercent; minStatus = s.status || null; }
-        if (max == null || s.marginPercent > max) { max = s.marginPercent; maxStatus = s.status || null; }
+        const profit = s.profit != null ? s.profit : null;
+        if (min == null || s.marginPercent < min) { min = s.marginPercent; minStatus = s.status || null; minProfit = profit; }
+        if (max == null || s.marginPercent > max) { max = s.marginPercent; maxStatus = s.status || null; maxProfit = profit; }
       }
     }
     porFamiliaProfit[familyId] = somaProfit != null ? Math.round(somaProfit * 100) / 100 : null;
@@ -418,6 +426,8 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
     porFamiliaMaxPercent[familyId] = max;
     porFamiliaMinStatus[familyId] = minStatus;
     porFamiliaMaxStatus[familyId] = maxStatus;
+    porFamiliaMinProfit[familyId] = minProfit;
+    porFamiliaMaxProfit[familyId] = maxProfit;
     porFamiliaMediaPercent[familyId] = media;
     porFamilia[familyId] = media;
   }
@@ -425,6 +435,7 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
   return {
     porItem, porItemProfit, porItemComputable, porItemStatus, porItemCalculadoEm, porItemOrigemJob, porItemFonte,
     porFamilia, porFamiliaMinPercent, porFamiliaMaxPercent, porFamiliaMinStatus, porFamiliaMaxStatus,
+    porFamiliaMinProfit, porFamiliaMaxProfit,
     porFamiliaMediaPercent,
     porFamiliaProfit, porFamiliaCalculadoEm, porFamiliaFonte,
   };
@@ -502,6 +513,8 @@ async function anexarMargemProjetadaNaPagina(anuncios, { clienteId, clienteConta
       anuncio.margemProjetadaMaxPercent = ouNull(faixa.porFamiliaMaxPercent[fid]);
       anuncio.margemProjetadaMinStatus = faixa.porFamiliaMinStatus[fid] || null;
       anuncio.margemProjetadaMaxStatus = faixa.porFamiliaMaxStatus[fid] || null;
+      anuncio.margemProjetadaMinProfit = ouNull(faixa.porFamiliaMinProfit[fid]);
+      anuncio.margemProjetadaMaxProfit = ouNull(faixa.porFamiliaMaxProfit[fid]);
       anuncio.margemProjetadaMediaPercent = ouNull(faixa.porFamiliaMediaPercent[fid]);
     } else {
       const s = snapshotPorItem.get(String(anuncio.item_id));
@@ -753,6 +766,10 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
           ? ranking.porFamiliaMaxPercent[anuncio.family_id] : null;
         anuncio.margemProjetadaMinStatus = ranking.porFamiliaMinStatus[anuncio.family_id] || null;
         anuncio.margemProjetadaMaxStatus = ranking.porFamiliaMaxStatus[anuncio.family_id] || null;
+        anuncio.margemProjetadaMinProfit = ranking.porFamiliaMinProfit[anuncio.family_id] != null
+          ? ranking.porFamiliaMinProfit[anuncio.family_id] : null;
+        anuncio.margemProjetadaMaxProfit = ranking.porFamiliaMaxProfit[anuncio.family_id] != null
+          ? ranking.porFamiliaMaxProfit[anuncio.family_id] : null;
         anuncio.margemProjetadaMediaPercent = ranking.porFamiliaMediaPercent[anuncio.family_id] != null
           ? ranking.porFamiliaMediaPercent[anuncio.family_id] : null;
       } else {

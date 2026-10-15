@@ -1829,12 +1829,24 @@
   // Sem "carregando": ao contrário de métricas/faturamento (assíncronos,
   // chegam DEPOIS do primeiro paint), o snapshot já está no MESMO objeto
   // que desenhou a linha — a célula nasce PRONTA.
+  // Lucro em R$ por unidade vendida, no preço atual — o `profit` que o Motor
+  // já calcula junto com a margem (margin = profit / price). Aparece embaixo
+  // do %, na MESMA cor dele: os dois são o mesmo resultado em escalas
+  // diferentes. Negativo sai como "−R$ 3,20", nunca "R$ -3,20".
+  function lucroMargemHtml(profit, classe) {
+    if (profit === null || profit === undefined || isNaN(Number(profit))) return "";
+    var n = Number(profit);
+    var texto = (n < 0 ? "−" : "") + formatMoeda(Math.abs(n));
+    return '<span class="am-margem__lucro ' + classe + '" title="Lucro por unidade vendida, no preço atual">' + texto + "</span>";
+  }
+
   function margemProjetadaConteudoHtml(a) {
     var classe = MARGEM_CLASSE[a.margemProjetadaStatus] || "is-neutral";
     if (a.margemProjetadaComputable === true && a.margemProjetadaPercent != null) {
       var tip = "Margem projetada com base no preço atual e custos configurados." +
         margemCalculadaEmFrase(a.margemProjetadaCalculadaEm, a.margemProjetadaFonte);
       return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(a.margemProjetadaPercent) + "</span>" +
+        lucroMargemHtml(a.margemProjetadaProfit, classe) +
         infoDotHtml(tip);
     }
     // Sem snapshot (job nunca rodou) e sem status algum: "—" simples, sem
@@ -1876,14 +1888,20 @@
     if (f.margemProjetadaMinPercent != null && f.margemProjetadaMaxPercent != null) {
       var min = formatarPercentualCompacto(f.margemProjetadaMinPercent);
       var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
-      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo). A ordenação por margem usa a média." +
+      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo), cada uma com o lucro por unidade do anúncio que a gerou. A ordenação por margem usa a média." +
         margemCalculadaEmFrase(f.margemProjetadaCalculadaEm, f.margemProjetadaFonte);
       var classeMin = MARGEM_CLASSE[f.margemProjetadaMinStatus] || "is-neutral";
       var classeMax = MARGEM_CLASSE[f.margemProjetadaMaxStatus] || "is-neutral";
+      var ponta = function (faixa, texto, classe, profit) {
+        return '<span class="am-margem__ponta">' +
+          '<span class="am-margem__valor ' + classe + '" data-faixa="' + faixa + '">' + texto + "</span>" +
+          lucroMargemHtml(profit, classe) +
+        "</span>";
+      };
       var linhas = min === max
-        ? '<span class="am-margem__valor ' + classeMax + '" data-faixa="unico">' + max + "</span>"
-        : '<span class="am-margem__valor ' + classeMin + '" data-faixa="min">' + min + "</span>" +
-          '<span class="am-margem__valor ' + classeMax + '" data-faixa="max">' + max + "</span>";
+        ? ponta("unico", max, classeMax, f.margemProjetadaMaxProfit)
+        : ponta("min", min, classeMin, f.margemProjetadaMinProfit) +
+          ponta("max", max, classeMax, f.margemProjetadaMaxProfit);
       return '<span class="am-margem am-margem--faixa" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
         linhas + infoDotHtml(tip) +
       "</span>";
@@ -3510,6 +3528,7 @@
       }
       if (p.pct == null) return '<span class="am-margem__estado is-neutral" title="' + escapeAttr(p.motivo || "") + '">Sem prévia</span>';
       return '<span class="am-margem__valor ' + classeMargemPct(p.pct) + '">' + formatarPercentualCompacto(p.pct) + "</span>" +
+        lucroMargemHtml(p.profit, classeMargemPct(p.pct)) +
         '<span class="am-custo__tag" title="Margem simulada com o novo custo — ainda não gravada">prévia</span>';
     }
     var v = CUSTOS.margemAoVivo[itemId];
@@ -3518,7 +3537,9 @@
         return '<span class="am-margem__estado ' + (MARGEM_CLASSE[v.status] || "is-neutral") + '">' +
           escapeHtml(MARGEM_LABEL[v.status] || "Indisponível") + "</span>";
       }
-      return '<span class="am-margem__valor ' + (MARGEM_CLASSE[v.status] || classeMargemPct(v.pct)) + '">' + formatarPercentualCompacto(v.pct) + "</span>" +
+      var classeVivo = MARGEM_CLASSE[v.status] || classeMargemPct(v.pct);
+      return '<span class="am-margem__valor ' + classeVivo + '">' + formatarPercentualCompacto(v.pct) + "</span>" +
+        lucroMargemHtml(v.profit, classeVivo) +
         infoDotHtml("Margem recalculada agora pelo Motor com o custo novo. A lista volta a usar o snapshot no próximo cálculo.");
     }
     return null;
@@ -3776,7 +3797,7 @@
           lote.forEach(function (id) {
             var m = margem[id];
             if (!m) return;
-            CUSTOS.margemAoVivo[id] = { pct: m.marginPercent, status: m.status };
+            CUSTOS.margemAoVivo[id] = { pct: m.marginPercent, status: m.status, profit: m.profit };
             // O modal e o preço ao vivo leem este mesmo cache.
             var pc = AM.state.performanceCache[id] || (AM.state.performanceCache[id] = {});
             pc.margem = m;
@@ -3908,6 +3929,7 @@
       CUSTOS.previa[itemId] = {
         valor: valor,
         pct: d.ok && res.computable && res.marginPercent != null ? res.marginPercent : null,
+        profit: d.ok && res.computable && res.profit != null ? res.profit : null,
         motivo: d.ok ? (res.missing && res.missing.length ? "Faltam dados do Motor: " + res.missing.join(", ") : "") : (d.motivo || ""),
       };
       atualizarMargemDaLinhaSemPerderFoco(itemId);

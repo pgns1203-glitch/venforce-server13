@@ -1134,6 +1134,29 @@
   row-gap: var(--vf-sp-1);
 }
 
+/* Lucro por unidade embaixo do %, na mesma cor (classe de status) — menor
+   e sem o peso do display: é o mesmo resultado, em R$. Na família, cada
+   ponta da faixa (.am-margem__ponta) agrupa o % e o lucro dela, para o
+   respiro da faixa separar as pontas e não o % do próprio lucro. */
+.vf-page-anuncios-meli .am-margem__ponta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-margem__lucro {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-margem__lucro.is-success { color: var(--vf-success-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-warning { color: var(--vf-warning-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-danger  { color: var(--vf-danger-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-info    { color: var(--vf-info-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-neutral { color: var(--vf-text-secondary); }
+
 /* "Realizada"/"Projetada" — o selo que diz qual margem é essa. Legenda de
    SKU, mesmo peso visual do resto da tela. */
 .vf-page-anuncios-meli .am-margem__origem {

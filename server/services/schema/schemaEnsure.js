@@ -292,6 +292,23 @@ async function ensurePromoSnapshotSchema(db = pool) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Anúncios ML — "Promoções com rebate" (promocoes_rebate_jobs). Mesmo desenho
+// das trilhas acima: o .sql versionado é a fonte, o boot aplica serializado
+// por advisory lock e o serviço chama o mesmo runner como proteção.
+const PROMOCOES_REBATE_MIGRATION = "20261015_promocoes_rebate_jobs.sql";
+const PROMOCOES_REBATE_LOCK_KEY = "vf:schema:promocoes_rebate_jobs";
+const promocoesRebateEmCurso = new WeakMap();
+
+function promocoesRebateDdl() {
+  return fs.readFileSync(path.join(migrationsDir, PROMOCOES_REBATE_MIGRATION), "utf8");
+}
+
+async function ensurePromocoesRebateSchema(db = pool) {
+  return singleFlight(promocoesRebateEmCurso, db, (chave) =>
+    aplicarMigrationSerializada(chave, promocoesRebateDdl(), PROMOCOES_REBATE_LOCK_KEY));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // BLOCO 18 — GOVERNANÇA DE MIGRATIONS (inventário legível por máquina)
 // ───────────────────────────────────────────────────────────────────────────
 // `auto: true`  → aplicada por um `ensure*` no boot (idempotente, aditiva).
@@ -451,6 +468,22 @@ const MIGRATIONS_INVENTARIO = [
       "recriar uq_custos_base_produto_sku_legado — só possível enquanto nenhuma base Shopee " +
       "tiver 2+ Models do mesmo Item (senão o índice antigo falha por duplicidade)",
   },
+  {
+    arquivo: PROMOCOES_REBATE_MIGRATION,
+    descricao:
+      "cria promocoes_rebate_jobs — jobs de \"Promoções com rebate\" (Anúncios ML): análise " +
+      "e execução disparadas por clique, com índice único parcial de um job 'processando' " +
+      "por cliente",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensurePromocoesRebateSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito:
+      "nenhum (sem FKs). Serializado por pg_advisory_xact_lock: seguro com duas instâncias " +
+      "subindo ao mesmo tempo",
+    rollback: "DROP TABLE promocoes_rebate_jobs (nenhuma tabela existente é alterada)",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -470,6 +503,10 @@ module.exports = {
   promoSnapshotDdl,
   PROMO_SNAPSHOT_MIGRATION,
   PROMO_SNAPSHOT_LOCK_KEY,
+  ensurePromocoesRebateSchema,
+  promocoesRebateDdl,
+  PROMOCOES_REBATE_MIGRATION,
+  PROMOCOES_REBATE_LOCK_KEY,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,

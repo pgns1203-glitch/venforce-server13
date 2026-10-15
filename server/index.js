@@ -132,6 +132,7 @@ const {
   ensureAnunciosMargemProjetadaSnapshotSchema,
   ensureMargemPrecificacaoSchema,
   ensurePromoSnapshotSchema,
+  ensurePromocoesRebateSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -2118,6 +2119,13 @@ const server = app.listen(PORT, () => {
   // chama o mesmo runner como proteção, nunca como mecanismo principal.
   ensureMargemPrecificacaoSchema().catch((err) => {
     console.error("[schema] erro ao garantir schema de margem_precificacao_aplicacoes no boot:", err.message);
+  });
+
+  // Anúncios ML — "Promoções com rebate": tabela de jobs (análise/execução
+  // disparadas por clique). Aditiva, serializada por advisory lock; o serviço
+  // chama o mesmo runner como proteção.
+  ensurePromocoesRebateSchema().catch((err) => {
+    console.error("[schema] erro ao garantir schema de promocoes_rebate_jobs no boot:", err.message);
   });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`

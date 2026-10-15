@@ -175,9 +175,9 @@ const MOCK_CLIENT = `
         { id: "P-SMART", tipo: "SMART", tipoLabel: "Campanha cofinanciada automatizada", nome: "Impulsione suas vendas", status: "candidate", statusExibicao: "ELEGÍVEL",
           inicio: null, fim: null, precoOriginal: 149.9, precoFinal: 146.9, descontoReais: 3, descontoPercentual: 2, mlBanca: 0.75, sellerBanca: 2.25,
           meliPercentage: 0.5, sellerPercentage: 1.5, margem: 0.235, lucro: 34.5, escrita: { suportada: false, acao: null, motivo: "Somente simulação: tipo sem escrita suportada." } },
-        { id: "P-NAO", tipo: "SELLER_CAMPAIGN", tipoLabel: "Campanha própria", nome: "Campanha antiga", status: "started", statusExibicao: "NÃO APLICADA",
-          inicio: null, fim: null, precoOriginal: 149.9, precoFinal: 144.9, descontoReais: 5, descontoPercentual: 3.34, mlBanca: null, sellerBanca: 5,
-          meliPercentage: null, sellerPercentage: 3.34, margem: 0.23, lucro: 33, escrita: { suportada: false, acao: null, motivo: "Não é a promoção aplicada." } },
+        { id: "P-NAO", tipo: "DEAL", tipoLabel: "Campanha tradicional", nome: "Campanha sem sugestão", status: "candidate", statusExibicao: "ELEGÍVEL",
+          inicio: null, fim: null, precoOriginal: 149.9, precoFinal: null, descontoReais: null, descontoPercentual: null, mlBanca: null, sellerBanca: null,
+          meliPercentage: null, sellerPercentage: null, margem: null, lucro: null, escrita: { suportada: true, acao: "PARTICIPAR", motivo: null } },
       ];
     }
 
@@ -185,9 +185,9 @@ const MOCK_CLIENT = `
     function r2(v) { return Math.round(v * 100) / 100; }
     function lin(p, o) {
       o = o || {};
-      var imp = r2(p * 0.1), com = r2(p * 0.12), fr = o.frete == null ? 15 : o.frete, reb = o.rebate || 0, custo = 50;
-      var lc = r2(p - imp - com - fr - custo + reb);
-      return { preco: p, imposto: imp, comissao: com, frete: fr, taxa_fixa: 0, custo: custo, rebate: reb, lc: lc, margem_ratio: Math.round((lc / p) * 10000) / 10000 };
+      var imp = r2(p * 0.1), com = r2(p * 0.12), fr = o.frete == null ? 15 : o.frete, reb = o.rebate || 0, custo = o.custo == null ? 50 : o.custo, taxa = o.taxa_fixa || 0;
+      var lc = r2(p - imp - com - fr - taxa - custo + reb);
+      return { preco: p, imposto: imp, comissao: com, frete: fr, taxa_fixa: taxa, custo: custo, rebate: reb, lc: lc, margem_ratio: Math.round((lc / p) * 10000) / 10000 };
     }
     var LINHA_VAZIA = { preco: null, imposto: null, comissao: null, frete: null, taxa_fixa: null, custo: null, rebate: null, lc: null, margem_ratio: null };
     function evidenciaCot(promo) {
@@ -200,7 +200,8 @@ const MOCK_CLIENT = `
       var r = Object.assign({
         tipo: tipo, entrada: entrada, veredito: "entrar", motivo: null, motivos: [],
         flags: { ativa: false, sem_desconto_efetivo: false, mudou_faixa_frete: ok ? cen.frete !== atual.frete : null, rebate_ambiguo: false },
-        atual: atual, cenario: cen || LINHA_VAZIA, desconto: null, ml_banca: null, seller_banca: null,
+        atual: atual, cenario: cen || LINHA_VAZIA, preco_cheio: null, preco_cheio_fonte: null, desconto_total: null, desconto_ratio: null,
+        ml_banca: null, seller_banca: null, delta_preco_atual: null, banca_motivo: null, banca_aviso: null,
         delta_lc: ok ? r2(cen.lc - atual.lc) : null,
         delta_margem_ratio: ok ? Math.round((cen.margem_ratio - atual.margem_ratio) * 10000) / 10000 : null,
         empate_volume: ok && cen.lc > 0 ? Math.round((atual.lc / cen.lc - 1) * 10000) / 10000 : null,
@@ -211,19 +212,26 @@ const MOCK_CLIENT = `
     function bloqueadoCen(tipo, entrada, atual, motivo, over) {
       return resCenario(tipo, entrada, atual, null, Object.assign({ veredito: "bloqueado", motivo: motivo, motivos: [motivo], evidencia: null }, over || {}));
     }
+    // O servidor classifica (promocao.grupo / promocao.escrita); a tela só agrupa e habilita o botão.
+    var GRUPO_DA_PROMO = { "P-ATIVA": "ativa", "P-NAO": "pode", "P-PROG": "participa", "P-DEAL": "pode", "P-SMART": "ml" };
     function promoPublica(pr) {
-      return { id: pr.id, chave: pr.id + "::" + pr.tipo, tipo: pr.tipo, nome: pr.nome, status: pr.status, status_exibicao: pr.statusExibicao, inicio: pr.inicio, fim: pr.fim, preco_original: pr.precoOriginal, preco_final: pr.precoFinal };
+      return { id: pr.id, chave: pr.id + "::" + pr.tipo, tipo: pr.tipo, nome: pr.nome, status: pr.status, status_exibicao: pr.statusExibicao, inicio: pr.inicio, fim: pr.fim, preco_original: pr.precoOriginal, preco_final: pr.precoFinal,
+        grupo: GRUPO_DA_PROMO[pr.id] || "ml", escrita: pr.escrita };
     }
-    function cenarioDaPromo(pr, atual) {
+    // Hipótese de custo do operador (o servidor refaz o mesmo cenário com o custo informado).
+    function hipLin(hip) { return hip ? { custo: hip.custo, taxa_fixa: hip.taxa_fixa } : {}; }
+    function cenarioDaPromo(pr, atual, hip) {
       var entrada = { tipo: "promo", promotion_id: pr.id };
+      if (hip) entrada.hipotese = hip;
       var pub = promoPublica(pr);
       var r;
       if (pr.id === "P-ATIVA") r = bloqueadoCen("promo", entrada, atual, "promocao_ativa", { flags: { ativa: true, sem_desconto_efetivo: false, mudou_faixa_frete: null, rebate_ambiguo: false } });
       else if (pr.id === "P-NAO") r = bloqueadoCen("promo", entrada, atual, "promocao_sem_preco");
-      else if (pr.id === "P-DEAL") r = resCenario("promo", entrada, atual, lin(99.9, { rebate: 5.2 }), { veredito: "entrar_se_girar", motivo: "lc_por_unidade_cai", desconto: 10.58, ml_banca: 5.2, seller_banca: 5.38 });
-      else if (pr.id === "P-SMART") r = resCenario("promo", entrada, atual, lin(108.9, { rebate: 3 }), { veredito: "entrar", desconto: 1.58, ml_banca: 3, seller_banca: 0 });
-      else r = resCenario("promo", entrada, atual, lin(95, { frete: 24.9 }), { veredito: "nao_entrar", motivo: "lc_nao_positivo", desconto: 15.48, ml_banca: 0, seller_banca: 15.48 });
+      else if (pr.id === "P-DEAL") r = resCenario("promo", entrada, atual, lin(99.9, Object.assign({ rebate: 5.2 }, hipLin(hip))), { veredito: "entrar_se_girar", motivo: "lc_por_unidade_cai", preco_cheio: 149.9, preco_cheio_fonte: "margin_snapshot", desconto_total: 50, desconto_ratio: 0.3336, ml_banca: 5.2, seller_banca: 44.8, delta_preco_atual: 10.58 });
+      else if (pr.id === "P-SMART") r = resCenario("promo", entrada, atual, lin(108.9, { rebate: 3 }), { veredito: "entrar", preco_cheio: 149.9, preco_cheio_fonte: "margin_snapshot", desconto_total: 41, desconto_ratio: 0.2735, ml_banca: 3, seller_banca: 38, delta_preco_atual: 1.58 });
+      else r = resCenario("promo", entrada, atual, lin(95, { frete: 24.9 }), { veredito: "nao_entrar", motivo: "lc_nao_positivo", preco_cheio: 149.9, preco_cheio_fonte: "margin_snapshot", desconto_total: 54.9, desconto_ratio: 0.3662, ml_banca: 0, seller_banca: 54.9, delta_preco_atual: 15.48 });
       r.promocao = pub;
+      if (hip) r.evidencia = Object.assign({}, r.evidencia, { hipotese: true });
       return r;
     }
     function simularResposta(mlb, cenarios) {
@@ -231,9 +239,14 @@ const MOCK_CLIENT = `
       var saida = [];
       cenarios.forEach(function (c) {
         if (c.tipo === "todas_promos") promosDe(mlb).forEach(function (pr) { saida.push(cenarioDaPromo(pr, atualLin)); });
-        else if (c.tipo === "preco") {
+        else if (c.tipo === "promo") {
+          var achada = promosDe(mlb).filter(function (pr) { return pr.id === c.promotion_id; })[0];
+          if (achada) saida.push(cenarioDaPromo(achada, atualLin, c.hipotese || null));
+        } else if (c.tipo === "preco") {
           if (c.preco < 70) saida.push(bloqueadoCen("preco", { tipo: "preco", preco: c.preco }, atualLin, "comissao_indisponivel"));
-          else saida.push(resCenario("preco", { tipo: "preco", preco: c.preco }, atualLin, lin(c.preco), { veredito: c.preco >= atualLin.preco ? "entrar" : "entrar_se_girar" }));
+          else saida.push(resCenario("preco", Object.assign({ tipo: "preco", preco: c.preco }, c.hipotese ? { hipotese: c.hipotese } : {}), atualLin, lin(c.preco, hipLin(c.hipotese)),
+            { veredito: c.preco >= atualLin.preco ? "entrar" : "entrar_se_girar", preco_cheio: 149.9, preco_cheio_fonte: "margin_snapshot", desconto_total: Math.round((149.9 - c.preco) * 100) / 100, desconto_ratio: Math.round(((149.9 - c.preco) / 149.9) * 10000) / 10000, ml_banca: 0, seller_banca: Math.round((149.9 - c.preco) * 100) / 100, delta_preco_atual: Math.round((atualLin.preco - c.preco) * 100) / 100,
+              evidencia: Object.assign(evidenciaCot(false), c.hipotese ? { hipotese: true } : {}) }));
         } else if (c.tipo === "preco_alvo") {
           saida.push(window.__pc.alvoModo === "sem-preco-viavel"
             ? { tipo: "preco_alvo", entrada: c, veredito: "bloqueado", motivo: "sem_preco_viavel", preco_alvo: { encontrado: false, preco: null, motivo: "sem_preco_viavel", causa: "meta_inviavel", margem_alvo: 0.1 } }
@@ -241,7 +254,7 @@ const MOCK_CLIENT = `
         }
       });
       return {
-        ok: true, mlb: mlb, item: { mlb: mlb },
+        ok: true, mlb: mlb, item: { mlb: mlb, ml_promos_url: "https://www.mercadolivre.com.br/anuncios/lista/promos?page=1&search=" + mlb.replace("MLB", "") },
         atual: Object.assign({ bloqueios: [], rebate_motivo: null }, atualLin),
         meta: { margem_alvo: 0.1, margem_minima: 0 },
         promocoes: cenarios.some(function (c) { return c.tipo === "todas_promos"; }) ? { disponivel: true, motivo: null, snapshot_em: "2026-10-14T08:00:00Z", parcial: false } : null,
@@ -754,42 +767,103 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('cm-pp-result') || document.querySelector('[data-promo-apply]'))"), false, "o cockpit antigo (cards de promoção, simulação por tipo) saiu do drawer");
     });
 
-    await check("Bancada: Preço manual + uma opção por promoção com chip de veredito; ATIVA/sem preço bloqueadas com o motivo; fonte e hora da cotação", async () => {
+    await check("Bancada em 2 colunas: cenários agrupados (Ativa · Já participa · Pode participar · Só pelo ML) com colunas, chip de veredito, card sem sugestão desabilitado e botão único dinâmico", async () => {
+      // Esquerda: Hoje × Cenário · Direita: Cenários (grupos na ordem de leitura)
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('.cm-banc__grid .cm-banc__esq #cm-banc-resultado') && document.querySelector('.cm-banc__grid .cm-banc__dir #cm-banc-cenarios'))"), true, "duas colunas");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer').classList.contains('cm-drawer--wide')"), true, "Precificar usa o drawer largo");
+      const grupos = JSON.parse(await cdp.evaluate("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('.cm-banc__grupo'), function (g) { return [g.getAttribute('data-grupo'), (g.querySelector('.cm-banc__grupo-titulo') || {}).textContent || null]; }))"));
+      assert.deepStrictEqual(grupos, [["manual", null], ["ativa", "Ativa agora"], ["participa", "Você já participa"], ["pode", "Pode participar pelo VenForce"], ["ml", "Só pelo Mercado Livre"]]);
       const opcoes = JSON.parse(await cdp.evaluate("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('[data-cenario]'), function (b) { var v = b.querySelector('[data-cm-veredito]'); return [b.getAttribute('data-cenario'), v ? v.getAttribute('data-cm-veredito') : null]; }))"));
-      assert.deepStrictEqual(opcoes, [["preco", null], ["P-ATIVA", "bloqueado"], ["P-DEAL", "entrar_se_girar"], ["P-PROG", "nao_entrar"], ["P-SMART", "entrar"], ["P-NAO", "bloqueado"]]);
+      assert.deepStrictEqual(opcoes, [["preco", null], ["P-ATIVA", "bloqueado"], ["P-PROG", "nao_entrar"], ["P-DEAL", "entrar_se_girar"], ["P-NAO", "bloqueado"], ["P-SMART", "entrar"]]);
       assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cenario=\"preco\"]').getAttribute('aria-checked')"), "true");
-      // Promoção já ativa: bloqueada pelo núcleo, motivo na tela, botão desabilitado
+      const cols = (await cdp.evaluate("document.querySelector('.cm-banc__cols').textContent")).replace(/\s+/g, " ");
+      for (const c of ["Promoção", "Preço final", "Subsídio ML", "LC/un", "Margem", "vs hoje", "Veredito"]) assert.ok(cols.includes(c), `coluna ${c}: ${cols}`);
+
+      // Sem sugestão do ML: card desabilitado com o motivo, não selecionável
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cenario=\"P-NAO\"]').disabled"), true);
+      assert.ok((await cdp.evaluate("document.querySelector('[data-cenario=\"P-NAO\"]').title")).includes("Sem sugestão do Mercado Livre"));
+      assert.ok((await cdp.evaluate("document.querySelector('[data-cenario=\"P-NAO\"]').textContent")).includes("Sem sugestão do ML"));
+      await selecionar("P-NAO");
+      assert.strictEqual(await st("s.bancada.selecionado"), "preco", "clicar no card desabilitado não troca o cenário");
+
+      // Ativa agora: bloqueada pelo núcleo (motivo na tela); o botão leva ao Mercado Livre (nada é escrito)
       await selecionar("P-ATIVA");
       let txt = await resultado();
       assert.ok(txt.includes("bloqueado · promoção já ativa"), txt);
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true);
-      assert.ok((await cdp.evaluate("document.getElementById('cm-bancada-review').title")).includes("promoção já ativa"));
-      // Sem preço sugerido pelo ML
-      await selecionar("P-NAO");
-      assert.ok((await resultado()).includes("promoção sem preço sugerido"));
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true);
-      // Promoção elegível: Atual × Cenário em cascata, retorno ML, seller × ML banca, ΔLC e quanto precisa vender a mais
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review')"), null, "ativa: não há botão de escrita");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-ml').getAttribute('href')"), "https://www.mercadolivre.com.br/anuncios/lista/promos?page=1&search=1001");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-bancada-ml').textContent")).includes("Abrir no Mercado Livre"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-ml').getAttribute('target')"), "_blank");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-bancada-ml').getAttribute('rel')")).includes("noopener"));
+
+      // Pode participar pelo VenForce: Atual × Cenário em cascata, retorno ML, quem banca sobre o preço cheio, ΔLC e volume de empate
       await selecionar("P-DEAL");
       txt = await resultado();
-      for (const t of ["Entrar se girar", "LC por unidade cai", "R$ 110,48", "R$ 99,90", "R$ 21,17", "R$ 18,12", "19,16%", "18,14%", "Retorno ML", "R$ 5,20"]) assert.ok(txt.includes(t), `falta ${t}: ${txt}`);
+      for (const t of ["Entrar se girar", "LC por unidade cai", "R$ 110,48", "R$ 99,90", "R$ 21,17", "R$ 18,12", "19,16%", "18,14%", "Retorno ML", "R$ 5,20", "Hoje", "Cenário"]) assert.ok(txt.includes(t), `falta ${t}: ${txt}`);
       const linhas = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('[data-cm-bancada-cascata] tbody tr'), function (tr) { return tr.getAttribute('data-cm-linha'); }).join(',')");
       assert.strictEqual(linhas, "preco,imposto,comissao,frete,taxa_fixa,custo,rebate,lc,margem", "cascata: preço → −imposto → −comissão → −frete → −taxa → −custo → +retorno = LC → margem");
       assert.ok(/-R\$\s3,05/.test(await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"]').textContent").then((t) => t.replace(/\u00a0/g, " "))), "ΔLC/un");
-      assert.ok(/Precisa vender\s*\+16,83%/.test((await cdp.evaluate("document.querySelector('[data-cm-empate]').textContent")).replace(/\u00a0/g, " ")), "empate de volume do núcleo");
-      const banca = (await cdp.evaluate("document.querySelector('[data-cm-promo-info=\"P-DEAL\"]').textContent")).replace(/\u00a0/g, " ");
-      for (const t of ["Oferta MLB1001", "Seller banca", "R$ 5,38", "ML banca", "R$ 5,20"]) assert.ok(banca.includes(t), `falta ${t}: ${banca}`);
+      assert.ok(/Precisa vender\s*\+16,83%\s*pra empatar/.test((await cdp.evaluate("document.querySelector('[data-cm-empate]').textContent")).replace(/\u00a0/g, " ")), "empate de volume do núcleo");
+      const linhaBanca = (await cdp.evaluate("document.querySelector('[data-cm-banca-linha]').textContent")).replace(/\u00a0/g, " ");
+      for (const t of ["Desconto total", "R$ 50,00", "33,36% sobre o preço cheio", "ML banca", "R$ 5,20", "Você banca", "R$ 44,80", "Preço cheio do anúncio"]) assert.ok(linhaBanca.includes(t), `falta ${t}: ${linhaBanca}`);
+      assert.ok(await cdp.evaluate("document.querySelector('[data-cm-promo-info=\"P-DEAL\"]').textContent.includes('Oferta MLB1001')"));
       assert.ok(txt.includes("cotação ao vivo do Mercado Livre às") && txt.includes("promoção lida em"), `fonte/hora: ${txt}`);
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Revisar entrada na promoção");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Participar desta promoção");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), false);
       assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('cm-new-price'))"), false, "com uma promoção escolhida não há campo de preço");
-      // Muda a faixa de frete: aviso
+      // Linha alterada em destaque (frete igual: sem destaque; comissão/imposto/LC mudam)
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cm-linha=\"comissao\"]').classList.contains('is-mudou')"), true);
+      // Card da promoção: colunas do cenário, vs hoje em chip
+      const card = (await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').textContent")).replace(/\u00a0/g, " ");
+      for (const t of ["Oferta MLB1001", "ELEGÍVEL", "R$ 99,90", "−33,36%", "R$ 5,20", "R$ 18,12", "18,14%", "-R$ 3,05/un"]) assert.ok(card.includes(t), `card sem ${t}: ${card}`);
+      assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cenario=\"P-DEAL\"] .cm-banc__vs.is-warn'))"), "vs hoje negativo em chip laranja");
+
+      // Já participa (programada): muda a faixa de frete (⚠ no frete); só pelo ML → botão leva ao painel
       await selecionar("P-PROG");
-      assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cm-flag=\"faixa-frete\"]'))"), "⚠ muda faixa de frete");
+      assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cm-linha=\"frete\"] [data-cm-flag=\"faixa-frete\"]'))"), "⚠ ao lado do frete");
       assert.ok((await resultado()).includes("Não entrar"));
+      assert.ok((await cdp.evaluate("document.getElementById('cm-bancada-ml').textContent")).includes("Abrir no Mercado Livre"));
+      // Só pelo Mercado Livre (SMART): ΔLC > 0 → ganha LC por unidade
       await selecionar("P-SMART");
-      assert.ok((await resultado()).includes("Empata o LC total de hoje mesmo vendendo"), "ΔLC > 0: empata vendendo menos");
+      assert.ok(/Ganha LC por unidade/.test(await resultado()), "ΔLC > 0: ganha LC por unidade");
+      assert.ok(await cdp.evaluate("Boolean(document.querySelector('[data-cenario=\"P-SMART\"] .cm-banc__vs.is-good'))"), "vs hoje positivo em chip verde");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-bancada-ml').textContent")).includes("Abrir no Mercado Livre"));
       await selecionar("P-DEAL");
       await shot("11-drawer-bancada");
+      await selecionar("preco");
+    });
+
+    await check("hipótese de custo: custo e taxa fixa editáveis na coluna Cenário, marcados 'hipótese'; o servidor refaz o cenário; foco mantido; restaurar volta ao real; escrita desabilitada", async () => {
+      await selecionar("P-DEAL");
+      const lcReal = await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"] td:nth-child(3)').textContent");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-hip=\"custo\"]').value"), "50", "custo do cenário = o real, editável");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-hipotese]'))"), false, "sem edição não é hipótese");
+      await cdp.evaluate("window.__pc.calls.simular.length = 0; (function(){var i=document.querySelector('[data-hip=\"custo\"]');i.focus();i.value='60';i.dispatchEvent(new Event('input',{bubbles:true}));})()");
+      await waitFor(cdp, "window.__pc.calls.simular.length === 1", "a hipótese não chegou ao servidor");
+      assert.deepStrictEqual(await cdp.evaluate("window.__pc.calls.simular[0]"), { clienteContaId: 10, mlb: "MLB1001", cenarios: [{ tipo: "promo", promotion_id: "P-DEAL", hipotese: { custo: 60 } }] });
+      await waitFor(cdp, "document.querySelector('[data-cm-hipotese]') && document.querySelector('[data-cm-linha=\"lc\"] td:nth-child(3)').textContent !== " + JSON.stringify(lcReal), "o cenário da hipótese não apareceu");
+      assert.ok(/R\$\s8,12/.test((await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"] td:nth-child(3)').textContent")).replace(/\u00a0/g, " ")), "LC recalculado pelo servidor com custo 60");
+      assert.strictEqual(await cdp.evaluate("document.activeElement && document.activeElement.getAttribute('data-hip')"), "custo", "o foco continua no campo editado");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-hip=\"custo\"]').value"), "60");
+      assert.ok((await resultado()).includes("Hipótese de custo") && (await resultado()).includes("custo de hipótese informado"), await resultado());
+      // A Base e a escrita usam os custos reais: nada de revisar/participar com hipótese
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), true);
+      assert.ok((await cdp.evaluate("document.getElementById('cm-bancada-review').title")).includes("Hipótese de custo"));
+      // Entrada inválida: erro local, nenhuma chamada
+      await cdp.evaluate("window.__pc.calls.simular.length = 0; (function(){var i=document.querySelector('[data-hip=\"custo\"]');i.value='abc';i.dispatchEvent(new Event('input',{bubbles:true}));})()");
+      await sleep(700);
+      assert.strictEqual(await calls("simular"), 0, "custo inválido não chama o servidor");
+      assert.ok((await resultado()).includes("Use um número"));
+      // Restaurar volta ao cenário real e libera o botão
+      await cdp.evaluate("document.getElementById('cm-hip-reset').click()");
+      await waitFor(cdp, "!document.querySelector('[data-cm-hip-aviso]') && document.querySelector('[data-hip=\"custo\"]').value === '50'", "restaurar não voltou ao custo real");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"] td:nth-child(3)').textContent"), lcReal);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), false);
+      // Trocar de cenário descarta a hipótese
+      await cdp.evaluate("(function(){var i=document.querySelector('[data-hip=\"taxa_fixa\"]');i.value='2';i.dispatchEvent(new Event('input',{bubbles:true}));})()");
+      await waitFor(cdp, "document.querySelector('[data-cm-hip-aviso]')", "hipótese de taxa fixa não apareceu");
+      await selecionar("P-SMART");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-hip-aviso]'))"), false, "a hipótese não vaza para outro cenário");
       await selecionar("preco");
     });
 
@@ -810,7 +884,8 @@ async function run() {
       assert.deepStrictEqual(ultima, { clienteContaId: 10, mlb: "MLB1001", cenarios: [{ tipo: "preco", preco: 114.9 }] });
       const res = await resultado();
       for (const t of ["R$ 110,48", "R$ 114,90", "R$ 21,17", "R$ 24,62", "19,16%", "21,43%", "+R$ 3,45", "+2,27%", "Entrar"]) assert.ok(res.includes(t), `falta ${t}: ${res}`);
-      assert.ok(res.includes("Empata o LC total de hoje mesmo vendendo 14,01% a menos"), res);
+      assert.ok(/Ganha LC por unidade.*empata o LC total de hoje mesmo vendendo 14,01% a menos/.test(res), res);
+      assert.ok(res.includes("Desconto total") && res.includes("R$ 35,00") && res.includes("Você banca"), `quem banca sobre o preço cheio: ${res}`);
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), false);
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Revisar novo preço");
       await shot("12-bancada-preco-manual");
@@ -1008,7 +1083,7 @@ async function run() {
       await cdp.evaluate("window.__pc.applyMode = 'ok'; document.getElementById('cm-confirm-cancel').click()");
     });
 
-    await check("promoção: Revisar entrada abre o preview com tipo PROMOTION, desconto total, ML banca e seller banca", async () => {
+    await check("promoção: 'Participar desta promoção' abre o preview com tipo PROMOTION, desconto total, ML banca e seller banca", async () => {
       await abrirRevisaoPromo("P-DEAL");
       await waitFor(cdp, "document.querySelector('#cm-confirm-body .cm-confirm__table')", "preview da promoção não abriu");
       const pv = await cdp.evaluate("window.__pc.calls.preview[window.__pc.calls.preview.length-1]");

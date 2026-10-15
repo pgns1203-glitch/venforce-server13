@@ -40,6 +40,7 @@ const core = require("../core");
 const { carregarRebatesDaConta, MOTIVO_REBATE } = require("../margemAtualRebate");
 const { sqlOportunidadesElegiveis, lerLinhas } = require("./precificacaoOportunidadesSql");
 const { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao, mapComLimite } = require("../margemCotacaoEmP");
+const { classificarPromocao } = require("./promocaoClassificacao");
 
 const FRESCO_MIN = 360; // 6h — mesmos limiares de promocoesDiagnosticoService
 const ANTIGO_MIN = 1440; // 24h
@@ -95,6 +96,8 @@ function defaults(deps = {}) {
       );
       return new Map(r.rows.map((x) => [x.item_id, x]));
     }),
+    // Tipos de promoção que a camada segura da Central escreve (decide o grupo e a ação).
+    tiposComEscrita: deps.tiposComEscrita || null,
     // Promo Snapshot (injetável nos testes).
     promo: deps.promo || {
       estadoComAutoTrigger: (identidade, opts) =>
@@ -440,6 +443,15 @@ function periodoPublico(periodo) {
 
 const CRITERIO = "Promoção disponível (que o anúncio ainda não está participando) que baixa o preço, avaliada pelo mesmo cálculo do simulador (LC por unidade, ΔLC, retorno ML, veredito). Ordem: veredito e, dentro dele, ΔLC × unidades vendidas no período (sem vendas, ΔLC por unidade). Comissão e frete são estimados do snapshot.";
 
+// A promoção da linha com o GRUPO (ativa · participa · pode · ml) e a escrita que a Central suporta.
+function comClasse(promocao, d) {
+  const classe = classificarPromocao(
+    { tipo: promocao.tipo, status: promocao.status, statusExibicao: promocao.statusExibicao },
+    { tiposComEscrita: d.tiposComEscrita }
+  );
+  return { ...promocao, grupo: classe.grupo, escrita: classe.escrita };
+}
+
 // Linha do banco (promoção × snapshot) → candidata, com a mesma régua nas duas fontes.
 function candidataDaLinha(r, promocao, vendasPorMlb, vendasIndisponivel, rebates) {
   return montarCandidata({
@@ -518,7 +530,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
   // Retorno ML das promoções EM ANDAMENTO da conta — uma consulta (a margem
   // de hoje precisa dele para o ΔLC de qualquer anúncio da lista).
   const rebates = await carregarRebatesDaConta({ clienteContaId: conta.id, sellerId, db: d.db, promoRepo: deps.promoRepository, logger: deps.logger });
-  const candidatas = rows.map((r) => candidataDaLinha(r, {
+  const candidatas = rows.map((r) => candidataDaLinha(r, comClasse({
     // Mesma identidade do /simular (promotionId || chave): é o que o chip da worklist
     // entrega ao drawer para escolher a promoção na Bancada.
     id: r.promo_id || r.chave || null,
@@ -532,7 +544,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
     // Leitura desta promoção falhou no último run: é a última leitura boa.
     herdada: r.promo_herdado === true,
     observadaEm: r.promo_observado_em || null,
-  }, vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
+  }, d), vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
   return respostaDaLista({
     d, cliente, sellerId, tipo, cotacao,
     base: {
@@ -605,9 +617,9 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
   });
   const rows = lerLinhas(await d.db.query(sql, valores));
   const rebates = await carregarRebatesDaConta({ clienteContaId: conta.id, sellerId, db: d.db, promoRepo: deps.promoRepository, logger: deps.logger });
-  const candidatas = rows.map((r) => candidataDaLinha(r, {
+  const candidatas = rows.map((r) => candidataDaLinha(r, comClasse({
     id: r.promo_id || null, chave: r.chave || null, nome: r.promo_nome || null, tipo: r.promo_tipo || null, status: r.promo_status || null,
-  }, vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
+  }, d), vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
   return respostaDaLista({
     d, cliente, sellerId, tipo, cotacao,
     base: { ...base, periodo: periodoPublico(periodo), ...vendasPublico(indisponivel) },

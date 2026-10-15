@@ -255,7 +255,7 @@ async function run() {
       await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').click()");
       const resultado = await texto("#cm-banc-resultado");
       for (const t of ["Entrar se girar", "Retorno ML", "LC/un", "Margem", "Precisa vender"]) assert.ok(resultado.includes(t), `falta ${t}: ${resultado}`);
-      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Revisar entrada na promoção");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Participar desta promoção");
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
       await shot("04-bancada-promocao");
     });

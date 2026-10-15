@@ -23,6 +23,7 @@ const pool = require("../../config/database");
 const core = require("./core");
 const { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao } = require("./margemCotacaoEmP");
 const { carregarRebatesAtivos, margemAtualComRebate, MOTIVO_REBATE } = require("./margemAtualRebate");
+const { classificarPromocao, urlPromocoesMl } = require("./precificacao/promocaoClassificacao");
 
 const MAX_CENARIOS = 20;
 const MAX_PROMOS_POR_ITEM = 60;
@@ -67,6 +68,8 @@ function defaults(deps = {}) {
     buscarComissaoEFrete: deps.buscarComissaoEFrete || require("../shared/marketplaceCurrentQuoteService").buscarComissaoEFrete,
     mlFetch: deps.mlFetch || require("../../utils/mlClient").mlFetch,
     carregarRebates: deps.carregarRebates || carregarRebatesAtivos,
+    // Tipos de promoção que a camada segura da Central escreve (decide o grupo e a ação).
+    tiposComEscrita: deps.tiposComEscrita || null,
   };
 }
 
@@ -115,6 +118,30 @@ function validarInsumos(bruto, indice) {
   return saida;
 }
 
+// Hipótese de custo (`hipotese: { custo, taxa_fixa }`) num cenário de preço ou promoção: o
+// operador testa "e se o custo fosse X?" sem mexer na Base. Ausente = os custos reais.
+// Valor inválido é 400 (nada é ignorado em silêncio). A escrita nunca usa hipótese.
+const CAMPOS_HIPOTESE = ["custo", "taxa_fixa"];
+function hipoteseDe(c, indice) {
+  if (c.hipotese === undefined || c.hipotese === null) return {};
+  if (typeof c.hipotese !== "object" || Array.isArray(c.hipotese)) {
+    throw erroHttp(400, "HIPOTESE_INVALIDA", `cenarios[${indice}].hipotese precisa ser um objeto.`);
+  }
+  const saida = {};
+  for (const campo of Object.keys(c.hipotese)) {
+    if (!CAMPOS_HIPOTESE.includes(campo)) {
+      throw erroHttp(400, "HIPOTESE_CAMPO_DESCONHECIDO", `cenarios[${indice}].hipotese.${campo} não é aceito (${CAMPOS_HIPOTESE.join(", ")}).`);
+    }
+    const valor = c.hipotese[campo];
+    const n = typeof valor === "string" ? Number(valor.trim().replace(",", ".")) : Number(valor);
+    if (valor === null || valor === "" || !Number.isFinite(n) || n < 0) {
+      throw erroHttp(400, "HIPOTESE_VALOR_INVALIDO", `cenarios[${indice}].hipotese.${campo} precisa ser um número maior ou igual a zero.`);
+    }
+    saida[campo] = n;
+  }
+  return Object.keys(saida).length ? { hipotese: saida } : {};
+}
+
 function validarCorpo(body) {
   const b = body && typeof body === "object" ? body : {};
   const contaId = parseInteiroPositivo(b.cliente_conta_id ?? b.clienteContaId);
@@ -137,11 +164,11 @@ function validarCorpo(body) {
     if (!TIPOS.has(tipo)) {
       throw erroHttp(400, "CENARIO_TIPO_INVALIDO", `cenarios[${i}].tipo precisa ser: ${Array.from(TIPOS).join(", ")}.`);
     }
-    if (tipo === "preco") return { tipo, preco: validarPrecoCenario(c.preco, i) };
+    if (tipo === "preco") return { tipo, preco: validarPrecoCenario(c.preco, i), ...hipoteseDe(c, i) };
     if (tipo === "promo") {
       const id = String(c.promotion_id ?? "").trim();
       if (!id || id.length > 160) throw erroHttp(400, "PROMOTION_ID_OBRIGATORIO", `cenarios[${i}].promotion_id é obrigatório.`);
-      return { tipo, promotion_id: id };
+      return { tipo, promotion_id: id, ...hipoteseDe(c, i) };
     }
     if (tipo === "insumos") return { tipo, insumos: validarInsumos(c.insumos, i) };
     if (tipo === "preco_alvo") {
@@ -217,7 +244,11 @@ async function carregarPromocoes(escopo, mlb, d, estado) {
   return { disponivel: true, motivo: null, linhas, estado };
 }
 
-function promocaoPublica(linha) {
+function promocaoPublica(linha, opcoes = {}) {
+  const classe = classificarPromocao(
+    { tipo: linha.tipo, status: linha.status, statusExibicao: linha.statusExibicao },
+    { tiposComEscrita: opcoes.tiposComEscrita || null }
+  );
   return {
     id: linha.promotionId || linha.promocaoChave,
     chave: linha.promocaoChave,
@@ -238,6 +269,9 @@ function promocaoPublica(linha) {
     elegivel: linha.elegivel === true,
     observado_em: iso(linha.observedAt),
     herdada: linha.herdada === true,
+    // Em que grupo a promoção aparece e o que a Central consegue fazer com ela.
+    grupo: classe.grupo,
+    escrita: classe.escrita,
   };
 }
 
@@ -264,39 +298,39 @@ function resolverPrecoCheio(snapshot, promocao) {
 // Cada pedido vira 1+ "tarefas" (todas_promos expande). A tarefa diz o que o
 // núcleo precisa: P', retorno ML, status da promoção — ou um bloqueio que nem
 // chega ao cálculo (sem Promo Snapshot, promoção inexistente).
-function montarTarefas(pedidos, promocoes) {
+function montarTarefas(pedidos, promocoes, opcoes = {}) {
   const tarefas = [];
   const bloqueio = (tipo, entrada, motivo, extra = {}) => tarefas.push({ tipo, entrada, bloqueio: motivo, ...extra });
 
   for (const pedido of pedidos) {
     if (pedido.tipo === "preco") {
-      tarefas.push({ tipo: "preco", entrada: { preco: pedido.preco }, preco: pedido.preco, rebate: 0 });
+      tarefas.push({ tipo: "preco", entrada: { preco: pedido.preco, ...(pedido.hipotese ? { hipotese: pedido.hipotese } : {}) }, preco: pedido.preco, rebate: 0, hipotese: pedido.hipotese || null });
     } else if (pedido.tipo === "insumos") {
       tarefas.push({ tipo: "insumos", entrada: { insumos: pedido.insumos }, insumos: pedido.insumos });
     } else if (pedido.tipo === "preco_alvo") {
       tarefas.push({ tipo: "preco_alvo", entrada: { margem_alvo: pedido.margem_alvo }, margem_alvo: pedido.margem_alvo });
     } else if (pedido.tipo === "promo") {
-      const entrada = { promotion_id: pedido.promotion_id };
+      const entrada = { promotion_id: pedido.promotion_id, ...(pedido.hipotese ? { hipotese: pedido.hipotese } : {}) };
       if (!promocoes.disponivel) { bloqueio("promo", entrada, core.MOTIVOS.SEM_SNAPSHOT_PROMOCOES); continue; }
       const casadas = promocoes.linhas.filter((l) => casaPromocao(l, pedido.promotion_id));
       if (casadas.length === 0) { bloqueio("promo", entrada, core.MOTIVOS.PROMOCAO_NAO_ENCONTRADA); continue; }
       if (casadas.length > 1) { bloqueio("promo", entrada, core.MOTIVOS.PROMOCAO_AMBIGUA); continue; }
-      tarefas.push(tarefaDePromocao(casadas[0], entrada));
+      tarefas.push({ ...tarefaDePromocao(casadas[0], entrada, opcoes), hipotese: pedido.hipotese || null });
     } else {
       // todas_promos
       if (!promocoes.disponivel) { bloqueio("promo", { promotion_id: null }, core.MOTIVOS.SEM_SNAPSHOT_PROMOCOES); continue; }
-      for (const linha of promocoes.linhas) tarefas.push(tarefaDePromocao(linha, { promotion_id: linha.promotionId || linha.promocaoChave, origem: "todas_promos" }));
+      for (const linha of promocoes.linhas) tarefas.push(tarefaDePromocao(linha, { promotion_id: linha.promotionId || linha.promocaoChave, origem: "todas_promos" }, opcoes));
     }
   }
   return tarefas;
 }
 
-function tarefaDePromocao(linha, entrada) {
+function tarefaDePromocao(linha, entrada, opcoes = {}) {
   const subsidio = num(linha.subsidioMl);
   return {
     tipo: "promo",
     entrada,
-    promocao: promocaoPublica(linha),
+    promocao: promocaoPublica(linha, opcoes),
     preco: num(linha.precoFinal),
     // ML não informou retorno (meli_percentage ausente) = a promoção é do
     // seller; vira 0 DECLARADO na evidência, não um zero escondido.
@@ -371,7 +405,7 @@ function calcularTarefa(tarefa, ctx) {
   const cotacao = deveCotar(tarefa, atual) ? cotacoes.get(Number(tarefa.preco).toFixed(2)) || null : null;
   const resultado = core.calcularCenario({
     atual,
-    cenario: { tipo: tarefa.tipo, preco: tarefa.preco, rebate: tarefa.rebate, status_promocao: tarefa.status_promocao, ...precoCheioDoCenario(ctx, tarefa.promocao) },
+    cenario: { tipo: tarefa.tipo, preco: tarefa.preco, rebate: tarefa.rebate, status_promocao: tarefa.status_promocao, ...precoCheioDoCenario(ctx, tarefa.promocao), ...(tarefa.hipotese || {}) },
     cotacao: cotacao
       ? cotacaoParaNucleo(cotacao)
       : { comissao: null, frete: null, frete_aplicavel: ctx.freteAplicavel },
@@ -379,6 +413,11 @@ function calcularTarefa(tarefa, ctx) {
     flags,
   });
   const evidencia = { ...evidenciaBase, ...(evidenciaCotacao(cotacao) || {}), preco_cheio: evidenciaPrecoCheio(ctx, tarefa.promocao) };
+  if (tarefa.hipotese) {
+    // Custo/taxa fixa informados pelo operador: hipótese dita na evidência (nunca passa por dado da Base).
+    for (const campo of Object.keys(tarefa.hipotese)) evidencia[campo === "custo" ? "custo" : "taxa_fixa"] = { fonte: "hipotese_do_operador", valor: tarefa.hipotese[campo] };
+    evidencia.hipotese = true;
+  }
   if (tarefa.tipo === "promo") {
     evidencia.preco = { fonte: "promo_snapshot", observado_em: tarefa.promocao.observado_em, fonte_do_preco: tarefa.promocao.preco_final_fonte };
     evidencia.rebate = {
@@ -545,7 +584,7 @@ async function simular({ user, body } = {}, deps = {}) {
     ? await carregarPromocoes(escopo, pedido.mlb, d, estadoPromo)
     : { disponivel: null, motivo: null, linhas: [], estado: null };
 
-  const tarefas = montarTarefas(pedido.cenarios, promocoes);
+  const tarefas = montarTarefas(pedido.cenarios, promocoes, { tiposComEscrita: d.tiposComEscrita });
 
   // ── Cotação em P' — só dos preços distintos que as tarefas pedem ──
   const precosParaCotar = semSnapshot ? [] : tarefas.filter((t) => deveCotar(t, atual)).map((t) => t.preco);
@@ -584,6 +623,7 @@ async function simular({ user, body } = {}, deps = {}) {
     item: {
       titulo: (snapshot && snapshot.titulo) || (anuncio && anuncio.titulo) || null,
       sku: (snapshot && snapshot.sku) || (anuncio && anuncio.sku) || null,
+      ml_promos_url: urlPromocoesMl(pedido.mlb),
     },
     atual: {
       ...atualCalc.atual,

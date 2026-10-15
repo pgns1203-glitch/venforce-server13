@@ -460,8 +460,8 @@ cenario("fonte PROMO SNAPSHOT: mesma regra — started/active e P' >= preço atu
 
 cenario("promoção SEM promotion_id no snapshot: o id da linha cai na chave do snapshot (a mesma identidade do /simular) — o chip da worklist seleciona a promoção na Bancada", async () => {
   const promos = [
-    { item_id: "MLB1", chave: "MLB1::SMART::0", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: null },
-    { item_id: "MLB2", chave: "MLB2::DEAL::7", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: "P-777" },
+    { item_id: "MLB1", chave: "MLB1::SMART::0", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: null, promo_tipo: "SMART" },
+    { item_id: "MLB2", chave: "MLB2::DEAL::7", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: "P-777", promo_tipo: "DEAL", promo_status_exibicao: "ELEGÍVEL" },
   ];
   const snapPorItem = new Map(["MLB1", "MLB2"].map((id) => [id, snapRow(id)]));
   const d = deps(fakeDb());
@@ -474,6 +474,11 @@ cenario("promoção SEM promotion_id no snapshot: o id da linha cai na chave do 
   const por = Object.fromEntries(r.oportunidades.map((o) => [o.itemId, o.promocao]));
   assert.strictEqual(por.MLB1.id, "MLB1::SMART::0", "sem promotion_id: a chave");
   assert.strictEqual(por.MLB2.id, "P-777", "com promotion_id: ele");
+  // Grupo e escrita suportada acompanham a promoção (a lista decide "Participar" só pelo que a Central escreve).
+  assert.strictEqual(por.MLB2.grupo, "pode");
+  assert.deepStrictEqual(por.MLB2.escrita, { suportada: true, acao: "PARTICIPAR", motivo: null });
+  assert.strictEqual(por.MLB1.grupo, "ml", "SMART: o ML define o preço");
+  assert.strictEqual(por.MLB1.escrita.suportada, false);
 });
 
 cenario("performance: 3 consultas ao banco (cabeçalho, elegíveis, rebates da conta) para a conta inteira, página fatiada no serviço, zero ML", async () => {

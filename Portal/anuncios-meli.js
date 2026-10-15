@@ -5544,6 +5544,7 @@
       esc.map(function (it, i) { return rebEscolhaItemHtml(it, i); }).join("");
   }
 
+  // tipo "preco": queda de preço de venda é boa (verde), alta é ruim.
   function rebDeltaHtml(v, tipo) {
     var n = rebNum(v);
     if (n === null) return '<span class="am-reb-delta">atual</span>';
@@ -5551,13 +5552,17 @@
     var txt = tipo === "pp"
       ? rebSinal(n) + abs.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " p.p."
       : rebSinal(n) + "R$ " + abs.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return '<span class="am-reb-delta am-reb-ganho' + (n > 0 ? " is-pos" : n < 0 ? " is-neg" : "") + '">' + txt + "</span>";
+    var bom = tipo === "preco" ? n < 0 : n > 0;
+    var ruim = tipo === "preco" ? n > 0 : n < 0;
+    return '<span class="am-reb-delta am-reb-ganho' + (bom ? " is-pos" : ruim ? " is-neg" : "") + '">' + txt + "</span>";
   }
 
   // Rebate pequeno sob o preço de venda — só quando a promoção tem subsídio.
+  // Rebate pequeno sob o lucro (é dinheiro que entra no lucro) — só quando
+  // a promoção tem subsídio.
   function rebRebateHtml(subsidio) {
     if (!(rebNum(subsidio) > 0)) return "";
-    return '<span class="am-reb-rebate">+' + formatMoeda(subsidio) + "/un</span>";
+    return '<span class="am-reb-rebate">+' + formatMoeda(subsidio) + "/un de rebate</span>";
   }
 
   function rebOpcaoHtml(o, nomeRadio, id, itemId, atual) {
@@ -5568,11 +5573,11 @@
         '<span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
       '<span class="am-reb-metricas">' +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Preço de venda</span>' +
-          '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebRebateHtml(o.subsidio) + "</span>" +
+          '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebDeltaHtml(o.dPreco, "preco") + "</span>" +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Margem</span>' +
           '<span class="am-reb-metrica__valor">' + rebPct(o.margem) + "</span>" + rebDeltaHtml(o.dMargem, "pp") + "</span>" +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Lucro/un</span>' +
-          '<span class="am-reb-metrica__valor">' + formatMoeda(o.lucro) + "</span>" + rebDeltaHtml(o.dLucro, "rs") + "</span>" +
+          '<span class="am-reb-metrica__valor">' + formatMoeda(o.lucro) + "</span>" + rebDeltaHtml(o.dLucro, "rs") + rebRebateHtml(o.subsidio) + "</span>" +
       "</span></label>";
   }
 
@@ -5582,7 +5587,7 @@
     var nome = "am-reb-esc-" + i;
     var hoje = rebAtual(it);
     var opcoes = [{
-      valor: "", rotulo: "Manter como está", margem: hoje.margemPercent, lucro: hoje.lucro, dMargem: null, dLucro: null,
+      valor: "", rotulo: "Manter como está", margem: hoje.margemPercent, lucro: hoje.lucro, dMargem: null, dLucro: null, dPreco: null,
       promo: hoje.nome, preco: hoje.preco, subsidio: hoje.subsidioMl, pct: hoje.meliPercentage,
     }];
     var vistos = {};
@@ -5592,6 +5597,8 @@
       vistos[pid] = true;
       opcoes.push({
         valor: c.promotionId, rotulo: rotulo, margem: c.margemPercent, lucro: c.lucro, dMargem: c.ganhoMargemPp, dLucro: c.ganhoLucro,
+        // Queda do preço de venda em relação ao de hoje (centavos, sem resíduo de float).
+        dPreco: rebNum(c.preco) !== null && rebNum(hoje.preco) !== null ? Math.round(c.preco * 100 - hoje.preco * 100) / 100 : null,
         promo: c.nome || c.promotionId, preco: c.preco, subsidio: c.subsidioMl, pct: c.meliPercentage,
       });
     }

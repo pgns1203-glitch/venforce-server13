@@ -29,14 +29,19 @@ piloto automático.
    - com subsídio do ML: `meliPercentage > 0` (subsidioMl > 0);
    - disponível para entrar: status `candidate`;
    - preço conhecido (`precoFinal` não nulo);
-   - **preço estritamente menor que o preço na referência** (centavos). No ML
+   - **preço estritamente menor que o preço de HOJE** (centavos). No ML
      vale o **menor preço para o comprador**: com preço igual ou maior a
      candidata nunca forma o preço e o rebate nunca entra → `PRECO_NAO_MENOR`.
+     "Preço de hoje" = a promoção que forma o preço agora
+     (`sale_price.metadata.promotion_id` → `statusExibicao: "ATIVA"`): a
+     referência, ou uma promoção com rebate em que o anúncio já entrou. Sem
+     ATIVA identificável, vale a referência.
 4. **A referência nunca é tocada** (nem PUT, nem DELETE). Ela fica como rede
    de segurança: quando a promoção com rebate acaba, o anúncio volta ao preço
    da referência.
 5. **Comparação**: margem % **e** lucro R$/un, os dois.
-   - Base = preço do anúncio na referência + subsídio da referência (se houver).
+   - Base = preço de hoje + subsídio da promoção que o forma (campo `atual`
+     do item; é a referência quando é ela que forma o preço).
    - Candidata = preço da candidata + subsídio dela.
    - Mesma fórmula: `marginEngine.computeMargin` com custo/alíquota/taxa fixa
      da Base de Custos e **comissão e frete cotados ao vivo em cada preço**
@@ -50,13 +55,16 @@ piloto automático.
    - `escolha`: a melhor em margem ≠ a melhor em lucro, ou a melhor piora uma
      das medidas → o usuário escolhe (por margem, por lucro ou manter só a
      referência). Atalhos "Preferir margem em todos" / "Preferir lucro em todos".
-   - `sem_ganho`: nenhuma candidata melhora margem nem lucro.
+   - `sem_ganho`: nenhuma candidata melhora margem nem lucro. Se o anúncio já
+     está numa promoção com rebate fora da referência e nada a supera, vem
+     com motivo `JA_EM_REBATE_MELHOR` ("já está numa promoção com rebate
+     melhor") — inclusive quando não sobra candidata mais barata.
    - `descartado`: com motivo (`SEM_CUSTO`, `COTACAO_INDISPONIVEL`,
      `FORA_DA_REFERENCIA`, `SEM_CANDIDATA`, `PRECO_NAO_MENOR`, `ERRO_ML`).
 7. **Sem ganho mínimo** na v1: qualquer melhora aparece.
 8. **Execução**: só os itens confirmados; `participarPromocaoAceite` item a
    item, relendo ao vivo antes de gravar e revalidando: candidata ainda
-   `candidate`, preço ainda **menor** que o da referência, referência ainda
+   `candidate`, preço ainda **menor** que o preço de hoje, referência ainda
    ativa. Falha de um item não para o lote. Cada participação vai para o log
    de atividade.
 
@@ -100,6 +108,9 @@ Body `{ clienteSlug, clienteContaId?, referencia: { id, tipo }, itemIds? }` →
           "status": "recomendado|escolha|sem_ganho|descartado",
           "motivo": null, "motivoTexto": null,
           "referencia": { "preco": 99.9, "subsidioMl": 0, "margemPercent": 12.3, "lucro": 12.29 },
+          "atual": { "promotionId": "C-MLB123", "tipo": "SELLER_CAMPAIGN", "nome": "Vendex - Outubro",
+                     "ehReferencia": true, "preco": 99.9, "subsidioMl": 0, "meliPercentage": null,
+                     "margemPercent": 12.3, "lucro": 12.29 },
           "candidatas": [
             { "promotionId": "P-MLB9", "tipo": "SMART", "tipoLabel": "…", "nome": "…",
               "preco": 94.9, "subsidioMl": 4.99, "margemPercent": 14.1, "lucro": 13.38,

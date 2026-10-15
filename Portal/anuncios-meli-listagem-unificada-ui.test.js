@@ -1292,7 +1292,7 @@ async function run() {
           temBadges: Boolean(badges),
           badgesTexto: badges ? badges.textContent : null,
           temTagCatalogo: Boolean(badges && badges.querySelector('.vf-tag.is-primary')),
-          temTagFull: Boolean(badges && badges.querySelector('.vf-tag.is-info')),
+          temTagFull: Boolean(badges && badges.querySelector('img.am-selo-full[alt="Full"]')),
           temTagFotos: Boolean(badges && badges.querySelector('.vf-tag.is-warning')),
           temTagRevisado: Boolean(badges && badges.querySelector('.vf-tag.is-success')),
           temGauge: Boolean(gauge),
@@ -1300,7 +1300,7 @@ async function run() {
         }; })()`);
       assert.strictEqual(estado.temBadges, true, "o MLB dentro da família precisa ter .am-mlb__badges, igual ao card legado");
       assert.strictEqual(estado.temTagCatalogo, true, `faltou a tag Catálogo: ${estado.badgesTexto}`);
-      assert.strictEqual(estado.temTagFull, true, `faltou a tag Full: ${estado.badgesTexto}`);
+      assert.strictEqual(estado.temTagFull, true, `faltou o logo Full: ${estado.badgesTexto}`);
       assert.strictEqual(estado.temTagFotos, true, `faltou a tag de fotos: ${estado.badgesTexto}`);
       assert.strictEqual(estado.temTagRevisado, true, `faltou a tag Revisado: ${estado.badgesTexto}`);
       assert.strictEqual(estado.temGauge, true, "o MLB dentro da família precisa usar o mesmo medidor semicircular (.am-gauge) do card legado");

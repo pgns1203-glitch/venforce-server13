@@ -244,7 +244,9 @@
   function badgesAnuncioHtml(a) {
     var badges = "";
     if (ehCatalogoOficial(a)) badges += '<span class="vf-tag is-primary">Catálogo</span>';
-    if (a.is_full) badges += '<span class="vf-tag is-info">Full</span>';
+    // Full usa o logo oficial (raio + FULL) em vez de uma vf-tag: é a marca
+    // que o operador já reconhece no Mercado Livre.
+    if (a.is_full) badges += '<img class="am-selo-full" src="assets/marketplaces/full.png" alt="Full" title="Full" />';
     if ((a.pictures_count || 0) < 3) badges += '<span class="vf-tag is-warning">' + (a.pictures_count || 0) + "/3 fotos</span>";
     if (!a.sku) badges += '<span class="vf-tag is-danger">Sem SKU</span>';
     if (a.revisado) badges += '<span class="vf-tag is-success">Revisado</span>';

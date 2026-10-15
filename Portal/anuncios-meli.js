@@ -511,11 +511,15 @@
     // expansão que ainda esteja em voo.
     resetarExpansoes();
     resetarCustos();
+    // Promoções com rebate: a análise é de UMA conta. O job continua no
+    // servidor; aqui só se para de acompanhar.
+    if (REB) fecharRebate(true, true);
 
-    if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; return; }
+    if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; atualizarBotaoRebate(); return; }
 
     AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
     AM.contaMlId = ctx.contaId;
+    atualizarBotaoRebate();
     AM.resumo = null;
     AM.anuncios = [];
     AM.paginacao.page = 1;
@@ -550,6 +554,7 @@
     document.addEventListener("vf:context", aplicarContextoDoShell);
     bindCustos(el("am-catalogo-container"));
     bindBarrasCustos();
+    if (el("am-reb-abrir")) el("am-reb-abrir").addEventListener("click", abrirRebate);
     // O botão mora no cabeçalho da lista, que é recriado a cada render.
     el("am-catalogo-container").addEventListener("click", function (e) {
       if (e.target.closest("#am-expandir-todos")) alternarTodosGrupos();
@@ -4029,6 +4034,7 @@
 
   // --- Barras ----------------------------------------------------------------------
   function renderBarraCustos() {
+    atualizarBotaoRebate();
     var box = el("am-custos-barra");
     if (!box) return;
     var slot = el("am-custos-acoes-slot");
@@ -4440,6 +4446,908 @@
       "</div>";
 
     box.innerHTML = html;
+  }
+
+  // ===========================================================================
+  // PROMOÇÕES COM REBATE — docs/specs/2026-10-15-anuncios-ml-promocoes-rebate.md
+  //
+  // Para os anúncios ATIVOS numa promoção de referência (em geral a Vendex do
+  // mês), procura promoções com subsídio do Mercado Livre e preço menor que
+  // deixem margem e/ou lucro maiores — e só participa com confirmação.
+  //   1. Referência  GET  /anuncios-meli/promocoes-rebate/referencias
+  //   2. Analisando  POST /anuncios-meli/promocoes-rebate/analises → jobId,
+  //                  depois GET /analises/:jobId a cada REB_POLL_MS
+  //   3. Prévia      grupos Recomendados / Escolha / Sem ganho / Descartados
+  //   4. Execução    POST /analises/:jobId/executar (só as escolhas
+  //                  confirmadas), progresso pelo mesmo GET (job.execucao)
+  // A referência NUNCA é tocada. Falha esperada = 200 { ok:false, motivo }.
+  // Nada roda sem clique: o polling para ao fechar, concluir ou falhar.
+  // ===========================================================================
+  var REB = null;
+  var REB_POLL_MS = 1500;
+  // Job que ficou processando quando o modal foi fechado (por conta). O
+  // servidor aceita UMA análise ativa por cliente — reabrir retoma o
+  // acompanhamento em vez de esbarrar em ANALISE_EM_ANDAMENTO.
+  var rebJobEmCurso = {};
+
+  var REB_MOTIVOS = {
+    SEM_CUSTO: "Sem custo na Base de custos — não dá para calcular a margem.",
+    COTACAO_INDISPONIVEL: "O Mercado Livre não devolveu comissão e frete para esse preço agora. Tente de novo mais tarde.",
+    FORA_DA_REFERENCIA: "O anúncio não está ativo na promoção de referência.",
+    SEM_CANDIDATA: "Nenhuma promoção com subsídio do Mercado Livre disponível para este anúncio.",
+    PRECO_NAO_MENOR: "As promoções com subsídio têm preço igual ou maior que o da referência — o rebate não entraria.",
+    ERRO_ML: "O Mercado Livre não respondeu para este anúncio.",
+  };
+
+  function rebChaveConta() {
+    return AM.clienteAtual ? AM.clienteAtual.slug + ":" + (AM.contaMlId || "") : "";
+  }
+
+  function atualizarBotaoRebate() {
+    var b = el("am-reb-abrir");
+    if (!b) return;
+    var semConta = !AM.clienteAtual;
+    var editando = !!(CUSTOS && CUSTOS.modo);
+    b.disabled = semConta || editando;
+    b.title = semConta ? "Escolha um cliente e uma conta para analisar"
+      : editando ? "Saia da edição de custos para analisar promoções"
+      : "Procurar promoções com subsídio do Mercado Livre para os anúncios da promoção de referência";
+  }
+
+  function rebQs() {
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    return qs;
+  }
+
+  function rebCorpo(extra) {
+    var corpo = { clienteSlug: AM.clienteAtual.slug };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    Object.keys(extra || {}).forEach(function (k) { corpo[k] = extra[k]; });
+    return corpo;
+  }
+
+  function rebMotivoResposta(r, padrao) {
+    var d = (r && r.data) || {};
+    return d.motivo || d.mensagem || padrao;
+  }
+
+  // --- Formatação ----------------------------------------------------------------
+  function rebNum(v) { return v === null || v === undefined || v === "" || isNaN(Number(v)) ? null : Number(v); }
+
+  function rebPct(v) {
+    var n = rebNum(v);
+    return n === null ? "—" : n.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+  }
+
+  function rebSinal(n) { return n > 0 ? "+" : n < 0 ? "−" : ""; }
+
+  // Ganho com sinal e cor de status (verde ganho / vermelho perda / neutro).
+  function rebGanhoHtml(v, tipo) {
+    var n = rebNum(v);
+    if (n === null) return '<span class="am-reb-ganho">—</span>';
+    var abs = Math.abs(n);
+    var txt = tipo === "pp"
+      ? rebSinal(n) + abs.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " p.p."
+      : rebSinal(n) + "R$ " + abs.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    var classe = n > 0 ? " is-pos" : n < 0 ? " is-neg" : "";
+    return '<span class="am-reb-ganho' + classe + '">' + txt + "</span>";
+  }
+
+  function rebData(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  }
+
+  function rebVigencia(ref) {
+    var ini = rebData(ref.inicio), fim = rebData(ref.fim);
+    if (ini && fim) return ini + " a " + fim;
+    if (fim) return "até " + fim;
+    if (ini) return "desde " + ini;
+    return "sem vigência informada";
+  }
+
+  function rebThumbHtml(url) {
+    if (url && /^https?:\/\//i.test(String(url))) {
+      return '<img class="am-reb-thumb" src="' + escapeAttr(url) + '" alt="" loading="lazy">';
+    }
+    return '<span class="am-reb-thumb am-reb-thumb--vazia" aria-hidden="true">' + icImagem(16) + "</span>";
+  }
+
+  function rebAnuncioHtml(it) {
+    return '<div class="am-reb-anuncio">' + rebThumbHtml(it.thumbnail) +
+      '<div class="am-reb-anuncio__txt"><span class="am-reb-anuncio__titulo">' + escapeHtml(it.titulo || "Anúncio sem título") + "</span>" +
+      '<span class="am-reb-anuncio__id vf-mono">' + escapeHtml(it.itemId) + "</span></div></div>";
+  }
+
+  function rebMotivoTexto(it) {
+    return it.motivoTexto || REB_MOTIVOS[it.motivo] || (it.motivo ? String(it.motivo) : "");
+  }
+
+  // --- Dados do resultado ----------------------------------------------------------
+  function rebItens(status) {
+    var res = REB && REB.job && REB.job.resultado;
+    return ((res && res.itens) || []).filter(function (it) { return !status || it.status === status; });
+  }
+
+  function rebItemPorId(itemId) {
+    var lista = rebItens();
+    for (var i = 0; i < lista.length; i++) if (lista[i].itemId === itemId) return lista[i];
+    return null;
+  }
+
+  function rebCandidata(it, promotionId) {
+    if (!it || !promotionId) return null;
+    var c = it.candidatas || [];
+    for (var i = 0; i < c.length; i++) if (c[i].promotionId === promotionId) return c[i];
+    return null;
+  }
+
+  // Escolha inicial: recomendados vêm marcados (a sugestão é a mesma nos dois
+  // critérios); itens de Escolha começam em "Manter só a referência".
+  function rebEscolhasIniciais() {
+    var esc = {};
+    rebItens().forEach(function (it) {
+      if (it.status === "recomendado") {
+        var s = it.sugestao || {};
+        var pid = s.porMargem || s.porLucro || (it.candidatas && it.candidatas[0] && it.candidatas[0].promotionId) || "";
+        esc[it.itemId] = rebCandidata(it, pid) ? pid : "";
+      } else if (it.status === "escolha") {
+        esc[it.itemId] = "";
+      }
+    });
+    return esc;
+  }
+
+  function rebEscolhasSelecionadas() {
+    var out = [];
+    rebItens().forEach(function (it) {
+      if (it.status !== "recomendado" && it.status !== "escolha") return;
+      var c = rebCandidata(it, REB.escolhas[it.itemId]);
+      if (c) out.push({ itemId: it.itemId, promotionId: c.promotionId, tipo: c.tipo });
+    });
+    return out;
+  }
+
+  // "Preferir margem/lucro em todos": só nos itens de Escolha, e só quando a
+  // sugestão daquele critério melhora o próprio critério — senão a referência.
+  function rebPreferir(criterio) {
+    rebItens("escolha").forEach(function (it) {
+      var s = it.sugestao || {};
+      var c = rebCandidata(it, criterio === "margem" ? s.porMargem : s.porLucro);
+      var ganho = c ? rebNum(criterio === "margem" ? c.ganhoMargemPp : c.ganhoLucro) : null;
+      REB.escolhas[it.itemId] = c && ganho !== null && ganho > 0 ? c.promotionId : "";
+    });
+    REB.confirmando = false;
+    renderRebate();
+  }
+
+  // --- Abrir / fechar --------------------------------------------------------------
+  function abrirRebate() {
+    if (!AM.clienteAtual || REB || (CUSTOS && CUSTOS.modo)) return;
+    var overlay = document.createElement("div");
+    overlay.className = "am-reb-overlay vf-overlay is-open";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "am-reb-titulo");
+    overlay.innerHTML = '<div class="am-reb-box vf-modal vf-modal--lg"></div>';
+    document.body.appendChild(overlay);
+    document.body.classList.add("vf-no-scroll");
+    REB = {
+      overlay: overlay, chave: rebChaveConta(), focoAnterior: document.activeElement,
+      passo: "referencia", referencias: null, padraoId: null, refId: "", erroRefs: null,
+      jobId: null, job: null, erro: null, iniciando: false,
+      escolhas: {}, confirmando: false, enviando: false, erroExecutar: null,
+      enviadas: [], pollsParado: 0, executou: false, avisoFechar: false,
+      timer: null, seq: 0,
+    };
+
+    overlay.addEventListener("click", onCliqueRebate);
+    overlay.addEventListener("change", onMudancaRebate);
+    overlay.addEventListener("keydown", onTeclaRebate);
+
+    var emCurso = rebJobEmCurso[REB.chave];
+    if (emCurso) {
+      // Retoma a análise/execução que ficou rodando no servidor.
+      REB.jobId = emCurso.jobId;
+      REB.passo = emCurso.fase === "execucao" ? "execucao" : "analisando";
+      REB.enviadas = emCurso.enviadas || [];
+      REB.retomado = true;
+      if (REB.passo === "execucao") REB.executou = true;
+      renderRebate();
+      rebFocarInicio();
+      rebPollar();
+      return;
+    }
+    renderRebate();
+    rebFocarInicio();
+    carregarReferenciasRebate();
+  }
+
+  // `forcar` fecha sem perguntar (troca de conta). Fora isso, no meio da
+  // execução, pergunta inline antes — o servidor continua gravando.
+  function fecharRebate(forcar, trocaDeConta) {
+    if (!REB) return;
+    var reb = REB;
+    var execEmCurso = reb.passo === "execucao" && rebProcessando();
+    if (!forcar && execEmCurso && !reb.avisoFechar) {
+      reb.avisoFechar = true;
+      renderRebate();
+      var b = reb.overlay.querySelector("#am-reb-continuar");
+      if (b) b.focus();
+      return;
+    }
+    // Lembra o job para retomar se ainda estava rodando.
+    if (reb.jobId && (reb.passo === "analisando" || execEmCurso)) {
+      rebJobEmCurso[reb.chave] = { jobId: reb.jobId, fase: reb.passo === "execucao" ? "execucao" : "analise", enviadas: reb.enviadas };
+    } else {
+      delete rebJobEmCurso[reb.chave];
+    }
+    if (reb.timer) clearTimeout(reb.timer);
+    reb.timer = null;
+    reb.seq++;
+    if (reb.overlay.parentNode) reb.overlay.parentNode.removeChild(reb.overlay);
+    document.body.classList.remove("vf-no-scroll");
+    REB = null;
+    // Depois de qualquer execução a lista é relida (preço/promoção mudaram).
+    // Na troca de conta quem recarrega é aplicarContextoDoShell.
+    if (reb.executou && !trocaDeConta) carregarAnuncios();
+    if (!trocaDeConta && reb.focoAnterior && reb.focoAnterior.focus && document.contains(reb.focoAnterior)) reb.focoAnterior.focus();
+  }
+
+  function rebProcessando() {
+    var j = REB && REB.job;
+    if (!REB || REB.passo !== "execucao") return false;
+    if (REB.enviando) return true;
+    return !rebExecucaoConcluida(j);
+  }
+
+  function rebFocarInicio() {
+    if (!REB) return;
+    var t = REB.overlay.querySelector("#am-reb-titulo");
+    if (t) t.focus();
+  }
+
+  // --- Eventos -----------------------------------------------------------------------
+  function onCliqueRebate(e) {
+    if (!REB) return;
+    // Clique no fundo só fecha antes da prévia — depois disso há escolhas
+    // (ou uma execução) que um clique perdido não pode descartar.
+    if (e.target === REB.overlay) { if (REB.passo === "referencia") fecharRebate(false); return; }
+    var b = e.target.closest("[data-reb-acao]");
+    if (!b || b.disabled) return;
+    switch (b.getAttribute("data-reb-acao")) {
+      case "fechar": fecharRebate(false); break;
+      case "fechar-mesmo": REB.avisoFechar = true; fecharRebate(true); break;
+      case "continuar": REB.avisoFechar = false; renderRebate(); break;
+      case "recarregar-refs": carregarReferenciasRebate(); break;
+      case "analisar": iniciarAnaliseRebate(); break;
+      case "voltar-ref":
+        REB.passo = "referencia"; REB.erro = null; REB.job = null; REB.jobId = null;
+        delete rebJobEmCurso[REB.chave];
+        renderRebate(); rebFocarInicio();
+        if (!REB.referencias) carregarReferenciasRebate();
+        break;
+      case "preferir-margem": rebPreferir("margem"); break;
+      case "preferir-lucro": rebPreferir("lucro"); break;
+      case "participar":
+        if (!rebEscolhasSelecionadas().length) return;
+        REB.confirmando = true; REB.erroExecutar = null; renderRebate();
+        rebFocar("#am-reb-confirmar");
+        break;
+      case "cancelar-confirmacao": REB.confirmando = false; renderRebate(); rebFocar("#am-reb-participar"); break;
+      case "confirmar": executarRebate(rebEscolhasSelecionadas()); break;
+      case "retentar": {
+        var falhas = rebFalhas();
+        if (falhas.length) executarRebate(falhas);
+        break;
+      }
+    }
+  }
+
+  function onMudancaRebate(e) {
+    if (!REB) return;
+    var t = e.target;
+    if (t.id === "am-reb-ref") { REB.refId = t.value; renderRebate(); return; }
+    var chk = t.getAttribute("data-reb-marcar");
+    if (chk) {
+      var it = rebItemPorId(chk);
+      var s = (it && it.sugestao) || {};
+      REB.escolhas[chk] = t.checked ? (s.porMargem || s.porLucro || "") : "";
+      REB.confirmando = false;
+      renderRebate();
+      return;
+    }
+    var radio = t.getAttribute("data-reb-escolha");
+    if (radio && t.checked) {
+      REB.escolhas[radio] = t.value;
+      REB.confirmando = false;
+      renderRebate();
+    }
+  }
+
+  function onTeclaRebate(e) {
+    if (!REB) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (REB.confirmando) { REB.confirmando = false; renderRebate(); rebFocar("#am-reb-participar"); return; }
+      if (REB.avisoFechar) { REB.avisoFechar = false; renderRebate(); return; }
+      fecharRebate(false);
+      return;
+    }
+    if (e.key === "Tab") {
+      // Foco preso no modal.
+      var foc = Array.prototype.filter.call(
+        REB.overlay.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'),
+        function (n) { return n.offsetParent !== null; });
+      if (!foc.length) return;
+      var primeiro = foc[0], ultimo = foc[foc.length - 1];
+      if (e.shiftKey && (document.activeElement === primeiro || !REB.overlay.contains(document.activeElement))) { e.preventDefault(); ultimo.focus(); }
+      else if (!e.shiftKey && document.activeElement === ultimo) { e.preventDefault(); primeiro.focus(); }
+    }
+  }
+
+  function rebFocar(sel) {
+    if (!REB) return;
+    var n = REB.overlay.querySelector(sel);
+    if (n) n.focus();
+  }
+
+  // --- 1. Referência -------------------------------------------------------------
+  function carregarReferenciasRebate() {
+    var reb = REB;
+    reb.referencias = null;
+    reb.erroRefs = null;
+    renderRebate();
+    api("/anuncios-meli/promocoes-rebate/referencias?" + rebQs()).then(function (r) {
+      if (REB !== reb) return;
+      var d = r.data || {};
+      if (!d.ok) {
+        reb.erroRefs = rebMotivoResposta(r, "Não foi possível carregar as promoções da conta.");
+        reb.referencias = [];
+      } else {
+        reb.referencias = Array.isArray(d.referencias) ? d.referencias : [];
+        reb.padraoId = d.padraoId || null;
+        var existe = function (id) { return reb.referencias.some(function (x) { return x.id === id; }); };
+        reb.refId = reb.padraoId && existe(reb.padraoId) ? reb.padraoId : "";
+      }
+      var foco = document.activeElement && document.activeElement.id;
+      renderRebate();
+      if (foco === "am-reb-titulo" || !foco) rebFocar("#am-reb-ref");
+    });
+  }
+
+  function rebRefSelecionada() {
+    var lista = (REB && REB.referencias) || [];
+    for (var i = 0; i < lista.length; i++) if (lista[i].id === REB.refId) return lista[i];
+    return null;
+  }
+
+  function iniciarAnaliseRebate() {
+    var reb = REB;
+    var ref = rebRefSelecionada();
+    if (!ref || reb.iniciando) return;
+    reb.iniciando = true;
+    reb.erro = null;
+    renderRebate();
+    api("/anuncios-meli/promocoes-rebate/analises", {
+      method: "POST", body: rebCorpo({ referencia: { id: ref.id, tipo: ref.tipo } }),
+    }).then(function (r) {
+      if (REB !== reb) return;
+      reb.iniciando = false;
+      var d = r.data || {};
+      // ANALISE_EM_ANDAMENTO com jobId: acompanha a que já está rodando.
+      if (d.ok && d.jobId != null || (d.codigo === "ANALISE_EM_ANDAMENTO" && d.jobId != null)) {
+        reb.jobId = d.jobId;
+        reb.job = null;
+        reb.passo = "analisando";
+        renderRebate();
+        rebFocarInicio();
+        rebPollar();
+        return;
+      }
+      reb.erro = rebMotivoResposta(r, "Não foi possível iniciar a análise.");
+      renderRebate();
+    });
+  }
+
+  // --- Polling (2 e 4) ---------------------------------------------------------------
+  function rebPollar() {
+    var reb = REB;
+    if (!reb || !reb.jobId) return;
+    if (reb.timer) clearTimeout(reb.timer);
+    var meuSeq = ++reb.seq;
+    api("/anuncios-meli/promocoes-rebate/analises/" + encodeURIComponent(reb.jobId) + "?" + rebQs()).then(function (r) {
+      if (REB !== reb || reb.seq !== meuSeq) return;
+      var d = r.data || {};
+      if (!d.ok || !d.job) {
+        // Falha de rede pontual não derruba o acompanhamento; resposta
+        // explícita do servidor (ok:false) encerra.
+        if (r.status === 0) { rebAgendar(reb); return; }
+        reb.erro = rebMotivoResposta(r, "Não foi possível acompanhar a análise.");
+        delete rebJobEmCurso[reb.chave];
+        if (reb.passo === "execucao") reb.erroExecutar = reb.erro;
+        renderRebate();
+        return;
+      }
+      var job = d.job;
+      // Logo depois do POST executar, o GET ainda pode trazer o job na fase
+      // de análise: mantém a fila local até o servidor virar a fase.
+      if (reb.passo === "execucao" && job.fase !== "execucao") {
+        reb.job = Object.assign({}, job, { fase: reb.job && reb.job.fase, status: reb.job && reb.job.status, execucao: reb.job && reb.job.execucao });
+        if (job.status === "erro") {
+          reb.erroExecutar = job.erro || "A execução foi interrompida.";
+          reb.job.status = "erro";
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          return;
+        }
+        rebAgendar(reb);
+        return;
+      }
+      reb.job = job;
+      if (reb.passo === "execucao") {
+        if (job.status === "processando") reb.viuProcessando = true;
+        else reb.pollsParado++;
+      }
+      if (reb.passo === "analisando") {
+        if (job.status === "erro") {
+          reb.erro = job.erro || "A análise foi interrompida. Tente de novo.";
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          return;
+        }
+        if (job.fase === "execucao" && job.execucao) {
+          // Retomado depois de fechar no meio da execução.
+          reb.passo = "execucao";
+          reb.executou = true;
+        } else if (job.status === "concluido" && job.resultado) {
+          delete rebJobEmCurso[reb.chave];
+          reb.passo = "previa";
+          reb.escolhas = rebEscolhasIniciais();
+          renderRebate();
+          rebFocarInicio();
+          return;
+        } else {
+          renderRebate();
+          rebAgendar(reb);
+          return;
+        }
+      }
+      if (reb.passo === "execucao") {
+        if (job.status === "erro" && job.fase === "execucao") {
+          reb.erroExecutar = job.erro || "A execução foi interrompida. Veja abaixo o que já foi feito.";
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          return;
+        }
+        if (rebExecucaoConcluida(job)) {
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          rebFocar(rebFalhas().length ? "#am-reb-retentar" : "#am-reb-fechar-final");
+          return;
+        }
+        renderRebate();
+        rebAgendar(reb);
+      }
+    });
+  }
+
+  function rebAgendar(reb) {
+    reb.timer = setTimeout(function () { if (REB === reb) rebPollar(); }, REB_POLL_MS);
+  }
+
+  // A execução terminou quando o job saiu de "processando" na fase execucao
+  // e nenhum item enviado está pendente. Num retry, o GET pode ainda trazer a
+  // execução ANTERIOR (já concluída, com as falhas): por isso só se aceita
+  // depois de ter visto "processando", ou com o total batendo com o que foi
+  // enviado por 2 polls, ou — rede de segurança para um contrato diferente
+  // do esperado — depois de 4 polls parados.
+  function rebExecucaoConcluida(job) {
+    if (!job || job.fase !== "execucao" || job.status === "processando" || !job.execucao) return false;
+    if (job.status === "erro") return true;
+    var itens = job.execucao.itens || [];
+    if (itens.some(function (x) { return x.status === "pendente"; })) return false;
+    if (!REB || REB.retomado) return true;
+    var enviados = REB.enviadas || [];
+    var cobre = enviados.every(function (e) {
+      return itens.some(function (x) { return x.itemId === e.itemId; });
+    });
+    if (!cobre) return REB.pollsParado >= 4;
+    if (REB.viuProcessando) return true;
+    if (rebNum(job.execucao.total) === enviados.length && REB.pollsParado >= 2) return true;
+    return REB.pollsParado >= 4;
+  }
+
+  // --- 4. Execução -------------------------------------------------------------------
+  function executarRebate(escolhas) {
+    var reb = REB;
+    if (!reb || !escolhas.length || reb.enviando) return;
+    reb.enviando = true;
+    reb.erroExecutar = null;
+    renderRebate();
+    api("/anuncios-meli/promocoes-rebate/analises/" + encodeURIComponent(reb.jobId) + "/executar", {
+      method: "POST", body: rebCorpo({ escolhas: escolhas }),
+    }).then(function (r) {
+      if (REB !== reb) return;
+      reb.enviando = false;
+      var d = r.data || {};
+      if (!d.ok) {
+        reb.erroExecutar = rebMotivoResposta(r, "Não foi possível iniciar a participação.");
+        reb.confirmando = false;
+        renderRebate();
+        rebFocar(reb.passo === "execucao" ? "#am-reb-retentar" : "#am-reb-participar");
+        return;
+      }
+      reb.enviadas = escolhas.slice();
+      reb.passo = "execucao";
+      reb.confirmando = false;
+      reb.executou = true;
+      reb.pollsParado = 0;
+      reb.viuProcessando = false;
+      reb.retomado = false;
+      // O GET ainda pode trazer a execução anterior até o servidor trocar.
+      reb.job = Object.assign({}, reb.job, {
+        fase: "execucao", status: "processando",
+        execucao: { total: escolhas.length, processados: 0, itens: escolhas.map(function (x) {
+          return { itemId: x.itemId, promotionId: x.promotionId, tipo: x.tipo, status: "pendente", codigo: null, motivo: null };
+        }) },
+      });
+      renderRebate();
+      rebFocarInicio();
+      rebPollar();
+    });
+  }
+
+  function rebItensExecucao() {
+    var ex = REB && REB.job && REB.job.execucao;
+    var itens = (ex && ex.itens) || [];
+    // Só o que foi enviado nesta rodada (o servidor pode manter as anteriores).
+    var enviados = REB.enviadas || [];
+    if (!enviados.length) return itens;
+    var filtrados = itens.filter(function (x) { return enviados.some(function (e) { return e.itemId === x.itemId; }); });
+    return filtrados.length ? filtrados : itens;
+  }
+
+  function rebFalhas() {
+    if (!REB || REB.passo !== "execucao" || rebProcessando()) return [];
+    return rebItensExecucao().filter(function (x) { return x.status === "falha"; }).map(function (x) {
+      var tipo = x.tipo;
+      if (!tipo) {
+        var c = rebCandidata(rebItemPorId(x.itemId), x.promotionId);
+        tipo = c ? c.tipo : undefined;
+      }
+      return { itemId: x.itemId, promotionId: x.promotionId, tipo: tipo };
+    });
+  }
+
+  // --- Render ------------------------------------------------------------------------
+  var REB_PASSOS = [
+    { chave: "referencia", rotulo: "Referência" },
+    { chave: "analisando", rotulo: "Análise" },
+    { chave: "previa", rotulo: "Prévia" },
+    { chave: "execucao", rotulo: "Participação" },
+  ];
+
+  function rebPassosHtml() {
+    var atual = 0;
+    REB_PASSOS.forEach(function (p, i) { if (p.chave === REB.passo) atual = i; });
+    return '<ol class="am-reb-passos" aria-label="Etapas">' + REB_PASSOS.map(function (p, i) {
+      var estado = i < atual ? " is-feito" : i === atual ? " is-atual" : "";
+      return '<li class="am-reb-passos__item' + estado + '"' + (i === atual ? ' aria-current="step"' : "") + ">" +
+        '<span class="am-reb-passos__n">' + (i + 1) + "</span> " + p.rotulo + "</li>";
+    }).join("") + "</ol>";
+  }
+
+  function rebBannerHtml(tipo, msg) {
+    return '<div class="vf-banner is-' + tipo + '"' + (tipo === "danger" ? ' role="alert"' : ' role="status"') +
+      '><div class="vf-banner__content"><p class="vf-banner__description">' + escapeHtml(msg) + "</p></div></div>";
+  }
+
+  function rebProgressoHtml(proc, total, rotulo) {
+    var t = rebNum(total) || 0, p = Math.min(rebNum(proc) || 0, t || Infinity);
+    var pct = t > 0 ? Math.round((p / t) * 100) : 0;
+    return '<div class="am-reb-progresso" data-reb-progresso>' +
+      '<div class="vf-progress" role="progressbar" aria-label="' + escapeAttr(rotulo) + '" aria-valuemin="0" aria-valuemax="' + t + '" aria-valuenow="' + p + '">' +
+        '<div class="vf-progress__bar" style="width:' + pct + '%"></div></div>' +
+      '<p class="am-reb-progresso__txt" aria-live="polite">' + (t > 0 ? p + " de " + t + " anúncios" : "Preparando…") + "</p></div>";
+  }
+
+  function renderRebate() {
+    if (!REB) return;
+    var reb = REB;
+    var box = reb.overlay.querySelector(".am-reb-box");
+    var focoId = document.activeElement && reb.overlay.contains(document.activeElement) ? document.activeElement.id : "";
+    var corpo = "", rodape = "";
+    var p = reb.passo;
+    if (p === "referencia") { corpo = rebPassoReferenciaHtml(); rodape = rebRodapeReferenciaHtml(); }
+    else if (p === "analisando") { corpo = rebPassoAnalisandoHtml(); rodape = rebRodapeAnalisandoHtml(); }
+    else if (p === "previa") { corpo = rebPassoPreviaHtml(); rodape = rebRodapePreviaHtml(); }
+    else { corpo = rebPassoExecucaoHtml(); rodape = rebRodapeExecucaoHtml(); }
+
+    if (reb.avisoFechar) {
+      rodape = '<div class="am-reb-confirma" role="alert">' +
+        '<p class="am-reb-confirma__txt">A participação continua no Mercado Livre mesmo se você fechar. Reabra "Promoções com rebate" para acompanhar.</p>' +
+        '<div class="am-reb-confirma__acoes">' +
+          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-mesmo" data-reb-acao="fechar-mesmo">Fechar mesmo assim</button>' +
+          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-continuar" data-reb-acao="continuar">Continuar acompanhando</button>' +
+        "</div></div>";
+    }
+
+    var scroll = box.querySelector(".vf-modal__body");
+    var scrollTop = scroll ? scroll.scrollTop : 0;
+    var abertos = {};
+    box.querySelectorAll("details[data-reb-grupo]").forEach(function (d) { abertos[d.getAttribute("data-reb-grupo")] = d.open; });
+
+    box.innerHTML = '<div class="vf-modal__header">' +
+        '<h3 class="vf-modal__title" id="am-reb-titulo" tabindex="-1">Promoções com rebate</h3>' +
+        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-x" data-reb-acao="fechar" aria-label="Fechar">' + icFechar() + "</button></div>" +
+      '<div class="vf-modal__body">' + rebPassosHtml() + corpo + "</div>" +
+      '<div class="vf-modal__footer am-reb-rodape">' + rodape + "</div>";
+
+    box.querySelectorAll("details[data-reb-grupo]").forEach(function (d) {
+      if (abertos[d.getAttribute("data-reb-grupo")]) d.open = true;
+    });
+    var novoScroll = box.querySelector(".vf-modal__body");
+    if (novoScroll && p === reb.ultimoPassoRender) novoScroll.scrollTop = scrollTop;
+    reb.ultimoPassoRender = p;
+    if (focoId) {
+      var n = document.getElementById(focoId);
+      if (n && reb.overlay.contains(n)) n.focus();
+    }
+  }
+
+  function rebPassoReferenciaHtml() {
+    var reb = REB;
+    var html = '<p class="am-reb-intro">Vamos olhar só os anúncios ativos nesta promoção e procurar promoções com subsídio do Mercado Livre e preço menor, que deixem margem ou lucro maiores. A promoção de referência não é alterada.</p>';
+    if (reb.referencias === null) return html + estadoHtml("loading", "Carregando promoções da conta…");
+    if (reb.erroRefs) {
+      return html + rebBannerHtml("danger", reb.erroRefs) +
+        '<div class="am-reb-cluster"><button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-reb-acao="recarregar-refs">Tentar de novo</button></div>';
+    }
+    if (!reb.referencias.length) {
+      return html + estadoHtml("empty", "Nenhuma promoção ativa ou programada nesta conta",
+        "Para usar esta análise, os anúncios precisam estar numa promoção de referência (por exemplo, a Vendex do mês).");
+    }
+    var ref = rebRefSelecionada();
+    html += '<div class="vf-field am-reb-campo"><label class="vf-field__label" for="am-reb-ref">Promoção de referência</label>' +
+      '<select id="am-reb-ref" class="vf-select">' +
+      (reb.refId ? "" : '<option value="" selected>Escolha a promoção de referência…</option>') +
+      reb.referencias.map(function (x) {
+        var txt = (x.nome || x.id) + " · " + (x.tipoLabel || x.tipo || "") + " · " + rebVigencia(x);
+        return '<option value="' + escapeAttr(x.id) + '"' + (x.id === reb.refId ? " selected" : "") + ">" + escapeHtml(txt) + "</option>";
+      }).join("") + "</select>";
+    if (ref) {
+      html += '<p class="vf-field__hint">' + escapeHtml(ref.tipoLabel || ref.tipo || "") + " · " + escapeHtml(rebVigencia(ref)) +
+        (ref.id === reb.padraoId ? " · sugerida para este mês" : "") + "</p>";
+    } else if (!reb.padraoId) {
+      html += '<p class="vf-field__hint">Não encontramos a Vendex deste mês — escolha a promoção de referência.</p>';
+    }
+    html += "</div>";
+    if (reb.erro) html += rebBannerHtml("danger", reb.erro);
+    return html;
+  }
+
+  function rebRodapeReferenciaHtml() {
+    var reb = REB;
+    var pode = !!rebRefSelecionada() && !reb.iniciando;
+    return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-cancelar" data-reb-acao="fechar">Cancelar</button>' +
+      '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-analisar" data-reb-acao="analisar"' + (pode ? "" : " disabled") + ">" +
+      (reb.iniciando ? "Iniciando…" : "Analisar") + "</button>";
+  }
+
+  function rebPassoAnalisandoHtml() {
+    var reb = REB;
+    var job = reb.job || {};
+    var nomeRef = (job.referencia && job.referencia.nome) || (rebRefSelecionada() || {}).nome || "";
+    if (reb.erro) {
+      return rebBannerHtml("danger", reb.erro);
+    }
+    var prog = job.progresso || {};
+    return '<p class="am-reb-intro">Analisando os anúncios ativos em <strong>' + escapeHtml(nomeRef || "na referência") + "</strong>: " +
+      "promoções com subsídio, preço menor e margem e lucro cotados ao vivo no Mercado Livre.</p>" +
+      rebProgressoHtml(prog.processados, prog.total, "Progresso da análise") +
+      '<p class="vf-field__hint">Pode levar alguns minutos em contas grandes. Se fechar, a análise continua e você retoma ao reabrir.</p>';
+  }
+
+  function rebRodapeAnalisandoHtml() {
+    if (REB.erro) {
+      return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-erro" data-reb-acao="fechar">Fechar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-voltar" data-reb-acao="voltar-ref">Voltar</button>';
+    }
+    return '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-an" data-reb-acao="fechar">Fechar</button>';
+  }
+
+  function rebLinhaReferenciaHtml(ref) {
+    ref = ref || {};
+    return '<div class="am-reb-valores">' +
+      '<span class="am-reb-valores__preco">' + formatMoeda(ref.preco) + "</span>" +
+      '<span class="am-reb-valores__det">' + rebPct(ref.margemPercent) + " · " + formatMoeda(ref.lucro) + "/un</span>" +
+      (rebNum(ref.subsidioMl) ? '<span class="am-reb-valores__det">Subsídio ' + formatMoeda(ref.subsidioMl) + "</span>" : "") +
+      "</div>";
+  }
+
+  function rebCandidataHtml(c) {
+    return '<div class="am-reb-valores">' +
+      '<span class="am-reb-valores__nome">' + escapeHtml(c.nome || c.promotionId) +
+        (c.tipoLabel || c.tipo ? ' <span class="vf-tag is-neutral">' + escapeHtml(c.tipoLabel || c.tipo) + "</span>" : "") + "</span>" +
+      '<span class="am-reb-valores__preco">' + formatMoeda(c.preco) + ' <span class="am-reb-valores__sub">subsídio ML ' + formatMoeda(c.subsidioMl) + "</span></span>" +
+      '<span class="am-reb-valores__det">' + rebPct(c.margemPercent) + " · " + formatMoeda(c.lucro) + "/un</span>" +
+      '<span class="am-reb-valores__ganhos">' + rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs") + "</span>" +
+      "</div>";
+  }
+
+  function rebPassoPreviaHtml() {
+    var reb = REB;
+    var res = (reb.job && reb.job.resultado) || {};
+    var rec = rebItens("recomendado"), esc = rebItens("escolha"), sem = rebItens("sem_ganho"), desc = rebItens("descartado");
+    var r = res.resumo || { recomendado: rec.length, escolha: esc.length, sem_ganho: sem.length, descartado: desc.length };
+    var nomeRef = (reb.job.referencia && reb.job.referencia.nome) || "";
+    var html = '<p class="am-reb-intro">Referência: <strong>' + escapeHtml(nomeRef) + "</strong> — continua ativa em todos os anúncios.</p>" +
+      '<ul class="am-reb-resumo" data-reb-resumo aria-label="Resumo da análise">' +
+        '<li><strong>' + (r.recomendado || 0) + "</strong> recomendados</li>" +
+        '<li><strong>' + (r.escolha || 0) + "</strong> para escolher</li>" +
+        '<li><strong>' + (r.sem_ganho || 0) + "</strong> sem ganho</li>" +
+        '<li><strong>' + (r.descartado || 0) + "</strong> descartados</li>" +
+      "</ul>";
+    if (reb.erroExecutar) html += rebBannerHtml("danger", reb.erroExecutar);
+
+    if (!rec.length && !esc.length) {
+      html += estadoHtml("empty", "Nenhuma promoção com rebate melhora estes anúncios agora",
+        "Veja abaixo os motivos. A referência continua como está.");
+    }
+
+    if (rec.length) {
+      html += '<section class="am-reb-grupo" data-reb-grupo-sec="recomendado" aria-labelledby="am-reb-g-rec">' +
+        '<h4 class="am-reb-grupo__titulo" id="am-reb-g-rec">Recomendados <span class="am-reb-grupo__n">' + rec.length + "</span></h4>" +
+        '<p class="vf-field__hint">A mesma promoção melhora margem e lucro. Já vêm marcados.</p>' +
+        '<div class="vf-table-wrap am-reb-tabela"><table class="vf-table vf-table--compact">' +
+        '<thead><tr><th class="am-reb-col-chk"><span class="vf-visually-hidden">Participar</span></th><th>Anúncio</th><th>Na referência</th><th>Promoção sugerida</th></tr></thead><tbody>' +
+        rec.map(function (it, i) {
+          var s = it.sugestao || {};
+          var c = rebCandidata(it, s.porMargem || s.porLucro) || (it.candidatas || [])[0];
+          var marcado = !!(c && reb.escolhas[it.itemId] === c.promotionId);
+          var idChk = "am-reb-chk-" + i;
+          return '<tr data-reb-item="' + escapeAttr(it.itemId) + '"' + (marcado ? ' class="is-selecionado"' : "") + ">" +
+            '<td class="am-reb-col-chk"><label class="vf-check"><input type="checkbox" id="' + idChk + '" data-reb-marcar="' + escapeAttr(it.itemId) + '"' +
+              (marcado ? " checked" : "") + (c ? "" : " disabled") + '><span class="vf-visually-hidden">Participar com ' + escapeHtml(it.titulo || it.itemId) + "</span></label></td>" +
+            "<td>" + rebAnuncioHtml(it) + "</td>" +
+            "<td>" + rebLinhaReferenciaHtml(it.referencia) + "</td>" +
+            "<td>" + (c ? rebCandidataHtml(c) : "—") + "</td></tr>";
+        }).join("") + "</tbody></table></div></section>";
+    }
+
+    if (esc.length) {
+      html += '<section class="am-reb-grupo" data-reb-grupo-sec="escolha" aria-labelledby="am-reb-g-esc">' +
+        '<div class="am-reb-grupo__head"><h4 class="am-reb-grupo__titulo" id="am-reb-g-esc">Escolha <span class="am-reb-grupo__n">' + esc.length + "</span></h4>" +
+        '<div class="am-reb-cluster">' +
+          '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-reb-pref-margem" data-reb-acao="preferir-margem">Preferir margem em todos</button>' +
+          '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-reb-pref-lucro" data-reb-acao="preferir-lucro">Preferir lucro em todos</button>' +
+        "</div></div>" +
+        '<p class="vf-field__hint">A promoção que dá mais margem não é a que dá mais lucro (ou uma delas piora a outra medida). Escolha por anúncio.</p>' +
+        '<ul class="am-reb-escolhas">' + esc.map(function (it, i) { return rebEscolhaItemHtml(it, i); }).join("") + "</ul></section>";
+    }
+
+    if (sem.length) html += rebDetalhesHtml("sem_ganho", "Sem ganho", sem, "Nenhuma promoção com subsídio melhora margem nem lucro.");
+    if (desc.length) html += rebDetalhesHtml("descartado", "Descartados", desc, "");
+    return html;
+  }
+
+  function rebEscolhaItemHtml(it, i) {
+    var s = it.sugestao || {};
+    var atual = REB.escolhas[it.itemId] || "";
+    var nome = "am-reb-esc-" + i;
+    var opcoes = [];
+    var vistos = {};
+    function add(pid, rotulo) {
+      var c = rebCandidata(it, pid);
+      if (!c || vistos[pid]) return;
+      vistos[pid] = true;
+      opcoes.push({ c: c, rotulo: rotulo });
+    }
+    if (s.porMargem && s.porMargem === s.porLucro) add(s.porMargem, "Maior margem e lucro");
+    add(s.porMargem, "Maior margem");
+    add(s.porLucro, "Maior lucro");
+    (it.candidatas || []).forEach(function (c) { add(c.promotionId, "Outra opção"); });
+
+    var html = '<li class="am-reb-escolha" data-reb-item="' + escapeAttr(it.itemId) + '">' +
+      '<div class="am-reb-escolha__topo">' + rebAnuncioHtml(it) +
+        '<div class="am-reb-escolha__ref"><span class="am-reb-rotulo">Na referência</span>' + rebLinhaReferenciaHtml(it.referencia) + "</div></div>" +
+      '<fieldset class="am-reb-opcoes"><legend class="vf-visually-hidden">Promoção para ' + escapeHtml(it.titulo || it.itemId) + "</legend>";
+    opcoes.forEach(function (o, k) {
+      var id = nome + "-" + k;
+      html += '<label class="am-reb-opcao' + (atual === o.c.promotionId ? " is-selecionada" : "") + '" for="' + id + '">' +
+        '<span class="vf-radio"><input type="radio" id="' + id + '" name="' + nome + '" value="' + escapeAttr(o.c.promotionId) + '" data-reb-escolha="' + escapeAttr(it.itemId) + '"' +
+          (atual === o.c.promotionId ? " checked" : "") + "><span class=\"am-reb-opcao__rotulo\">" + escapeHtml(o.rotulo) + "</span></span>" +
+        rebCandidataHtml(o.c) + "</label>";
+    });
+    var idRef = nome + "-ref";
+    html += '<label class="am-reb-opcao am-reb-opcao--ref' + (atual === "" ? " is-selecionada" : "") + '" for="' + idRef + '">' +
+      '<span class="vf-radio"><input type="radio" id="' + idRef + '" name="' + nome + '" value="" data-reb-escolha="' + escapeAttr(it.itemId) + '"' +
+        (atual === "" ? " checked" : "") + '><span class="am-reb-opcao__rotulo">Manter só a referência</span></span>' +
+      '<span class="vf-field__hint">Nada muda neste anúncio.</span></label>';
+    html += "</fieldset></li>";
+    return html;
+  }
+
+  function rebDetalhesHtml(chave, titulo, itens, dica) {
+    return '<details class="am-reb-detalhes" data-reb-grupo="' + chave + '"><summary>' + titulo + " (" + itens.length + ")</summary>" +
+      (dica ? '<p class="vf-field__hint">' + escapeHtml(dica) + "</p>" : "") +
+      '<ul class="am-reb-lista">' + itens.map(function (it) {
+        var m = rebMotivoTexto(it);
+        return '<li class="am-reb-lista__item" data-reb-item="' + escapeAttr(it.itemId) + '">' + rebAnuncioHtml(it) +
+          (m ? '<span class="am-reb-lista__motivo">' + escapeHtml(m) + "</span>" : "") + "</li>";
+      }).join("") + "</ul></details>";
+  }
+
+  function rebRodapePreviaHtml() {
+    var reb = REB;
+    var n = rebEscolhasSelecionadas().length;
+    var rotulo = n === 1 ? "1 participação selecionada" : n + " participações selecionadas";
+    if (reb.confirmando && n) {
+      var nomeRef = (reb.job.referencia && reb.job.referencia.nome) || "de referência";
+      return '<div class="am-reb-confirma" role="alertdialog" aria-labelledby="am-reb-confirma-txt">' +
+        '<p class="am-reb-confirma__txt" id="am-reb-confirma-txt">Participar de ' + n + (n === 1 ? " promoção em 1 anúncio" : " promoções em " + n + " anúncios") +
+          "? A promoção <strong>" + escapeHtml(nomeRef) + "</strong> permanece ativa em todos — nada nela é alterado.</p>" +
+        '<div class="am-reb-confirma__acoes">' +
+          '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-cancelar-conf" data-reb-acao="cancelar-confirmacao"' + (reb.enviando ? " disabled" : "") + ">Voltar</button>" +
+          '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-confirmar" data-reb-acao="confirmar"' + (reb.enviando ? " disabled" : "") + ">" +
+            (reb.enviando ? "Enviando…" : "Confirmar participação") + "</button>" +
+        "</div></div>";
+    }
+    return '<span class="am-reb-contador" data-reb-contador aria-live="polite">' + rotulo + "</span>" +
+      '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-prev" data-reb-acao="fechar">Fechar</button>' +
+      '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-participar" data-reb-acao="participar"' + (n ? "" : " disabled") + ">Participar</button>";
+  }
+
+  function rebPassoExecucaoHtml() {
+    var reb = REB;
+    var ex = (reb.job && reb.job.execucao) || {};
+    var itens = rebItensExecucao();
+    var proc = itens.length ? itens.filter(function (x) { return x.status !== "pendente"; }).length : ex.processados;
+    var total = itens.length || ex.total;
+    var concluida = !rebProcessando();
+    var ok = itens.filter(function (x) { return x.status === "ok"; }).length;
+    var falhas = itens.filter(function (x) { return x.status === "falha"; }).length;
+    var html = "";
+    if (reb.erroExecutar) html += rebBannerHtml("danger", reb.erroExecutar);
+    if (concluida) {
+      html += rebBannerHtml(falhas ? "warning" : "success",
+        ok + (ok === 1 ? " participação confirmada" : " participações confirmadas") + " no Mercado Livre" +
+        (falhas ? " · " + falhas + (falhas === 1 ? " falhou" : " falharam") : "") + ". A referência continua ativa.");
+    } else {
+      html += '<p class="am-reb-intro">Participando das promoções, um anúncio por vez. Cada um é relido no Mercado Livre antes de gravar.</p>' +
+        rebProgressoHtml(proc, total, "Progresso da participação");
+    }
+    html += '<ul class="am-reb-lista am-reb-exec" data-reb-exec>' + itens.map(function (x) {
+      var it = rebItemPorId(x.itemId) || { itemId: x.itemId };
+      var c = rebCandidata(it, x.promotionId);
+      var st = x.status === "ok" ? '<span class="vf-status is-success">Participando</span>'
+        : x.status === "falha" ? '<span class="vf-status is-danger">Falhou</span>'
+        : '<span class="vf-status is-empty">Na fila</span>';
+      var det = x.status === "ok"
+        ? (c ? escapeHtml(c.nome || c.promotionId) : "") + (rebNum(x.precoConfirmado) !== null ? " · " + formatMoeda(x.precoConfirmado) : "")
+        : x.status === "falha" ? escapeHtml(x.motivo || REB_MOTIVOS[x.codigo] || "Não foi possível participar.")
+        : (c ? escapeHtml(c.nome || c.promotionId) : "");
+      return '<li class="am-reb-lista__item am-reb-exec__item is-' + escapeAttr(x.status || "pendente") + '" data-reb-exec-item="' + escapeAttr(x.itemId) + '">' +
+        rebAnuncioHtml(it) + '<span class="am-reb-exec__st">' + st + "</span>" +
+        (det ? '<span class="am-reb-lista__motivo">' + det + "</span>" : "") + "</li>";
+    }).join("") + "</ul>";
+    return html;
+  }
+
+  function rebRodapeExecucaoHtml() {
+    var reb = REB;
+    if (rebProcessando()) {
+      return '<span class="am-reb-contador">Gravando no Mercado Livre…</span>' +
+        '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" id="am-reb-fechar-exec" data-reb-acao="fechar">Fechar</button>';
+    }
+    var nFalhas = rebFalhas().length;
+    return (nFalhas ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-reb-retentar" data-reb-acao="retentar"' + (reb.enviando ? " disabled" : "") + ">" +
+        (reb.enviando ? "Enviando…" : "Tentar de novo as falhas (" + nFalhas + ")") + "</button>" : "") +
+      '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-reb-fechar-final" data-reb-acao="fechar">Fechar</button>';
   }
 
   function bindPaginacao(prefixo, pag, irPara) {

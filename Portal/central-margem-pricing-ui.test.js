@@ -615,6 +615,43 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-drawer').classList.contains('is-open')"), false);
     });
 
+    await check("chip 'Promo …' abre a Bancada JÁ na promoção (cenário = promotion_id do chip, coluna Cenário preenchida); o '›' da linha abre em Preço manual; promoção pedida que sumiu AVISA", async () => {
+      const chipSel = "tr[data-item-id=\"MLB1001\"] .cm-next-chip";
+      // 1) chip → promoção selecionada, Bancada com seletor e cascata (nunca só "Novo preço" + simulação avançada)
+      await cdp.evaluate(`document.querySelector('${chipSel}').click()`);
+      await waitFor(cdp, "document.querySelector('[data-cenario=\"P-DEAL\"].is-active')", "a promoção do chip não ficou selecionada");
+      assert.strictEqual(await cdp.evaluate(`document.querySelector('${chipSel}').getAttribute('data-next-promo')`), "P-DEAL");
+      assert.strictEqual(await st("s.bancada.selecionado"), "P-DEAL", "cenário selecionado = promotion_id do chip");
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-banc-cenarios [data-cenario]').length >= 3"), true, "o seletor de cenários aparece");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-bancada-cascata]'))"), true, "a cascata Atual × Cenário aparece");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('cm-new-price'))"), false, "com a promoção escolhida não há campo de preço manual");
+      const colunaCenario = await cdp.evaluate("document.querySelector('tr[data-cm-linha=\"preco\"] td:nth-child(3)').textContent");
+      assert.ok(/99,90/.test(colunaCenario), `a coluna Cenário foi preenchida com o preço da promoção: ${colunaCenario}`);
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-promo-info=\"P-DEAL\"]'))"), true);
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+
+      // 2) o '›' da linha (sem chip) abre a Bancada em Preço manual
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"] .cm-go').click()");
+      await waitFor(cdp, "document.querySelector('[data-cenario=\"preco\"].is-active') && document.getElementById('cm-new-price')", "a linha não abriu em Preço manual");
+      assert.strictEqual(await st("s.bancada.selecionado"), "preco");
+      assert.strictEqual(await st("s.pendingPromoId"), null);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-banc-cenarios [data-cenario]').length >= 3"), true, "o seletor também está lá");
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+
+      // 3) o chip pode entregar a CHAVE do snapshot em vez do id: ainda seleciona a mesma promoção (id canônico)
+      await cdp.evaluate(`var c = document.querySelector('${chipSel}'); c.setAttribute('data-next-promo', 'P-DEAL::DEAL'); c.click();`);
+      await waitFor(cdp, "document.querySelector('[data-cenario=\"P-DEAL\"].is-active')", "a chave do snapshot não selecionou a promoção");
+      assert.strictEqual(await st("s.bancada.selecionado"), "P-DEAL");
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+
+      // 4) promoção pedida que não existe mais na leitura: avisa (nunca cai em Preço manual em silêncio)
+      await cdp.evaluate(`var c = document.querySelector('${chipSel}'); c.setAttribute('data-next-promo', 'P-SUMIU'); c.click();`);
+      await waitFor(cdp, "document.querySelector('[data-cm-bancada=\"promo-nao-encontrada\"]')", "faltou o aviso de promoção ausente");
+      assert.strictEqual(await st("s.bancada.selecionado"), "preco");
+      assert.strictEqual(await st("s.pendingPromoId"), null);
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+    });
+
     await check("aba Promoções: fonte bulk da conta, sem ML por linha; estimativa primeiro, depois a página cotada ao vivo", async () => {
       // Ao carregar a Central só roda o RESUMO (KPI + chips): uma leitura estimada dos 50 melhores, nunca a lista paginada.
       const resumoCalls = JSON.parse(await cdp.evaluate("JSON.stringify(window.__pc.calls.oppsParams)"));

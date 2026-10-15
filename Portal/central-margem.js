@@ -3045,9 +3045,14 @@
     var id = state.pendingPromoId;
     if (!id || !state.bancada || state.bancada.status === "loading" || state.bancada.status === "idle") return;
     state.pendingPromoId = null;
-    if (state.bancada.status === "ok" && bancadaPromoPorId(id)) {
+    if (state.bancada.status !== "ok") return;
+    var achada = bancadaPromoPorId(id);
+    if (achada) {
       state.drawerTab = "pricing";
-      state.bancada.selecionado = id;
+      state.bancada.selecionado = promoIdDe(achada);
+    } else {
+      // Nunca cai em "Preço manual" em silêncio: a promoção pedida não está na leitura atual.
+      state.bancada.aviso = "A promoção escolhida não está mais na leitura atual das promoções deste anúncio; mostrando o preço manual.";
     }
   }
 
@@ -3298,7 +3303,7 @@
 
   function novaBancada() {
     return {
-      status: "idle", data: null, error: null, selecionado: "preco", alvo: null,
+      status: "idle", data: null, error: null, aviso: null, selecionado: "preco", alvo: null,
       manual: { status: "idle", resultado: null, atual: null, error: null, localError: null, seq: 0, timer: null, abort: null },
     };
   }
@@ -3330,9 +3335,14 @@
     return String(cenario.promocao ? cenario.promocao.id : (cenario.entrada && cenario.entrada.promotion_id) || "");
   }
 
+  // A promoção pode ser pedida pelo id, pela chave do snapshot ou pelo ref_id (o chip da worklist vem da lista de Oportunidades).
   function bancadaPromoPorId(id) {
+    var alvo = String(id);
     var lista = bancadaPromos();
-    for (var i = 0; i < lista.length; i += 1) if (promoIdDe(lista[i]) === String(id) && lista[i].promocao) return lista[i];
+    for (var i = 0; i < lista.length; i += 1) {
+      var p = lista[i].promocao;
+      if (p && (promoIdDe(lista[i]) === alvo || String(p.chave || "") === alvo || String(p.ref_id || "") === alvo)) return lista[i];
+    }
     return null;
   }
 
@@ -3590,7 +3600,8 @@
       var ap = state.pricing && state.pricing.aplicacao;
       var defasado = ap && (ap.status === "aplicado" || ap.status === "divergente") && ["atualizado", "nao_aplicavel"].indexOf(ap.snapshotStatus) === -1
         ? '<p class="cm-banc__nota" data-cm-bancada="atual-defasado">A coluna Atual ainda é a de antes da alteração; ela é atualizada quando a margem for recalculada.</p>' : "";
-      corpo = defasado + bancadaSeletorHtml() + semPromos + manual + '<div class="cm-banc__resultado" id="cm-banc-resultado" aria-live="polite">' + bancadaResultadoHtml() + "</div>" + '<div id="cm-banc-botao">' + bancadaBotaoHtml() + "</div>";
+      var avisoPromo = b.aviso ? '<p class="cm-banc__nota" role="status" data-cm-bancada="promo-nao-encontrada">' + escapeHtml(b.aviso) + "</p>" : "";
+      corpo = defasado + avisoPromo + bancadaSeletorHtml() + semPromos + manual + '<div class="cm-banc__resultado" id="cm-banc-resultado" aria-live="polite">' + bancadaResultadoHtml() + "</div>" + '<div id="cm-banc-botao">' + bancadaBotaoHtml() + "</div>";
     }
     return '<section class="cm-banc" aria-labelledby="cm-banc-title" data-cm-bancada-status="' + escapeHtml(b.status) + '"><header class="cm-pp__head"><h3 id="cm-banc-title">Bancada</h3><span>atual × cenário · cálculo do Motor</span></header>' + corpo + "</section>";
   }

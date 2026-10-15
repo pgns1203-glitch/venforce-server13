@@ -458,6 +458,24 @@ cenario("fonte PROMO SNAPSHOT: mesma regra — started/active e P' >= preço atu
   assert.ok(r.oportunidades.every((o) => o.precoPromocao < o.precoAtual && !["started", "active"].includes(o.promocao.status)));
 });
 
+cenario("promoção SEM promotion_id no snapshot: o id da linha cai na chave do snapshot (a mesma identidade do /simular) — o chip da worklist seleciona a promoção na Bancada", async () => {
+  const promos = [
+    { item_id: "MLB1", chave: "MLB1::SMART::0", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: null },
+    { item_id: "MLB2", chave: "MLB2::DEAL::7", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: "P-777" },
+  ];
+  const snapPorItem = new Map(["MLB1", "MLB2"].map((id) => [id, snapRow(id)]));
+  const d = deps(fakeDb());
+  d.promo = {
+    estadoComAutoTrigger: async () => ({ estado: { state: "ready", hasSnapshot: true, snapshotRunId: 9, snapshotAt: new Date().toISOString(), total: 2, workerEnabled: true }, gatilho: { acao: "nenhuma" } }),
+    syncPublico: (e) => ({ ...e }),
+    listarElegiveis: async () => elegiveisReferencia({ promos, snapPorItem }),
+  };
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, d);
+  const por = Object.fromEntries(r.oportunidades.map((o) => [o.itemId, o.promocao]));
+  assert.strictEqual(por.MLB1.id, "MLB1::SMART::0", "sem promotion_id: a chave");
+  assert.strictEqual(por.MLB2.id, "P-777", "com promotion_id: ele");
+});
+
 cenario("performance: 3 consultas ao banco (cabeçalho, elegíveis, rebates da conta) para a conta inteira, página fatiada no serviço, zero ML", async () => {
   const itens = Array.from({ length: 300 }, (_, i) => diagRow(`MLB${i + 1}`));
   const snaps = itens.map((r) => snapRow(r.item_id));

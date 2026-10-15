@@ -519,7 +519,9 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
   // de hoje precisa dele para o ΔLC de qualquer anúncio da lista).
   const rebates = await carregarRebatesDaConta({ clienteContaId: conta.id, sellerId, db: d.db, promoRepo: deps.promoRepository, logger: deps.logger });
   const candidatas = rows.map((r) => candidataDaLinha(r, {
-    id: r.promo_id || null,
+    // Mesma identidade do /simular (promotionId || chave): é o que o chip da worklist
+    // entrega ao drawer para escolher a promoção na Bancada.
+    id: r.promo_id || r.chave || null,
     chave: r.chave || null,
     nome: r.promo_nome || null,
     tipo: r.promo_tipo || null,

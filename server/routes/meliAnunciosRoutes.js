@@ -183,6 +183,10 @@ router.get("/familias/:familyId", ctrl.detalheFamilia);
 // existentes, não escreve em nada. Ver meliMetricas7dService/motorMargemService.
 router.get("/performance", ctrl.performance);
 
+// Preço vigente + cheio AO VIVO (só sale_price, sem Motor) — a linha da família
+// risca a promoção antes de expandir. Read-only. Ver meliPrecoAoVivoService.
+router.get("/precos-ao-vivo", ctrl.precosAoVivo);
+
 // Criação de anúncios (escrita no Mercado Livre via POST /items).
 router.get("/criacao/status", ctrl.criacaoStatus);
 router.get("/criacao/categorias", ctrl.criacaoCategorias);

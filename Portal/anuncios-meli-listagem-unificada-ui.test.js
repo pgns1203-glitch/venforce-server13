@@ -150,7 +150,9 @@ const LINHAS_CONTA_42 = [
     total_user_products: 1, total_itens: 1,
     estoque_total: 12, vendidos_total: 0,
     preco_min: 39.9, preco_max: 39.9, moeda: "BRL", score_min: 80,
-    preco_min_original: 49.9, preco_max_original: 49.9,
+    // Snapshot SEM promoção de propósito: a promoção do MLB-B9 só existe no
+    // sale_price (PRECOS_AO_VIVO) — o caso real em que a família não riscava.
+    preco_min_original: null, preco_max_original: null,
     status_contagem: { ativos: 1, pausados: 0, encerrados: 0 },
     cover: { thumbnail: null, user_product_id: "MLBU-300" },
   },
@@ -370,6 +372,10 @@ let estoqueVariacaoLegadoHandler = null;
 // (para simular indisponibilidade de margem ou falha total).
 let atrasoPerformance = 0;
 let performanceHandler = null;
+// GET /anuncios-meli/precos-ao-vivo — preço vigente + cheio só do sale_price.
+// MLB-B9 (FAM-2) está em promoção AO VIVO, mas não no snapshot da listagem.
+const PRECOS_AO_VIVO = { "MLB-B9": { precoAtual: 39.9, precoOriginal: 49.9 } };
+const chamadasPrecosAoVivo = [];
 const chamadasPerformance = [];
 
 // GET /anuncios-meli/familias — `chamadasFamilias` registra page/ordenarPor
@@ -611,6 +617,15 @@ function wireInterception(cdp) {
         anuncios,
         paginacao: { page: 1, limit: 20, total: anuncios.length, totalPaginas: 1 },
       });
+      return;
+    }
+
+    if (caminho.startsWith("/anuncios-meli/precos-ao-vivo")) {
+      const ids = (new URL(url).searchParams.get("itemIds") || "").split(",").filter(Boolean);
+      chamadasPrecosAoVivo.push(ids);
+      const precos = {};
+      ids.forEach((id) => { if (PRECOS_AO_VIVO[id]) precos[id] = PRECOS_AO_VIVO[id]; });
+      await corpo({ ok: true, precos });
       return;
     }
 
@@ -890,6 +905,15 @@ async function run() {
     });
 
     await check("5b — agrupador: faixa no desenho da margem (mín em cima, máx embaixo), cada extremo com o SEU cheio riscado; valor único usa a célula do MLB", async () => {
+      // FAM-2 não tem promoção no snapshot — o riscado só pode vir do preço
+      // AO VIVO dos filhos (GET /precos-ao-vivo), e tem de aparecer SEM
+      // expandir a família.
+      await waitFor(cdp, `!!document.querySelector('.am-row--grupo[data-familia="FAM-2"] .am-row__preco--promo')`,
+        "a família com promoção só no sale_price não riscou antes de expandir");
+      assert.ok(chamadasPrecosAoVivo.some((ids) => ids.includes("MLB-B9")), "o preço ao vivo do filho foi pedido");
+      assert.ok(!chamadasPerformance.some((c) => c.incluirMargem && c.itemIds.includes("MLB-B9")),
+        "o riscado não pode depender do Motor de Margem (só roda ao expandir)");
+      assert.strictEqual(await cdp.evaluate(`document.querySelector('.am-row--grupo[data-familia="FAM-2"]').getAttribute('aria-expanded')`), "false");
       const r = await cdp.evaluate(`(function(){
         function cel(id){ return document.querySelector('.am-row--grupo[data-familia="' + id + '"] .am-row__preco'); }
         var f1 = cel("FAM-1"), f2 = cel("FAM-2");

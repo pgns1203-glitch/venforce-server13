@@ -3453,6 +3453,8 @@ async function run() {
             porFamiliaValor: { "FAM-1": 3330, "FAM-2": 44 },
             porItemUnidades: { "MLB-SEMUP": 12, "MLB-SEMVAR": 1 },
             porFamiliaUnidades: { "FAM-1": 1234, "FAM-2": 2 },
+            porItemPrecoMedio: { "MLB-SEMUP": 79.21, "MLB-SEMVAR": 11 },
+            porFamiliaPrecoMedio: { "FAM-1": 2.7, "FAM-2": 22 },
           },
           curvaAbc: {
             periodoDias: 30,
@@ -3484,17 +3486,17 @@ async function run() {
         const valorAbsolutoFam = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento__legenda').textContent.trim()`);
         assert.strictEqual(valorAbsolutoFam, "R$ 3.330,00", "família usa o valor ABSOLUTO consolidado (porFamiliaValor, soma dos filhos), nunca o de um filho isolado");
 
-        // 3ª linha: só a contagem de unidades vendidas, neutra — sem preço
-        // médio nem "↓" (confundiam o usuário).
+        // 3ª linha: unidades + preço médio, neutros — sem o "↓" nem o texto
+        // sobre promoção (confundiam o usuário).
         const un = await cdp.evaluate(`(function(){
           var i = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento__un');
           var f = document.querySelector('${linhaFam("FAM-1")} .am-faturamento__un');
           return { item: i && i.textContent.trim(), fam: f && f.textContent.trim(), titulo: i && i.getAttribute('title'),
             seta: document.querySelectorAll('.am-faturamento__un.is-abaixo').length };
         })()`);
-        assert.strictEqual(un.item, "12 un");
-        assert.strictEqual(un.fam, "1.234 un", "família soma as unidades dos filhos");
-        assert.strictEqual(un.titulo, "Unidades vendidas nos últimos 30 dias");
+        assert.strictEqual(un.item, "12 un · R$ 79,21/un");
+        assert.strictEqual(un.fam, "1.234 un · R$ 2,70/un", "família soma as unidades dos filhos");
+        assert.strictEqual(un.titulo, "Unidades vendidas nos últimos 30 dias e preço médio por unidade vendida");
         assert.strictEqual(un.seta, 0, "sem o aviso de preço médio");
 
         // Curva ABC: tag SEMPRE visível quando existe dado — sem nenhuma

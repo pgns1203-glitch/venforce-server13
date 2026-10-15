@@ -733,6 +733,8 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
       const mapaUn = anuncio.tipo === "familia" ? ranking.porFamiliaUnidades : ranking.porItemUnidades;
       const chaveUn = anuncio.tipo === "familia" ? anuncio.family_id : anuncio.item_id;
       anuncio.faturamentoUnidades = mapaUn && mapaUn[chaveUn] != null ? mapaUn[chaveUn] : null;
+      const mapaMedio = anuncio.tipo === "familia" ? ranking.porFamiliaPrecoMedio : ranking.porItemPrecoMedio;
+      anuncio.faturamentoPrecoMedio = mapaMedio && mapaMedio[chaveUn] != null ? mapaMedio[chaveUn] : null;
       anuncio.faturamentoPeriodoDias = ranking.periodoDias != null ? ranking.periodoDias : null;
     }
   }
@@ -1151,6 +1153,21 @@ function diasNoPeriodo(periodo) {
   return Number.isFinite(dias) && dias > 0 ? dias : null;
 }
 
+// Unidades das linhas que TÊM receita (as sem `receita_produto` contam
+// unidade mas não receita — ver centralVendasEvidenceAdapter.novoAgregado).
+// Sem a cobertura (agregado de teste/legado), cai em `unidades`.
+function unidadesComReceita(agregado) {
+  const cob = agregado && agregado.receitaCobertura;
+  if (cob && Number.isFinite(cob.unidadesComValor)) return cob.unidadesComValor;
+  return (agregado && agregado.unidades) || 0;
+}
+
+// Preço MÉDIO vendido = receita ÷ unidades COM receita (nunca ÷ todas).
+function precoMedioDe(receita, unidades) {
+  if (!receita || !(unidades > 0)) return null;
+  return Math.round((receita / unidades) * 100) / 100;
+}
+
 // % que a receita do item representa sobre a receita de TODO o período
 // (porMlb inteiro, do Motor de Margem/Central de Vendas — mesma fonte que já
 // alimenta `margem[itemId]`) — nunca só a receita do lote de itemIds pedido,
@@ -1179,6 +1196,7 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
   // Unidades vendidas no período (mesmo agregado do Motor que dá a receita).
   // null quando o item não vendeu — sem venda é ausência, como o percentual.
   const porItemUnidades = {};
+  const porItemPrecoMedio = {};
   for (const itemId of itemIds) {
     const agregado = porMlb.get(String(itemId));
     const receita = agregado ? agregado.receita : null;
@@ -1188,19 +1206,22 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
         : null;
     porItemValor[itemId] = receita != null ? Math.round(receita * 100) / 100 : null;
     porItemUnidades[itemId] = receita != null && agregado ? agregado.unidades || 0 : null;
+    porItemPrecoMedio[itemId] = receita != null && agregado ? precoMedioDe(receita, unidadesComReceita(agregado)) : null;
   }
 
   const porFamilia = {};
   const porFamiliaValor = {};
   const porFamiliaUnidades = {};
+  const porFamiliaPrecoMedio = {};
   for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
     let receitaFamilia = 0;
     let teveReceita = false;
     let unidadesFamilia = 0;
+    let unidadesComReceitaFamilia = 0;
     for (const itemId of itensDaFamilia) {
       const agregado = porMlb.get(String(itemId));
       if (agregado && agregado.receita) { receitaFamilia += agregado.receita; teveReceita = true; }
-      if (agregado) unidadesFamilia += agregado.unidades || 0;
+      if (agregado) { unidadesFamilia += agregado.unidades || 0; unidadesComReceitaFamilia += unidadesComReceita(agregado); }
     }
     porFamilia[familyId] =
       teveReceita && receitaTotalPeriodo > 0
@@ -1208,11 +1229,12 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
         : null;
     porFamiliaValor[familyId] = teveReceita ? Math.round(receitaFamilia * 100) / 100 : null;
     porFamiliaUnidades[familyId] = teveReceita ? unidadesFamilia : null;
+    porFamiliaPrecoMedio[familyId] = teveReceita ? precoMedioDe(receitaFamilia, unidadesComReceitaFamilia) : null;
   }
 
   return {
     periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia, porItemValor, porFamiliaValor,
-    porItemUnidades, porFamiliaUnidades,
+    porItemUnidades, porFamiliaUnidades, porItemPrecoMedio, porFamiliaPrecoMedio,
   };
 }
 

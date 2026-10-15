@@ -1141,8 +1141,9 @@ async function run() {
     ok("faturamento.porFamiliaValor: soma bruta (R$) dos filhos, aditivo ao percentual existente");
   });
 
-  // 38b. Unidades vendidas no período (item e família) — mesmo agregado do
-  //      Motor que dá a receita. Sem venda no período: null, nunca 0.
+  // 38b. Unidades vendidas e preço MÉDIO vendido no período (item e família) —
+  //      mesmo agregado do Motor que dá a receita. Sem venda: null, nunca 0.
+  //      O médio divide só pelas unidades das linhas COM receita.
   await withMockDb(UMA_CONTA, async () => {
     reset();
     familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
@@ -1150,7 +1151,7 @@ async function run() {
       itens: [],
       porMlb: new Map([
         ["MLB-A", { receita: 114.9, unidades: 1 }],
-        ["MLB-F1", { receita: 200, unidades: 3 }],
+        ["MLB-F1", { receita: 200, unidades: 3, receitaCobertura: { unidadesComValor: 2 } }], // 1 un sem receita
         ["MLB-F2", { receita: 100, unidades: 1 }],
       ]),
       periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
@@ -1165,8 +1166,10 @@ async function run() {
     assert.strictEqual(f.porItemUnidades["MLB-A"], 1);
     assert.strictEqual(f.porItemUnidades["MLB-SEM"], null, "sem venda no período: null, nunca 0 inventado");
     assert.strictEqual(f.porFamiliaUnidades["FAM1"], 4, "3 + 1 unidades dos filhos");
-    assert.ok(!("porItemPrecoMedio" in f), "preço médio não volta (confundia o usuário)");
-    ok("faturamento: unidades vendidas por item/família (sem preço médio)");
+    assert.strictEqual(f.porItemPrecoMedio["MLB-A"], 114.9);
+    assert.strictEqual(f.porItemPrecoMedio["MLB-SEM"], null);
+    assert.strictEqual(f.porFamiliaPrecoMedio["FAM1"], 100, "300 ÷ 3 unidades COM receita (2 + 1), não ÷ 4");
+    ok("faturamento: unidades vendidas e preço médio por item/família (médio só sobre unidades com receita)");
   });
 
   // 39. familias ausente: zero chamada a resolverItensDeFamilias, comporta-

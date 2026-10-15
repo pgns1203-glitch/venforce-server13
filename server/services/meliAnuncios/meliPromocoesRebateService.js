@@ -318,6 +318,9 @@ function classificarItem({ referencia, candidatas }) {
       nome: c.nome || null,
       preco: round2(num(c.precoFinal)),
       subsidioMl: round2(num(c.subsidioMl)),
+      // Taxa de rebate do ML (meli_percentage sobre o preço original) — a tela
+      // mostra "Rebate ML x%" ao lado do valor em R$.
+      meliPercentage: round2(num(c.meliPercentage)),
       margemPercent: round2(c.margemRatio * 100),
       lucro: round2(c.lucro),
       ganhoMargemPp: round2((c.margemRatio - refM) * 100),
@@ -815,7 +818,11 @@ async function avaliarItem({ itemId, anuncio, naReferencia, referencia, custos, 
   if (!refPromo) return descartar(MOTIVOS.FORA_DA_REFERENCIA);
 
   const subsidioRef = num(refPromo.subsidioMl) > 0 ? num(refPromo.subsidioMl) : 0;
-  base.referencia = { preco: round2(num(refPromo.precoFinal)), subsidioMl: round2(subsidioRef), margemPercent: null, lucro: null };
+  base.referencia = {
+    preco: round2(num(refPromo.precoFinal)), subsidioMl: round2(subsidioRef),
+    meliPercentage: subsidioRef > 0 ? round2(num(refPromo.meliPercentage)) : null,
+    margemPercent: null, lucro: null,
+  };
 
   const { candidatas, motivo } = filtrarCandidatas(lido.promocoes, refPromo);
   if (!candidatas.length) return descartar(motivo);

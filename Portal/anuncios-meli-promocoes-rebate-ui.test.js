@@ -56,7 +56,7 @@ const REFERENCIAS = [
 
 function cand(pid, tipo, nome, preco, margem, lucro, gm, gl, extra) {
   return Object.assign({ promotionId: pid, tipo, tipoLabel: tipo === "SMART" ? "Campanha co-participada" : "Campanha do ML", nome,
-    preco, subsidioMl: 4.99, margemPercent: margem, lucro, ganhoMargemPp: gm, ganhoLucro: gl, fim: "2026-10-31T02:59:00Z",
+    preco, subsidioMl: 4.99, meliPercentage: 5, margemPercent: margem, lucro, ganhoMargemPp: gm, ganhoLucro: gl, fim: "2026-10-31T02:59:00Z",
     melhorMargem: false, melhorLucro: false }, extra || {});
 }
 const REF_VAL = { preco: 99.9, subsidioMl: 0, margemPercent: 12.3, lucro: 12.29 };
@@ -293,6 +293,7 @@ const q = (sel) => `document.querySelector(${JSON.stringify(sel)})`;
 const texto = (sel) => `((${q(sel)} || {}).textContent || "").replace(/\\s+/g, " ").trim()`;
 const clicar = (cdp, sel) => cdp.evaluate(`${q(sel)}.click()`);
 const contador = texto("[data-reb-contador]");
+const REC = (itemId) => `[data-reb-grupo-sec="recomendado"] [data-reb-item="${itemId}"]`;
 const escolhaMarcada = (itemId) => `(${q(`.am-reb-escolha[data-reb-item="${itemId}"] input[type=radio]:checked`)} || {}).value`;
 
 async function tecla(cdp, seletor, key) {
@@ -413,20 +414,34 @@ async function run() {
     // ── Passo 3: prévia ──────────────────────────────────────────────────────
     await check("V1 — resumo por grupo e Recomendados marcados por padrão", async () => {
       const r = await cdp.evaluate(texto("[data-reb-resumo]"));
-      assert.match(r, /2 recomendados/); assert.match(r, /2 para escolher/); assert.match(r, /1 sem ganho/); assert.match(r, /2 descartados/);
+      assert.match(r, /Recomendados 2/); assert.match(r, /Escolher margem ou lucro 2/); assert.match(r, /Sem ganho 1/); assert.match(r, /Descartados 2/);
+      assert.strictEqual(await cdp.evaluate(`${q('[data-reb-aba="recomendado"]')}.getAttribute("aria-selected")`), "true", "abre na aba Recomendados");
+      assert.match(await cdp.evaluate(texto(".am-reb-sub")), /Comparando com Vendex - Outubro · 7 anúncios analisados · trocar referência/);
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll("[data-reb-marcar]:checked").length`), 2);
       assert.strictEqual(await cdp.evaluate(contador), "2 participações selecionadas");
-      const linha = await cdp.evaluate(texto('tr[data-reb-item="MLB-R1"]'));
+      assert.match(await cdp.evaluate(texto(".am-reb-resumo-sel__det")), /2 recomendadas \+ 0 escolhidas · a Vendex - Outubro continua ativa em todos/);
+      assert.strictEqual(await cdp.evaluate(texto("#am-reb-participar")), "Participar de 2");
+      assert.match(await cdp.evaluate(texto(".am-reb-tab__cab")), /Hoje na Vendex/);
+      const linha = await cdp.evaluate(texto(REC("MLB-R1")));
       assert.match(linha, /MLB-R1/); assert.match(linha, /R\$ 99,90/); assert.match(linha, /12,3%/); assert.match(linha, /R\$ 12,29/);
-      assert.match(linha, /Smart Outubro/); assert.match(linha, /R\$ 94,90/); assert.match(linha, /subsídio ML R\$ 4,99/);
-      assert.match(linha, /14,1%/); assert.match(linha, /\+1,8 p\.p\./); assert.match(linha, /\+R\$ 1,09/);
-      assert.ok(await cdp.evaluate(`!!document.querySelector('tr[data-reb-item="MLB-R1"] .am-reb-ganho.is-pos')`));
+      assert.match(linha, /Smart Outubro/); assert.match(linha, /R\$ 94,90/); assert.match(linha, /\+ R\$ 4,99 ML/);
+      assert.match(linha, /\+1,8 p\.p\./); assert.match(linha, /\+R\$ 1,09/);
+      assert.ok(await cdp.evaluate(`!!document.querySelector('${REC("MLB-R1")} .am-reb-ganho.is-pos')`));
     });
-    await check("V2 — Escolha: 'Manter só a referência' por padrão; margem e lucro lado a lado + opção extra", async () => {
+    await check("V2 — Escolha: 'Só a Vendex' por padrão; margem e lucro lado a lado + opção extra", async () => {
+      await clicar(cdp, '[data-reb-aba="escolha"]');
+      await waitFor(cdp, q(".am-reb-escolha"), "aba Escolher não abriu");
+      assert.match(await cdp.evaluate(texto(".am-reb-rapida")), /Escolha rápida para os 2 anúncios/);
       assert.strictEqual(await cdp.evaluate(escolhaMarcada("MLB-E1")), "");
       assert.strictEqual(await cdp.evaluate(escolhaMarcada("MLB-E2")), "");
       const rotulos = await cdp.evaluate(`Array.from(document.querySelectorAll('.am-reb-escolha[data-reb-item="MLB-E1"] .am-reb-opcao__rotulo')).map(n => n.textContent)`);
-      assert.deepStrictEqual(rotulos, ["Maior margem", "Maior lucro", "Outra opção", "Manter só a referência"]);
+      assert.deepStrictEqual(rotulos, ["Só a Vendex", "Maior margem", "Maior lucro", "Outra opção"]);
+      const card = await cdp.evaluate(texto('.am-reb-escolha[data-reb-item="MLB-E1"]'));
+      assert.match(card, /Copo inox 500ml/); assert.match(card, /MLB-E1/);
+      assert.match(card, /Sem rebate/, "a Vendex sem subsídio mostra 'Sem rebate'");
+      assert.match(card, /Rebate ML 5,0%/); assert.match(card, /\+R\$ 4,99\/un/);
+      assert.match(card, /Margem/i); assert.match(card, /Lucro\/un/i); assert.match(card, /atual/);
+      await foto(cdp, "rebate-03b-escolha");
       assert.ok(await cdp.evaluate(`!!document.querySelector('.am-reb-escolha[data-reb-item="MLB-E1"] .am-reb-ganho.is-neg')`), "perda pintada");
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('.am-reb-escolha label.am-reb-opcao:not([for])').length`), 0, "toda opção tem label");
     });
@@ -439,27 +454,39 @@ async function run() {
       assert.strictEqual(await cdp.evaluate(escolhaMarcada("MLB-E1")), "P-3L");
       assert.strictEqual(await cdp.evaluate(escolhaMarcada("MLB-E2")), "", "a sugestão por lucro não melhora o lucro → mantém a referência");
       assert.strictEqual(await cdp.evaluate(contador), "3 participações selecionadas");
+      assert.strictEqual(await cdp.evaluate(`${q("#am-reb-pref-lucro")}.getAttribute("aria-checked")`), "true");
+      await clicar(cdp, "#am-reb-pref-ref");
+      assert.strictEqual(await cdp.evaluate(escolhaMarcada("MLB-E1")), "");
+      assert.strictEqual(await cdp.evaluate(contador), "2 participações selecionadas");
+      await clicar(cdp, "#am-reb-pref-lucro");
+      assert.strictEqual(await cdp.evaluate(contador), "3 participações selecionadas");
     });
     await check("V4 — rádio e checkbox individuais atualizam o contador", async () => {
       await clicar(cdp, '.am-reb-escolha[data-reb-item="MLB-E2"] input[value="P-4L"]');
       assert.strictEqual(await cdp.evaluate(contador), "4 participações selecionadas");
+      assert.strictEqual(await cdp.evaluate(`${q("#am-reb-pref-lucro")}.getAttribute("aria-checked")`), "false", "troca manual desmarca a escolha rápida");
       await clicar(cdp, '.am-reb-escolha[data-reb-item="MLB-E2"] input[value=""]');
+      await clicar(cdp, '[data-reb-aba="recomendado"]');
       await clicar(cdp, '[data-reb-marcar="MLB-R2"]');
       assert.strictEqual(await cdp.evaluate(contador), "2 participações selecionadas");
       await clicar(cdp, '[data-reb-marcar="MLB-R2"]');
       assert.strictEqual(await cdp.evaluate(contador), "3 participações selecionadas");
     });
-    await check("V5 — Sem ganho e Descartados recolhidos, com motivo amigável (ou motivoTexto)", async () => {
-      assert.strictEqual(await cdp.evaluate(`document.querySelectorAll("details[data-reb-grupo]").length`), 2);
-      assert.strictEqual(await cdp.evaluate(`Array.from(document.querySelectorAll("details[data-reb-grupo]")).some(d => d.open)`), false);
+    await check("V5 — abas Sem ganho e Descartados, com motivo amigável (ou motivoTexto)", async () => {
+      await clicar(cdp, '[data-reb-aba="descartado"]');
+      await waitFor(cdp, q('[data-reb-grupo="descartado"]'), "aba Descartados não abriu");
       assert.match(await cdp.evaluate(texto('[data-reb-grupo="descartado"] [data-reb-item="MLB-D1"]')), /Sem custo na Base de custos/);
       assert.match(await cdp.evaluate(texto('[data-reb-grupo="descartado"] [data-reb-item="MLB-D2"]')), /Texto do servidor <i>sem HTML<\/i>/);
+      await clicar(cdp, '[data-reb-aba="sem_ganho"]');
+      await waitFor(cdp, q('[data-reb-grupo="sem_ganho"]'), "aba Sem ganho não abriu");
       assert.match(await cdp.evaluate(texto('[data-reb-grupo="sem_ganho"]')), /Pote hermético/);
+      assert.strictEqual(await cdp.evaluate(contador), "3 participações selecionadas", "trocar de aba não perde escolhas");
+      await clicar(cdp, '[data-reb-aba="recomendado"]');
     });
     await check("V6 — escape de HTML em todo dado da API (título, nome de promoção, thumbnail)", async () => {
       assert.strictEqual(await cdp.evaluate(`window.__rebXss`), undefined);
-      assert.match(await cdp.evaluate(texto('tr[data-reb-item="MLB-R2"]')), /<img src=x onerror=/);
-      assert.match(await cdp.evaluate(texto('tr[data-reb-item="MLB-R2"]')), /Campanha <ML>/);
+      assert.match(await cdp.evaluate(texto(REC("MLB-R2"))), /<img src=x onerror=/);
+      assert.match(await cdp.evaluate(texto(REC("MLB-R2"))), /Campanha <ML>/);
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('.am-reb-box img').length`), 0, "thumbnail não-http não vira <img>");
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll('.am-reb-box i, .am-reb-box b').length`), 0);
     });

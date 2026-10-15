@@ -142,8 +142,8 @@ fórmula nova e sem chute:
 
 ## 4. Freshness e stale-while-revalidate
 
-`fresh_until = snapshot_at + PROMO_SNAPSHOT_FRESH_MINUTES`. O default de 360 min reaproveita a
-variável da tela antiga.
+`fresh_until = snapshot_at + PROMO_SNAPSHOT_FRESH_MINUTES`. O default é 720 min (12 h) e reaproveita
+o nome da variável da tela antiga.
 
 `ensureFreshPromoSnapshot(conta)` nunca executa o scan: só enfileira e devolve na hora.
 
@@ -211,6 +211,12 @@ Não há cron novo. O `promoSnapshotRuntime` sobe no boot (`server/index.js`) s�
 
 - **Worker:** o genérico `marginSnapshotWorker` com o processor e o run service do Promo Snapshot,
   com polling leve do banco.
+- **Piloto (allowlist):** `PROMO_SNAPSHOT_CLIENTES` (slugs de cliente separados por vírgula, sem
+  distinção de caixa; vazio = nenhum). Ligar o worker sem a lista **não sincroniza conta nenhuma**.
+  A regra é uma só (`avaliarPiloto`) e vale nos três pontos que enfileiram: o orquestrador (e
+  `listarContasElegiveis`, no SQL), o auto-trigger ao abrir a Central e o `POST /promocoes/sync`.
+  Conta fora da lista → estado `fora_do_piloto` (motivo `FORA_DO_PILOTO`, `PILOTO_VAZIO` ou
+  `WORKER_DESABILITADO`) e nada é enfileirado. O slug é o de `clientes.slug` (ex.: `red_fish`).
 - **Orquestrador:** a cada `PROMO_SNAPSHOT_ORCHESTRATOR_INTERVAL_MS`, enfileira até
   `PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK` contas elegíveis, vencidas primeiro. Elegível
   significa:
@@ -267,11 +273,12 @@ ganhou `page`, `total` e `hasNext`.
 | Env | Default | Efeito |
 |---|---|---|
 | `PROMO_SNAPSHOT_WORKER_ENABLED` | `false` | liga worker + orquestrador + auto-enqueue |
-| `PROMO_SNAPSHOT_FRESH_MINUTES` | 360 | frescor do snapshot (reaproveitada da tela antiga) |
+| `PROMO_SNAPSHOT_CLIENTES` | vazio (= nenhum) | allowlist de clientes (slugs, vírgula) que podem ser sincronizados |
+| `PROMO_SNAPSHOT_FRESH_MINUTES` | 720 | frescor do snapshot (nome reaproveitado da tela antiga) |
 | `PROMO_SNAPSHOT_WORKER_CONCURRENCY` | 1 (≤3) | runs simultâneos por processo |
 | `PROMO_SNAPSHOT_WORKER_POLL_MS` | 15000 | polling de runs de outra instância |
-| `PROMO_SNAPSHOT_ITEM_CONCURRENCY` | 3 (≤8) | leituras paralelas por lote |
-| `PROMO_SNAPSHOT_REQUEST_INTERVAL_MS` | 100 | espaçamento mínimo entre requisições no processo |
+| `PROMO_SNAPSHOT_ITEM_CONCURRENCY` | 2 (≤8) | leituras paralelas por lote |
+| `PROMO_SNAPSHOT_REQUEST_INTERVAL_MS` | 250 | espaçamento mínimo entre requisições no processo |
 | `PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS` | 15000 | timeout real por requisição (limitado a 1/4 da janela de stale) |
 | `PROMO_SNAPSHOT_BATCH_SIZE` | 20 | anúncios por lote |
 | `PROMO_SNAPSHOT_MAX_ATTEMPTS` / `_BACKOFF_BASE_MS` / `_BACKOFF_MAX_MS` / `_RETRY_AFTER_MAX_MS` | 3 / 2000 / 30000 / 120000 | retry |
@@ -284,7 +291,7 @@ ganhou `page`, `total` e `hasNext`.
 | `PROMO_SNAPSHOT_INHERIT_MAX_MINUTES` | 4320 | idade máxima da leitura boa herdada por item que falhou (0 desliga) |
 | `PROMO_SAME_CLIENT_COOLDOWN_MINUTES` | 15 | cooldown do POST de sync (agora por conta) |
 | `PROMO_SNAPSHOT_FAILED_RETRY_MINUTES` | 30 | espera do auto-trigger/orquestrador depois de falha |
-| `PROMO_SNAPSHOT_ORCHESTRATOR_INTERVAL_MS` / `_MAX_PER_TICK` | 300000 / 5 | orquestrador |
+| `PROMO_SNAPSHOT_ORCHESTRATOR_INTERVAL_MS` / `_MAX_PER_TICK` | 300000 / 1 | orquestrador |
 | `PROMO_SNAPSHOT_RESOLVE_ACTIVE` / `_RESOLVE_VIGENCIA` | `true` / `true` | enriquecimentos opcionais |
 
 ## 11. Observabilidade
@@ -308,6 +315,25 @@ Todos carregam `cliente_id`, `cliente_conta_id`, `seller_id` e `run_id`; os de c
   - a leitura do último snapshot filtra pelo seller da conta.
 - A Central lê o diagnóstico legado só enquanto a conta não tem Promo Snapshot (`fonte.tipo =
   diagnostico_legado`).
+- **Fonte única (aba Promoções × Bancada).** `listarOportunidades` e `POST /api/margem/simular`
+  devolvem o MESMO `fontePromocoes` (`promoSnapshotFonte.montarFontePromocoes`) e o Portal só o
+  renderiza (`central-margem-promo-fonte.js`):
+
+  | `estado` | rótulo | dados exibidos |
+  |---|---|---|
+  | `fora_do_piloto` | Promoções automáticas não ativadas para esta conta | último bom, se houver |
+  | `primeira_sincronizacao_pendente` | Primeira sincronização pendente | — (ou legado) |
+  | `sincronizando` | Sincronizando promoções… | último bom, se houver |
+  | `desatualizado` | atualizando | último bom + data |
+  | `falhou` | falha na atualização · motivo | último bom, se houver |
+  | `atualizado` | — | snapshot + data |
+
+  O legado só aparece quando a conta NÃO tem snapshot, rotulado `diagnóstico legado · data`. Na
+  Bancada as promoções dele chegam com `promocao.estimativa = true` e o botão de participar fica
+  desabilitado, com o motivo visível. Uma conta nunca vê o snapshot de outra (identidade = conta +
+  seller), mesmo do mesmo cliente.
+- `refreshMlGrant` (mlTokenService) não segura mais conexão do pool durante o POST OAuth: o advisory
+  lock do grant fica numa conexão dedicada fora do pool e o POST tem timeout de 15 s.
 - `marginSnapshotWorker` ganhou opções compatíveis (nomes de evento, campos extras de log e
   repasse do resultado do processor). O Margin Snapshot continua igual.
 

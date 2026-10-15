@@ -17,6 +17,10 @@ const {
   contarResponsaveisAtivos,
 } = require("./squadsRepository");
 
+// Função dentro do Squad. 'gestor' dá a carteira do Squad no Painel de Contas
+// (painelContasAcesso); administrar o Squad continua só do coordenador.
+const FUNCOES_SQUAD = Object.freeze(["membro", "gestor", "coordenador"]);
+
 // Quando um Cliente muda de Squad, as responsabilidades (gestor/auxiliar/
 // designer) cujo titular NÃO é membro do Squad de destino são encerradas —
 // não podem seguir apontando silenciosamente para quem perdeu o acesso
@@ -141,8 +145,8 @@ async function adicionarMembro(squadId, userId, { funcao = "membro", isPrimary =
   await ensureSquadsTables();
   const sid = Number(squadId);
   const uid = Number(userId);
-  if (!["membro", "coordenador"].includes(funcao)) {
-    throw erro(400, "FUNCAO_INVALIDA", "funcao deve ser 'membro' ou 'coordenador'.");
+  if (!FUNCOES_SQUAD.includes(funcao)) {
+    throw erro(400, "FUNCAO_INVALIDA", "funcao deve ser 'membro', 'gestor' ou 'coordenador'.");
   }
 
   const client = await pool.connect();
@@ -289,8 +293,8 @@ async function definirPrincipal(squadId, userId, actorId = null) {
 
 async function definirFuncao(squadId, userId, funcao, actorId = null) {
   await ensureSquadsTables();
-  if (!["membro", "coordenador"].includes(funcao)) {
-    throw erro(400, "FUNCAO_INVALIDA", "funcao deve ser 'membro' ou 'coordenador'.");
+  if (!FUNCOES_SQUAD.includes(funcao)) {
+    throw erro(400, "FUNCAO_INVALIDA", "funcao deve ser 'membro', 'gestor' ou 'coordenador'.");
   }
   const { rows } = await pool.query(
     `UPDATE squad_members SET funcao = $1, updated_at = NOW()

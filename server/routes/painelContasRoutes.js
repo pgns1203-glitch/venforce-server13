@@ -5,7 +5,7 @@
 // logo acessa"). Papel: authMiddleware + requireAutomacoesAccess
 // (admin/user/membro; seller/shopee_reviewer não entram). Depois:
 //   LEITURA  → escopo próprio do Painel (painelContasAcesso: admin, coordenador
-//              do Squad, gestor do cliente), independente de SQUADS_ENFORCEMENT;
+//              ou gestor do Squad, gestor do cliente), independente de SQUADS_ENFORCEMENT;
 //   ESCRITA  → carteira global (requireClienteNaCarteira) E o escopo do Painel
 //              (no service) — interseção, nunca ampliação;
 //   ATUALIZAR → admin + carteira, como antes.

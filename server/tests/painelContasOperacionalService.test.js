@@ -329,6 +329,19 @@ async function run() {
     await rejeita("L: e o servidor recusa o lançamento", service.salvarLancamentoManual(U.dani, "3", "31", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
     m.responsaveis = [];
 
+    // Gestor do Squad (funcao 'gestor' em squad_members): mesma carteira do
+    // coordenador, sem precisar de cliente_responsaveis.
+    const membroDani = m.members.find((x) => x.user_id === 500);
+    membroDani.funcao = "gestor";
+    const listaGestorSquad = await service.listar(U.dani, { competencia: SET });
+    eq("L: gestor do Squad vê os clientes do Squad", slugs(listaGestorSquad), ["fora-da-carteira"]);
+    eq("L: a resposta diz que vem da gestão do Squad, não da coordenação",
+      [listaGestorSquad.acesso.squadsGeridos.map((x) => x.nome), listaGestorSquad.acesso.squadsCoordenados], [["Squad 2"], []]);
+    ok("L: gestor do Squad lê o histórico do cliente do Squad", (await service.listarMeses(U.dani, "6")).ok === true);
+    await rejeita("L: gestor do Squad não lê cliente de outro Squad", service.listarMeses(U.dani, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    membroDani.funcao = "membro";
+    await rejeita("L: voltar a membro tira o acesso", service.listar(U.dani, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+
     // Squad inativo e membership inativa não dão acesso.
     m.squads.find((sq) => sq.id === 20).ativo = false;
     await rejeita("L: coordenador de Squad inativo perde o acesso", service.listar(U.beto, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");

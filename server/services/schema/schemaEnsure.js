@@ -338,6 +338,17 @@ const MIGRATIONS_INVENTARIO = [
     rollback: "DROP COLUMN das colunas novas",
   },
   {
+    arquivo: "20261015_squad_members_funcao_gestor.sql",
+    descricao: "CHECK de squad_members.funcao passa a aceitar 'gestor'",
+    tipo: "aditiva",
+    auto: true,
+    runner: "squadsRepository.ensureSquadsTables",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito: "20260827_squads_foundation.sql",
+    rollback: "funcao 'gestor' → 'membro' e recriar o CHECK com ('membro', 'coordenador')",
+  },
+  {
     arquivo: "20260817_cliente_contas_foundation.sql",
     descricao: "cria cliente_contas + backfill determinístico a partir de ml_tokens",
     tipo: "aditiva + backfill",

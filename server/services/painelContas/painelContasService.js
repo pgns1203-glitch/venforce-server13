@@ -291,6 +291,7 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     acesso: {
       tipo: acesso.tipo,
       squadsCoordenados: acesso.squadsCoordenados,
+      squadsGeridos: acesso.squadsGeridos,
       clientesComoGestor: acesso.clientesComoGestor,
     },
     resumoCarteira: resumirCarteira(noMarketplace, legadoOcultos),

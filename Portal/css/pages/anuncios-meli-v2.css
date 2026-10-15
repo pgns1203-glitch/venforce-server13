@@ -676,7 +676,18 @@
 .vf-page-anuncios-meli .am-row__badges {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
+}
+
+/* Logo oficial do Full no lugar da vf-tag: mesma altura visual das tags
+   vizinhas, largura pela proporção da imagem. */
+.vf-page-anuncios-meli .am-selo-full {
+  display: block;
+  flex: none;
+  width: auto;
+  height: 12px;
+  margin: 0 4px;
 }
 
 /* ------------------------------------------------------------
@@ -934,6 +945,7 @@
 .vf-page-anuncios-meli .am-mlb__badges {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
 }
 

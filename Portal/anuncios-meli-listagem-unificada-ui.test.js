@@ -137,6 +137,8 @@ const LINHAS_CONTA_42 = [
     total_user_products: 3, total_itens: 4,
     estoque_total: ESTOQUE_FAM1, vendidos_total: 31,
     preco_min: 89.9, preco_max: 129.9, moeda: "BRL", score_min: 40,
+    // Promoção só no anúncio do mínimo: o máximo NÃO pode herdar este cheio.
+    preco_min_original: 109.9, preco_max_original: null,
     status_contagem: { ativos: 4, pausados: 0, encerrados: 0 },
     cover: { thumbnail: CAPA_FAM1, user_product_id: "MLBU-200" },
   },
@@ -148,6 +150,7 @@ const LINHAS_CONTA_42 = [
     total_user_products: 1, total_itens: 1,
     estoque_total: 12, vendidos_total: 0,
     preco_min: 39.9, preco_max: 39.9, moeda: "BRL", score_min: 80,
+    preco_min_original: 49.9, preco_max_original: 49.9,
     status_contagem: { ativos: 1, pausados: 0, encerrados: 0 },
     cover: { thumbnail: null, user_product_id: "MLBU-300" },
   },
@@ -884,6 +887,34 @@ async function run() {
       assert.ok(/3 variações/.test(t), `não resumiu as variações: ${JSON.stringify(t)}`);
       assert.ok(/4 anúncios/.test(t), `não resumiu os anúncios: ${JSON.stringify(t)}`);
       assert.ok(/89,90/.test(t) && /129,90/.test(t), `a faixa de preço não apareceu: ${JSON.stringify(t)}`);
+    });
+
+    await check("5b — agrupador: faixa no desenho da margem (mín em cima, máx embaixo), cada extremo com o SEU cheio riscado; valor único usa a célula do MLB", async () => {
+      const r = await cdp.evaluate(`(function(){
+        function cel(id){ return document.querySelector('.am-row--grupo[data-familia="' + id + '"] .am-row__preco'); }
+        var f1 = cel("FAM-1"), f2 = cel("FAM-2");
+        var pontas = Array.prototype.map.call(f1.querySelectorAll('.am-preco-faixa__ponta'), function (p) {
+          var cheio = p.querySelector('.am-preco-faixa__cheio');
+          return { faixa: p.getAttribute('data-faixa'),
+                   valor: p.querySelector('.am-preco-faixa__valor').textContent.trim(),
+                   cheio: cheio ? cheio.textContent.trim() : null,
+                   riscado: cheio ? getComputedStyle(cheio).textDecorationLine : null };
+        });
+        return {
+          pontas: pontas,
+          f2Promo: f2.classList.contains('am-row__preco--promo'),
+          f2Original: (f2.querySelector('.am-row__preco-original') || {}).textContent,
+          f2Atual: (f2.querySelector('.am-row__preco-atual') || {}).textContent,
+        };
+      })()`);
+      assert.deepStrictEqual(r.pontas.map((p) => [p.faixa, p.valor, p.cheio]), [
+        ["min", "R$ 89,90", "R$ 109,90"],
+        ["max", "R$ 129,90", null],
+      ], "o máximo sem promoção não pode herdar o cheio do mínimo");
+      assert.ok(/line-through/.test(r.pontas[0].riscado), "o cheio da faixa precisa sair riscado");
+      assert.ok(r.f2Promo, "família de preço único em promoção usa a célula --promo do MLB");
+      assert.strictEqual(r.f2Original, "R$ 49,90");
+      assert.strictEqual(r.f2Atual, "R$ 39,90");
     });
 
     /* ── 6 e 7: nada abre sozinho; só o agrupador expande ───────────────── */

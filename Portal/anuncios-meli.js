@@ -985,14 +985,94 @@
   // Preço do agrupador. "Preço por variação" é o nome da própria iniciativa do
   // ML: uma família existe justamente para ter preços diferentes por variação.
   // Faixa quando os extremos diferem, valor único quando coincidem.
-  function precoGrupoHtml(f) {
-    var min = f.preco_min, max = f.preco_max;
-    if (min === null || min === undefined) return "—";
-    if (max === null || max === undefined || Number(min) === Number(max)) {
-      return escapeHtml(formatMoeda(min, f.moeda));
+  //
+  // Cada extremo carrega o preço cheio do MESMO anúncio que o gerou — nunca
+  // um cheio de outro filho — para o riscado da família dizer a mesma coisa
+  // que o riscado do MLB. Fonte: os extremos que a listagem já traz
+  // (preco_min/preco_max + preco_min_original/preco_max_original); depois
+  // que a família é expandida e o Motor responde pelos filhos, os filhos
+  // (AM.state.familyCache) com a mesma regra de celulaPrecoHtml — a linha-mãe
+  // passa a riscar também a promoção que só existe no sale_price ao vivo.
+  function numeroOuNulo(v) {
+    if (v === null || v === undefined || v === "") return null;
+    var n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+
+  function precoAtualECheioDoItem(a) {
+    var cache = AM.state.performanceCache[a.item_id];
+    var m = cache && cache.margem;
+    var atual = numeroOuNulo(m && m.precoAtual != null ? m.precoAtual : a.preco);
+    var cheioBruto = cache && cache.temMargem
+      ? numeroOuNulo(m && m.precoOriginal)
+      : numeroOuNulo(a.preco_original);
+    return { atual: atual, cheio: precoCheioReal(atual, cheioBruto) };
+  }
+
+  function extremosPrecoGrupo(f) {
+    var pares = [];
+    var familia = AM.state.familyCache[f.family_id];
+    var itens = [];
+    if (familia) {
+      (familia.user_products || []).forEach(function (up) { itens = itens.concat(up.itens || []); });
     }
-    return '<span class="am-row__faixa">' + escapeHtml(formatMoeda(min, f.moeda)) +
-      "<small>até " + escapeHtml(formatMoeda(max, f.moeda)) + "</small></span>";
+    // Os filhos só assumem quando o Motor já respondeu por algum deles
+    // (família expandida): antes disso o agregado da listagem é o mesmo
+    // snapshot, e trocar de fonte só por causa do pré-carregamento em
+    // background faria a célula piscar sem nenhum dado novo.
+    var aoVivo = itens.some(function (item) {
+      var c = AM.state.performanceCache[item.item_id];
+      return !!(c && c.temMargem);
+    });
+    if (aoVivo) {
+      itens.forEach(function (item) {
+        var p = precoAtualECheioDoItem(item);
+        if (p.atual != null) pares.push(p);
+      });
+    }
+    if (!pares.length) {
+      [[f.preco_min, f.preco_min_original], [f.preco_max, f.preco_max_original]].forEach(function (par) {
+        var atual = numeroOuNulo(par[0]);
+        if (atual != null) pares.push({ atual: atual, cheio: precoCheioReal(atual, numeroOuNulo(par[1])) });
+      });
+    }
+    if (!pares.length) return null;
+    // Empate no vigente: fica o par COM riscado (o maior cheio).
+    var melhor = function (a, b, maior) {
+      if (a.atual !== b.atual) return (maior ? b.atual > a.atual : b.atual < a.atual) ? b : a;
+      return (b.cheio || 0) > (a.cheio || 0) ? b : a;
+    };
+    return {
+      min: pares.reduce(function (acc, p) { return melhor(acc, p, false); }),
+      max: pares.reduce(function (acc, p) { return melhor(acc, p, true); }),
+    };
+  }
+
+  // Valor único: a MESMA célula do MLB (riscado em cima, vigente embaixo).
+  // Faixa: mesmo desenho da faixa de margem (margemFaixaFamiliaHtml) —
+  // mínimo em cima, máximo embaixo, cada vigente com o seu cheio riscado
+  // logo abaixo, no lugar em que a margem mostra o lucro.
+  function precoGrupoHtml(f) {
+    var classe = "am-row__preco";
+    var ext = extremosPrecoGrupo(f);
+    if (!ext) return '<span class="' + classe + '">—</span>';
+    if (ext.min.atual === ext.max.atual) {
+      var p = ext.min.cheio ? ext.min : ext.max;
+      return '<span class="' + classe + (p.cheio ? " " + classe + "--promo" : "") + '">' +
+        precoCelulaConteudoHtml(classe, p.atual, p.cheio, f.moeda) + "</span>";
+    }
+    var ponta = function (faixa, par) {
+      return '<span class="am-preco-faixa__ponta" data-faixa="' + faixa + '">' +
+        '<span class="am-preco-faixa__valor">' + escapeHtml(formatMoeda(par.atual, f.moeda)) + "</span>" +
+        (par.cheio
+          ? '<span class="am-preco-faixa__cheio" title="Preço cheio, antes da promoção">' +
+              escapeHtml(formatMoeda(par.cheio, f.moeda)) + "</span>"
+          : "") +
+      "</span>";
+    };
+    return '<span class="' + classe + ' am-preco-faixa" ' +
+      'title="Faixa de preço dos anúncios desta família (mínimo em cima, máximo embaixo)">' +
+      ponta("min", ext.min) + ponta("max", ext.max) + "</span>";
   }
 
   // Uma linha de agrupador, na MESMA grade de 11 colunas de rowAnuncioHtml.
@@ -1039,7 +1119,7 @@
       "</div>" +
       '<span class="vf-status ' + st.classe + '"' +
         (st.titulo ? ' title="' + escapeAttr(st.titulo) + '"' : "") + ">" + st.label + "</span>" +
-      '<span class="am-row__preco">' + precoGrupoHtml(f) + "</span>" +
+      precoGrupoHtml(f) +
       // A soma que dá sentido ao agrupador: estoque por User Product distinto.
       '<span class="am-row__num" title="Soma do estoque das ' +
         escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +

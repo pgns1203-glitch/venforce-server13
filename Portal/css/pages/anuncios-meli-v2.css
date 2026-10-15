@@ -709,19 +709,30 @@
 }
 
 /* Faixa de preço do agrupador: "preço por variação" é o nome da
-   iniciativa do ML, então a família tem extremos, não um preço. O
-   limite superior entra como linha secundária para não competir em
-   peso com o número principal da coluna. */
-.vf-page-anuncios-meli .am-row__faixa {
+   iniciativa do ML, então a família tem extremos, não um preço. Mesmo
+   desenho da faixa de margem (.am-margem--faixa): mínimo em cima, máximo
+   embaixo, os dois com o peso da coluna, e o cheio riscado de cada um
+   logo abaixo dele, com o mesmo recuo leve do lucro (.am-margem__lucro). */
+.vf-page-anuncios-meli .am-preco-faixa {
   display: flex;
   flex-direction: column;
+  row-gap: var(--vf-sp-1);
   line-height: 1.2;
 }
 
-.vf-page-anuncios-meli .am-row__faixa small {
+.vf-page-anuncios-meli .am-preco-faixa__ponta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-preco-faixa__cheio {
+  padding-left: 6px;
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-medium);
   color: var(--vf-text-muted);
+  text-decoration: line-through;
+  white-space: nowrap;
 }
 
 /* Painel do agrupador. Sem fundo, sem recuo e sem raio: o conteúdo

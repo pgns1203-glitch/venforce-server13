@@ -4117,7 +4117,7 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 
 .am-reb-tab__linha {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 160px 220px 110px;
+  grid-template-columns: 32px minmax(0, 1fr) 170px 240px;
   gap: var(--vf-sp-3);
   align-items: center;
   padding: 14px 0;
@@ -4132,7 +4132,6 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   text-transform: uppercase;
   color: var(--vf-text-muted);
 }
-.am-reb-tab__cab .am-reb-col-ganho { text-align: right; }
 
 .am-reb-tab input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--vf-primary); }
 
@@ -4143,7 +4142,7 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 /* Margem · lucro na promoção com rebate: mesmo peso visual do preço, para
    comparar direto com a coluna Hoje. */
 .am-reb-celula__metricas { font-weight: var(--vf-fw-semibold); color: var(--vf-text); white-space: nowrap; }
-.am-reb-celula--ganho { align-items: flex-end; font-weight: var(--vf-fw-semibold); }
+.am-reb-celula__ganho { font-size: var(--vf-fs-xs); color: var(--vf-text-muted); white-space: nowrap; }
 
 .am-reb-ganho { font-weight: var(--vf-fw-semibold); color: var(--vf-text-muted); white-space: nowrap; }
 .am-reb-ganho.is-pos { color: var(--vf-success); }
@@ -4305,7 +4304,6 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   color: var(--vf-success-strong);
   white-space: nowrap;
 }
-.am-reb-rebate__taxa { font-weight: var(--vf-fw-medium); color: var(--vf-success); }
 
 /* Abas Sem ganho / Descartados e execução */
 .am-reb-lista { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
@@ -4358,7 +4356,6 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   .am-reb-tab__cab { display: none; }
   .am-reb-tab__linha { grid-template-columns: 24px minmax(0, 1fr); row-gap: var(--vf-sp-2); }
   .am-reb-tab__linha > .am-reb-celula { grid-column: 2; }
-  .am-reb-celula--ganho { align-items: flex-start; flex-direction: row; gap: var(--vf-sp-3); }
   .am-reb-opcoes { grid-template-columns: minmax(0, 1fr); }
   .am-reb-rodape .vf-btn { flex: 1 1 auto; }
 }

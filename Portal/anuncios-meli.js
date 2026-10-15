@@ -5493,7 +5493,6 @@
         '<span role="columnheader">Anúncio</span>' +
         '<span role="columnheader">Hoje</span>' +
         '<span role="columnheader">Com rebate</span>' +
-        '<span role="columnheader" class="am-reb-col-ganho">Ganho</span>' +
       "</div>" +
       rec.map(function (it, i) {
         var s = it.sugestao || {};
@@ -5512,11 +5511,11 @@
           '<span role="cell" class="am-reb-celula am-reb-celula--nova">' + (c
             ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(c.subsidioMl) + " ML</span></span>" +
               '<span class="am-reb-celula__metricas" data-reb-com-rebate>' + rebPct(c.margemPercent) + " · " + formatMoeda(c.lucro) + "</span>" +
+              // Ganho logo abaixo dos valores: quanto a margem e o lucro sobem.
+              '<span class="am-reb-celula__ganho" data-reb-ganho>' + rebGanhoHtml(c.ganhoMargemPp, "pp") +
+                '<span aria-hidden="true"> · </span>' + rebGanhoHtml(c.ganhoLucro, "rs", "/un") + "</span>" +
               '<span class="am-reb-celula__fraco"' + (c.tipoLabel ? ' title="' + escapeAttr(c.tipoLabel) + '"' : "") + ">" + escapeHtml(c.nome || c.promotionId) + "</span>"
             : "—") + "</span>" +
-          '<span role="cell" class="am-reb-celula am-reb-celula--ganho">' + (c
-            ? rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs", "/un")
-            : "") + "</span>" +
           "</div>";
       }).join("") + "</div>";
   }
@@ -5553,10 +5552,9 @@
   }
 
   // Rebate pequeno sob o preço de venda — só quando a promoção tem subsídio.
-  function rebRebateHtml(subsidio, pct) {
+  function rebRebateHtml(subsidio) {
     if (!(rebNum(subsidio) > 0)) return "";
-    return '<span class="am-reb-rebate"><span>+' + formatMoeda(subsidio) + "/un</span>" +
-      '<span class="am-reb-rebate__taxa">Rebate ML' + (rebNum(pct) !== null ? " " + rebPct(pct) : "") + "</span></span>";
+    return '<span class="am-reb-rebate">+' + formatMoeda(subsidio) + "/un</span>";
   }
 
   function rebOpcaoHtml(o, nomeRadio, id, itemId, atual) {
@@ -5567,7 +5565,7 @@
         '<span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
       '<span class="am-reb-metricas">' +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Preço de venda</span>' +
-          '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebRebateHtml(o.subsidio, o.pct) + "</span>" +
+          '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebRebateHtml(o.subsidio) + "</span>" +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Margem</span>' +
           '<span class="am-reb-metrica__valor">' + rebPct(o.margem) + "</span>" + rebDeltaHtml(o.dMargem, "pp") + "</span>" +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Lucro/un</span>' +

@@ -317,7 +317,9 @@ function measure() {
   return {
     cardWidth: rect.width, clientWidth: card.clientWidth, scrollWidth: card.scrollWidth, outside, scroll,
     tokens: oneLine(".am-row__ids > *, .am-row__badges .vf-tag, .am-mlb .vf-tag, .am-mlb__cond, .vf-status, .am-margem__valor, .am-metricas7d__linha", true),
-    headings: oneLine(".am-listagem__head span"), kpiRows: Object.values(rows), grids,
+    // Colunas com período (Vendidos/Faturamento/Métricas) têm 2 linhas de
+    // propósito: rótulo + período. A regra "uma linha" vale para CADA uma delas.
+    headings: oneLine(".am-listagem__head > span:not(.am-listagem__head-col), .am-listagem__head-col > *"), kpiRows: Object.values(rows), grids,
   };
 }
 

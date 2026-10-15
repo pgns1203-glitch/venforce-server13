@@ -187,6 +187,10 @@ router.get("/familias/:familyId", ctrl.detalheFamilia);
 // existentes, não escreve em nada. Ver meliMetricas7dService/motorMargemService.
 router.get("/performance", ctrl.performance);
 
+// Preço vigente + cheio AO VIVO (só sale_price, sem Motor) — a linha da família
+// risca a promoção antes de expandir. Read-only. Ver meliPrecoAoVivoService.
+router.get("/precos-ao-vivo", ctrl.precosAoVivo);
+
 // "Promoções com rebate" (ver meliPromocoesRebateService e
 // docs/specs/2026-10-15-anuncios-ml-promocoes-rebate.md): para os anúncios que
 // já estão numa promoção de referência, procura promoções com subsídio do ML

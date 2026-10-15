@@ -4390,3 +4390,35 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 .vf-page-anuncios-meli .am-estoque[data-estoque-cobertura] .am-cobertura-alvo {
   padding-left: var(--vf-sp-1);
 }
+
+/* Cabeçalho com período: Vendidos (total), Faturamento (janela do Motor) e
+   Métricas (7 dias) olham períodos diferentes — o período fica embaixo do
+   rótulo, em minúsculas, para não competir com ele. */
+.vf-page-anuncios-meli .am-listagem__head-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.vf-page-anuncios-meli .am-listagem__head .am-listagem__head-periodo {
+  font-size: var(--vf-fs-2xs);
+  white-space: nowrap;
+  font-weight: var(--vf-fw-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Unidades vendidas no período; "↓" quando o preço médio vendido ficou
+   abaixo do preço atual (o title explica). */
+.vf-page-anuncios-meli .am-faturamento__un {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+  cursor: help;
+}
+
+.vf-page-anuncios-meli .am-faturamento__un.is-abaixo {
+  color: var(--vf-warning-strong);
+  font-weight: var(--vf-fw-medium);
+}

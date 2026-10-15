@@ -408,6 +408,8 @@ async function montarAnunciosDeRows(rows, { clienteId, clienteContaId = null, in
         vendidos_total: r.vendidos_total,
         preco_min: r.preco_min,
         preco_max: r.preco_max,
+        preco_min_original: r.preco_min_original,
+        preco_max_original: r.preco_max_original,
         moeda: r.moeda,
         score_min: r.score_min,
         status_contagem: {
@@ -492,7 +494,7 @@ async function listarAgrupado({
     -- LISTAR_AGRUPADO_PAGINA
     WITH base AS (
       SELECT a.item_id, a.user_product_id, a.titulo, a.sku, a.status,
-             a.preco, a.moeda, a.estoque, a.vendidos, a.score_venforce,
+             a.preco, a.preco_original, a.moeda, a.estoque, a.vendidos, a.score_venforce,
              a.score_motivo, a.pictures_count, a.is_full, a.revisado,
              a.updated_at,
              up.family_id,
@@ -532,6 +534,10 @@ async function listarAgrupado({
              SUM(COALESCE(b.vendidos, 0))::int               AS vendidos_total,
              MIN(b.preco)                                    AS preco_min,
              MAX(b.preco)                                    AS preco_max,
+             -- Preço cheio do MESMO anúncio que deu o extremo (riscado da família;
+             -- empate no preço vigente fica com o maior cheio, não com um cheio de outro).
+             (ARRAY_AGG(b.preco_original ORDER BY b.preco ASC NULLS LAST, b.preco_original DESC NULLS LAST))[1] AS preco_min_original,
+             (ARRAY_AGG(b.preco_original ORDER BY b.preco DESC NULLS LAST, b.preco_original DESC NULLS LAST))[1] AS preco_max_original,
              MIN(b.moeda)                                    AS moeda,
              MIN(b.score_venforce)                           AS score_min,
              COUNT(*) FILTER (WHERE b.status = 'active')::int AS total_ativos,
@@ -545,7 +551,7 @@ async function listarAgrupado({
     )
     SELECT g.grupo_key, g.family_id, g.family_name, g.item_id,
            g.total_itens, g.total_user_products, g.vendidos_total,
-           g.preco_min, g.preco_max, g.moeda, g.score_min,
+           g.preco_min, g.preco_max, g.preco_min_original, g.preco_max_original, g.moeda, g.score_min,
            g.total_ativos, g.total_pausados, g.total_encerrados,
            e.estoque_total,
            COUNT(*) OVER()::int AS total_grupos
@@ -794,7 +800,7 @@ async function listarAgrupadoPorChaves({ clienteId, clienteContaId = null, inclu
     -- LISTAR_AGRUPADO_POR_CHAVES
     WITH base AS (
       SELECT a.item_id, a.user_product_id, a.titulo, a.sku, a.status,
-             a.preco, a.moeda, a.estoque, a.vendidos, a.score_venforce,
+             a.preco, a.preco_original, a.moeda, a.estoque, a.vendidos, a.score_venforce,
              up.family_id,
              up.family_name AS up_family_name,
              CASE WHEN up.family_id IS NOT NULL
@@ -830,6 +836,10 @@ async function listarAgrupadoPorChaves({ clienteId, clienteContaId = null, inclu
              SUM(COALESCE(b.vendidos, 0))::int               AS vendidos_total,
              MIN(b.preco)                                    AS preco_min,
              MAX(b.preco)                                    AS preco_max,
+             -- Preço cheio do MESMO anúncio que deu o extremo (riscado da família;
+             -- empate no preço vigente fica com o maior cheio, não com um cheio de outro).
+             (ARRAY_AGG(b.preco_original ORDER BY b.preco ASC NULLS LAST, b.preco_original DESC NULLS LAST))[1] AS preco_min_original,
+             (ARRAY_AGG(b.preco_original ORDER BY b.preco DESC NULLS LAST, b.preco_original DESC NULLS LAST))[1] AS preco_max_original,
              MIN(b.moeda)                                    AS moeda,
              MIN(b.score_venforce)                           AS score_min,
              COUNT(*) FILTER (WHERE b.status = 'active')::int AS total_ativos,
@@ -841,7 +851,7 @@ async function listarAgrupadoPorChaves({ clienteId, clienteContaId = null, inclu
     )
     SELECT g.grupo_key, g.family_id, g.family_name, g.item_id,
            g.total_itens, g.total_user_products, g.vendidos_total,
-           g.preco_min, g.preco_max, g.moeda, g.score_min,
+           g.preco_min, g.preco_max, g.preco_min_original, g.preco_max_original, g.moeda, g.score_min,
            g.total_ativos, g.total_pausados, g.total_encerrados,
            e.estoque_total
       FROM grupos g

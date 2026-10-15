@@ -137,7 +137,9 @@ const LINHAS_CONTA_42 = [
     total_user_products: 3, total_itens: 4,
     estoque_total: ESTOQUE_FAM1, vendidos_total: 31,
     preco_min: 89.9, preco_max: 129.9, moeda: "BRL", score_min: 40,
-    status_contagem: { ativos: 4, pausados: 0, encerrados: 0 },
+    // Promoção só no anúncio do mínimo: o máximo NÃO pode herdar este cheio.
+    preco_min_original: 109.9, preco_max_original: null,
+    status_contagem: { ativos: 3, pausados: 1, encerrados: 0 },
     cover: { thumbnail: CAPA_FAM1, user_product_id: "MLBU-200" },
   },
   // Agrupador sem capa: o backend diz que nenhuma variação serve de capa, e o
@@ -148,6 +150,7 @@ const LINHAS_CONTA_42 = [
     total_user_products: 1, total_itens: 1,
     estoque_total: 12, vendidos_total: 0,
     preco_min: 39.9, preco_max: 39.9, moeda: "BRL", score_min: 80,
+    preco_min_original: 49.9, preco_max_original: 49.9,
     status_contagem: { ativos: 1, pausados: 0, encerrados: 0 },
     cover: { thumbnail: null, user_product_id: "MLBU-300" },
   },
@@ -866,7 +869,7 @@ async function run() {
       const cel = await cdp.evaluate(`(function(){
         var r = document.querySelector('${linhaFam("FAM-1")}');
         var nums = r.querySelectorAll('.am-row__num');
-        return { estoque: nums[0].textContent.trim(), vendidos: nums[1].textContent.trim(),
+        return { estoque: nums[0].firstElementChild.textContent.trim(), vendidos: nums[1].textContent.trim(),
                  titulo: nums[0].getAttribute('title') || '' }; })()`);
       assert.strictEqual(cel.estoque, String(ESTOQUE_FAM1),
         "a coluna de estoque do agrupador não é a soma que a API devolveu");
@@ -875,7 +878,7 @@ async function run() {
 
       const individual = await cdp.evaluate(`(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
-        return r.querySelectorAll('.am-row__num')[0].textContent.trim(); })()`);
+        return r.querySelectorAll('.am-row__num')[0].firstElementChild.textContent.trim(); })()`);
       assert.strictEqual(individual, "3", "o anúncio individual precisa manter o próprio estoque");
     });
 
@@ -884,6 +887,34 @@ async function run() {
       assert.ok(/3 variações/.test(t), `não resumiu as variações: ${JSON.stringify(t)}`);
       assert.ok(/4 anúncios/.test(t), `não resumiu os anúncios: ${JSON.stringify(t)}`);
       assert.ok(/89,90/.test(t) && /129,90/.test(t), `a faixa de preço não apareceu: ${JSON.stringify(t)}`);
+    });
+
+    await check("5b — agrupador: faixa no desenho da margem (mín em cima, máx embaixo), cada extremo com o SEU cheio riscado; valor único usa a célula do MLB", async () => {
+      const r = await cdp.evaluate(`(function(){
+        function cel(id){ return document.querySelector('.am-row--grupo[data-familia="' + id + '"] .am-row__preco'); }
+        var f1 = cel("FAM-1"), f2 = cel("FAM-2");
+        var pontas = Array.prototype.map.call(f1.querySelectorAll('.am-preco-faixa__ponta'), function (p) {
+          var cheio = p.querySelector('.am-preco-faixa__cheio');
+          return { faixa: p.getAttribute('data-faixa'),
+                   valor: p.querySelector('.am-preco-faixa__valor').textContent.trim(),
+                   cheio: cheio ? cheio.textContent.trim() : null,
+                   riscado: cheio ? getComputedStyle(cheio).textDecorationLine : null };
+        });
+        return {
+          pontas: pontas,
+          f2Promo: f2.classList.contains('am-row__preco--promo'),
+          f2Original: (f2.querySelector('.am-row__preco-original') || {}).textContent,
+          f2Atual: (f2.querySelector('.am-row__preco-atual') || {}).textContent,
+        };
+      })()`);
+      assert.deepStrictEqual(r.pontas.map((p) => [p.faixa, p.valor, p.cheio]), [
+        ["min", "R$ 89,90", "R$ 109,90"],
+        ["max", "R$ 129,90", null],
+      ], "o máximo sem promoção não pode herdar o cheio do mínimo");
+      assert.ok(/line-through/.test(r.pontas[0].riscado), "o cheio da faixa precisa sair riscado");
+      assert.ok(r.f2Promo, "família de preço único em promoção usa a célula --promo do MLB");
+      assert.strictEqual(r.f2Original, "R$ 49,90");
+      assert.strictEqual(r.f2Atual, "R$ 39,90");
     });
 
     /* ── 6 e 7: nada abre sozinho; só o agrupador expande ───────────────── */
@@ -1392,14 +1423,66 @@ async function run() {
       );
     });
 
-    await check("10b — a linha principal do agrupador mostra o ID do agrupador", async () => {
+    await check("10b — o ID do agrupador sai do texto da linha e vira um botão de copiar que NÃO expande a família", async () => {
       const ids = await cdp.evaluate(`(function(){
-        var ids = document.querySelector('${linhaFam("FAM-1")} .am-row__ids');
-        return { texto: ids.innerText, mono: Array.from(ids.querySelectorAll('.vf-mono'))
-          .map(function(e){ return e.textContent; }) }; })()`);
-      assert.deepStrictEqual(ids.mono, ["FAM-1"],
-        `o ID maior do agrupador não aparece na linha principal: ${JSON.stringify(ids)}`);
-      assert.ok(/3 variações/.test(ids.texto), "os agregados do grupo saíram da linha principal");
+        var linha = document.querySelector('${linhaFam("FAM-1")}');
+        var ids = linha.querySelector('.am-row__ids');
+        var btn = ids.querySelector('.am-row__copiar-id');
+        var antes = linha.getAttribute('aria-expanded');
+        if (btn) btn.click();
+        return { texto: ids.innerText, mono: ids.querySelectorAll('.vf-mono').length,
+          copiar: btn ? btn.getAttribute('data-copiar-familia') : null,
+          titulo: btn ? btn.getAttribute('title') : null,
+          expandiu: linha.getAttribute('aria-expanded') !== antes }; })()`);
+      assert.strictEqual(ids.mono, 0, `o family_id não pode mais ocupar a linha: ${JSON.stringify(ids)}`);
+      assert.ok(!/FAM-1/.test(ids.texto), "o family_id não aparece como texto da linha");
+      assert.strictEqual(ids.copiar, "FAM-1", "o botão de copiar carrega o family_id");
+      assert.ok(/FAM-1/.test(ids.titulo), "o family_id fica legível no title do botão");
+      assert.strictEqual(ids.expandiu, false, "copiar o ID não pode abrir/fechar a família");
+      assert.ok(/3 variações/.test(ids.texto) && /4 anúncios/.test(ids.texto),
+        "variações ≠ anúncios: os dois números continuam na linha");
+    });
+
+    await check("10b3 — 'Misto' mostra a contagem embaixo do selo; estoque da família ganha a cobertura no ritmo de 7d", async () => {
+      await waitFor(cdp, `!!document.querySelector('${linhaFam("FAM-1")} .am-cobertura')`,
+        "a cobertura da família não apareceu depois das métricas 7d");
+      const r = await cdp.evaluate(`(function(){
+        var f1 = document.querySelector('${linhaFam("FAM-1")}');
+        var det = f1.querySelector('.am-status-misto__detalhe');
+        var cob = f1.querySelector('.am-cobertura');
+        return {
+          selo: f1.querySelector('.am-status-misto .vf-status').textContent.trim(),
+          detalhe: det ? Array.from(det.children).map(function(e){ return e.textContent; }) : null,
+          cobTexto: cob.textContent.trim(),
+          cobAviso: cob.classList.contains('is-warning'),
+          cobNoMlbFilho: document.querySelectorAll('.am-mlb .am-cobertura').length,
+        }; })()`);
+      assert.strictEqual(r.selo, "Misto");
+      assert.deepStrictEqual(r.detalhe, ["3 ativos", "1 pausado"], "só os status com contagem, um por linha");
+      // 300 un. / (2 vendas / 7 dias) = 1050 dias
+      assert.strictEqual(r.cobTexto, "> 1 ano");
+      assert.ok(r.cobAviso, "estoque parado (> 90 dias) sai em aviso");
+      assert.strictEqual(r.cobNoMlbFilho, 0, "o MLB filho divide o estoque com o irmão: não mostra cobertura");
+    });
+
+    await check("10b2 — família 1 variação = 1 anúncio mostra um número só; Curva ABC mora no faturamento; score é selo compacto", async () => {
+      const r = await cdp.evaluate(`(function(){
+        var f2 = document.querySelector('${linhaFam("FAM-2")}');
+        var f1 = document.querySelector('${linhaFam("FAM-1")}');
+        var gauge = f1.querySelector('.am-gauge');
+        var legenda = gauge.querySelector('.am-gauge__legenda');
+        return {
+          idsF2: f2.querySelector('.am-row__ids').innerText,
+          abcFora: document.querySelectorAll('.am-row__badges [data-abc-item], .am-row__badges [data-abc-familia], .am-mlb__badges [data-abc-item]').length,
+          abcNoFat: !!f1.querySelector('.am-faturamento [data-abc-familia]'),
+          gaugeTitulo: gauge.getAttribute('title'),
+          legendaVisivel: legenda.getBoundingClientRect().width > 2,
+        }; })()`);
+      assert.ok(/1 variação/.test(r.idsF2) && !/anúncio/.test(r.idsF2), `contagem repetida: ${JSON.stringify(r.idsF2)}`);
+      assert.strictEqual(r.abcFora, 0, "a Curva ABC não pode sobrar entre os badges do título");
+      assert.ok(r.abcNoFat, "a Curva ABC da família fica na célula de faturamento");
+      assert.ok(/^Score/.test(r.gaugeTitulo || ""), "a legenda do score vai para o title");
+      assert.strictEqual(r.legendaVisivel, false, "a legenda do score não ocupa espaço visível");
     });
 
     await check("10c — o título não é repetido na linha quando a variação já o disse", async () => {
@@ -1809,7 +1892,7 @@ async function run() {
       // item a item daria 310, que é o bug que a listagem unificada corrigiu.
       const agregado = await cdp.evaluate(`(function(){
         var c = document.querySelectorAll('${linhaFam("FAM-1")} .am-row__num');
-        return { estoque: c[0].textContent.trim(), vendidos: c[1].textContent.trim() }; })()`);
+        return { estoque: c[0].firstElementChild.textContent.trim(), vendidos: c[1].textContent.trim() }; })()`);
       assert.strictEqual(agregado.estoque, "255",
         `o agregado do agrupador não acompanhou a edição somando por MLBU: ${agregado.estoque}`);
       assert.strictEqual(agregado.vendidos, "31", "vendidos não tem nada a ver com a edição de estoque");
@@ -2759,9 +2842,9 @@ async function run() {
       assert.ok(estado.maxSuccess, "máximo vindo de filho HEALTHY usa a cor de saudável");
       assert.ok(estado.uniSuccess, "faixa de um ponto só também ganha a cor do status");
       assert.ok(estado.mesmaCorDoItem, "família saudável e item avulso saudável têm a MESMA cor");
-      assert.deepStrictEqual(estado.lucroItem, { t: "R$ 28,30", ok: true }, "item mostra o lucro por unidade embaixo do %, na mesma cor");
-      assert.deepStrictEqual(estado.lucroMin, { t: "−R$ 1,50", ok: true }, "ponta mínima mostra o lucro do filho dela (negativo com sinal de menos), na cor dela");
-      assert.deepStrictEqual(estado.lucroMax, { t: "R$ 14,26", ok: true }, "ponta máxima mostra o lucro do filho dela");
+      assert.deepStrictEqual(estado.lucroItem, { t: "R$ 28,30/un", ok: true }, "item mostra o lucro por unidade embaixo do %, na mesma cor");
+      assert.deepStrictEqual(estado.lucroMin, { t: "−R$ 1,50/un", ok: true }, "ponta mínima mostra o lucro do filho dela (negativo com sinal de menos), na cor dela");
+      assert.deepStrictEqual(estado.lucroMax, { t: "R$ 14,26/un", ok: true }, "ponta máxima mostra o lucro do filho dela");
       assert.ok(estado.lucroUniAusente, "sem profit no snapshot não inventa lucro (nunca R$ 0,00)");
       ordenarPorGlobalHandler = null;
       console.log("  ✓ 39a2b");

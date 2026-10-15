@@ -884,7 +884,7 @@ async function run() {
       const cel = await cdp.evaluate(`(function(){
         var r = document.querySelector('${linhaFam("FAM-1")}');
         var nums = r.querySelectorAll('.am-row__num');
-        return { estoque: nums[0].firstElementChild.textContent.trim(), vendidos: nums[1].textContent.trim(),
+        return { estoque: nums[0].textContent.trim(), vendidos: nums[1].textContent.trim(),
                  titulo: nums[0].getAttribute('title') || '' }; })()`);
       assert.strictEqual(cel.estoque, String(ESTOQUE_FAM1),
         "a coluna de estoque do agrupador não é a soma que a API devolveu");
@@ -893,7 +893,7 @@ async function run() {
 
       const individual = await cdp.evaluate(`(function(){
         var r = document.querySelector('.am-row[data-item="MLB-SEMUP"]');
-        return r.querySelectorAll('.am-row__num')[0].firstElementChild.textContent.trim(); })()`);
+        return r.querySelectorAll('.am-row__num')[0].textContent.trim(); })()`);
       assert.strictEqual(individual, "3", "o anúncio individual precisa manter o próprio estoque");
     });
 
@@ -1467,26 +1467,18 @@ async function run() {
         "variações ≠ anúncios: os dois números continuam na linha");
     });
 
-    await check("10b3 — 'Misto' mostra a contagem embaixo do selo; estoque da família ganha a cobertura no ritmo de 7d", async () => {
-      await waitFor(cdp, `!!document.querySelector('${linhaFam("FAM-1")} .am-cobertura')`,
-        "a cobertura da família não apareceu depois das métricas 7d");
+    await check("10b3 — 'Misto' mostra a contagem embaixo do selo; estoque sem linha de cobertura", async () => {
       const r = await cdp.evaluate(`(function(){
         var f1 = document.querySelector('${linhaFam("FAM-1")}');
         var det = f1.querySelector('.am-status-misto__detalhe');
-        var cob = f1.querySelector('.am-cobertura');
         return {
           selo: f1.querySelector('.am-status-misto .vf-status').textContent.trim(),
           detalhe: det ? Array.from(det.children).map(function(e){ return e.textContent; }) : null,
-          cobTexto: cob.textContent.trim(),
-          cobAviso: cob.classList.contains('is-warning'),
-          cobNoMlbFilho: document.querySelectorAll('.am-mlb .am-cobertura').length,
+          cobertura: document.querySelectorAll('.am-cobertura').length,
         }; })()`);
       assert.strictEqual(r.selo, "Misto");
       assert.deepStrictEqual(r.detalhe, ["3 ativos", "1 pausado"], "só os status com contagem, um por linha");
-      // 300 un. / (2 vendas / 7 dias) = 1050 dias
-      assert.strictEqual(r.cobTexto, "> 1 ano");
-      assert.ok(r.cobAviso, "estoque parado (> 90 dias) sai em aviso");
-      assert.strictEqual(r.cobNoMlbFilho, 0, "o MLB filho divide o estoque com o irmão: não mostra cobertura");
+      assert.strictEqual(r.cobertura, 0, "a coluna de estoque mostra só o número (cobertura removida a pedido)");
     });
 
     await check("10b2 — família 1 variação = 1 anúncio mostra um número só; Curva ABC mora no faturamento; score é selo compacto", async () => {
@@ -1916,7 +1908,7 @@ async function run() {
       // item a item daria 310, que é o bug que a listagem unificada corrigiu.
       const agregado = await cdp.evaluate(`(function(){
         var c = document.querySelectorAll('${linhaFam("FAM-1")} .am-row__num');
-        return { estoque: c[0].firstElementChild.textContent.trim(), vendidos: c[1].textContent.trim() }; })()`);
+        return { estoque: c[0].textContent.trim(), vendidos: c[1].textContent.trim() }; })()`);
       assert.strictEqual(agregado.estoque, "255",
         `o agregado do agrupador não acompanhou a edição somando por MLBU: ${agregado.estoque}`);
       assert.strictEqual(agregado.vendidos, "31", "vendidos não tem nada a ver com a edição de estoque");

@@ -1192,12 +1192,10 @@
       "</div>" +
       statusGrupoHtml(f) +
       precoGrupoHtml(f) +
-      // A soma que dá sentido ao agrupador: estoque por User Product distinto,
-      // com a cobertura (dias de estoque no ritmo dos últ. 7d) embaixo.
-      '<span class="am-row__num am-estoque-cel" title="Soma do estoque das ' +
+      // A soma que dá sentido ao agrupador: estoque por User Product distinto.
+      '<span class="am-row__num" title="Soma do estoque das ' +
         escapeAttr(plural(nVar, "variação", "variações")) + '">' +
-        "<span>" + (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
-        coberturaEstoqueHtml(f.estoque_total, metricas7dAgregadoDoGrupo(f.family_id)) + "</span>" +
+        (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
       '<span class="am-row__num" title="Total vendido desde a criação do anúncio">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
       // % faturamento CONSOLIDADO da família — vem pronto do backend
       // (dados.faturamento.porFamilia), mesma regra da Curva ABC acima:
@@ -2902,16 +2900,6 @@
         ? cacheRef.margem.precoAtual : cel.getAttribute("data-preco-ref");
       cel.innerHTML = faturamentoConteudoHtml(v, valor, abcItemHtml(id), faturamentoItemCtx(id, ref));
     });
-    // Cobertura do estoque do avulso: depende das métricas 7d que acabaram de
-    // chegar. Só o alvo próprio é trocado — a célula de estoque pode estar em
-    // edição e não pode ser reconstruída por baixo do operador.
-    document.querySelectorAll("[data-cobertura-item]").forEach(function (alvoCob) {
-      var id = alvoCob.getAttribute("data-cobertura-item");
-      if (!alvo[id]) return;
-      var cache = AM.state.performanceCache[id];
-      var est = alvoCob.getAttribute("data-cobertura-estoque");
-      alvoCob.innerHTML = coberturaEstoqueHtml(est === "" ? null : est, cache && cache.temMetricas ? cache.metricas7d : null);
-    });
     // Curva ABC — tag própria (data-abc-item), separada dos badges estáticos
     // (ver curvaAbcBadgeHtml/badgesAnuncioHtml): chega assíncrona, então
     // precisa deste repaint pontual pra aparecer sem reconstruir a linha.
@@ -3071,45 +3059,12 @@
   // comporta igual nos dois, mas continua vestida como a coluna do seu nível.
   // `.am-estoque` é o que marca "esta célula é editável" — é por ela que o
   // bind acha as células e que os handlers de linha sabem não abrir o modal.
-  // Cobertura: quantos dias o estoque dura no ritmo de vendas dos últ. 7d.
-  // Só onde o estoque e as vendas falam do MESMO conjunto — linha da família
-  // (soma por variação × soma das vendas) e anúncio avulso. No MLB filho o
-  // estoque é da variação, compartilhado com o irmão Clássico/Premium, e as
-  // vendas são só dele: a conta sairia inflada, então ele não mostra.
-  // Sem métricas ainda (ou sem estoque) não mostra nada — nunca um palpite.
-  function coberturaEstoqueHtml(estoque, m) {
-    if (estoque === null || estoque === undefined || estoque === "" || !m || m.vendas == null) return "";
-    var e = Number(estoque);
-    if (!(e > 0)) return "";
-    if (m.vendas === 0) {
-      return '<span class="am-cobertura is-warning" title="Nenhuma venda nos últimos 7 dias com ' +
-        escapeAttr(String(e)) + ' unidades em estoque">sem venda 7d</span>';
-    }
-    var dias = e / (m.vendas / 7);
-    var texto = dias > 365 ? "> 1 ano" : dias < 1 ? "< 1 dia" : "≈ " + plural(Math.round(dias), "dia", "dias");
-    var classe = dias < 7 ? "is-danger" : dias > 90 ? "is-warning" : "is-neutral";
-    return '<span class="am-cobertura ' + classe + '" title="Cobertura: dias de estoque no ritmo de vendas dos últimos 7 dias (' +
-      escapeAttr(String(m.vendas)) + ' vendas)">' + escapeHtml(texto) + "</span>";
-  }
-
-  // Alvo estável da cobertura do anúncio avulso: as métricas 7d chegam
-  // depois do primeiro paint (ver pintarPerformanceEmCelulas).
-  function coberturaItemHtml(itemId, estoque) {
-    var cache = AM.state.performanceCache[itemId];
-    return '<span class="am-cobertura-alvo" data-cobertura-item="' + escapeAttr(itemId) +
-      '" data-cobertura-estoque="' + escapeAttr(estoque == null ? "" : estoque) + '">' +
-      coberturaEstoqueHtml(estoque, cache && cache.temMetricas ? cache.metricas7d : null) + "</span>";
-  }
-
-  // `opcoes.cobertura` liga a linha de cobertura (só no avulso, ver acima).
-  function celulaEstoqueHtml(a, classeColuna, opcoes) {
+  function celulaEstoqueHtml(a, classeColuna) {
     var tem = a.estoque != null;
-    var cobertura = !!(opcoes && opcoes.cobertura);
     return '<span class="' + (classeColuna || "am-mlb__num") + ' am-estoque" data-estoque-item="' +
       escapeAttr(a.item_id) + '" data-estoque-valor="' +
-      escapeAttr(tem ? a.estoque : "") + '"' + (cobertura ? ' data-estoque-cobertura="1"' : "") + ">" +
-      botaoEstoqueHtml(tem ? String(a.estoque) : "—") +
-      (cobertura ? coberturaItemHtml(a.item_id, tem ? a.estoque : null) : "") + "</span>";
+      escapeAttr(tem ? a.estoque : "") + '">' +
+      botaoEstoqueHtml(tem ? String(a.estoque) : "—") + "</span>";
   }
 
   function bindEstoqueEditavel(raiz) {
@@ -3130,10 +3085,7 @@
     var bruto = cel.getAttribute("data-estoque-valor");
     cel.removeAttribute("data-estoque-editando");
     cel.classList.remove("is-editando", "is-salvando");
-    cel.innerHTML = botaoEstoqueHtml(bruto === "" || bruto === null ? "—" : bruto) +
-      (cel.getAttribute("data-estoque-cobertura") === "1"
-        ? coberturaItemHtml(cel.getAttribute("data-estoque-item"), bruto === "" ? null : bruto)
-        : "");
+    cel.innerHTML = botaoEstoqueHtml(bruto === "" || bruto === null ? "—" : bruto);
   }
 
   function abrirEditorEstoque(cel) {
@@ -3636,10 +3588,9 @@
     // listener (bindEstoqueEditavel só encontra `.am-estoque`), só o número.
     // Mesma decisão já tomada pra linha do AGRUPADOR (ver comentário abaixo).
     var estoqueItemHtml = temVariacoesLegado
-      ? '<span class="am-row__num am-estoque-cel" title="O estoque deste anúncio é por variação — abra as variações para editar.">' +
-        "<span>" + (a.estoque != null ? escapeHtml(String(a.estoque)) : "—") + "</span>" +
-        coberturaItemHtml(a.item_id, a.estoque) + "</span>"
-      : celulaEstoqueHtml(a, "am-row__num", { cobertura: true });
+      ? '<span class="am-row__num" title="O estoque deste anúncio é por variação — abra as variações para editar.">' +
+        (a.estoque != null ? escapeHtml(String(a.estoque)) : "—") + "</span>"
+      : celulaEstoqueHtml(a, "am-row__num");
 
     return '<div class="am-row" data-item="' + escapeHtml(a.item_id) + '" tabindex="0" role="button" ' +
       'aria-label="Ver detalhes de ' + escapeHtml(a.titulo || a.item_id) + '">' +

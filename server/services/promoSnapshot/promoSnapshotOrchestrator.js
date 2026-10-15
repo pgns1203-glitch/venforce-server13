@@ -5,12 +5,13 @@
 // elegíveis (MELI, ativas, cliente ativo, seller vinculado, grant utilizável,
 // sem run ativo, snapshot vencido/inexistente, fora da espera pós-falha) e
 // enfileira até `orchestratorMaxPerTick`. Conta inativa, revogada ou sem
-// grant nunca entra. Duas instâncias orquestrando ao mesmo tempo são seguras:
+// grant nunca entra — nem conta de cliente fora da allowlist do piloto
+// (PROMO_SNAPSHOT_CLIENTES; lista vazia = nenhuma, sem sequer consultar). Duas instâncias orquestrando ao mesmo tempo são seguras:
 // o enqueue é idempotente (índice único de run ativo por conta).
 
 const pool = require("../../config/database");
 const repoPadrao = require("./promoSnapshotRepository");
-const { resolvePromoSnapshotConfig } = require("./promoSnapshotConfig");
+const { resolvePromoSnapshotConfig, avaliarPiloto } = require("./promoSnapshotConfig");
 const { enqueuePromoSnapshotRun } = require("./promoSnapshotService");
 const { logEvento } = require("../motorMargem/marginSnapshotLog");
 const { redigirSegredos } = require("../motorMargem/marginSnapshotSanitize");
@@ -22,9 +23,13 @@ async function orquestrarTick(deps = {}) {
   const config = resolvePromoSnapshotConfig(deps.env || process.env);
   if (!config.workerEnabled) return { enfileirados: [], motivo: "WORKER_DESABILITADO" };
 
-  const contas = await repo.listarContasElegiveis({
-    limit: config.orchestratorMaxPerTick, failedRetryMinutes: config.failedRetryMinutes,
+  if (!config.clientesPiloto.length) return { enfileirados: [], motivo: "PILOTO_VAZIO" };
+
+  const candidatas = await repo.listarContasElegiveis({
+    limit: config.orchestratorMaxPerTick, failedRetryMinutes: config.failedRetryMinutes, clientesPiloto: config.clientesPiloto,
   }, db);
+  // O filtro é do SQL; este é o cinto de segurança (a regra é uma só: avaliarPiloto).
+  const contas = candidatas.filter((c) => avaliarPiloto(config, c.clienteSlug).noPiloto);
   const enfileirados = [];
   for (const conta of contas) {
     try {

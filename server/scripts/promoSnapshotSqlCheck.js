@@ -20,6 +20,9 @@ process.env.DATABASE_URL = "postgres://127.0.0.1:1/promo-snapshot-sql-check-nunc
 
 const assert = require("assert");
 
+// Allowlist do piloto usada nas elegibilidades (slugs semeados abaixo).
+const PILOTO = ["loja-a", "loja-b"];
+
 let PGlite;
 try {
   ({ PGlite } = require("@electric-sql/pglite"));
@@ -414,7 +417,7 @@ check("seller reconectado (SQL real): ponteiro por conta+seller; run do seller a
   assert.strictEqual(await repo.obterConta({ clienteContaId: 7, sellerId: "999" }, db), null, "leitura do 999 não acha o ponteiro do 555");
   const e = await service.estadoSincronizacao({ clienteContaId: 7, sellerId: "999" }, { db, repo, env: {} });
   assert.deepStrictEqual([e.state, e.hasSnapshot, e.activeRun], ["never_synced", false, null]);
-  const elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db);
+  const elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: PILOTO }, db);
   assert.ok(elegiveis.some((x) => x.clienteContaId === 7 && x.sellerId === "999"), "conta elegível pelo seller atual");
   const { run: novo, reaproveitado } = await service.enqueuePromoSnapshotRun(ID7N, { reason: "y" }, { db, repo, logger: silencioso });
   assert.strictEqual(reaproveitado, false, "run do 555 nunca é reaproveitado para o 999");
@@ -500,19 +503,31 @@ check("lote idempotente (SQL real): replay do mesmo (run, seq) não muda contado
 });
 
 check("orquestrador (SQL real): só MELI ativa com grant utilizável, sem run ativo, vencida, fora da espera pós-falha", async ({ db, pg }) => {
-  let elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db);
+  let elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: PILOTO }, db);
   assert.deepStrictEqual(elegiveis.map((e) => e.clienteContaId), [7, 8], "conta 9 tem grant revogado");
   await pg.query(`UPDATE cliente_contas SET ativo = false WHERE id = 8`);
   await rodarRunManual(db, ID7, [["MLB1"]]); // agora fresca
-  elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db);
+  elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: PILOTO }, db);
   assert.deepStrictEqual(elegiveis, []);
   await pg.query(`UPDATE promo_snapshot_contas SET fresh_until = NOW() - INTERVAL '1 minute', last_attempt_status = 'failed', last_attempt_at = NOW()`);
-  assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db), [], "espera pós-falha");
+  assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: PILOTO }, db), [], "espera pós-falha");
   await pg.query(`UPDATE promo_snapshot_contas SET last_attempt_at = NOW() - INTERVAL '31 minutes'`);
-  elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db);
+  elegiveis = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: PILOTO }, db);
   assert.deepStrictEqual(elegiveis.map((e) => [e.clienteContaId, e.sellerId]), [[7, "555"]]);
   await pg.query(`UPDATE clientes SET ativo = false WHERE id = 3`);
-  assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db), [], "cliente inativo");
+  assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: PILOTO }, db), [], "cliente inativo");
+});
+
+check("allowlist do piloto (SQL real): só clientes da lista; lista vazia = nenhuma; caixa e espaços não importam", async ({ db }) => {
+  const todos = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: PILOTO }, db);
+  assert.deepStrictEqual(todos.map((e) => e.clienteContaId), [7, 8], "loja-a (contas 7 e 8); a conta 9 tem grant revogado");
+  const soB = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: [" LOJA-B "] }, db);
+  assert.deepStrictEqual(soB, [], "loja-b só tem a conta 9, com grant revogado");
+  const soA = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: ["Loja-A"] }, db);
+  assert.deepStrictEqual(soA.map((e) => e.clienteContaId), [7, 8]);
+  assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: ["outra"] }, db), []);
+  assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: [] }, db), []);
+  assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db), [], "sem lista nunca lista tudo");
 });
 
 check("pipeline completo com SQL real: worker + processor + repositório; 2 contas; ML falso só GET; Central lê o snapshot", async ({ db, pg }) => {
@@ -521,7 +536,7 @@ check("pipeline completo com SQL real: worker + processor + repositório; 2 cont
     666: { itens: { MLBB1: [F.promo({ id: "P-9", type: "SMART", status: "candidate", meli: 10, seller: 0 })] } },
   };
   const ml = F.criarMlFake({ sellers });
-  const env = { PROMO_SNAPSHOT_WORKER_ENABLED: "true", PROMO_SNAPSHOT_REQUEST_INTERVAL_MS: "0" };
+  const env = { PROMO_SNAPSHOT_WORKER_ENABLED: "true", PROMO_SNAPSHOT_CLIENTES: PILOTO.join(","), PROMO_SNAPSHOT_REQUEST_INTERVAL_MS: "0" };
   const config = resolvePromoSnapshotConfig(env);
   const base = { db, repo, env, logger: silencioso, kick() {} };
   const worker = runtime.criarWorker({

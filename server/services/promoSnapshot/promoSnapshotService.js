@@ -15,7 +15,7 @@
 
 const pool = require("../../config/database");
 const repoPadrao = require("./promoSnapshotRepository");
-const { resolvePromoSnapshotConfig } = require("./promoSnapshotConfig");
+const { resolvePromoSnapshotConfig, avaliarPiloto } = require("./promoSnapshotConfig");
 const { redigirSegredos } = require("../motorMargem/marginSnapshotSanitize");
 const { logEvento } = require("../motorMargem/marginSnapshotLog");
 
@@ -181,7 +181,8 @@ function estadoPublico(estado) {
 /**
  * fresh → nada · stale/nunca → enfileira · run ativo → reutiliza.
  * Não enfileira com o worker desligado (evita runs queued que ninguém
- * processa) nem logo depois de uma falha (espera failedRetryMinutes).
+ * processa), para cliente fora da allowlist do piloto, nem logo depois de uma
+ * falha (espera failedRetryMinutes).
  * Nunca executa o scan: devolve na hora.
  */
 async function ensureFreshPromoSnapshot(conta, { reason = "auto_refresh", estado = null } = {}, deps = {}) {
@@ -193,6 +194,9 @@ async function ensureFreshPromoSnapshot(conta, { reason = "auto_refresh", estado
   if (atual.activeRun) return { acao: "reutilizado", runId: atual.activeRun.runId, estado: atual };
   if (atual.snapshotState === "fresh" && atual.state !== "failed") return { acao: "nenhuma", estado: atual };
   if (!config.workerEnabled) return { acao: "worker_desabilitado", estado: atual };
+  // Piloto: cliente fora da allowlist nunca é enfileirado pela abertura da tela.
+  const piloto = avaliarPiloto(config, id.clienteSlug);
+  if (!piloto.noPiloto) return { acao: "fora_do_piloto", motivo: piloto.motivo, estado: atual };
 
   const c = atual._conta;
   if (c && (c.lastAttemptStatus === "failed" || (c.lastAttemptStatus === "partial" && c.lastAttemptRunId !== c.currentRunId))) {

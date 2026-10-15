@@ -32,6 +32,9 @@ const TODAS_CHAMADAS_ML = [];
 
 const ENV = {
   PROMO_SNAPSHOT_WORKER_ENABLED: "true",
+  // Allowlist do piloto: os clientes dos cenários estão dentro dela; os cenários
+  // de allowlist sobrescrevem esta variável.
+  PROMO_SNAPSHOT_CLIENTES: "loja-a,loja-b,loja-c,loja-d,loja-e,loja-f",
   PROMO_SNAPSHOT_REQUEST_INTERVAL_MS: "0",
   PROMO_SNAPSHOT_BACKOFF_BASE_MS: "100",
   PROMO_SNAPSHOT_BACKOFF_MAX_MS: "400",
@@ -1470,6 +1473,97 @@ cenario("nenhum módulo do Promo Snapshot importa serviço de escrita (preço/pr
   }
   const rotas = fs.readFileSync(path.join(__dirname, "..", "routes", "promoSnapshotRoutes.js"), "utf8");
   assert.ok(!/aplicar/.test(rotas.replace(/nunca aplica/g, "")), "nenhuma rota de aplicar");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Piloto: allowlist PROMO_SNAPSHOT_CLIENTES + defaults conservadores
+// ─────────────────────────────────────────────────────────────────────────────
+
+const { avaliarPiloto } = require("../services/promoSnapshot/promoSnapshotConfig");
+
+cenario("defaults conservadores no código: frescor 12 h, 250 ms entre requests, 2 itens, 1 conta por tick, 1 worker", async () => {
+  const c = resolvePromoSnapshotConfig({});
+  assert.strictEqual(c.workerEnabled, false);
+  assert.strictEqual(c.freshMinutes, 720);
+  assert.strictEqual(c.requestIntervalMs, 250);
+  assert.strictEqual(c.itemConcurrency, 2);
+  assert.strictEqual(c.orchestratorMaxPerTick, 1);
+  assert.strictEqual(c.workerConcurrency, 1);
+  assert.deepStrictEqual(c.clientesPiloto, []);
+  // Env continua mandando: o default só vale quando a variável não existe.
+  const o = resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_FRESH_MINUTES: "360", PROMO_SNAPSHOT_REQUEST_INTERVAL_MS: "100", PROMO_SNAPSHOT_ITEM_CONCURRENCY: "3", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "5" });
+  assert.deepStrictEqual([o.freshMinutes, o.requestIntervalMs, o.itemConcurrency, o.orchestratorMaxPerTick], [360, 100, 3, 5]);
+});
+
+cenario("allowlist: slugs separados por vírgula, sem espaço/caixa/duplicata; vazio = nenhum cliente", async () => {
+  assert.deepStrictEqual(resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_CLIENTES: " Red-Fish , loja-a,,RED-FISH " }).clientesPiloto, ["red-fish", "loja-a"]);
+  assert.deepStrictEqual(resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_CLIENTES: "" }).clientesPiloto, []);
+  assert.deepStrictEqual(resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_CLIENTES: " , ," }).clientesPiloto, []);
+  const lig = { PROMO_SNAPSHOT_WORKER_ENABLED: "true" };
+  const dentro = avaliarPiloto(resolvePromoSnapshotConfig({ ...lig, PROMO_SNAPSHOT_CLIENTES: "red-fish" }), "RED-FISH");
+  assert.deepStrictEqual(dentro, { noPiloto: true, motivo: null });
+  assert.deepStrictEqual(avaliarPiloto(resolvePromoSnapshotConfig({ ...lig, PROMO_SNAPSHOT_CLIENTES: "red-fish" }), "loja-a"), { noPiloto: false, motivo: "FORA_DO_PILOTO" });
+  assert.deepStrictEqual(avaliarPiloto(resolvePromoSnapshotConfig({ ...lig }), "red-fish"), { noPiloto: false, motivo: "PILOTO_VAZIO" });
+  assert.deepStrictEqual(avaliarPiloto(resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_CLIENTES: "red-fish" }), "red-fish"), { noPiloto: false, motivo: "WORKER_DESABILITADO" });
+  assert.strictEqual(avaliarPiloto(resolvePromoSnapshotConfig({ ...lig, PROMO_SNAPSHOT_CLIENTES: "red-fish" }), null).noPiloto, false, "sem slug nunca entra");
+});
+
+cenario("allowlist no orquestrador: só enfileira conta de cliente da lista; lista vazia não consulta nem enfileira", async () => {
+  const contasCliente = [
+    { id: 7, cliente_id: 3, cliente_slug: "loja-a", marketplace: "meli", ativo: true, external_account_id: "555" },
+    { id: 9, cliente_id: 4, cliente_slug: "loja-b", marketplace: "meli", ativo: true, external_account_id: "777" },
+  ];
+  const grants = [
+    { cliente_id: 3, ml_user_id: "555", access_token: "a", refresh_token: "r", token_status: "valid" },
+    { cliente_id: 4, ml_user_id: "777", access_token: "a", refresh_token: "r", token_status: "valid" },
+  ];
+  const dentro = ambiente({ contasCliente, grants, env: { PROMO_SNAPSHOT_CLIENTES: "loja-b", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "10" } });
+  const r = await orquestrarTick({ ...dentro.base });
+  assert.deepStrictEqual(r.enfileirados.map((e) => e.clienteContaId), [9], "loja-a está fora do piloto");
+  assert.deepStrictEqual(dentro.repo._st.runs.map((x) => x.cliente_conta_id), [9]);
+
+  const vazio = ambiente({ contasCliente, grants, env: { PROMO_SNAPSHOT_CLIENTES: "", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "10" } });
+  const r2 = await orquestrarTick({ ...vazio.base });
+  assert.deepStrictEqual(r2.enfileirados, []);
+  assert.strictEqual(r2.motivo, "PILOTO_VAZIO");
+  assert.strictEqual(vazio.repo._st.runs.length, 0);
+  assert.ok(!vazio.repo._chamadas.some((c) => c === "listarContasElegiveis"), "nem consulta as contas");
+
+  // Defesa em profundidade: mesmo que o repositório devolva conta fora da lista, o orquestrador não enfileira.
+  const frouxo = ambiente({ contasCliente, grants, env: { PROMO_SNAPSHOT_CLIENTES: "loja-b", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "10" } });
+  const original = frouxo.repo.listarContasElegiveis;
+  frouxo.repo.listarContasElegiveis = (args, db) => original({ ...args, clientesPiloto: undefined }, db);
+  const r3 = await orquestrarTick({ ...frouxo.base });
+  assert.deepStrictEqual(r3.enfileirados.map((e) => e.clienteContaId), [9]);
+});
+
+cenario("allowlist no auto-trigger: ensureFresh e abrir a Central em conta fora da lista não enfileiram (fora_do_piloto)", async () => {
+  const amb = ambiente({ env: { PROMO_SNAPSHOT_CLIENTES: "loja-b" } });
+  const fora = await service.ensureFreshPromoSnapshot(idConta(7), {}, amb.base);
+  assert.strictEqual(fora.acao, "fora_do_piloto");
+  assert.strictEqual(fora.motivo, "FORA_DO_PILOTO");
+  assert.strictEqual(amb.repo._st.runs.length, 0);
+  assert.strictEqual(amb.kicks.length, 0);
+  const st = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(st.sync.autoTrigger, "fora_do_piloto");
+  assert.strictEqual(amb.repo._st.runs.length, 0, "abrir a tela não enfileira");
+  const dentro = await service.ensureFreshPromoSnapshot(idConta(9), {}, amb.base);
+  assert.strictEqual(dentro.acao, "enfileirado");
+  assert.strictEqual(amb.repo._st.runs.length, 1);
+});
+
+cenario("allowlist no POST /sync: conta fora da lista → FORA_DO_PILOTO, nada enfileirado; dentro da lista enfileira", async () => {
+  const amb = ambiente({ env: { PROMO_SNAPSHOT_CLIENTES: "loja-b" } });
+  const fora = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(fora.enfileirado, false);
+  assert.strictEqual(fora.motivo, "FORA_DO_PILOTO");
+  assert.strictEqual(fora.mensagem, "Promoções automáticas não ativadas para esta conta");
+  assert.strictEqual(amb.repo._st.runs.length, 0);
+  const dentro = await read.solicitarSync({ clienteSlug: "loja-b", clienteContaId: 9 }, depsLeitura(amb));
+  assert.strictEqual(dentro.enfileirado, true);
+  assert.strictEqual(amb.repo._st.runs.length, 1);
+  const vazio = ambiente({ env: { PROMO_SNAPSHOT_CLIENTES: "" } });
+  assert.strictEqual((await read.solicitarSync({ clienteSlug: "loja-b", clienteContaId: 9 }, depsLeitura(vazio))).motivo, "PILOTO_VAZIO");
 });
 
 async function main() {

@@ -884,8 +884,11 @@ async function listarOportunidadesElegiveis({ clienteId, clienteContaId, sellerI
  * seller atual vencido ou inexistente e fora da espera pós-falha. Vencidas
  * primeiro. (Run ativo de um seller anterior é encerrado no enqueue.)
  */
-async function listarContasElegiveis({ limit, failedRetryMinutes }, db = pool) {
+async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto }, db = pool) {
   await ensureTables(db);
+  // Allowlist do piloto (slugs em minúsculas): lista vazia = nenhuma conta.
+  const slugs = Array.isArray(clientesPiloto) ? clientesPiloto.map((x) => String(x).trim().toLowerCase()).filter(Boolean) : [];
+  if (!slugs.length) return [];
   const r = await db.query(
     `SELECT c.id AS cliente_conta_id, c.cliente_id, cl.slug AS cliente_slug, c.external_account_id AS seller_id,
             s.fresh_until
@@ -895,6 +898,7 @@ async function listarContasElegiveis({ limit, failedRetryMinutes }, db = pool) {
          ON s.cliente_conta_id = c.id AND s.marketplace = 'meli' AND s.seller_id = c.external_account_id::text
       WHERE c.marketplace = 'meli' AND c.ativo = true AND COALESCE(cl.ativo, true) = true
         AND c.external_account_id IS NOT NULL AND c.external_account_id <> ''
+        AND LOWER(cl.slug) = ANY($4::text[])
         AND EXISTS (
           SELECT 1 FROM ml_tokens t
            WHERE t.cliente_id = c.cliente_id AND t.ml_user_id::text = c.external_account_id::text
@@ -909,7 +913,7 @@ async function listarContasElegiveis({ limit, failedRetryMinutes }, db = pool) {
                  AND s.last_attempt_at > NOW() - make_interval(mins => $3::int))
       ORDER BY s.fresh_until ASC NULLS FIRST, c.id ASC
       LIMIT $1`,
-    [limit, TIPO, failedRetryMinutes]
+    [limit, TIPO, failedRetryMinutes, slugs]
   );
   return r.rows.map((row) => ({
     clienteContaId: Number(row.cliente_conta_id),

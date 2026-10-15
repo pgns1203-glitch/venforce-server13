@@ -326,11 +326,14 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       return { rows };
     },
 
-    async listarContasElegiveis({ limit, failedRetryMinutes }) {
+    async listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto }) {
       reg("listarContasElegiveis");
       const agora = relogio.agora();
       const ponteiro = (c) => st.contas.get(chaveConta(c.id, "meli", c.external_account_id));
+      // Allowlist (espelha `LOWER(cl.slug) = ANY($4)` do SQL): lista vazia = nenhuma conta.
+      const noPiloto = (c) => !Array.isArray(clientesPiloto) || clientesPiloto.includes(String(c.cliente_slug || "").toLowerCase());
       return contasCliente.filter((c) => c.marketplace === "meli" && c.ativo !== false && c.cliente_ativo !== false && c.external_account_id)
+        .filter(noPiloto)
         .filter((c) => grants.some((g) => g.cliente_id === c.cliente_id && String(g.ml_user_id) === String(c.external_account_id) &&
           g.access_token && g.refresh_token && !["revoked", "blocked", "invalid"].includes(String(g.token_status || "valid").toLowerCase())))
         .filter((c) => !st.runs.some((r) => r.cliente_conta_id === c.id && r.seller_id === String(c.external_account_id) && ["queued", "running"].includes(r.status)))

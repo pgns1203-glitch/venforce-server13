@@ -15,7 +15,7 @@
 const pool = require("../../config/database");
 const repoPadrao = require("./promoSnapshotRepository");
 const service = require("./promoSnapshotService");
-const { resolvePromoSnapshotConfig } = require("./promoSnapshotConfig");
+const { resolvePromoSnapshotConfig, avaliarPiloto } = require("./promoSnapshotConfig");
 const { criarErroHttp } = require("../motorMargem/marginSnapshotApiService");
 
 const LIMITE_SNAPSHOT_PADRAO = 50;
@@ -143,6 +143,14 @@ async function solicitarSync(params = {}, deps = {}) {
   }
   if (!config.workerEnabled) {
     return { ok: true, enfileirado: false, motivo: "WORKER_DESABILITADO", mensagem: "A sincronização de promoções não está ligada neste ambiente (PROMO_SNAPSHOT_WORKER_ENABLED).", sync: syncPublico(estado, null) };
+  }
+  const piloto = avaliarPiloto(config, identidade.clienteSlug);
+  if (!piloto.noPiloto) {
+    return {
+      ok: true, enfileirado: false, motivo: piloto.motivo,
+      mensagem: "Promoções automáticas não ativadas para esta conta",
+      sync: syncPublico(estado, { acao: "fora_do_piloto" }),
+    };
   }
   const c = estado._conta;
   const ultima = c && c.lastAttemptAt ? new Date(c.lastAttemptAt).getTime() : NaN;

@@ -7,6 +7,11 @@
 // desligado — mesmo padrão de MARGIN_SNAPSHOT_WORKER_ENABLED). Desligado:
 // nenhum worker, nenhum orquestrador, nenhum enqueue automático; a Central
 // continua lendo o último snapshot (ou o diagnóstico legado).
+//
+// Piloto: PROMO_SNAPSHOT_CLIENTES=slug-a,slug-b (allowlist de CLIENTES; vazio
+// = nenhum). Ligar o worker sem a lista não sincroniza conta nenhuma: só os
+// clientes listados são enfileirados — pelo orquestrador, pelo auto-trigger ao
+// abrir a Central e pelo POST /promocoes/sync (ver avaliarPiloto).
 
 function inteiroEntre(raw, { padrao, min, max }) {
   const n = Number(raw);
@@ -18,6 +23,18 @@ function fracaoEntre(raw, { padrao, min, max }) {
   const n = Number(raw);
   if (raw === undefined || raw === null || raw === "" || !Number.isFinite(n)) return padrao;
   return Math.min(Math.max(n, min), max);
+}
+
+// "Red-Fish, loja-a,,RED-FISH" → ["red-fish", "loja-a"] (minúsculas, sem
+// espaço, sem vazio, sem repetição, na ordem em que aparecem).
+function listaDeSlugs(raw) {
+  if (raw === undefined || raw === null) return [];
+  const vistos = new Set();
+  for (const parte of String(raw).split(",")) {
+    const slug = parte.trim().toLowerCase();
+    if (slug) vistos.add(slug);
+  }
+  return [...vistos];
 }
 
 function flagLigada(raw, padrao = false) {
@@ -94,13 +111,30 @@ function resolvePromoSnapshotConfig(env = process.env) {
   return config;
 }
 
+/**
+ * A conta (pelo slug do cliente) pode ser sincronizada automaticamente?
+ * `motivo` quando não: WORKER_DESABILITADO | PILOTO_VAZIO | FORA_DO_PILOTO.
+ * Slug ausente nunca entra. É a ÚNICA regra de allowlist: orquestrador,
+ * auto-trigger, POST /sync e o estado exibido às telas usam esta função.
+ */
+function avaliarPiloto(config, clienteSlug) {
+  if (!config.workerEnabled) return { noPiloto: false, motivo: "WORKER_DESABILITADO" };
+  const lista = config.clientesPiloto || [];
+  if (!lista.length) return { noPiloto: false, motivo: "PILOTO_VAZIO" };
+  const slug = String(clienteSlug || "").trim().toLowerCase();
+  if (slug && lista.includes(slug)) return { noPiloto: true, motivo: null };
+  return { noPiloto: false, motivo: "FORA_DO_PILOTO" };
+}
+
 function resolverBruto(env) {
   return {
     workerEnabled: flagLigada(env.PROMO_SNAPSHOT_WORKER_ENABLED),
+    // Allowlist de clientes (slugs) do piloto; vazio = nenhum.
+    clientesPiloto: listaDeSlugs(env.PROMO_SNAPSHOT_CLIENTES),
 
     // Freshness — REUTILIZA PROMO_SNAPSHOT_FRESH_MINUTES da tela antiga
-    // (promocoesDiagnosticoService, default 6 h).
-    freshMinutes: inteiroEntre(env.PROMO_SNAPSHOT_FRESH_MINUTES, { padrao: 360, min: 15, max: 10080 }),
+    // (promocoesDiagnosticoService). Default conservador: 12 h.
+    freshMinutes: inteiroEntre(env.PROMO_SNAPSHOT_FRESH_MINUTES, { padrao: 720, min: 15, max: 10080 }),
 
     // Runs simultâneos por processo (lotes de uma conta nunca em paralelo).
     workerConcurrency: inteiroEntre(env.PROMO_SNAPSHOT_WORKER_CONCURRENCY, { padrao: 1, min: 1, max: 3 }),
@@ -109,8 +143,8 @@ function resolverBruto(env) {
     // Chamadas ao ML: concorrência por lote, espaçamento mínimo entre
     // requisições no processo e timeout real por requisição (limitado a 1/4
     // da janela de stale — ver invariante acima).
-    itemConcurrency: inteiroEntre(env.PROMO_SNAPSHOT_ITEM_CONCURRENCY, { padrao: 3, min: 1, max: 8 }),
-    requestIntervalMs: inteiroEntre(env.PROMO_SNAPSHOT_REQUEST_INTERVAL_MS, { padrao: 100, min: 0, max: 10000 }),
+    itemConcurrency: inteiroEntre(env.PROMO_SNAPSHOT_ITEM_CONCURRENCY, { padrao: 2, min: 1, max: 8 }),
+    requestIntervalMs: inteiroEntre(env.PROMO_SNAPSHOT_REQUEST_INTERVAL_MS, { padrao: 250, min: 0, max: 10000 }),
     requestTimeoutMs: inteiroEntre(env.PROMO_SNAPSHOT_REQUEST_TIMEOUT_MS, { padrao: 15000, min: 1000, max: 120000 }),
     batchSize: inteiroEntre(env.PROMO_SNAPSHOT_BATCH_SIZE, { padrao: 20, min: 1, max: 100 }),
 
@@ -152,7 +186,7 @@ function resolverBruto(env) {
     // Orquestrador (mesmo runtime do worker): a cada intervalo enfileira até N
     // contas elegíveis vencidas/sem snapshot.
     orchestratorIntervalMs: inteiroEntre(env.PROMO_SNAPSHOT_ORCHESTRATOR_INTERVAL_MS, { padrao: 300000, min: 10000, max: 86400000 }),
-    orchestratorMaxPerTick: inteiroEntre(env.PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK, { padrao: 5, min: 1, max: 100 }),
+    orchestratorMaxPerTick: inteiroEntre(env.PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK, { padrao: 1, min: 1, max: 100 }),
 
     // Enriquecimentos opcionais (1 chamada por item com promoção started para
     // saber qual forma o preço; 1 por campanha sem vigência, com cache no run).
@@ -163,6 +197,7 @@ function resolverBruto(env) {
 
 module.exports = {
   resolvePromoSnapshotConfig,
+  avaliarPiloto,
   validarInvariantesHeartbeat,
   piorIntervaloSemHeartbeatMs,
   PromoSnapshotConfigError,

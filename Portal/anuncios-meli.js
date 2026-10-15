@@ -121,9 +121,14 @@
       // backend não tem o dado para esta linha".
       faturamentoCache: {},
       faturamentoValorCache: {},
+      // Unidades vendidas no período do faturamento (mesma chave do % acima).
+      faturamentoUnidadesCache: {},
+      faturamentoPrecoMedioCache: {},
       faturamentoEmVoo: {},
       faturamentoPorFamiliaCache: {},
       faturamentoValorPorFamiliaCache: {},
+      faturamentoUnidadesPorFamiliaCache: {},
+      faturamentoPrecoMedioPorFamiliaCache: {},
       // Período (dias) que a resposta do faturamento disse — o cabeçalho mostra.
       faturamentoPeriodoDias: null,
       faturamentoFamiliaEmVoo: {},
@@ -556,6 +561,8 @@
     AM.state.familyFetchFalhou = {};
     AM.state.faturamentoPorFamiliaCache = {};
     AM.state.faturamentoFamiliaEmVoo = {};
+    AM.state.faturamentoUnidadesPorFamiliaCache = {};
+    AM.state.faturamentoPrecoMedioPorFamiliaCache = {};
     AM.state.precoAoVivoCache = {};
     AM.familiaEpoca++;
   }
@@ -799,6 +806,12 @@
           var chave = linha.tipo === "familia" ? linha.family_id : linha.item_id;
           if (linha.faturamentoPercentual !== undefined) cacheItem[chave] = linha.faturamentoPercentual;
           if (linha.faturamentoValor !== undefined) cacheValor[chave] = linha.faturamentoValor;
+          if (linha.faturamentoUnidades !== undefined) {
+            (linha.tipo === "familia" ? AM.state.faturamentoUnidadesPorFamiliaCache : AM.state.faturamentoUnidadesCache)[chave] = linha.faturamentoUnidades;
+          }
+          if (linha.faturamentoPrecoMedio !== undefined) {
+            (linha.tipo === "familia" ? AM.state.faturamentoPrecoMedioPorFamiliaCache : AM.state.faturamentoPrecoMedioCache)[chave] = linha.faturamentoPrecoMedio;
+          }
           if (linha.faturamentoPeriodoDias != null) registrarPeriodoFaturamento({ periodoDias: linha.faturamentoPeriodoDias });
           if (linha.curvaAbc !== undefined) cacheAbc[chave] = linha.curvaAbc;
         });
@@ -2109,7 +2122,9 @@
   // `pedido`: o faturamento desta linha já foi pedido e voltou — aí "—" quer
   // dizer "sem venda no período", e diz isso no title (antes era igual ao
   // "ainda não pedido").
-  function faturamentoConteudoHtml(v, valorAbsoluto, abcHtml, pedido) {
+  // `unidades`/`precoMedio`: 3ª linha "N un · R$ X/un" — neutra, sem aviso
+  // (o "↓" e o texto sobre promoção confundiam e saíram de vez).
+  function faturamentoConteudoHtml(v, valorAbsoluto, abcHtml, pedido, unidades, precoMedio) {
     if (v === null || v === undefined) {
       var tituloVazio = pedido ? ' title="Sem venda ' + escapeAttr(periodoFaturamentoTexto()) + '"' : "";
       return '<span class="am-faturamento__topo"><span class="am-faturamento__vazio"' + tituloVazio + ">—</span>" + (abcHtml || "") + "</span>";
@@ -2127,7 +2142,12 @@
     // faturamento absoluto").
     return '<span class="am-faturamento__topo"><span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
         (abcHtml || "") + "</span>" +
-      '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>";
+      '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>" +
+      (unidades === null || unidades === undefined ? "" :
+        '<span class="am-faturamento__un" title="' + escapeAttr("Unidades vendidas " + periodoFaturamentoTexto() +
+            (precoMedio != null ? " e preço médio por unidade vendida" : "")) + '">' +
+          escapeHtml(Number(unidades).toLocaleString("pt-BR") + " un" +
+            (precoMedio != null ? " · " + formatMoeda(precoMedio) + "/un" : "")) + "</span>");
   }
 
   // "nos últimos 30 dias" — o período que a resposta do faturamento disse.
@@ -2156,7 +2176,8 @@
       ? AM.state.faturamentoValorCache[itemId] : null;
     return '<span class="am-faturamento" data-faturamento-item="' + escapeAttr(itemId) + '">' +
       faturamentoConteudoHtml(v, valor, abcItemHtml(itemId),
-        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId)) + "</span>";
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId),
+        AM.state.faturamentoUnidadesCache[itemId], AM.state.faturamentoPrecoMedioCache[itemId]) + "</span>";
   }
 
   // Percentual CONSOLIDADO da família — soma dos filhos sobre o faturamento
@@ -2172,7 +2193,8 @@
       '" title="Percentual consolidado da família sobre o faturamento total do período">' +
       faturamentoConteudoHtml(v, valor,
         '<span data-abc-familia="' + escapeAttr(familyId) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[familyId]) + "</span>",
-        Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId)) + "</span>";
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId),
+        AM.state.faturamentoUnidadesPorFamiliaCache[familyId], AM.state.faturamentoPrecoMedioPorFamiliaCache[familyId]) + "</span>";
   }
 
   // Busca metricas7d, margem e/ou composição da margem para os item_id
@@ -2336,10 +2358,14 @@
         if (pendentesFaturamento.length) {
           var porItem = (dados.faturamento && dados.faturamento.porItem) || {};
           var porItemValor = (dados.faturamento && dados.faturamento.porItemValor) || {};
+          var porItemUnidades = (dados.faturamento && dados.faturamento.porItemUnidades) || {};
+          var porItemPrecoMedio = (dados.faturamento && dados.faturamento.porItemPrecoMedio) || {};
           registrarPeriodoFaturamento(dados.faturamento);
           pendentesFaturamento.forEach(function (id) {
             AM.state.faturamentoCache[id] = porItem[id] != null ? porItem[id] : null;
             AM.state.faturamentoValorCache[id] = porItemValor[id] != null ? porItemValor[id] : null;
+            AM.state.faturamentoUnidadesCache[id] = porItemUnidades[id] != null ? porItemUnidades[id] : null;
+            AM.state.faturamentoPrecoMedioCache[id] = porItemPrecoMedio[id] != null ? porItemPrecoMedio[id] : null;
           });
         }
         if (pendentesCurvaAbc.length) {
@@ -2393,11 +2419,15 @@
       var dados = r.data;
       var porFamilia = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamilia) || {};
       var porFamiliaValor = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamiliaValor) || {};
+      var porFamiliaUnidades = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamiliaUnidades) || {};
+      var porFamiliaPrecoMedio = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamiliaPrecoMedio) || {};
       var porFamiliaAbc = (dados && dados.ok && dados.curvaAbc && dados.curvaAbc.porFamilia) || {};
       if (dados && dados.ok) registrarPeriodoFaturamento(dados.faturamento);
       pendentes.forEach(function (familyId) {
         AM.state.faturamentoPorFamiliaCache[familyId] = porFamilia[familyId] != null ? porFamilia[familyId] : null;
         AM.state.faturamentoValorPorFamiliaCache[familyId] = porFamiliaValor[familyId] != null ? porFamiliaValor[familyId] : null;
+        AM.state.faturamentoUnidadesPorFamiliaCache[familyId] = porFamiliaUnidades[familyId] != null ? porFamiliaUnidades[familyId] : null;
+        AM.state.faturamentoPrecoMedioPorFamiliaCache[familyId] = porFamiliaPrecoMedio[familyId] != null ? porFamiliaPrecoMedio[familyId] : null;
         AM.state.curvaAbcPorFamiliaCache[familyId] = porFamiliaAbc[familyId] || null;
         repintarLinhaDoGrupo(familyId);
       });
@@ -2826,7 +2856,8 @@
       var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) ? AM.state.faturamentoCache[id] : null;
       var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, id) ? AM.state.faturamentoValorCache[id] : null;
       cel.innerHTML = faturamentoConteudoHtml(v, valor, abcItemHtml(id),
-        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id));
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id),
+        AM.state.faturamentoUnidadesCache[id], AM.state.faturamentoPrecoMedioCache[id]);
     });
     // Curva ABC — tag própria (data-abc-item), separada dos badges estáticos
     // (ver curvaAbcBadgeHtml/badgesAnuncioHtml): chega assíncrona, então

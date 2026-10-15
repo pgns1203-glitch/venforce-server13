@@ -426,12 +426,12 @@
   --am-pad-x: var(--vf-sp-4);
   --am-gap: var(--vf-sp-3); /* respiro entre colunas */
   --am-c-thumb: 44px;
-  --am-c-anuncio: 156px;
+  --am-c-anuncio: 140px;
   --am-c-status: 68px;
   --am-c-preco: 124px; /* faixa: vigente + cheio riscado lado a lado */
   --am-c-estoque: 56px;
   --am-c-vendidos: 60px;
-  --am-c-fat: 84px;
+  --am-c-fat: 116px; /* "12 un · R$ 1.110,48/un" */
   --am-c-metricas: 96px; /* "🛒 123 · 10,5%" */
   --am-c-margem: 124px; /* faixa: "35,5%  R$ 53,18/un" + (i) */
   --am-c-score: 56px; /* selo compacto, legenda no title */
@@ -4383,4 +4383,11 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   font-weight: var(--vf-fw-medium);
   letter-spacing: 0;
   text-transform: none;
+}
+
+/* Unidades vendidas no período — só a contagem, neutra. */
+.vf-page-anuncios-meli .am-faturamento__un {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
 }

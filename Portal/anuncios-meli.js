@@ -5562,7 +5562,7 @@
   // a promoção tem subsídio.
   function rebRebateHtml(subsidio) {
     if (!(rebNum(subsidio) > 0)) return "";
-    return '<span class="am-reb-rebate">+' + formatMoeda(subsidio) + "/un de rebate</span>";
+    return '<span class="am-reb-rebate">+' + formatMoeda(subsidio) + " de rebate</span>";
   }
 
   function rebOpcaoHtml(o, nomeRadio, id, itemId, atual) {

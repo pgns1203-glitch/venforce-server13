@@ -435,6 +435,7 @@
   --am-c-metricas: 96px; /* "🛒 123 · 10,5%" */
   --am-c-margem: 124px; /* faixa: "35,5%  R$ 53,18/un" + (i) */
   --am-c-score: 56px; /* selo compacto, legenda no title */
+  --am-score-respiro: var(--vf-sp-8); /* afasta o Score da Margem */
   --am-c-acao: 56px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -524,6 +525,14 @@
 .vf-page-anuncios-meli .am-listagem .am-gauge {
   justify-self: center;
   align-items: center;
+}
+
+/* Respiro entre Margem e Score: rótulo e medidor andam juntos para a
+   direita (margin-left com justify-self: center desloca o centro em
+   metade da margem e mantém um alinhado ao outro). */
+.vf-page-anuncios-meli .am-listagem__head > span:nth-child(10),
+.vf-page-anuncios-meli .am-listagem .am-gauge {
+  margin-left: var(--am-score-respiro);
 }
 
 .vf-page-anuncios-meli .am-listagem__head-rotulo {

@@ -136,7 +136,7 @@
 .cm-drawer .cm-banc__vs { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: var(--vf-fs-2xs); font-weight: 600; white-space: nowrap; background: var(--vf-surface-hover); color: var(--vf-text-secondary); }
 .cm-drawer .cm-banc__vs.is-good { background: var(--vf-success-bg); color: var(--vf-success-strong); }
 .cm-drawer .cm-banc__vs.is-warn { background: var(--vf-warning-bg); color: var(--vf-warning-strong); }
-.cm-drawer .cm-banc__manual { padding-top: var(--vf-sp-1); }
+.cm-drawer .cm-banc__manual { padding: var(--vf-sp-2) var(--vf-sp-2) 0; }
 @media (max-width: 1100px) {
   .cm-drawer .cm-banc__cols { display: none; }
   .cm-drawer .cm-banc__card { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -206,7 +206,8 @@
 /* Detalhe expandido: a mesma cascata Hoje × Promo do drawer */
 .vf-page-central-margem .cm-promo-detail > td { padding: var(--vf-sp-3) 16px var(--vf-sp-4); background: var(--vf-surface-2); border-bottom: 1px solid var(--vf-border); }
 .vf-page-central-margem .cm-promo-detail[hidden] { display: none; }
-.vf-page-central-margem .cm-promo-detail__grid { display: grid; grid-template-columns: minmax(300px, 5fr) minmax(0, 6fr); gap: var(--vf-sp-4); align-items: start; }
+.vf-page-central-margem .cm-promo-detail__grid { display: grid; grid-template-columns: minmax(540px, 5fr) minmax(0, 5fr); gap: var(--vf-sp-5, 24px); align-items: start; }
+.vf-page-central-margem .cm-promo-detail__esq { min-width: 0; overflow-x: auto; }
 .vf-page-central-margem .cm-promo-detail__dir { display: flex; flex-direction: column; gap: var(--vf-sp-2); }
 .vf-page-central-margem .cm-promo-detail .cm-banc__tabela { width: 100%; border-collapse: collapse; font-size: var(--vf-fs-sm); }
 .vf-page-central-margem .cm-promo-detail .cm-banc__tabela th, .vf-page-central-margem .cm-promo-detail .cm-banc__tabela td { padding: 5px 8px; border-bottom: 1px solid var(--vf-border); text-align: left; }

@@ -239,13 +239,25 @@ async function run() {
       await cdp.evaluate("document.querySelector('[data-view=promotions]').click()");
       await waitFor(cdp, "document.querySelector('#cm-opps-host tr[data-opp]') && document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'", "promoções não apareceram");
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
+      const badge = (await texto("#cm-opps-meta")) + " | " + (await texto("#cm-promos-live"));
+      assert.ok(/^Lista: Promo Snapshot · /.test(badge) && /Números: cotação ao vivo/.test(badge), badge);
       await shot("02-promocoes");
+    });
+
+    await check("Promoções: linha expandida mostra a cascata Hoje × Promo, quem banca e a origem dos números", async () => {
+      await cdp.evaluate("document.querySelector('tr.cm-promo-row .cm-c-produto').click()");
+      await waitFor(cdp, "document.querySelector('tr.cm-promo-detail:not([hidden]) [data-cm-bancada-cascata]')", "o detalhe da linha não abriu");
+      const detalhe = (await texto("tr.cm-promo-detail:not([hidden])")).replace(/\s+/g, " ");
+      for (const t of ["Desconto total", "ML banca", "Você banca", "Lista: Promo Snapshot", "Números: cotação ao vivo"]) assert.ok(detalhe.includes(t), `falta ${t}: ${detalhe}`);
+      assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
+      await shot("03-promocoes-expandida");
+      await cdp.evaluate("document.querySelector('tr.cm-promo-row .cm-c-produto').click()");
     });
 
     await check("Diagnóstico: divergências e a tabela Composição atual", async () => {
       await cdp.evaluate("document.querySelector('[data-view=composition]').click()");
       await waitFor(cdp, "document.getElementById('cm-divergences').hidden === false", "o Diagnóstico não abriu");
-      await shot("03-diagnostico");
+      await shot("07-diagnostico");
       await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
     });
 
@@ -269,11 +281,24 @@ async function run() {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
+    await check("Bancada (bloqueado): promoção já ativa — o motivo na tela, sem botão de escrita e com o link do Mercado Livre", async () => {
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-cenarios]')", "a Bancada não carregou");
+      await cdp.evaluate("document.querySelector('[data-cenario=\"P-ATIVA\"]').click()");
+      const resultado = await texto("#cm-banc-resultado");
+      assert.ok(resultado.includes("bloqueado · promoção já ativa"), resultado);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review')"), null, "sem botão de escrita");
+      assert.ok((await texto("#cm-bancada-ml")).includes("Abrir no Mercado Livre"));
+      assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
+      await shot("06-bancada-bloqueado");
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+    });
+
     await check("Bancada de anúncio em prejuízo: chip 'Subir p/ R$ X' com o preço-alvo cotado", async () => {
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"]').click()");
       await waitFor(cdp, "document.querySelector('[data-cm-chip=\"alvo\"]')", "o preço-alvo cotado não apareceu");
       assert.ok(/Subir p\/ R\$\s95,59/.test(await texto("[data-cm-chip=\"alvo\"]")));
-      await shot("06-bancada-prejuizo");
+      await shot("08-bancada-prejuizo");
     });
 
     console.log(`# ${checks} testes visuais concluídos`);

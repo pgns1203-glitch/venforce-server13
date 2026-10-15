@@ -3683,7 +3683,7 @@
     var h = state.bancada.hip;
     var digitado = h[campo] !== "";
     var tocado = h.edit[campo] === true;
-    var valor = tocado ? h[campo] : (cenValor === null || cenValor === undefined ? "" : String(cenValor).replace(".", ","));
+    var valor = tocado ? h[campo] : (cenValor === null || cenValor === undefined ? "" : Number(cenValor).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
     var pode = Boolean(exibicao.resultado && exibicao.resultado.cenario && exibicao.resultado.cenario[campo] !== null && exibicao.resultado.cenario[campo] !== undefined) || tocado;
     if (!pode) return escapeHtml(money(cenValor));
     return '<input class="vf-input vf-input--sm cm-banc__hip' + (digitado ? " is-hipotese" : "") + '" type="text" inputmode="decimal" autocomplete="off" data-hip="' + campo + '" value="' + escapeHtml(valor) +
@@ -3870,30 +3870,41 @@
     return '<div class="cm-banc__cols" aria-hidden="true"><span>Promoção</span><span>Preço final</span><span>Subsídio ML</span><span>LC/un</span><span>Margem</span><span>vs hoje</span><span>Veredito</span></div>';
   }
 
-  function bancadaSeletorHtml() {
+  // Card do Preço manual (selecionável); o campo do novo preço fica logo abaixo dele, fora da parte que é redesenhada.
+  function bancadaManualCardHtml() {
     var b = state.bancada;
-    var promos = bancadaPromos().filter(function (c) { return c.promocao; });
     var manualAtivo = String(b.selecionado) === "preco";
     var vManual = b.manual.resultado ? veredictoChipHtml(b.manual.resultado.veredito) : "";
-    var html = '<section class="cm-banc__grupo" data-grupo="manual"><button class="cm-banc__card cm-banc__card--manual' + (manualAtivo ? " is-active" : "") + '" type="button" role="radio" aria-checked="' + (manualAtivo ? "true" : "false") + '" data-cenario="preco">' +
+    return '<button class="cm-banc__card cm-banc__card--manual' + (manualAtivo ? " is-active" : "") + '" type="button" role="radio" aria-checked="' + (manualAtivo ? "true" : "false") + '" data-cenario="preco">' +
       '<span class="cm-banc__c-nome"><strong>Preço manual</strong><span class="cm-banc__c-meta"><span>digite um preço e compare com hoje</span></span></span>' +
-      '<span class="cm-banc__c-vered">' + vManual + "</span></button></section>";
+      '<span class="cm-banc__c-vered">' + vManual + "</span></button>";
+  }
+
+  function bancadaPromosHtml() {
+    var promos = bancadaPromos().filter(function (c) { return c.promocao; });
+    var html = "";
     BANCADA_GRUPOS.forEach(function (g) {
       var itens = promos.filter(function (c) { return (c.promocao.grupo || "ml") === g.chave; });
       if (!itens.length) return;
       html += '<section class="cm-banc__grupo" data-grupo="' + g.chave + '"><header class="cm-banc__grupo-cab"><span class="cm-banc__grupo-titulo">' + escapeHtml(g.titulo) + '</span><span class="cm-banc__grupo-dica">' + escapeHtml(g.dica) + "</span></header>" +
         bancadaCabecalhoCards() + itens.map(promoCardHtml).join("") + "</section>";
     });
-    return '<div class="cm-banc__cenarios" id="cm-banc-cenarios" role="radiogroup" aria-label="Cenário" data-cm-cenarios>' + html + "</div>";
+    return html;
   }
 
-  /** Campo do novo preço (só no cenário Preço manual) — fora da lista de cards para não perder o foco ao redesenhar. */
+  /** Campo do novo preço (só no cenário Preço manual), logo sob o card — fora do que é redesenhado a cada resposta, para não perder foco nem cursor. */
   function bancadaManualHtml(item) {
     var b = state.bancada;
     if (String(b.selecionado) !== "preco") return "";
     return '<div class="cm-banc__manual" id="cm-banc-manual"><div class="cm-pp__row"><div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(money(shownPrice(item))) + "</strong></div>" +
       '<label class="cm-pp__field"><span class="cm-pp__label">Novo preço</span><input class="vf-input vf-input--sm cm-pp__input" id="cm-new-price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeHtml(state.pricing.novoPreco) + '"></label>' +
       bancadaPrecoAlvoHtml(item) + "</div></div>";
+  }
+
+  function bancadaSeletorHtml(item) {
+    return '<div class="cm-banc__cenarios" id="cm-banc-cenarios" role="radiogroup" aria-label="Cenário" data-cm-cenarios>' +
+      '<section class="cm-banc__grupo" data-grupo="manual"><div id="cm-banc-manual-card">' + bancadaManualCardHtml() + "</div>" + bancadaManualHtml(item) + "</section>" +
+      '<div id="cm-banc-promos">' + bancadaPromosHtml() + "</div></div>";
   }
 
   // --- Botão único, dinâmico -----------------------------------------------------
@@ -3978,7 +3989,7 @@
       corpo = defasado + avisoPromo +
         '<div class="cm-banc__grid">' +
           '<div class="cm-banc__esq"><h4 class="cm-banc__sub">Hoje × Cenário</h4><div class="cm-banc__resultado" id="cm-banc-resultado" aria-live="polite">' + bancadaResultadoHtml() + "</div></div>" +
-          '<div class="cm-banc__dir"><h4 class="cm-banc__sub">Cenários</h4>' + semPromos + bancadaSeletorHtml() + bancadaManualHtml(item) + "</div>" +
+          '<div class="cm-banc__dir"><h4 class="cm-banc__sub">Cenários</h4>' + semPromos + bancadaSeletorHtml(item) + "</div>" +
         "</div>" +
         '<div id="cm-banc-botao">' + bancadaBotaoHtml() + "</div>";
     }
@@ -4031,11 +4042,12 @@
     if (!host) { renderBancada(); return; }
     preservandoFoco(function () {
       if (comSeletor === true) {
-        var seletor = el("cm-banc-cenarios");
-        if (seletor) {
-          seletor.outerHTML = bancadaSeletorHtml();
-          bindCenarios();
-        }
+        // Só o card do preço manual e a lista de promoções: o campo do novo preço não é tocado.
+        var cartao = el("cm-banc-manual-card");
+        var promos = el("cm-banc-promos");
+        if (cartao) cartao.innerHTML = bancadaManualCardHtml();
+        if (promos) promos.innerHTML = bancadaPromosHtml();
+        bindCenarios();
       }
       host.innerHTML = bancadaResultadoHtml();
       bindHipotese();

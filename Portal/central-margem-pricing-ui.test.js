@@ -858,7 +858,7 @@ async function run() {
     await check("hipótese de custo: custo e taxa fixa editáveis na coluna Cenário, marcados 'hipótese'; o servidor refaz o cenário; foco mantido; restaurar volta ao real; escrita desabilitada", async () => {
       await selecionar("P-DEAL");
       const lcReal = await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"] td:nth-child(3)').textContent");
-      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-hip=\"custo\"]').value"), "50", "custo do cenário = o real, editável");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-hip=\"custo\"]').value"), "50,00", "custo do cenário = o real, editável");
       assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-hipotese]'))"), false, "sem edição não é hipótese");
       await cdp.evaluate("window.__pc.calls.simular.length = 0; (function(){var i=document.querySelector('[data-hip=\"custo\"]');i.focus();i.value='60';i.dispatchEvent(new Event('input',{bubbles:true}));})()");
       await waitFor(cdp, "window.__pc.calls.simular.length === 1", "a hipótese não chegou ao servidor");
@@ -878,7 +878,7 @@ async function run() {
       assert.ok((await resultado()).includes("Use um número"));
       // Restaurar volta ao cenário real e libera o botão
       await cdp.evaluate("document.getElementById('cm-hip-reset').click()");
-      await waitFor(cdp, "!document.querySelector('[data-cm-hip-aviso]') && document.querySelector('[data-hip=\"custo\"]').value === '50'", "restaurar não voltou ao custo real");
+      await waitFor(cdp, "!document.querySelector('[data-cm-hip-aviso]') && document.querySelector('[data-hip=\"custo\"]').value === '50,00'", "restaurar não voltou ao custo real");
       assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cm-linha=\"lc\"] td:nth-child(3)').textContent"), lcReal);
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').disabled"), false);
       // Trocar de cenário descarta a hipótese

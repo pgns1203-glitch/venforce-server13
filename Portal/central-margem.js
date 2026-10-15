@@ -650,6 +650,9 @@
     refs.drawerNext.addEventListener("click", function () { moveDrawer(1); });
     el("cm-confirm-close").addEventListener("click", closeConfirm);
     el("cm-confirm-cancel").addEventListener("click", closeConfirm);
+    refs.confirmBody.addEventListener("click", function (event) {
+      if (event.target.closest("[data-cm-reler]")) relerAplicacao();
+    });
     refs.confirmApply.addEventListener("click", confirmApply);
     refs.confirmOverlay.addEventListener("click", function (event) {
       if (event.target === refs.confirmOverlay) closeConfirm();
@@ -4265,6 +4268,7 @@
     var apl = c.result && c.result.aplicacao;
     if (c.status === "applying") status = '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Aplicando no Mercado Livre… não feche esta janela.</span></div>';
     else if (c.status === "done" && !(apl && apl.status === "divergente")) status = '<div class="vf-banner is-success" role="status" data-cm-apply-result="aplicado"><div class="vf-banner__content"><p class="vf-banner__title">Aplicado no Mercado Livre</p><p class="vf-banner__description">Preço confirmado pelo Mercado Livre: <strong>' + escapeHtml(formatMoney(c.result.aplicacao.precoConfirmado) || "—") + "</strong>. A margem está sendo recalculada.</p></div></div>";
+    else if (c.status === "failed" && apl && apl.status === "resultado_desconhecido") status = resultadoDesconhecidoHtml(c, apl);
     else if (c.status === "failed") status = '<div class="vf-banner is-danger" role="alert" data-cm-apply-result="' + escapeHtml(c.result && c.result.aplicacao ? c.result.aplicacao.status : "erro") + '"><div class="vf-banner__content"><p class="vf-banner__title">' + escapeHtml(c.result && c.result.aplicacao && c.result.aplicacao.status === "recusado" ? "Alteração recusada — nada foi alterado" : "A alteração não foi confirmada") + '</p><p class="vf-banner__description">' + escapeHtml(c.error || "") + (c.retryable ? " Você pode tentar de novo com segurança (mesma chave, sem escrita dupla)." : " Gere um novo preview para tentar de novo.") + "</p></div></div>";
     refs.confirmBody.innerHTML =
       '<div class="cm-confirm__who"><strong>' + escapeHtml(pv.item && pv.item.titulo || (item && item.title) || "Produto") + "</strong>" +
@@ -4279,7 +4283,56 @@
     var podeAplicar = c.status === "ready" && !pv.bloqueado && escrita.habilitada && pv.preview && pv.preview.id && pv.preview.fingerprint;
     var podeRetentar = c.status === "failed" && c.retryable;
     refs.confirmApply.disabled = !(podeAplicar || podeRetentar);
-    refs.confirmApply.textContent = podeRetentar ? "Tentar de novo" : c.status === "done" ? "Aplicado" : "Confirmar alteração no Mercado Livre";
+    var promocao = c.kind === "PROMOTION";
+    // Escrita desligada: o preview abre completo, mas o botão final diz por que não confirma (nunca simula sucesso).
+    var desligada = promocao && !escrita.habilitada && c.status !== "done";
+    refs.confirmApply.textContent = podeRetentar ? "Tentar de novo"
+      : c.status === "done" ? (promocao ? "Participação confirmada" : "Aplicado")
+        : desligada ? "Escrita desligada — piloto não liberado"
+          : promocao ? "Confirmar participação no Mercado Livre" : "Confirmar alteração no Mercado Livre";
+  }
+
+  // Timeout/falha depois do envio: o Mercado Livre pode ter aplicado. Nada é repetido sozinho e o botão final
+  // não volta: o operador relê a aplicação (reconciliação no servidor) e confere o anúncio antes de qualquer nova tentativa.
+  function resultadoDesconhecidoHtml(c, apl) {
+    var rel = c.releitura;
+    var estado = rel && rel.erro
+      ? '<span class="cm-field-error" role="alert">' + escapeHtml(rel.erro) + "</span>"
+      : rel && rel.aplicacao
+        ? "Estado relido: <strong>" + escapeHtml(rel.aplicacao.status || "—") + "</strong>" + (rel.aplicacao.execucao ? " (" + escapeHtml(rel.aplicacao.execucao) + ")" : "") + (rel.em ? " às " + escapeHtml(formatShortDateTime(rel.em)) : "") + "."
+        : "";
+    return '<div class="vf-banner is-danger" role="alert" data-cm-apply-result="resultado_desconhecido"><div class="vf-banner__content">' +
+      '<p class="vf-banner__title">Resultado desconhecido — confira o anúncio antes de qualquer nova tentativa</p>' +
+      '<p class="vf-banner__description">O Mercado Livre não confirmou a ' + (c.kind === "PROMOTION" ? "participação" : "alteração") + ' a tempo: ela <strong>pode ter sido aplicada</strong>. A Central não repete sozinha. ' +
+      escapeHtml(c.error || "") + " " + estado + "</p>" +
+      '<p><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-confirm-reler" data-cm-reler' + (c.relendo ? " disabled" : "") + ">" + (c.relendo ? "Relendo…" : "Reler aplicação e anúncio") + "</button></p></div></div>";
+  }
+
+  function relerAplicacao() {
+    var c = state.confirm;
+    var apl = c && c.result && c.result.aplicacao;
+    if (!c || !apl || c.relendo || typeof api.getPricingApplication !== "function") return;
+    c.relendo = true;
+    renderConfirm();
+    var seq = state.drawerSeq;
+    api.getPricingApplication({ clientSlug: state.client.slug, clienteContaId: state.contaId, id: apl.id }).then(function (result) {
+      if (state.confirm !== c) return;
+      c.relendo = false;
+      if (result.ok && result.aplicacao) {
+        c.releitura = { aplicacao: result.aplicacao, em: new Date().toISOString() };
+        c.result.aplicacao = result.aplicacao;
+        // Se a releitura mostra que de fato aplicou (reconciliado), o estado segue o servidor.
+        if (result.aplicacao.status === "aplicado" || result.aplicacao.status === "divergente") {
+          c.status = "done";
+          if (seq === state.drawerSeq && state.pricing) { state.pricing.aplicacao = result.aplicacao; if (result.aplicacao.snapshotStatus !== "nao_aplicavel") trackPostWrite(result.aplicacao.id, seq); }
+        }
+      } else {
+        c.releitura = { erro: result.error || "Não foi possível reler agora." };
+      }
+      // O anúncio também é relido (a coluna Hoje volta do Mercado Livre/snapshot, nunca do que foi enviado).
+      if (seq === state.drawerSeq) recarregarBancada();
+      renderConfirm();
+    });
   }
 
   var ATENCAO_TEXTO = {
@@ -4347,6 +4400,7 @@
           // O cenário era do preço anterior: depois da escrita a bancada recomeça do preço novo.
           state.pricing.novoPreco = "";
           state.bancada.manual = novaBancada().manual;
+          limparHipotese();
           state.bancada.selecionado = "preco";
           if (c.kind === "PRICE" && aplicacao.precoConfirmado !== null && aplicacao.precoConfirmado !== undefined) {
             state.pricing.precoTabela = null;

@@ -8,6 +8,12 @@
 // Sem nenhuma das duas: simulação, promoções, preview, gates e histórico
 // funcionam; o APLICAR responde "rollout desligado" e nunca chama o ML.
 //
+// PARTICIPAR EM PROMOÇÃO tem rollout PRÓPRIO (piloto por cliente), separado do de preço:
+//   MARGIN_PROMO_WRITE_ENABLED=true     → chave geral (nasce false)
+//   MARGIN_PROMO_WRITE_CLIENTES=a,b     → slugs do piloto (nasce vazia)
+// As DUAS são necessárias: ligada com a lista vazia (ou cliente fora dela) não libera
+// ninguém. MARGIN_PRICING_WRITE_* não libera promoção.
+//
 // Leitura por chamada (não no load do módulo): testes injetam `env`.
 
 const { flagLigada } = require("../marginSnapshotConfig");
@@ -29,6 +35,31 @@ function escritaHabilitada({ clienteSlug } = {}, env = process.env) {
   if (flagLigada(env.MARGIN_PRICING_WRITE_ENABLED)) return true;
   const slug = String(clienteSlug || "").trim().toLowerCase();
   return Boolean(slug) && listaDeSlugs(env.MARGIN_PRICING_WRITE_CLIENTES).includes(slug);
+}
+
+const MOTIVO_PROMO_DESLIGADA = "Escrita desligada — piloto não liberado.";
+
+/**
+ * Rollout da escrita de PROMOÇÃO para um cliente.
+ * @returns {{ habilitada:boolean, codigo:string|null, motivo:string|null }}
+ */
+function promocaoEscritaStatus({ clienteSlug } = {}, env = process.env) {
+  if (!flagLigada(env.MARGIN_PROMO_WRITE_ENABLED)) {
+    return { habilitada: false, codigo: "ESCRITA_DESABILITADA", motivo: MOTIVO_PROMO_DESLIGADA };
+  }
+  const slug = String(clienteSlug || "").trim().toLowerCase();
+  if (!slug || !listaDeSlugs(env.MARGIN_PROMO_WRITE_CLIENTES).includes(slug)) {
+    return {
+      habilitada: false,
+      codigo: "PROMO_WRITE_CLIENTE_FORA_DO_PILOTO",
+      motivo: "Escrita de promoções liberada só para os clientes do piloto; este cliente não está na lista.",
+    };
+  }
+  return { habilitada: true, codigo: null, motivo: null };
+}
+
+function promocaoEscritaHabilitada(args = {}, env = process.env) {
+  return promocaoEscritaStatus(args, env).habilitada;
 }
 
 function resolvePricingConfig(env = process.env) {
@@ -76,4 +107,4 @@ function resolvePricingConfig(env = process.env) {
   };
 }
 
-module.exports = { escritaHabilitada, resolvePricingConfig, listaDeSlugs };
+module.exports = { escritaHabilitada, promocaoEscritaStatus, promocaoEscritaHabilitada, MOTIVO_PROMO_DESLIGADA, resolvePricingConfig, listaDeSlugs };

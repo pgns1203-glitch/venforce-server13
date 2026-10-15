@@ -14,6 +14,9 @@
 // docs/AUDITORIA_CENTRAL_MARGEM_OPERACIONAL_PRECIFICACAO.md §5): a meta de
 // margem é só aviso; variação % não tem limite.
 
+// Núcleo puro (calcularCenario/DEFAULT_TARGET_MARGIN): carregado no topo — sem I/O.
+const core = require("../core");
+
 const TOLERANCIA_PRECO = 0.005; // meio centavo: preços comparados em 2 casas
 
 // Status BRUTOS que podem virar PUT numa promoção ATIVA — mesma regra de
@@ -279,6 +282,24 @@ function gate(id, grupo, tom, titulo, detalhe = null) {
   return { id, grupo, tom, titulo, detalhe };
 }
 
+// Veredito do núcleo (calcularCenario — a mesma conta do simulador) como GATE da participação:
+// `nao_entrar` e `bloqueado` impedem a escrita; `entrar_se_girar` avisa (LC por unidade cai ou margem
+// abaixo da meta — o operador decide vendo o volume de empate); `entrar` passa.
+function gateVeredito(cenario) {
+  const v = cenario.veredito;
+  if (v === "entrar") return gate("veredito", "PROMOCAO", "ok", "Veredito: entrar", "O LC por unidade não cai e a margem fica na meta.");
+  if (v === "entrar_se_girar") {
+    const empate = cenario.empate_volume !== null && cenario.empate_volume !== undefined && cenario.empate_volume > 0
+      ? ` Precisa vender ${pct(cenario.empate_volume)} a mais para empatar o LC total de hoje.` : "";
+    return gate("veredito", "PROMOCAO", "warn", "Veredito: entrar se girar", `${cenario.motivo === "lc_por_unidade_cai" ? "O LC por unidade cai." : "A margem fica abaixo da meta."}${empate}`);
+  }
+  if (v === "nao_entrar") {
+    return gate("veredito", "PROMOCAO", "block", "Veredito: não entrar",
+      cenario.motivo === "lc_nao_positivo" ? "O LC por unidade fica zero ou negativo nesta promoção." : "A margem fica abaixo do mínimo nesta promoção.");
+  }
+  return gate("veredito", "PROMOCAO", "block", "Veredito bloqueado", `Sem número confiável para decidir: ${(cenario.motivos || [cenario.motivo]).filter(Boolean).join(", ") || "motivo não informado"}.`);
+}
+
 function pct(fracao) {
   return fracao === null || fracao === undefined ? "—" : `${(fracao * 100).toFixed(1).replace(".", ",")}%`;
 }
@@ -446,6 +467,17 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
       // Quem banca é medido contra o preço CHEIO (original da promoção, ou o de lista do
       // item) — nunca contra o preço atual, que já pode ser promocional. Sem nenhum dos
       // dois: banca null + `sem_preco_cheio` (não cai no preço atual).
+      // Participar só com veredito do núcleo ≠ não entrar/bloqueado (alterar uma oferta já ativa segue só
+      // pelos gates acima: o núcleo marca a promoção ativa como `bloqueado`, que não é o caso aqui).
+      if (escrita.acao === "PARTICIPAR" && novoPreco !== null) {
+        const veredito = core.calcularCenario({
+          atual: { preco: m.precoAtual, custo: m.custo, aliquota: m.imposto, taxa_fixa: m.taxaFixa, comissao: m.comissao, frete: m.frete, rebate: 0 },
+          cenario: { tipo: "promo", preco: novoPreco, rebate, status_promocao: promocao.status },
+          cotacao: { comissao: recote.comissao, frete: recote.frete, frete_aplicavel: recote.freteFonte !== "nao_aplicavel" },
+          meta: { margem_alvo: m.metaMargem !== null && m.metaMargem !== undefined ? m.metaMargem : core.DEFAULT_TARGET_MARGIN, margem_minima: 0 },
+        });
+        gates.push(gateVeredito(veredito));
+      }
       const precoOriginal = num(promocao.precoOriginal) ?? m.precoLista ?? null;
       const desconto = novoPreco !== null && precoOriginal !== null ? round2(precoOriginal - novoPreco) : null;
       const mlBanca = rebate || null;

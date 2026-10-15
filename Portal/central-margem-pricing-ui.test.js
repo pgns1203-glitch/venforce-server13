@@ -290,7 +290,8 @@ const MOCK_CLIENT = `
           rebate: promo ? 5.2 : 0, variacaoPercentual: Math.round((novo / 110.48 - 1) * 10000) / 100 },
         vendas: { unidades: 84, pedidos: 80, receita: 9000 },
         promocao: promo, gates: gatesBase(bloqueado), bloqueado: bloqueado,
-        escrita: window.__pc.escritaHabilitada ? { habilitada: true, motivo: null } : { habilitada: false, motivo: "Escrita no Mercado Livre desligada para este cliente (rollout)." },
+        escrita: window.__pc.escritaHabilitada ? { habilitada: true, motivo: null }
+          : { habilitada: false, motivo: params.tipo === "PROMOTION" ? "Escrita desligada — piloto não liberado." : "Escrita no Mercado Livre desligada para este cliente (rollout)." },
       }, extra || {});
     }
 
@@ -385,6 +386,9 @@ const MOCK_CLIENT = `
       },
       getPricingApplication: function (params) {
         window.__pc.calls.app.push(params.id);
+        if (window.__pc.releituraMode === "desconhecido") {
+          return Promise.resolve({ ok: true, aplicacao: { id: params.id, status: "resultado_desconhecido", execucao: "resultado_desconhecido" } });
+        }
         return Promise.resolve({ ok: true, aplicacao: { id: params.id, status: "aplicado", precoConfirmado: 114.9, snapshotStatus: window.__pc.calls.app.length >= 2 ? "atualizado" : "pendente" } });
       },
       getPricingHistory: function (params) {
@@ -1111,6 +1115,53 @@ async function run() {
       for (const t of ["Participar de:", "Desconto total", "R$ 20,00", "ML banca", "R$ 5,20", "Seller banca", "R$ 14,80"]) assert.ok(body.includes(t), `falta ${t}: ${body}`);
       await shot("14-preview-promo");
       await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
+    });
+
+    await check("participar com a escrita DESLIGADA (piloto não liberado): o preview abre completo; aviso e botão final dizem 'Escrita desligada — piloto não liberado'; zero aplicar", async () => {
+      await cdp.evaluate("window.__pc.escritaHabilitada = false; window.__pc.calls.apply.length = 0");
+      await abrirRevisaoPromo("P-DEAL");
+      await waitFor(cdp, "document.querySelector('#cm-confirm-body .cm-confirm__table')", "preview da promoção não abriu");
+      const corpo = (await cdp.evaluate("document.getElementById('cm-confirm-body').textContent")).replace(/\u00a0/g, " ");
+      for (const t of ["Participar de:", "Desconto total", "ML banca", "Seller banca", "Gates"]) assert.ok(corpo.includes(t), `preview incompleto (falta ${t}): ${corpo}`);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cm-rollout=\"off\"]').textContent"), "Escrita desligada — piloto não liberado.");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').disabled"), true);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').textContent"), "Escrita desligada — piloto não liberado");
+      await cdp.evaluate("document.getElementById('cm-confirm-apply').click()");
+      await sleep(150);
+      assert.strictEqual(await cdp.evaluate("window.__pc.calls.apply.length"), 0, "nunca chama o aplicar com a flag desligada (nunca simula sucesso)");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-apply-result=\"aplicado\"]'))"), false);
+      await cdp.evaluate("document.getElementById('cm-confirm-cancel').click()");
+      // Liberada: o botão vira "Confirmar participação no Mercado Livre" e habilita (sem clicar)
+      await cdp.evaluate("window.__pc.escritaHabilitada = true");
+      await abrirRevisaoPromo("P-DEAL");
+      await waitFor(cdp, "document.getElementById('cm-confirm-apply').disabled === false", "com a escrita liberada o botão não habilitou");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').textContent"), "Confirmar participação no Mercado Livre");
+      await cdp.evaluate("document.getElementById('cm-confirm-cancel').click(); window.__pc.escritaHabilitada = false");
+    });
+
+    await check("participar: resultado desconhecido (timeout) NÃO repete sozinho — mostra o estado e exige a releitura da aplicação e do anúncio", async () => {
+      await cdp.evaluate("window.__pc.escritaHabilitada = true; window.__pc.applyMode = 'desconhecido'; window.__pc.releituraMode = 'desconhecido'; window.__pc.calls.apply.length = 0; window.__pc.calls.app.length = 0; window.__pc.calls.simular.length = 0");
+      await abrirRevisaoPromo("P-DEAL");
+      await waitFor(cdp, "document.getElementById('cm-confirm-apply').disabled === false");
+      await cdp.evaluate("document.getElementById('cm-confirm-apply').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-apply-result=\"resultado_desconhecido\"]')", "estado desconhecido não apareceu");
+      const banner = (await cdp.evaluate("document.querySelector('[data-cm-apply-result=\"resultado_desconhecido\"]').textContent")).replace(/\u00a0/g, " ");
+      for (const t of ["Resultado desconhecido", "pode ter sido aplicada", "não repete sozinha", "Reler aplicação e anúncio"]) assert.ok(banner.includes(t), `falta ${t}: ${banner}`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').disabled"), true, "nenhum botão de nova tentativa");
+      assert.strictEqual(await cdp.evaluate("window.__pc.calls.apply.length"), 1);
+      // Reler: busca a aplicação (reconciliada no servidor) e o anúncio; segue desconhecido → diz o estado, sem reenviar
+      await cdp.evaluate("document.getElementById('cm-confirm-reler').click()");
+      await waitFor(cdp, "document.getElementById('cm-confirm-body').textContent.indexOf('Estado relido') !== -1", "a releitura não apareceu");
+      assert.ok((await cdp.evaluate("document.getElementById('cm-confirm-body').textContent")).includes("Estado relido: resultado_desconhecido"));
+      assert.deepStrictEqual(await cdp.evaluate("window.__pc.calls.app"), [903], "relê a aplicação pelo id");
+      await waitFor(cdp, "window.__pc.calls.simular.some(function (c) { return c.cenarios.some(function (x) { return x.tipo === 'todas_promos'; }); })", "o anúncio não foi relido (Bancada)");
+      assert.strictEqual(await cdp.evaluate("window.__pc.calls.apply.length"), 1, "a releitura nunca reenvia a participação");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-confirm-apply').disabled"), true);
+      // A releitura mostra que de fato aplicou: o estado segue o servidor
+      await cdp.evaluate("window.__pc.releituraMode = null; document.getElementById('cm-confirm-reler').click()");
+      await waitFor(cdp, "document.getElementById('cm-confirm-apply').textContent === 'Participação confirmada'", "a releitura não concluiu o estado");
+      assert.strictEqual(await cdp.evaluate("window.__pc.calls.apply.length"), 1);
+      await cdp.evaluate("window.__pc.applyMode = 'ok'; window.__pc.releituraMode = null; window.__pc.escritaHabilitada = false; document.getElementById('cm-confirm-cancel').click()");
     });
 
     await check("histórico: quem, quando, preço antes → depois, margem e status; outro item mostra estado vazio", async () => {

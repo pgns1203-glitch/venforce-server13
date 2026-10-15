@@ -28,7 +28,7 @@
 
 const crypto = require("crypto");
 const avaliacao = require("./precificacaoAvaliacao");
-const { escritaHabilitada, resolvePricingConfig } = require("./precificacaoConfig");
+const { escritaHabilitada, promocaoEscritaStatus, resolvePricingConfig } = require("./precificacaoConfig");
 const fingerprintLib = require("./precificacaoFingerprint");
 
 const { erroHttp, validarPreco, mesmoPreco, codigoDoGate } = avaliacao;
@@ -73,9 +73,27 @@ function defaults(deps = {}) {
       deps.leituraSnapshotHabilitada || require("../marginSnapshotReadService").leituraHabilitada,
     novoToken: deps.novoToken || (() => crypto.randomUUID()),
     relogio: deps.relogio || (() => performance.now()),
+    // Quem pode participar de promoção: admin ou coordenador do squad do cliente.
+    podeEscreverPromocao: deps.podeEscreverPromocao || papelPodeEscreverPromocao,
     env: deps.env || process.env,
     now: deps.now || (() => new Date()),
   };
+}
+
+const MOTIVO_PAPEL_PROMOCAO = "Seu perfil não pode participar de promoções: só admin ou coordenador do squad do cliente.";
+
+/**
+ * Escrever em promoção é restrito a admin ou ao COORDENADOR (função de squad ativa) do squad
+ * que atende o cliente. O acesso à conta (carteira) já foi garantido pela rota.
+ * @returns {Promise<{ ok:boolean, papel:string|null }>}
+ */
+async function papelPodeEscreverPromocao({ user, clienteId }, db) {
+  if (!user || user.id === null || user.id === undefined) return { ok: false, papel: null };
+  if (String(user.role || "").toLowerCase() === "admin") return { ok: true, papel: "admin" };
+  const squads = require("../../squads/squadsRepository");
+  const atual = await squads.squadAtivoDoCliente(clienteId, db);
+  if (atual && (await squads.ehCoordenadorDoSquad(user.id, atual.squad_id, db))) return { ok: true, papel: "coordenador" };
+  return { ok: false, papel: null };
 }
 
 function comPrazo(promessa, ms, codigo = "REAVALIACAO_TIMEOUT") {
@@ -171,7 +189,20 @@ async function avaliarCompleto({ base, tipo, novoPreco, precoVisto, promotionId,
   return { resultado, preco, promo };
 }
 
-function publicoAvaliacao(base, resultado, { tipo, clienteSlug, env }) {
+// Rollout (e papel) da escrita para o tipo da avaliação: promoção tem flags e papel próprios.
+function escritaPublica({ tipo, clienteSlug, env, papel }) {
+  if (tipo === "PROMOTION") {
+    const rollout = promocaoEscritaStatus({ clienteSlug }, env);
+    if (!rollout.habilitada) return { habilitada: false, motivo: rollout.motivo, codigo: rollout.codigo };
+    if (papel && papel.ok === false) return { habilitada: false, motivo: MOTIVO_PAPEL_PROMOCAO, codigo: "PAPEL_NAO_AUTORIZADO" };
+    return { habilitada: true, motivo: null, codigo: null };
+  }
+  return escritaHabilitada({ clienteSlug }, env)
+    ? { habilitada: true, motivo: null }
+    : { habilitada: false, motivo: "Escrita no Mercado Livre desligada para este cliente (rollout). Simulação e preview seguem disponíveis." };
+}
+
+function publicoAvaliacao(base, resultado, { tipo, clienteSlug, env, papel = null }) {
   return {
     ok: true,
     tipo,
@@ -190,9 +221,7 @@ function publicoAvaliacao(base, resultado, { tipo, clienteSlug, env }) {
     promocao: resultado.promocao,
     gates: resultado.gates,
     bloqueado: resultado.bloqueado,
-    escrita: escritaHabilitada({ clienteSlug }, env)
-      ? { habilitada: true, motivo: null }
-      : { habilitada: false, motivo: "Escrita no Mercado Livre desligada para este cliente (rollout). Simulação e preview seguem disponíveis." },
+    escrita: escritaPublica({ tipo, clienteSlug, env, papel }),
   };
 }
 
@@ -239,7 +268,8 @@ async function preview(params = {}, deps = {}) {
     depsVivos,
     d
   );
-  const publico = publicoAvaliacao(base, resultado, { tipo, clienteSlug: base.cliente.slug, env: d.env });
+  const papel = tipo === "PROMOTION" ? await d.podeEscreverPromocao({ user, clienteId: base.cliente.id }, deps.db) : null;
+  const publico = publicoAvaliacao(base, resultado, { tipo, clienteSlug: base.cliente.slug, env: d.env, papel });
   if (preco === null) return { ...publico, preview: null };
 
   const fingerprint = fingerprintLib.montarFingerprint({ base, tipo, precoVisto: visto.valor, precoSolicitado: preco, resultado, promo });
@@ -412,8 +442,14 @@ async function aplicar(params = {}, deps = {}) {
     throw erroHttp(409, "PREVIEW_FINGERPRINT_DIVERGENTE", "A confirmação não corresponde ao preview gerado. Gere um novo preview.");
   }
 
-  // Rollout: com a escrita desligada nada é tocado — nem a linha, nem o ML.
-  if (!escritaHabilitada({ clienteSlug: cliente.slug }, d.env)) {
+  // Rollout: com a escrita desligada nada é tocado — nem a linha, nem o ML. Promoção tem flags
+  // próprias (MARGIN_PROMO_WRITE_*: chave geral + lista de clientes do piloto) e papel restrito.
+  if (linha.tipoAcao === "PROMOTION") {
+    const rollout = promocaoEscritaStatus({ clienteSlug: cliente.slug }, d.env);
+    if (!rollout.habilitada) throw erroHttp(403, rollout.codigo, `${rollout.motivo} Nenhuma alteração foi enviada.`);
+    const papel = await d.podeEscreverPromocao({ user, clienteId: cliente.id }, deps.db);
+    if (!papel.ok) throw erroHttp(403, "PAPEL_NAO_AUTORIZADO", `${MOTIVO_PAPEL_PROMOCAO} Nenhuma alteração foi enviada.`);
+  } else if (!escritaHabilitada({ clienteSlug: cliente.slug }, d.env)) {
     throw erroHttp(403, "ESCRITA_DESABILITADA", "Escrita no Mercado Livre desligada para este cliente (rollout). Nenhuma alteração foi enviada.");
   }
 
@@ -472,9 +508,13 @@ async function aplicar(params = {}, deps = {}) {
         status,
         precoVisto: claim.precoVisto,
         precoSolicitado: claim.precoSolicitado,
+        promotionType: claim.promotionType || null,
+        promotionNome: claim.promotionNome || null,
         precoConfirmado: extra.precoConfirmado ?? null,
         margemAntes: claim.margemAntes,
         margemDepois: row ? row.margemDepois : null,
+        lucroAntes: claim.lucroAntes ?? null,
+        lucroDepois: row ? row.lucroDepois ?? null : null,
         atencaoCodigo: (row && row.atencaoCodigo) || extra.atencaoCodigo || null,
         erroCodigo: extra.erroCodigo || null,
       },
@@ -853,9 +893,10 @@ async function promocoes(params = {}, deps = {}) {
     config.simulacaoCacheMs
   );
   const escrita = escritaHabilitada({ clienteSlug: base.cliente.slug }, d.env);
+  const escritaPromocao = promocaoEscritaStatus({ clienteSlug: base.cliente.slug }, d.env).habilitada;
   if (!base.contaCorreta || !base.motor) {
     const r = avaliacao.avaliar({ base, tipo: "PRICE", novoPreco: null, precoVisto: null, recote: {} }, deps);
-    return { ok: true, itemId: base.anuncio.itemId, contaCorreta: false, gates: r.gates, promocoes: [], escritaHabilitada: escrita };
+    return { ok: true, itemId: base.anuncio.itemId, contaCorreta: false, gates: r.gates, promocoes: [], escritaHabilitada: escrita, escritaPromocaoHabilitada: escritaPromocao };
   }
   const { lista } = await promocaoAoVivo(base, null, d);
   const recotes = new Map();
@@ -900,6 +941,7 @@ async function promocoes(params = {}, deps = {}) {
     vendas: base.motor.vendas,
     promocoes: saida,
     escritaHabilitada: escrita,
+    escritaPromocaoHabilitada: escritaPromocao,
   };
 }
 
@@ -914,6 +956,7 @@ module.exports = {
   aplicacaoPublica,
   execucaoDe,
   invalidarCache,
+  _papelPodeEscreverPromocao: papelPodeEscreverPromocao,
   CODIGOS_RECUSA_SERVICO,
   _cacheContexto: cacheContexto,
 };

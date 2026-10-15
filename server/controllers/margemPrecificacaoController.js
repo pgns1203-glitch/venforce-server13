@@ -27,7 +27,8 @@ function slugParam(req) {
 
 function usuario(req) {
   const u = req.user || {};
-  return { id: u.id ?? null, nome: u.nome || u.name || null, email: u.email || null };
+  // `role` vai junto: o gate de escrita de promoção (admin ou coordenador do squad do cliente) precisa dele.
+  return { id: u.id ?? null, nome: u.nome || u.name || null, email: u.email || null, role: u.role || null };
 }
 
 function createMargemPrecificacaoController({ service = defaultService, oportunidades = defaultOportunidades } = {}) {

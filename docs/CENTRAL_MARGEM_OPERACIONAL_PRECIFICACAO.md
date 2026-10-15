@@ -112,6 +112,7 @@ Por que não advisory lock de sessão: prenderia uma conexão do pool durante a 
 | `MARGIN_PRICING_WRITE_ENABLED=true` | escrita liberada para todos |
 | `MARGIN_PRICING_WRITE_CLIENTES=a,b` | escrita só para estes slugs |
 | (nenhuma) | **padrão**: simulação, promoções, preview, gates e histórico funcionam; o aplicar responde 403 `ESCRITA_DESABILITADA` sem tocar linha nem ML |
+| `MARGIN_PROMO_WRITE_ENABLED` (false) + `MARGIN_PROMO_WRITE_CLIENTES` (vazia) | **Participar em promoção tem rollout PRÓPRIO** (piloto por cliente): as DUAS são necessárias — ligada com a lista vazia, ou cliente fora dela, não libera ninguém (403 `PROMO_WRITE_CLIENTE_FORA_DO_PILOTO`); desligada: 403 `ESCRITA_DESABILITADA` e o preview mostra “Escrita desligada — piloto não liberado.”. `MARGIN_PRICING_WRITE_*` **não** libera promoção (e vice-versa) |
 | `MARGIN_PRICING_PREVIEW_TTL_MINUTES` (10) | validade do preview |
 | `MARGIN_PRICING_ML_TIMEOUT_MS` (15000) | timeout REAL de cada chamada ao ML no caminho da escrita |
 | `MARGIN_PRICING_REAVALIACAO_TIMEOUT_MS` (60000) | prazo da reavaliação ao vivo no aplicar |
@@ -131,7 +132,8 @@ Nenhuma variável de ambiente real foi alterada.
 - **Com escrita:** `DEAL`, `SELLER_CAMPAIGN` (mesma lista do serviço de escrita de `/anuncios`).
 - **Só simulação:** `PRICE_DISCOUNT`, `DOD`, `LIGHTNING`, `MARKETPLACE_CAMPAIGN`, `VOLUME`, `SMART`, `PRICE_MATCHING`, `PRE_NEGOTIATED`, `UNHEALTHY_STOCK`, `SELLER_COUPON_CAMPAIGN`, e qualquer `PROGRAMADA`/`NÃO APLICADA`.
 - Margem/LC por promoção: `marginEngine.computeMargin` com `rebate = subsidioMl` (retorno ML) e **comissão/frete recotados no preço promocional** (até 6 preços distintos por abertura; preços repetidos compartilham a recotação).
-- Seller banca = desconto − retorno ML. ML banca = retorno ML.
+- Quem banca é medido contra o **preço cheio** (original da promoção, ou o de lista do item), nunca contra o preço atual (que já pode ser promocional): desconto total = cheio − P'; ML banca = retorno ML; seller banca = desconto total − retorno ML. Sem preço cheio: seller banca `null` + `sem_preco_cheio`; banca negativa sai com aviso.
+- **Gates próprios da participação (PARTICIPAR):** (1) rollout `MARGIN_PROMO_WRITE_*`; (2) papel — admin ou **coordenador ativo do squad do cliente** (`PAPEL_NAO_AUTORIZADO`); (3) veredito do núcleo (`calcularCenario`, a mesma conta do simulador) ≠ `nao_entrar`/`bloqueado` (`entrar_se_girar` só avisa); (4) conta/cliente da carteira do usuário (rota) e preview do próprio autor. Depois: fingerprint, claim/lease, revalidação ao vivo, POST com prazo, confirmação (releitura do snapshot) e auditoria `central_margem_promocao_aplicar` (quem, quando, promoção, preço, LC e margem antes/depois). `resultado_desconhecido` (timeout) nunca é repetido sozinho: replay da mesma chave só devolve o estado e o preview não pode ser reutilizado.
 - Limites `min/max_discounted_price` não são expostos pelo normalizador de `/anuncios` (que não foi alterado): a Central valida `0 < preço < original` e o ML valida a faixa na confirmação (erro traduzido e auditado).
 
 ## 6. Decisões pendentes (não inventadas)

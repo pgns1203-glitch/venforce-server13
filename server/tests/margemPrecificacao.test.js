@@ -27,7 +27,8 @@ async function esperaErro(fn) {
   throw new Error("era esperado um erro");
 }
 
-const ESCRITA_ON = { MARGIN_PRICING_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", MARGIN_PRICING_SNAPSHOT_DELAY_MS: "0" };
+// Preço e promoção têm rollouts próprios; as duas escritas ficam LIGADAS para a loja-a (os testes de rollout trocam o env).
+const ESCRITA_ON = { MARGIN_PRICING_WRITE_CLIENTES: "loja-a", MARGIN_PROMO_WRITE_ENABLED: "true", MARGIN_PROMO_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", MARGIN_PRICING_SNAPSHOT_DELAY_MS: "0" };
 
 function comRepo(c, repo) {
   return { ...c.deps, repo };
@@ -587,6 +588,213 @@ cenario("promoção: resposta 200 sem preço → resultado_desconhecido PROMOCAO
   assert.strictEqual(repo.linhas[0].status, "resultado_desconhecido");
 });
 
+// ── Participar em promoção: rollout PRÓPRIO, papel, veredito, revalidação, timeout e auditoria ──
+
+const SO_PRECO_ON = { MARGIN_PRICING_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", MARGIN_PRICING_SNAPSHOT_DELAY_MS: "0" };
+const PROMO_ON = { MARGIN_PROMO_WRITE_ENABLED: "true", MARGIN_PROMO_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", MARGIN_PRICING_SNAPSHOT_DELAY_MS: "0" };
+
+cenario("promoção: flags de rollout próprias (MARGIN_PROMO_WRITE_*) — as DUAS são necessárias; MARGIN_PRICING_WRITE_* não libera promoção", () => {
+  const { promocaoEscritaStatus, promocaoEscritaHabilitada } = require("../services/motorMargem/precificacao/precificacaoConfig");
+  assert.strictEqual(promocaoEscritaHabilitada({ clienteSlug: "loja-a" }, {}), false, "nasce desligada");
+  assert.strictEqual(promocaoEscritaStatus({ clienteSlug: "loja-a" }, {}).motivo, "Escrita desligada — piloto não liberado.");
+  assert.strictEqual(promocaoEscritaHabilitada({ clienteSlug: "loja-a" }, { MARGIN_PROMO_WRITE_ENABLED: "true" }), false, "ligada com a lista vazia não libera ninguém");
+  assert.strictEqual(promocaoEscritaHabilitada({ clienteSlug: "loja-a" }, { MARGIN_PROMO_WRITE_CLIENTES: "loja-a" }), false, "lista sem a chave geral não libera");
+  assert.strictEqual(promocaoEscritaHabilitada({ clienteSlug: "loja-a" }, { MARGIN_PROMO_WRITE_ENABLED: "false", MARGIN_PROMO_WRITE_CLIENTES: "loja-a" }), false);
+  const fora = promocaoEscritaStatus({ clienteSlug: "loja-b" }, { MARGIN_PROMO_WRITE_ENABLED: "true", MARGIN_PROMO_WRITE_CLIENTES: "loja-a" });
+  assert.strictEqual(fora.habilitada, false);
+  assert.strictEqual(fora.codigo, "PROMO_WRITE_CLIENTE_FORA_DO_PILOTO");
+  assert.strictEqual(promocaoEscritaHabilitada({ clienteSlug: "Loja-A" }, { MARGIN_PROMO_WRITE_ENABLED: "TRUE", MARGIN_PROMO_WRITE_CLIENTES: "x, loja-a" }), true);
+  assert.strictEqual(promocaoEscritaHabilitada({ clienteSlug: "loja-a" }, { MARGIN_PRICING_WRITE_ENABLED: "true", MARGIN_PRICING_WRITE_CLIENTES: "loja-a" }), false, "a escrita de PREÇO ligada não libera promoção");
+});
+
+cenario("promoção com a flag DESLIGADA: o preview abre completo (gates e números) com 'Escrita desligada — piloto não liberado.'; aplicar → 403 e ZERO chamadas de escrita ao ML", async () => {
+  for (const env of [{}, SO_PRECO_ON]) {
+    const c = cenarioPromo({ env });
+    const repo = criarRepoMemoria();
+    const p = await previewPromo(c, repo);
+    assert.strictEqual(p.ok, true);
+    assert.strictEqual(p.bloqueado, false, "o preview não é bloqueado pelo rollout");
+    assert.strictEqual(p.proposta.preco, 129.9, "preview completo: números e gates");
+    assert.ok(p.gates.length > 5);
+    assert.deepStrictEqual({ h: p.escrita.habilitada, m: p.escrita.motivo, c: p.escrita.codigo }, { h: false, m: "Escrita desligada — piloto não liberado.", c: "ESCRITA_DESABILITADA" });
+    const err = await esperaErro(() => aplicar(c, repo, p.preview.id, "promo-off-0001"));
+    assert.strictEqual(err.statusCode, 403);
+    assert.strictEqual(err.code, "ESCRITA_DESABILITADA");
+    assert.strictEqual(c.chamadas.aplicarPromocao.length, 0, "o escritor de promoção nem é chamado");
+    assert.strictEqual(c.chamadas.enviosMl.length, 0, "zero POST/PUT ao Mercado Livre");
+    assert.strictEqual(repo.linhas[0].status, "preview", "a linha segue como preview: nada foi reivindicado");
+    assert.strictEqual(c.chamadas.logs.length, 0, "nada aconteceu: nada a auditar");
+  }
+});
+
+cenario("promoção com a flag LIGADA e o cliente FORA da lista do piloto → 403 PROMO_WRITE_CLIENTE_FORA_DO_PILOTO, zero escrita", async () => {
+  const c = cenarioPromo({ env: { ...PROMO_ON, MARGIN_PROMO_WRITE_CLIENTES: "outra-loja" } });
+  const repo = criarRepoMemoria();
+  const p = await previewPromo(c, repo);
+  assert.strictEqual(p.escrita.habilitada, false);
+  assert.strictEqual(p.escrita.codigo, "PROMO_WRITE_CLIENTE_FORA_DO_PILOTO");
+  const err = await esperaErro(() => aplicar(c, repo, p.preview.id, "promo-fora-001"));
+  assert.strictEqual(err.statusCode, 403);
+  assert.strictEqual(err.code, "PROMO_WRITE_CLIENTE_FORA_DO_PILOTO");
+  assert.strictEqual(c.chamadas.enviosMl.length, 0);
+  assert.strictEqual(repo.linhas[0].status, "preview");
+  // ligada com a lista vazia: também ninguém
+  const vazio = cenarioPromo({ env: { MARGIN_PROMO_WRITE_ENABLED: "true", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0" } });
+  const repo2 = criarRepoMemoria();
+  const p2 = await previewPromo(vazio, repo2);
+  const err2 = await esperaErro(() => aplicar(vazio, repo2, p2.preview.id, "promo-vazia-01"));
+  assert.strictEqual(err2.statusCode, 403);
+  assert.strictEqual(vazio.chamadas.enviosMl.length, 0);
+});
+
+cenario("rollout independente: promoção liberada NÃO libera preço, e preço liberado NÃO libera promoção", async () => {
+  const soPromo = criarCenario({ env: PROMO_ON });
+  const repoA = criarRepoMemoria();
+  const pa = await previewPreco(soPromo, repoA);
+  const errA = await esperaErro(() => aplicar(soPromo, repoA, pa.preview.id, "preco-sem-flag-1"));
+  assert.strictEqual(errA.code, "ESCRITA_DESABILITADA", "preço continua desligado");
+  assert.strictEqual(soPromo.chamadas.enviosMl.length, 0);
+  const cp = cenarioPromo({ env: PROMO_ON });
+  const repoB = criarRepoMemoria();
+  const pb = await previewPromo(cp, repoB);
+  const rb = await aplicar(cp, repoB, pb.preview.id, "promo-so-flag-01");
+  assert.strictEqual(rb.ok, true, "promoção liberada aplica");
+  assert.strictEqual(cp.chamadas.enviosMl.length, 1);
+});
+
+cenario("promoção: papel — só admin ou coordenador do squad do cliente; o preview avisa e aplicar → 403 PAPEL_NAO_AUTORIZADO sem tocar o ML", async () => {
+  const c = cenarioPromo({ env: ESCRITA_ON });
+  c.estado.papelPromocao = { ok: false, papel: null };
+  const repo = criarRepoMemoria();
+  const p = await previewPromo(c, repo);
+  assert.strictEqual(p.escrita.habilitada, false);
+  assert.strictEqual(p.escrita.codigo, "PAPEL_NAO_AUTORIZADO");
+  assert.ok(/admin ou coordenador/.test(p.escrita.motivo));
+  const err = await esperaErro(() => aplicar(c, repo, p.preview.id, "promo-papel-001"));
+  assert.strictEqual(err.statusCode, 403);
+  assert.strictEqual(err.code, "PAPEL_NAO_AUTORIZADO");
+  assert.strictEqual(c.chamadas.enviosMl.length, 0);
+  assert.strictEqual(repo.linhas[0].status, "preview");
+  // o gate é por usuário e cliente: recebe quem pediu e o cliente da conta
+  assert.ok(c.chamadas.papel.every((x) => x.user && x.user.id === 9 && x.clienteId === 3));
+  // preço NÃO exige esse papel
+  const preco = criarCenario({ env: ESCRITA_ON });
+  preco.estado.papelPromocao = { ok: false, papel: null };
+  const repoP = criarRepoMemoria();
+  const pp = await previewPreco(preco, repoP);
+  assert.strictEqual(pp.escrita.habilitada, true);
+});
+
+cenario("papel (implementação real): admin passa; coordenador ATIVO do squad do cliente passa; membro comum, coordenador de outro squad e cliente sem squad não", async () => {
+  const { _papelPodeEscreverPromocao: papel } = service;
+  const dbSquad = (squadDoCliente, coordenaEm) => ({
+    async query(sql, params) {
+      if (/squads:SQUAD_ATIVO_DO_CLIENTE/.test(sql)) return { rows: squadDoCliente ? [{ squad_id: squadDoCliente }] : [] };
+      if (/squads:EH_COORDENADOR/.test(sql)) return { rows: coordenaEm.includes(Number(params[1])) ? [{ "?column?": 1 }] : [] };
+      throw new Error("SQL inesperado: " + sql);
+    },
+  });
+  assert.deepStrictEqual(await papel({ user: { id: 1, role: "admin" }, clienteId: 3 }, dbSquad(null, [])), { ok: true, papel: "admin" });
+  assert.deepStrictEqual(await papel({ user: { id: 2, role: "user" }, clienteId: 3 }, dbSquad(11, [11])), { ok: true, papel: "coordenador" });
+  assert.strictEqual((await papel({ user: { id: 3, role: "membro" }, clienteId: 3 }, dbSquad(11, []))).ok, false, "membro do squad não é coordenador");
+  assert.strictEqual((await papel({ user: { id: 4, role: "user" }, clienteId: 3 }, dbSquad(11, [12]))).ok, false, "coordenador de OUTRO squad");
+  assert.strictEqual((await papel({ user: { id: 5, role: "user" }, clienteId: 3 }, dbSquad(null, [11]))).ok, false, "cliente sem squad ativo");
+  assert.strictEqual((await papel({ user: {}, clienteId: 3 }, dbSquad(11, [11]))).ok, false, "sem usuário identificado");
+});
+
+cenario("promoção: veredito do núcleo é GATE — 'não entrar' (LC ≤ 0) bloqueia o preview e o aplicar recusa sem escrever; 'entrar se girar' só avisa", async () => {
+  // Custo alto: com a promoção a 129,90 o LC fica negativo.
+  const ruim = cenarioPromo({ env: ESCRITA_ON, motor: motorItem({ preco: 149.9, custo: 125 }) });
+  const repoR = criarRepoMemoria();
+  const pr = await previewPromo(ruim, repoR);
+  const g = gate(pr, "veredito");
+  assert.strictEqual(g.tom, "block");
+  assert.strictEqual(g.titulo, "Veredito: não entrar");
+  assert.strictEqual(pr.bloqueado, true);
+  const rr = await aplicar(ruim, repoR, pr.preview.id, "promo-vered-001").catch((e) => e);
+  assert.ok(rr.codigo === "PREVIEW_BLOQUEADO" || rr.code === "PREVIEW_BLOQUEADO" || rr.codigo === "GATE_VEREDITO", JSON.stringify(rr.codigo || rr.code));
+  assert.strictEqual(ruim.chamadas.enviosMl.length, 0);
+  // Margem razoável, LC por unidade cai: avisa, não bloqueia.
+  const gira = cenarioPromo({ env: ESCRITA_ON });
+  const pg = await previewPromo(gira, criarRepoMemoria());
+  const gg = gate(pg, "veredito");
+  assert.strictEqual(gg.tom, "warn");
+  assert.strictEqual(gg.titulo, "Veredito: entrar se girar");
+  assert.ok(/LC por unidade cai/.test(gg.detalhe) && /Precisa vender/.test(gg.detalhe), gg.detalhe);
+  assert.strictEqual(pg.bloqueado, false);
+  // Retorno ML cobre o desconto: entrar.
+  const entra = cenarioPromo({ env: ESCRITA_ON, promocoes: [promo({ id: "P-DEAL-1", subsidioMl: 25, precoOriginal: 149.9 })] });
+  const pe = await previewPromo(entra, criarRepoMemoria());
+  assert.strictEqual(gate(pe, "veredito").tom, "ok");
+});
+
+cenario("promoção: revalidação ao vivo divergente (preço/subsídio da promoção mudou depois do preview) → abortado, ZERO escrita", async () => {
+  const c = cenarioPromo({ env: ESCRITA_ON });
+  const repo = criarRepoMemoria();
+  const p = await previewPromo(c, repo);
+  c.estado.promocoes = [promo({ id: "P-DEAL-1", precoFinal: 124.9, subsidioMl: 4 })];
+  const r = await aplicar(c, repo, p.preview.id, "promo-diverge-01");
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.codigo, "PREVIEW_DESATUALIZADO");
+  assert.strictEqual(r.novoPreviewNecessario, true);
+  assert.strictEqual(c.chamadas.enviosMl.length, 0);
+  assert.strictEqual(c.chamadas.aplicarPromocao.length, 0, "nem chega ao escritor");
+  assert.strictEqual(repo.linhas[0].status, "recusado");
+  // preço do anúncio mudou depois do preview: o gate do preço visto recusa
+  const c2 = cenarioPromo({ env: ESCRITA_ON });
+  const repo2 = criarRepoMemoria();
+  const p2 = await previewPromo(c2, repo2);
+  c2.estado.motor.pricing.current.value = 140;
+  const r2 = await aplicar(c2, repo2, p2.preview.id, "promo-diverge-02");
+  assert.strictEqual(r2.ok, false);
+  assert.strictEqual(c2.chamadas.enviosMl.length, 0);
+});
+
+cenario("promoção: TIMEOUT no envio → resultado_desconhecido; nunca repete sozinho (replay da mesma chave e novo aplicar do mesmo preview não escrevem de novo)", async () => {
+  const c = cenarioPromo({ env: ESCRITA_ON, respostaPromocao: () => ({ ok: false, codigo: "ML_TIMEOUT", motivo: "O Mercado Livre não respondeu a tempo.", incerto: true }) });
+  const repo = criarRepoMemoria();
+  const p = await previewPromo(c, repo);
+  const r = await aplicar(c, repo, p.preview.id, "promo-timeout-01");
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.codigo, "ML_TIMEOUT");
+  assert.strictEqual(repo.linhas[0].status, "resultado_desconhecido");
+  assert.strictEqual(r.aplicacao.execucao, "resultado_desconhecido");
+  assert.strictEqual(c.chamadas.enviosMl.length, 1);
+  // mesma chave: devolve o estado, sem 2º envio
+  const replay = await aplicar(c, repo, p.preview.id, "promo-timeout-01");
+  assert.strictEqual(replay.replay, true);
+  assert.strictEqual(replay.aplicacao.status, "resultado_desconhecido");
+  assert.strictEqual(c.chamadas.enviosMl.length, 1, "o replay nunca reenvia");
+  // outra chave para o MESMO preview: já utilizado
+  const outra = await esperaErro(() => aplicar(c, repo, p.preview.id, "promo-timeout-02"));
+  assert.ok(["PREVIEW_JA_UTILIZADO", "IDEMPOTENCY_KEY_EM_USO"].includes(outra.code), outra.code);
+  assert.strictEqual(c.chamadas.enviosMl.length, 1, "nada é repetido automaticamente: a releitura é do operador");
+  // a auditoria registra o desfecho incerto
+  const log = c.chamadas.logs[c.chamadas.logs.length - 1];
+  assert.strictEqual(log.status, "erro");
+  assert.strictEqual(log.detalhes.status, "resultado_desconhecido");
+});
+
+cenario("promoção: auditoria gravada — quem, quando, promoção, preço e LC/margem antes e depois", async () => {
+  const c = cenarioPromo({ env: ESCRITA_ON });
+  const repo = criarRepoMemoria();
+  const p = await previewPromo(c, repo);
+  const r = await aplicar(c, repo, p.preview.id, "promo-audit-001", { ip: "10.1.2.3" });
+  assert.strictEqual(r.ok, true);
+  const log = c.chamadas.logs[c.chamadas.logs.length - 1];
+  assert.strictEqual(log.acao, "central_margem_promocao_aplicar");
+  assert.strictEqual(log.status, "sucesso");
+  assert.deepStrictEqual({ userId: log.userId, userEmail: log.userEmail, ip: log.ip }, { userId: 9, userEmail: "p@x", ip: "10.1.2.3" }, "quem");
+  const d = log.detalhes;
+  assert.deepStrictEqual({ cliente: d.cliente, clienteContaId: d.clienteContaId, itemId: d.itemId, tipo: d.tipo, promotionId: d.promotionId, promotionAcao: d.promotionAcao, promotionType: d.promotionType, status: d.status },
+    { cliente: "loja-a", clienteContaId: 7, itemId: "MLB100", tipo: "PROMOTION", promotionId: "P-DEAL-1", promotionAcao: "PARTICIPAR", promotionType: "DEAL", status: "aplicado" });
+  assert.strictEqual(d.precoSolicitado, 129.9);
+  assert.strictEqual(d.precoConfirmado, 129.9);
+  assert.ok(d.lucroAntes !== null && d.lucroDepois !== null && d.margemAntes !== null && d.margemDepois !== null, "LC e margem antes/depois");
+  assert.strictEqual(d.lucroDepois, repo.linhas[0].lucroDepois);
+  assert.ok(repo.linhas[0].aplicadoEm || repo.linhas[0].status === "aplicado", "quando: a linha guarda o momento da aplicação");
+});
+
 cenario("lista de promoções do drawer: margem/LC por promoção, escrita suportada só p/ DEAL/SELLER_CAMPAIGN", async () => {
   const c = cenarioPromo({
     promocoes: [
@@ -653,6 +861,19 @@ cenario("controller: erro tipado vira status + payload; aplicar recusado respond
   await ctrl.aplicar({ params: { clienteSlug: "loja-a" }, body: { previewId: 1 }, query: {}, headers: {}, socket: {} }, r2);
   assert.strictEqual(r2.statusCode, 200);
   assert.strictEqual(r2.body.ok, false);
+});
+
+cenario("controller: o usuário repassado ao serviço leva o `role` (o gate de promoção precisa dele) — no preview e no aplicar", async () => {
+  const { createMargemPrecificacaoController } = require("../controllers/margemPrecificacaoController");
+  const vistos = [];
+  const ctrl = createMargemPrecificacaoController({
+    service: { preview: async (p) => { vistos.push(p.user); return { ok: true }; }, aplicar: async (p) => { vistos.push(p.user); return { ok: true }; } },
+  });
+  const res = () => ({ status() { return this; }, json() { return this; } });
+  const req = { params: { clienteSlug: "loja-a" }, body: { previewId: 1 }, query: {}, headers: {}, socket: {}, user: { id: 5, nome: "Ana", email: "a@x", role: "user", senha_hash: "nao-vaza" } };
+  await ctrl.preview(req, res());
+  await ctrl.aplicar(req, res());
+  assert.deepStrictEqual(vistos, [{ id: 5, nome: "Ana", email: "a@x", role: "user" }, { id: 5, nome: "Ana", email: "a@x", role: "user" }]);
 });
 
 cenario("defaults reais: tipos com escrita da Central = os do serviço de escrita de /anuncios", () => {

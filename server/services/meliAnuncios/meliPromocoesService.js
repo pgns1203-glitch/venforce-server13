@@ -429,11 +429,28 @@ function aplicarFallbackPrecoAtivo(normalizadas, saleAmount) {
 }
 
 async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
+  const r = await listarPromocoesDoItemDetalhado({ clienteId, itemId, mlUserId });
+  return r.promocoes;
+}
+
+// Mesma leitura de listarPromocoesDoItem, mas sem engolir a falha do ML: quem
+// precisa distinguir "o item não tem promoção" de "o ML não respondeu" (ex.:
+// 429 na análise em lote de "Promoções com rebate") recebe `ok`/`status`/
+// `retryAfter` junto da lista. listarPromocoesDoItem continua devolvendo só a
+// lista (vazia em falha), exatamente como antes.
+async function listarPromocoesDoItemDetalhado({ clienteId, itemId, mlUserId }) {
   const [resp, saleInfo] = await Promise.all([
     mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`, { mlUserId }),
     obterPromotionIdAtivo({ clienteId, itemId, mlUserId }),
   ]);
-  if (!resp || !resp.ok) return [];
+  if (!resp || !resp.ok) {
+    return {
+      ok: false,
+      status: (resp && resp.status) ?? null,
+      retryAfter: (resp && resp.retryAfter) ?? null,
+      promocoes: [],
+    };
+  }
 
   let lista = Array.isArray(resp.data)
     ? resp.data
@@ -453,12 +470,13 @@ async function listarPromocoesDoItem({ clienteId, itemId, mlUserId }) {
     paresBrutoNormalizado: ordenada.map((p, i) => [p, normalizadas[i]]),
   });
 
-  return deduplicarPromocoes(normalizadas);
+  return { ok: true, status: resp.status ?? 200, retryAfter: null, promocoes: deduplicarPromocoes(normalizadas) };
 }
 
 module.exports = {
   ROTULO_TIPO,
   listarPromocoesDoItem,
+  listarPromocoesDoItemDetalhado,
   normalizarPromocao,
   ordenarPorPrioridade,
   deduplicarPromocoes,

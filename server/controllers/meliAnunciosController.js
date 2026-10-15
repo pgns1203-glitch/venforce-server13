@@ -28,6 +28,7 @@ const variacoesLegadoEstoqueService = require("../services/meliAnuncios/meliVari
 const precoService = require("../services/meliAnuncios/meliPrecoService");
 const promocoesService = require("../services/meliAnuncios/meliPromocoesService");
 const promocoesEscritaService = require("../services/meliAnuncios/meliPromocoesEscritaService");
+const promocoesRebateService = require("../services/meliAnuncios/meliPromocoesRebateService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const custosLoteService = require("../services/meliAnuncios/meliCustosLoteService");
 const custosPlanilhaService = require("../services/meliAnuncios/meliCustosPlanilhaService");
@@ -2019,6 +2020,109 @@ function sairPromocao(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// "Promoções com rebate" (docs/specs/2026-10-15-anuncios-ml-promocoes-rebate.md)
+//   GET  /anuncios-meli/promocoes-rebate/referencias?clienteSlug=&clienteContaId=
+//   POST /anuncios-meli/promocoes-rebate/analises            body: { clienteSlug, clienteContaId?, referencia:{id,tipo}, itemIds? }
+//   GET  /anuncios-meli/promocoes-rebate/analises/:jobId?clienteSlug=&clienteContaId=
+//   POST /anuncios-meli/promocoes-rebate/analises/:jobId/executar body: { clienteSlug, clienteContaId?, escolhas:[{itemId,promotionId,tipo}] }
+//
+// Disparado só por clique. A regra inteira mora em meliPromocoesRebateService;
+// aqui é fiação: cliente pelo slug, conta pela mesma regra dos vizinhos (2+
+// contas sem clienteContaId → 409 de ambiguidade), falha esperada como
+// 200 + ok:false + codigo/motivo. A promoção de referência nunca é tocada.
+// ----------------------------------------------------------------------------
+async function resolverClienteEContaRebate(req, res, origem, requireUsableGrant) {
+  const fonte = (origem === "query" ? req.query : req.body) || {};
+  const { clienteSlug } = fonte;
+  if (!clienteSlug) {
+    res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    return null;
+  }
+  const cliente = await anunciosService.resolverCliente(clienteSlug);
+  if (!cliente) {
+    res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    return null;
+  }
+  const contexto = await anunciosService.resolverContextoConta({
+    clienteId: cliente.id,
+    clienteContaId: extrairClienteContaId(fonte.clienteContaId),
+    requireUsableGrant,
+  });
+  return { cliente, contexto };
+}
+
+function responderRebate(res, r) {
+  const { httpStatus, ...corpo } = r;
+  return res.status(httpStatus || 200).json(corpo);
+}
+
+function tratarErroRebate(res, err, rotulo) {
+  if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+  // Erros estruturais de conta/grant (resolveMarketplaceAccountContext) já
+  // trazem status e código próprios — repassados como vieram.
+  if (err.statusCode && err.statusCode < 500 && err.code) {
+    return res.status(err.statusCode).json({ ok: false, codigo: err.code, motivo: err.message });
+  }
+  console.error(`[anuncios-meli] ${rotulo}:`, err.message);
+  return res.status(500).json({ ok: false, motivo: "Erro interno em Promoções com rebate." });
+}
+
+async function promocoesRebateReferencias(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "query", true);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.listarReferencias({ clienteId: r.cliente.id, mlUserId: r.contexto.mlUserId });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateReferencias");
+  }
+}
+
+async function promocoesRebateIniciarAnalise(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "body", true);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.iniciarAnalise({
+      cliente: r.cliente, contexto: r.contexto, body: req.body || {}, user: req.user || null,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateIniciarAnalise");
+  }
+}
+
+async function promocoesRebateLerAnalise(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "query", false);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.lerJob({
+      jobId: req.params.jobId, cliente: r.cliente, mlUserId: r.contexto.mlUserId,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateLerAnalise");
+  }
+}
+
+async function promocoesRebateExecutar(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "body", true);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.iniciarExecucao({
+      jobId: req.params.jobId,
+      cliente: r.cliente,
+      mlUserId: r.contexto.mlUserId,
+      body: req.body || {},
+      user: req.user || null,
+      ip: req.headers ? extrairIp(req) : null,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateExecutar");
+  }
+}
+
+// ----------------------------------------------------------------------------
 // PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque
 //   body: { clienteSlug, clienteContaId?, estoque }
 //
@@ -3667,6 +3771,10 @@ module.exports = {
   aplicarPromocao,
   participarPromocao,
   sairPromocao,
+  promocoesRebateReferencias,
+  promocoesRebateIniciarAnalise,
+  promocoesRebateLerAnalise,
+  promocoesRebateExecutar,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   adicionarImagem,

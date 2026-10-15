@@ -274,13 +274,21 @@ async function relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, t
       ),
     };
   }
-  return { id, promo };
+  return { id, promo, lista };
 }
 
-async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo }) {
+/**
+ * `antesDeEscrever` (OPCIONAL, mesmo espírito do de aplicarPromocao): gancho
+ * chamado com a promoção RELIDA e a lista inteira relida do item
+ * ({ promo, lista, acao: "PARTICIPAR" }) ANTES do POST; devolve { ok:true }
+ * ou uma falha { codigo, motivo }. É onde "Promoções com rebate" revalida, na
+ * mesma releitura, que a referência continua ativa e que o preço da candidata
+ * continua menor que o dela. Sem o gancho o fluxo é exatamente o de antes.
+ */
+async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo, antesDeEscrever = null }) {
   const lido = await relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo });
   if (lido.falha) return lido.falha;
-  const { id, promo } = lido;
+  const { id, promo, lista } = lido;
 
   if (promo.status !== "candidate") {
     return falha("PROMOCAO_JA_PARTICIPA", "O anúncio já participa desta promoção. Atualize a tela.");
@@ -292,6 +300,13 @@ async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotion
       return falha("OFFER_ID_AUSENTE", "O Mercado Livre não informou a oferta desta promoção — participe pelo painel do Mercado Livre.");
     }
     corpo.offer_id = promo.refId;
+  }
+
+  if (antesDeEscrever) {
+    const liberado = await antesDeEscrever({ promo, lista, acao: "PARTICIPAR" });
+    if (!liberado || liberado.ok !== true) {
+      return falha((liberado && liberado.codigo) || "ESCRITA_NAO_LIBERADA", (liberado && liberado.motivo) || "A escrita não foi liberada.");
+    }
   }
 
   const resp = await mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(id)}?app_version=v2`, {

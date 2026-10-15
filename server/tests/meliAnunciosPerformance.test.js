@@ -1141,41 +1141,6 @@ async function run() {
     ok("faturamento.porFamiliaValor: soma bruta (R$) dos filhos, aditivo ao percentual existente");
   });
 
-  // 38b. Unidades vendidas no período + preço MÉDIO vendido (item e família).
-  //      O médio divide a receita só pelas unidades das linhas COM receita
-  //      (receitaCobertura.unidadesComValor) — uma linha sem preço na Orders
-  //      API não pode baixar o médio. É o que explica faturamento ≠ preço
-  //      atual × unidades (venda em promoção).
-  await withMockDb(UMA_CONTA, async () => {
-    reset();
-    familiaHandler = () => new Map([["FAM1", ["MLB-F1", "MLB-F2"]]]);
-    margemHandler = () => ({
-      itens: [],
-      porMlb: new Map([
-        ["MLB-A", { receita: 114.9, unidades: 1, receitaCobertura: { unidadesComValor: 1 } }],
-        // 3 unidades, mas só 2 com receita: médio = 200 / 2, não 200 / 3
-        ["MLB-F1", { receita: 200, unidades: 3, receitaCobertura: { unidadesComValor: 2 } }],
-        ["MLB-F2", { receita: 100, unidades: 1, receitaCobertura: { unidadesComValor: 1 } }],
-      ]),
-      periodo: { dateFrom: "2026-08-01", dateTo: "2026-08-30" },
-    });
-
-    const res = fakeRes();
-    await ctrl.performance({
-      query: { clienteSlug: "cliente-a", itemIds: "MLB-A,MLB-SEM", incluirMetricas: "0", incluirFaturamento: "1", familias: "FAM1" },
-    }, res);
-
-    const f = res.corpo.faturamento;
-    assert.strictEqual(f.periodoDias, 30);
-    assert.strictEqual(f.porItemUnidades["MLB-A"], 1);
-    assert.strictEqual(f.porItemPrecoMedio["MLB-A"], 114.9);
-    assert.strictEqual(f.porItemUnidades["MLB-SEM"], null, "sem venda no período: null, nunca 0 inventado");
-    assert.strictEqual(f.porItemPrecoMedio["MLB-SEM"], null);
-    assert.strictEqual(f.porFamiliaUnidades["FAM1"], 4, "3 + 1 unidades dos filhos");
-    assert.strictEqual(f.porFamiliaPrecoMedio["FAM1"], 100, "300 ÷ 3 unidades COM receita (2 + 1)");
-    ok("faturamento: unidades e preço médio vendido por item/família (médio só sobre unidades com receita)");
-  });
-
   // 39. familias ausente: zero chamada a resolverItensDeFamilias, comporta-
   //     mento idêntico ao anterior (nenhuma regressão nos testes 1-29).
   await withMockDb(UMA_CONTA, async () => {

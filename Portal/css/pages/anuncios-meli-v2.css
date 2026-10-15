@@ -4384,17 +4384,3 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   letter-spacing: 0;
   text-transform: none;
 }
-
-/* Unidades vendidas no período; "↓" quando o preço médio vendido ficou
-   abaixo do preço atual (o title explica). */
-.vf-page-anuncios-meli .am-faturamento__un {
-  font-size: var(--vf-fs-2xs);
-  color: var(--vf-text-muted);
-  white-space: nowrap;
-  cursor: help;
-}
-
-.vf-page-anuncios-meli .am-faturamento__un.is-abaixo {
-  color: var(--vf-warning-strong);
-  font-weight: var(--vf-fw-medium);
-}

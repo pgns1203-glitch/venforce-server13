@@ -282,19 +282,31 @@ cenario("paginação respeita o teto do multiget do Mercado Livre", async () => 
 
 // ── Margem alvo ──────────────────────────────────────────────────────────────
 
-cenario("margem alvo aceita fração e percentual e muda a classificação", async () => {
+cenario("margem alvo: fração válida muda a classificação; ausente usa o padrão explícito; fora da faixa é erro 400 com motivo (sem converter escala nem cair no padrão)", async () => {
   assert.strictEqual(service.parseTargetMargin("0.25"), 0.25);
-  assert.strictEqual(service.parseTargetMargin("25"), 0.25);
-  assert.strictEqual(service.parseTargetMargin("abc"), C.DEFAULT_TARGET_MARGIN);
-  assert.strictEqual(service.parseTargetMargin("0"), C.DEFAULT_TARGET_MARGIN);
+  assert.strictEqual(service.parseTargetMargin("0,25"), 0.25, "vírgula decimal é só formato, não escala");
+  for (const ausente of [undefined, null, "", "  "]) {
+    assert.strictEqual(service.parseTargetMargin(ausente), C.DEFAULT_TARGET_MARGIN, "não informada = padrão explícito");
+  }
+  for (const ruim of ["25", "abc", "0", "1", "-0.1", "150", "1.5"]) {
+    let erro = null;
+    try { service.parseTargetMargin(ruim); } catch (err) { erro = err; }
+    assert.ok(erro, `"${ruim}" deveria ser recusado`);
+    assert.strictEqual(erro.statusCode, 400);
+    assert.strictEqual(erro.payload.codigo, "margem_alvo_fora_da_faixa");
+    assert.ok(erro.payload.erro.includes("entre 0 e 1"));
+  }
 
   // Com meta de 25%, o item de 18% deixa de ser saudável.
-  const resposta = await service.listarItens({ ...params, margemAlvo: "25" }, depsPadrao());
+  const resposta = await service.listarItens({ ...params, margemAlvo: "0.25" }, depsPadrao());
   const item = resposta.itens.find((i) => i.identity.itemId === "MLB1");
   assert.strictEqual(resposta.margemAlvo, 0.25);
   assert.strictEqual(item.quality.status, C.STATUS.LOW_MARGIN);
   assert.strictEqual(item.margin.target.marginTarget, 0.25);
   assert.strictEqual(item.margin.target.computable, true);
+
+  // Na API, "25" chega como erro — o endpoint não adivinha a escala.
+  await assert.rejects(() => service.listarItens({ ...params, margemAlvo: "25" }, depsPadrao()), (err) => err.statusCode === 400 && err.payload.codigo === "margem_alvo_fora_da_faixa");
 });
 
 // ── Período ──────────────────────────────────────────────────────────────────

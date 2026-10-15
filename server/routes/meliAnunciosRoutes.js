@@ -36,6 +36,10 @@
 //   POST   /anuncios-meli/:itemId/promocoes/:promotionId/aplicar (escrita real, DEAL/SELLER_CAMPAIGN)
 //   POST   /anuncios-meli/:itemId/promocoes/:promotionId/participar (ACEITE — preço definido pelo ML)
 //   POST   /anuncios-meli/:itemId/promocoes/:promotionId/sair       (ACEITE — deixar de participar)
+//   GET    /anuncios-meli/promocoes-rebate/referencias               (Promoções com rebate: seletor de referência)
+//   POST   /anuncios-meli/promocoes-rebate/analises                  (Promoções com rebate: inicia a análise, job)
+//   GET    /anuncios-meli/promocoes-rebate/analises/:jobId           (Promoções com rebate: progresso/resultado)
+//   POST   /anuncios-meli/promocoes-rebate/analises/:jobId/executar  (Promoções com rebate: escrita real, confirmada)
 //   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
 //   POST   /anuncios-meli/:itemId/imagens       (adiciona uma imagem, anúncio sem variação)
 //   GET    /anuncios-meli/:itemId/fotos/variacoes (editor de fotos: leitura ao vivo)
@@ -182,6 +186,22 @@ router.get("/familias/:familyId", ctrl.detalheFamilia);
 // Read-only nos dois sentidos: só lê o Mercado Livre e o Motor de Margem já
 // existentes, não escreve em nada. Ver meliMetricas7dService/motorMargemService.
 router.get("/performance", ctrl.performance);
+
+// Preço vigente + cheio AO VIVO (só sale_price, sem Motor) — a linha da família
+// risca a promoção antes de expandir. Read-only. Ver meliPrecoAoVivoService.
+router.get("/precos-ao-vivo", ctrl.precosAoVivo);
+
+// "Promoções com rebate" (ver meliPromocoesRebateService e
+// docs/specs/2026-10-15-anuncios-ml-promocoes-rebate.md): para os anúncios que
+// já estão numa promoção de referência, procura promoções com subsídio do ML
+// que melhorem margem/lucro e — só com a confirmação do usuário — faz o
+// anúncio participar. A referência nunca é tocada. Disparado só por clique.
+// Mesmas travas do módulo (automações + carteira pelo clienteSlug). Precisam
+// vir ANTES de "/:itemId" — senão "promocoes-rebate" vira um itemId.
+router.get("/promocoes-rebate/referencias", ctrl.promocoesRebateReferencias);
+router.post("/promocoes-rebate/analises", ctrl.promocoesRebateIniciarAnalise);
+router.get("/promocoes-rebate/analises/:jobId", ctrl.promocoesRebateLerAnalise);
+router.post("/promocoes-rebate/analises/:jobId/executar", ctrl.promocoesRebateExecutar);
 
 // Criação de anúncios (escrita no Mercado Livre via POST /items).
 router.get("/criacao/status", ctrl.criacaoStatus);

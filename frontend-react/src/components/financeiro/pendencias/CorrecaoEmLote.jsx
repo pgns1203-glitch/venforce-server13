@@ -12,9 +12,10 @@
 //
 // Reaproveita os mesmos endpoints, o mesmo parser e a mesma gravação da tela
 // Bases — o Financeiro é outra interface para a mesma operação. Acrescenta as
-// proteções que a tela Bases não tem: linha ambígua (Shopee: sobrescreveria o
-// registro de outra variação; ID repetido com valores diferentes) NÃO é gravada
-// e é reportada.
+// proteções que a tela Bases não tem: linha ambígua (Shopee: sem Model para um
+// Item que só tem variações na base; mesma identidade repetida com valores
+// diferentes) NÃO é gravada e é reportada. Shopee grava por Item + Model: as
+// outras variações do Item nunca mudam.
 
 import { useRef, useState } from "react";
 import { previewPlanilhaDeCustos, registrarCustoNaBase } from "../../../services/basesCustoApi.js";

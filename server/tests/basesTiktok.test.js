@@ -655,9 +655,12 @@ async function testeUpsert() {
   const updateShopee = stubShopee.queries.find((q) => /UPDATE custos/i.test(q.text));
   const selectShopee = stubShopee.queries.find((q) => /SELECT[\s\S]*FROM custos/i.test(q.text));
   stubShopee.restaurar();
-  eq("ID Model continua disponível para Shopee", updateShopee.params[5], "999");
-  eq("taxa fixa continua funcionando para Shopee", updateShopee.params[4], 2);
-  ok("Shopee continua sendo localizada por produto_id", /WHERE base_id = \$1 AND produto_id = \$2/.test(selectShopee.text));
+  // FIN-508: a linha Shopee é a VARIAÇÃO — localizada por Item + Model, e o
+  // UPDATE nunca troca o id_model (antes: Model 888 virava 999 = sobrescrita).
+  ok("Shopee é localizada por Item + Model", /produto_id = \$2[\s\S]*COALESCE\(id_model, ''\) = \$3/.test(selectShopee.text));
+  eq("o Model procurado é o enviado", selectShopee.params[2], "999");
+  ok("o UPDATE da variação não reescreve o id_model", !/SET[\s\S]*id_model\s*=/.test(updateShopee.text.split("WHERE")[0]));
+  eq("taxa fixa continua funcionando para Shopee", updateShopee.params[5], 2);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -728,9 +731,11 @@ function testeSchemaSkuId() {
     "import TikTok resolve conflito por (base_id, sku_id)",
     /ON CONFLICT \(base_id, sku_id\) WHERE sku_id <> ''/.test(baseImportSrc)
   );
+  // FIN-508: MELI/Shopee resolvem por (base, produto_id, sku, Model) — as
+  // variações Shopee do mesmo Item coexistem; MELI (sem Model) é o histórico.
   ok(
-    "import MELI/Shopee mantém o conflito histórico",
-    /ON CONFLICT \(base_id, produto_id, sku\) WHERE sku_id = ''/.test(baseImportSrc)
+    "import MELI/Shopee resolve conflito por Item + Model",
+    /ON CONFLICT \(base_id, produto_id, sku, \(COALESCE\(id_model, ''\)\)\) WHERE sku_id = ''/.test(baseImportSrc)
   );
 }
 
@@ -837,9 +842,14 @@ function testeGetBaseMultiSku() {
   const fim = indexSrc.indexOf("// IMPORTAR PLANILHA");
   ok("rota GET /bases/:baseId localizada", inicio > 0 && fim > inicio);
   const rota = indexSrc.slice(inicio, fim);
+  // A chave passou para baseCustosService.chaveDadosCusto (FIN-508 acrescentou
+  // a variação Shopee); o contrato TikTok é provado no próprio helper.
+  ok("rota usa a chave única por linha (chaveDadosCusto)", /const chave = chaveDadosCusto\(row, base\.marketplace\)/.test(rota));
+  const { chaveDadosCusto } = require("../services/bases/baseCustosService");
   ok(
     "chave do dicionário é o sku_id no TikTok (evita colapsar variações do mesmo produto)",
-    /const chave = row\.sku_id\s*\?\s*row\.sku_id/.test(rota)
+    chaveDadosCusto({ produto_id: "P", sku_id: "S1", sku: "", id_model: null }, "tiktok") === "S1" &&
+      chaveDadosCusto({ produto_id: "P", sku_id: "S2", sku: "", id_model: null }, "tiktok") === "S2"
   );
   ok("resposta expõe produto_id explicitamente por item", /produto_id: row\.produto_id/.test(rota));
   ok("resposta expõe sku_id por item", /sku_id: row\.sku_id \|\| null/.test(rota));

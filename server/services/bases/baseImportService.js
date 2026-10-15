@@ -45,10 +45,13 @@ const SQL_INSERT_CUSTO_TIKTOK = `
     produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome),
     variacao_nome = COALESCE(EXCLUDED.variacao_nome, custos.variacao_nome),
     updated_at = CURRENT_TIMESTAMP`;
+// MELI/Shopee: a identidade inclui o Model ID (FIN-508,
+// uq_custos_base_produto_sku_model) — cada variação Shopee do mesmo Item é
+// uma linha própria. MELI nunca tem id_model: a chave segue (base, produto_id).
 const SQL_INSERT_CUSTO_LEGADO = `
   INSERT INTO custos (base_id, produto_id, sku_id, custo_produto, imposto_percentual, taxa_fixa, id_model, produto_nome, variacao_nome, sku, updated_at)
   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, CURRENT_TIMESTAMP)
-  ON CONFLICT (base_id, produto_id, sku) WHERE sku_id = '' DO UPDATE SET
+  ON CONFLICT (base_id, produto_id, sku, (COALESCE(id_model, ''))) WHERE sku_id = '' DO UPDATE SET
     custo_produto = EXCLUDED.custo_produto, imposto_percentual = EXCLUDED.imposto_percentual,
     taxa_fixa = EXCLUDED.taxa_fixa, id_model = EXCLUDED.id_model,
     produto_nome = COALESCE(EXCLUDED.produto_nome, custos.produto_nome),
@@ -145,13 +148,21 @@ async function criarBaseComCustos({
       vinculo = resultado.vinculo;
     }
 
+    // O que o banco GUARDOU, não quantas linhas chegaram: linhas com a mesma
+    // identidade viram uma só (ON CONFLICT) e o contador não pode prometer mais.
+    const persistidas = await client.query(
+      "SELECT COUNT(*)::int AS total FROM custos WHERE base_id = $1",
+      [baseId]
+    );
+
     await client.query("COMMIT");
     return {
       baseId,
       slug: baseRow.slug,
       nome: baseRow.nome,
       marketplace: baseRow.marketplace,
-      total: linhasPersistiveis.length,
+      total: Number.isFinite(Number(persistidas.rows?.[0]?.total)) ? Number(persistidas.rows[0].total) : linhasPersistiveis.length,
+      linhasRecebidas: linhasPersistiveis.length,
       vinculo,
     };
   } catch (err) {

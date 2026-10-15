@@ -10,7 +10,7 @@
 // agregação de exibição dos valores do backend, não uma fórmula financeira.
 
 import { gerarXlsx } from "./xlsxMinimo.js";
-import { fracaoParaPontos, normalizarId } from "./baseCustos.js";
+import { fracaoParaPontos, normalizarId, registroDaPendencia } from "./baseCustos.js";
 
 // Rótulos do diagnóstico tipado Shopee — os MESMOS de Portal/financeiro.js
 // (SHOPEE_COST_GAP_*), para as duas telas falarem a mesma língua.
@@ -169,7 +169,9 @@ export function montarLinhasPlanilhaPendencias(pendencias, { marketplace = "meli
   const { incluidas } = separarPendenciasParaPlanilha(pendencias, { marketplace });
   return incluidas.map((p) => {
     const produtoId = normalizarId(marketplace, p.itemId);
-    const registro = indice && indice.get(produtoId)?.length === 1 ? indice.get(produtoId)[0] : null;
+    // Custo atual = o do registro da MESMA variação (Shopee: Item + Model) —
+    // nunca o de outra variação do Item.
+    const registro = indice ? registroDaPendencia({ marketplace, pendencia: p, indice }) : null;
     return [
       p.produto || null,
       produtoId,

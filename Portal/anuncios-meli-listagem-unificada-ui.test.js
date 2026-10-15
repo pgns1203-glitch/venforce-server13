@@ -137,7 +137,9 @@ const LINHAS_CONTA_42 = [
     total_user_products: 3, total_itens: 4,
     estoque_total: ESTOQUE_FAM1, vendidos_total: 31,
     preco_min: 89.9, preco_max: 129.9, moeda: "BRL", score_min: 40,
-    status_contagem: { ativos: 4, pausados: 0, encerrados: 0 },
+    // Promoção só no anúncio do mínimo: o máximo NÃO pode herdar este cheio.
+    preco_min_original: 109.9, preco_max_original: null,
+    status_contagem: { ativos: 3, pausados: 1, encerrados: 0 },
     cover: { thumbnail: CAPA_FAM1, user_product_id: "MLBU-200" },
   },
   // Agrupador sem capa: o backend diz que nenhuma variação serve de capa, e o
@@ -148,6 +150,9 @@ const LINHAS_CONTA_42 = [
     total_user_products: 1, total_itens: 1,
     estoque_total: 12, vendidos_total: 0,
     preco_min: 39.9, preco_max: 39.9, moeda: "BRL", score_min: 80,
+    // Snapshot SEM promoção de propósito: a promoção do MLB-B9 só existe no
+    // sale_price (PRECOS_AO_VIVO) — o caso real em que a família não riscava.
+    preco_min_original: null, preco_max_original: null,
     status_contagem: { ativos: 1, pausados: 0, encerrados: 0 },
     cover: { thumbnail: null, user_product_id: "MLBU-300" },
   },
@@ -367,6 +372,10 @@ let estoqueVariacaoLegadoHandler = null;
 // (para simular indisponibilidade de margem ou falha total).
 let atrasoPerformance = 0;
 let performanceHandler = null;
+// GET /anuncios-meli/precos-ao-vivo — preço vigente + cheio só do sale_price.
+// MLB-B9 (FAM-2) está em promoção AO VIVO, mas não no snapshot da listagem.
+const PRECOS_AO_VIVO = { "MLB-B9": { precoAtual: 39.9, precoOriginal: 49.9 } };
+const chamadasPrecosAoVivo = [];
 const chamadasPerformance = [];
 
 // GET /anuncios-meli/familias — `chamadasFamilias` registra page/ordenarPor
@@ -608,6 +617,15 @@ function wireInterception(cdp) {
         anuncios,
         paginacao: { page: 1, limit: 20, total: anuncios.length, totalPaginas: 1 },
       });
+      return;
+    }
+
+    if (caminho.startsWith("/anuncios-meli/precos-ao-vivo")) {
+      const ids = (new URL(url).searchParams.get("itemIds") || "").split(",").filter(Boolean);
+      chamadasPrecosAoVivo.push(ids);
+      const precos = {};
+      ids.forEach((id) => { if (PRECOS_AO_VIVO[id]) precos[id] = PRECOS_AO_VIVO[id]; });
+      await corpo({ ok: true, precos });
       return;
     }
 
@@ -884,6 +902,43 @@ async function run() {
       assert.ok(/3 variações/.test(t), `não resumiu as variações: ${JSON.stringify(t)}`);
       assert.ok(/4 anúncios/.test(t), `não resumiu os anúncios: ${JSON.stringify(t)}`);
       assert.ok(/89,90/.test(t) && /129,90/.test(t), `a faixa de preço não apareceu: ${JSON.stringify(t)}`);
+    });
+
+    await check("5b — agrupador: faixa no desenho da margem (mín em cima, máx embaixo), cada extremo com o SEU cheio riscado; valor único usa a célula do MLB", async () => {
+      // FAM-2 não tem promoção no snapshot — o riscado só pode vir do preço
+      // AO VIVO dos filhos (GET /precos-ao-vivo), e tem de aparecer SEM
+      // expandir a família.
+      await waitFor(cdp, `!!document.querySelector('.am-row--grupo[data-familia="FAM-2"] .am-row__preco--promo')`,
+        "a família com promoção só no sale_price não riscou antes de expandir");
+      assert.ok(chamadasPrecosAoVivo.some((ids) => ids.includes("MLB-B9")), "o preço ao vivo do filho foi pedido");
+      assert.ok(!chamadasPerformance.some((c) => c.incluirMargem && c.itemIds.includes("MLB-B9")),
+        "o riscado não pode depender do Motor de Margem (só roda ao expandir)");
+      assert.strictEqual(await cdp.evaluate(`document.querySelector('.am-row--grupo[data-familia="FAM-2"]').getAttribute('aria-expanded')`), "false");
+      const r = await cdp.evaluate(`(function(){
+        function cel(id){ return document.querySelector('.am-row--grupo[data-familia="' + id + '"] .am-row__preco'); }
+        var f1 = cel("FAM-1"), f2 = cel("FAM-2");
+        var pontas = Array.prototype.map.call(f1.querySelectorAll('.am-preco-faixa__ponta'), function (p) {
+          var cheio = p.querySelector('.am-preco-faixa__cheio');
+          return { faixa: p.getAttribute('data-faixa'),
+                   valor: p.querySelector('.am-preco-faixa__valor').textContent.trim(),
+                   cheio: cheio ? cheio.textContent.trim() : null,
+                   riscado: cheio ? getComputedStyle(cheio).textDecorationLine : null };
+        });
+        return {
+          pontas: pontas,
+          f2Promo: f2.classList.contains('am-row__preco--promo'),
+          f2Original: (f2.querySelector('.am-row__preco-original') || {}).textContent,
+          f2Atual: (f2.querySelector('.am-row__preco-atual') || {}).textContent,
+        };
+      })()`);
+      assert.deepStrictEqual(r.pontas.map((p) => [p.faixa, p.valor, p.cheio]), [
+        ["min", "R$ 89,90", "R$ 109,90"],
+        ["max", "R$ 129,90", null],
+      ], "o máximo sem promoção não pode herdar o cheio do mínimo");
+      assert.ok(/line-through/.test(r.pontas[0].riscado), "o cheio da faixa precisa sair riscado");
+      assert.ok(r.f2Promo, "família de preço único em promoção usa a célula --promo do MLB");
+      assert.strictEqual(r.f2Original, "R$ 49,90");
+      assert.strictEqual(r.f2Atual, "R$ 39,90");
     });
 
     /* ── 6 e 7: nada abre sozinho; só o agrupador expande ───────────────── */
@@ -1392,14 +1447,58 @@ async function run() {
       );
     });
 
-    await check("10b — a linha principal do agrupador mostra o ID do agrupador", async () => {
+    await check("10b — o ID do agrupador sai do texto da linha e vira um botão de copiar que NÃO expande a família", async () => {
       const ids = await cdp.evaluate(`(function(){
-        var ids = document.querySelector('${linhaFam("FAM-1")} .am-row__ids');
-        return { texto: ids.innerText, mono: Array.from(ids.querySelectorAll('.vf-mono'))
-          .map(function(e){ return e.textContent; }) }; })()`);
-      assert.deepStrictEqual(ids.mono, ["FAM-1"],
-        `o ID maior do agrupador não aparece na linha principal: ${JSON.stringify(ids)}`);
-      assert.ok(/3 variações/.test(ids.texto), "os agregados do grupo saíram da linha principal");
+        var linha = document.querySelector('${linhaFam("FAM-1")}');
+        var ids = linha.querySelector('.am-row__ids');
+        var btn = ids.querySelector('.am-row__copiar-id');
+        var antes = linha.getAttribute('aria-expanded');
+        if (btn) btn.click();
+        return { texto: ids.innerText, mono: ids.querySelectorAll('.vf-mono').length,
+          copiar: btn ? btn.getAttribute('data-copiar-familia') : null,
+          titulo: btn ? btn.getAttribute('title') : null,
+          expandiu: linha.getAttribute('aria-expanded') !== antes }; })()`);
+      assert.strictEqual(ids.mono, 0, `o family_id não pode mais ocupar a linha: ${JSON.stringify(ids)}`);
+      assert.ok(!/FAM-1/.test(ids.texto), "o family_id não aparece como texto da linha");
+      assert.strictEqual(ids.copiar, "FAM-1", "o botão de copiar carrega o family_id");
+      assert.ok(/FAM-1/.test(ids.titulo), "o family_id fica legível no title do botão");
+      assert.strictEqual(ids.expandiu, false, "copiar o ID não pode abrir/fechar a família");
+      assert.ok(/3 variações/.test(ids.texto) && /4 anúncios/.test(ids.texto),
+        "variações ≠ anúncios: os dois números continuam na linha");
+    });
+
+    await check("10b3 — 'Misto' mostra a contagem embaixo do selo; estoque sem linha de cobertura", async () => {
+      const r = await cdp.evaluate(`(function(){
+        var f1 = document.querySelector('${linhaFam("FAM-1")}');
+        var det = f1.querySelector('.am-status-misto__detalhe');
+        return {
+          selo: f1.querySelector('.am-status-misto .vf-status').textContent.trim(),
+          detalhe: det ? Array.from(det.children).map(function(e){ return e.textContent; }) : null,
+          cobertura: document.querySelectorAll('.am-cobertura').length,
+        }; })()`);
+      assert.strictEqual(r.selo, "Misto");
+      assert.deepStrictEqual(r.detalhe, ["3 ativos", "1 pausado"], "só os status com contagem, um por linha");
+      assert.strictEqual(r.cobertura, 0, "a coluna de estoque mostra só o número (cobertura removida a pedido)");
+    });
+
+    await check("10b2 — família 1 variação = 1 anúncio mostra um número só; Curva ABC mora no faturamento; score é selo compacto", async () => {
+      const r = await cdp.evaluate(`(function(){
+        var f2 = document.querySelector('${linhaFam("FAM-2")}');
+        var f1 = document.querySelector('${linhaFam("FAM-1")}');
+        var gauge = f1.querySelector('.am-gauge');
+        var legenda = gauge.querySelector('.am-gauge__legenda');
+        return {
+          idsF2: f2.querySelector('.am-row__ids').innerText,
+          abcFora: document.querySelectorAll('.am-row__badges [data-abc-item], .am-row__badges [data-abc-familia], .am-mlb__badges [data-abc-item]').length,
+          abcNoFat: !!f1.querySelector('.am-faturamento [data-abc-familia]'),
+          gaugeTitulo: gauge.getAttribute('title'),
+          legendaVisivel: legenda.getBoundingClientRect().width > 2,
+        }; })()`);
+      assert.ok(/1 variação/.test(r.idsF2) && !/anúncio/.test(r.idsF2), `contagem repetida: ${JSON.stringify(r.idsF2)}`);
+      assert.strictEqual(r.abcFora, 0, "a Curva ABC não pode sobrar entre os badges do título");
+      assert.ok(r.abcNoFat, "a Curva ABC da família fica na célula de faturamento");
+      assert.ok(/^Score/.test(r.gaugeTitulo || ""), "a legenda do score vai para o title");
+      assert.strictEqual(r.legendaVisivel, false, "a legenda do score não ocupa espaço visível");
     });
 
     await check("10c — o título não é repetido na linha quando a variação já o disse", async () => {
@@ -2714,6 +2813,59 @@ async function run() {
       console.log("  ✓ 39a2");
     });
 
+    await check("39a2b — faixa da família usa a cor do status do Motor de cada ponta, igual à célula do item", async () => {
+      ordenarPorGlobalHandler = () => ({
+        ok: true, cliente: { slug: "n97", nome: "N97 Comercial" },
+        ordenacaoAplicada: true, ordenacaoIndisponivel: null,
+        anuncios: [
+          { tipo: "familia", key: "fam:FAM-COR", family_id: "FAM-COR", family_name: "Camiseta Pesca",
+            titulo: "Camiseta Pesca", margemProjetadaPercent: null, margemProjetadaComputable: false,
+            margemProjetadaMinPercent: 4.2, margemProjetadaMaxPercent: 23.8,
+            margemProjetadaMinStatus: "LOW_MARGIN", margemProjetadaMaxStatus: "HEALTHY",
+            margemProjetadaMinProfit: -1.5, margemProjetadaMaxProfit: 14.26, cover: { thumbnail: null } },
+          { tipo: "familia", key: "fam:FAM-UNI", family_id: "FAM-UNI", family_name: "Kit Camisetas",
+            titulo: "Kit Camisetas", margemProjetadaPercent: null, margemProjetadaComputable: false,
+            margemProjetadaMinPercent: 23.8, margemProjetadaMaxPercent: 23.8,
+            margemProjetadaMinStatus: "HEALTHY", margemProjetadaMaxStatus: "HEALTHY", cover: { thumbnail: null } },
+          { tipo: "item", item_id: "MLB-COR-I", key: "item:MLB-COR-I", titulo: "Item avulso", status: "active",
+            margemProjetadaPercent: 23.6, margemProjetadaComputable: true, margemProjetadaStatus: "HEALTHY",
+            margemProjetadaProfit: 28.3, cover: { thumbnail: null } },
+        ],
+        paginacao: { page: 1, limit: 20, total: 3, totalPaginas: 1 },
+      });
+      await cdp.evaluate(`(function(){
+        var s = document.getElementById('am-ordenacao');
+        s.value = 'margem_asc';
+        s.dispatchEvent(new Event('change'));
+      })()`);
+      await waitFor(cdp, `document.querySelector('${linhaFam("FAM-UNI")}')`, "a linha da família não renderizou");
+      const estado = await cdp.evaluate(`(function(){
+        var min = document.querySelector('${linhaFam("FAM-COR")} .am-margem__valor[data-faixa="min"]');
+        var max = document.querySelector('${linhaFam("FAM-COR")} .am-margem__valor[data-faixa="max"]');
+        var uni = document.querySelector('${linhaFam("FAM-UNI")} .am-margem__valor[data-faixa="unico"]');
+        var item = document.querySelector('.am-row[data-item="MLB-COR-I"] .am-margem__valor');
+        return {
+          minWarning: !!(min && min.classList.contains('is-warning')),
+          maxSuccess: !!(max && max.classList.contains('is-success')),
+          uniSuccess: !!(uni && uni.classList.contains('is-success')),
+          mesmaCorDoItem: !!(uni && item && getComputedStyle(uni).color === getComputedStyle(item).color),
+          lucroItem: (function(){ var l = document.querySelector('.am-row[data-item="MLB-COR-I"] .am-margem__lucro'); return l ? { t: l.textContent.trim(), ok: l.classList.contains('is-success') } : null; })(),
+          lucroMin: (function(){ var l = min && min.parentElement.querySelector('.am-margem__lucro'); return l ? { t: l.textContent.trim(), ok: l.classList.contains('is-warning') } : null; })(),
+          lucroMax: (function(){ var l = max && max.parentElement.querySelector('.am-margem__lucro'); return l ? { t: l.textContent.trim(), ok: l.classList.contains('is-success') } : null; })(),
+          lucroUniAusente: !(uni && uni.parentElement.querySelector('.am-margem__lucro')),
+        }; })()`);
+      assert.ok(estado.minWarning, "mínimo vindo de filho LOW_MARGIN usa a cor de margem baixa");
+      assert.ok(estado.maxSuccess, "máximo vindo de filho HEALTHY usa a cor de saudável");
+      assert.ok(estado.uniSuccess, "faixa de um ponto só também ganha a cor do status");
+      assert.ok(estado.mesmaCorDoItem, "família saudável e item avulso saudável têm a MESMA cor");
+      assert.deepStrictEqual(estado.lucroItem, { t: "R$ 28,30/un", ok: true }, "item mostra o lucro por unidade embaixo do %, na mesma cor");
+      assert.deepStrictEqual(estado.lucroMin, { t: "−R$ 1,50/un", ok: true }, "ponta mínima mostra o lucro do filho dela (negativo com sinal de menos), na cor dela");
+      assert.deepStrictEqual(estado.lucroMax, { t: "R$ 14,26/un", ok: true }, "ponta máxima mostra o lucro do filho dela");
+      assert.ok(estado.lucroUniAusente, "sem profit no snapshot não inventa lucro (nunca R$ 0,00)");
+      ordenarPorGlobalHandler = null;
+      console.log("  ✓ 39a2b");
+    });
+
     await check("39a3 — margem_desc: família sem NENHUM filho computável (min/max ausentes) continua '—', nunca inventa faixa", async () => {
       pedidos.length = 0;
       ordenarPorGlobalHandler = () => ({
@@ -3299,6 +3451,10 @@ async function run() {
             porFamilia: { "FAM-1": 0.333, "FAM-2": 0.044 },
             porItemValor: { "MLB-SEMUP": 950.5, "MLB-SEMVAR": 11 },
             porFamiliaValor: { "FAM-1": 3330, "FAM-2": 44 },
+            porItemUnidades: { "MLB-SEMUP": 12, "MLB-SEMVAR": 1 },
+            porFamiliaUnidades: { "FAM-1": 1234, "FAM-2": 2 },
+            porItemPrecoMedio: { "MLB-SEMUP": 79.21, "MLB-SEMVAR": 11 },
+            porFamiliaPrecoMedio: { "FAM-1": 2.7, "FAM-2": 22 },
           },
           curvaAbc: {
             periodoDias: 30,
@@ -3329,6 +3485,19 @@ async function run() {
         assert.strictEqual(valorAbsolutoSemup, "R$ 950,50", `célula precisa mostrar o valor absoluto (R$), nunca o texto antigo "do faturamento": recebido "${valorAbsolutoSemup}"`);
         const valorAbsolutoFam = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento__legenda').textContent.trim()`);
         assert.strictEqual(valorAbsolutoFam, "R$ 3.330,00", "família usa o valor ABSOLUTO consolidado (porFamiliaValor, soma dos filhos), nunca o de um filho isolado");
+
+        // 3ª linha: unidades + preço médio, neutros — sem o "↓" nem o texto
+        // sobre promoção (confundiam o usuário).
+        const un = await cdp.evaluate(`(function(){
+          var i = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento__un');
+          var f = document.querySelector('${linhaFam("FAM-1")} .am-faturamento__un');
+          return { item: i && i.textContent.trim(), fam: f && f.textContent.trim(), titulo: i && i.getAttribute('title'),
+            seta: document.querySelectorAll('.am-faturamento__un.is-abaixo').length };
+        })()`);
+        assert.strictEqual(un.item, "12 un · R$ 79,21/un");
+        assert.strictEqual(un.fam, "1.234 un · R$ 2,70/un", "família soma as unidades dos filhos");
+        assert.strictEqual(un.titulo, "Unidades vendidas nos últimos 30 dias e preço médio por unidade vendida");
+        assert.strictEqual(un.seta, 0, "sem o aviso de preço médio");
 
         // Curva ABC: tag SEMPRE visível quando existe dado — sem nenhuma
         // ordenação selecionada — e SEM o prefixo "ABC" (só a letra).

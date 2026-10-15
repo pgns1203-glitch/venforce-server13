@@ -292,6 +292,23 @@ async function ensurePromoSnapshotSchema(db = pool) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Anúncios ML — "Promoções com rebate" (promocoes_rebate_jobs). Mesmo desenho
+// das trilhas acima: o .sql versionado é a fonte, o boot aplica serializado
+// por advisory lock e o serviço chama o mesmo runner como proteção.
+const PROMOCOES_REBATE_MIGRATION = "20261015_promocoes_rebate_jobs.sql";
+const PROMOCOES_REBATE_LOCK_KEY = "vf:schema:promocoes_rebate_jobs";
+const promocoesRebateEmCurso = new WeakMap();
+
+function promocoesRebateDdl() {
+  return fs.readFileSync(path.join(migrationsDir, PROMOCOES_REBATE_MIGRATION), "utf8");
+}
+
+async function ensurePromocoesRebateSchema(db = pool) {
+  return singleFlight(promocoesRebateEmCurso, db, (chave) =>
+    aplicarMigrationSerializada(chave, promocoesRebateDdl(), PROMOCOES_REBATE_LOCK_KEY));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // BLOCO 18 — GOVERNANÇA DE MIGRATIONS (inventário legível por máquina)
 // ───────────────────────────────────────────────────────────────────────────
 // `auto: true`  → aplicada por um `ensure*` no boot (idempotente, aditiva).
@@ -319,6 +336,17 @@ const MIGRATIONS_INVENTARIO = [
     risco: "baixo",
     prerequisito: "20260827_squads_foundation.sql",
     rollback: "DROP COLUMN das colunas novas",
+  },
+  {
+    arquivo: "20261015_squad_members_funcao_gestor.sql",
+    descricao: "CHECK de squad_members.funcao passa a aceitar 'gestor'",
+    tipo: "aditiva",
+    auto: true,
+    runner: "squadsRepository.ensureSquadsTables",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito: "20260827_squads_foundation.sql",
+    rollback: "funcao 'gestor' → 'membro' e recriar o CHECK com ('membro', 'coordenador')",
   },
   {
     arquivo: "20260817_cliente_contas_foundation.sql",
@@ -435,6 +463,38 @@ const MIGRATIONS_INVENTARIO = [
       "diagnóstico legado)",
     nota: "Sem backfill: promocoes_diagnosticos não tem cliente_conta_id. Cada conta nasce vazia.",
   },
+  {
+    arquivo: "20261014_custos_shopee_item_model.sql",
+    descricao:
+      "FIN-508: troca a unicidade de custos MELI/Shopee (base_id, produto_id, sku) por " +
+      "(base_id, produto_id, sku, COALESCE(id_model,'')) — as variações Shopee do mesmo Item " +
+      "coexistem. Índice novo é mais permissivo que o antigo; não cria nem altera linhas.",
+    tipo: "estrutural (índice)",
+    auto: true,
+    runner: "baseCustosService.ensureColunasCustos",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito: "20260810_add_sku_id_tiktok.sql (colunas sku/sku_id)",
+    rollback:
+      "recriar uq_custos_base_produto_sku_legado — só possível enquanto nenhuma base Shopee " +
+      "tiver 2+ Models do mesmo Item (senão o índice antigo falha por duplicidade)",
+  },
+  {
+    arquivo: PROMOCOES_REBATE_MIGRATION,
+    descricao:
+      "cria promocoes_rebate_jobs — jobs de \"Promoções com rebate\" (Anúncios ML): análise " +
+      "e execução disparadas por clique, com índice único parcial de um job 'processando' " +
+      "por cliente",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensurePromocoesRebateSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito:
+      "nenhum (sem FKs). Serializado por pg_advisory_xact_lock: seguro com duas instâncias " +
+      "subindo ao mesmo tempo",
+    rollback: "DROP TABLE promocoes_rebate_jobs (nenhuma tabela existente é alterada)",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -454,6 +514,10 @@ module.exports = {
   promoSnapshotDdl,
   PROMO_SNAPSHOT_MIGRATION,
   PROMO_SNAPSHOT_LOCK_KEY,
+  ensurePromocoesRebateSchema,
+  promocoesRebateDdl,
+  PROMOCOES_REBATE_MIGRATION,
+  PROMOCOES_REBATE_LOCK_KEY,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,

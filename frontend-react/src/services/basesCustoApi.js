@@ -24,8 +24,9 @@ export function obterCustosDaBase(baseSlug, { signal } = {}) {
 
 // `impostoFracao`: fração (0,08 = 8%), como o banco guarda. Omitido = o
 // servidor mantém o imposto do registro (ou usa o padrão da base, se novo).
-// `idModel` (Shopee) é enviado SEMPRE que se conhece: o upsert zera o
-// id_model existente quando ele não vem.
+// `idModel` (Shopee) é a identidade da variação (FIN-508): com ele, o upsert
+// grava exatamente Item + Model; sem ele, só a linha "pai" do Item (409 se o
+// Item só tiver variações). Nunca altera outra variação.
 export function registrarCustoNaBase(baseSlug, { produtoId, custoProduto, impostoFracao, idModel, produtoNome }, { signal } = {}) {
   return requisitar(`/bases/${encodeURIComponent(baseSlug)}/custos/upsert`, {
     metodo: "POST",

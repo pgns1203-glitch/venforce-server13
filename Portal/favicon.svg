@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <style>
+    .seta { fill: #001f8b; }
+    .degrau { fill: #ca6ce6; }
+    @media (prefers-color-scheme: dark) {
+      .seta { fill: #8fa2ff; }
+      .degrau { fill: #d68cf0; }
+    }
+  </style>
+  <path class="seta" d="M20.5 4.6 31.5 1 30.3 12.2Z"/>
+  <rect class="degrau" x="1.5" y="8" width="22" height="7" rx=".8"/>
+  <rect class="degrau" x="1.5" y="16.5" width="15.5" height="7" rx=".8"/>
+  <rect class="degrau" x="1.5" y="25" width="9" height="7" rx=".8"/>
+</svg>

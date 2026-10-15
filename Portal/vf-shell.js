@@ -28,6 +28,7 @@ import { vfContext } from "./vf-context.js";
 import { vfApi } from "./vf-api.js";
 import { format as fmt } from "./vf-format.js";
 import { statusOperacao, rotuloExterno } from "./vf-context.js";
+import { loadUnificacaoAccess } from "./clientes-unificacao-access.js";
 
 const TOKEN_KEY = "vf-token";
 const USER_KEY = "vf-user";
@@ -53,9 +54,8 @@ export const MODULOS = [
   // mesmo Shell V3 desta sidebar (vf-context/vf-shell) — mesmo padrão de
   // "visao" acima: nasce de Cliente+Operação já escolhidos aqui, não
   // precisa de linkParams (contexto vem de vf-context.js, não da URL).
-  // Aditivo: V1 ("cliente-360") e V2 ("cliente-360-v2") acima continuam
-  // linkadas e intactas até o cutover (master prompt Fase 8).
-  { id: "cliente-360-v3", label: "Cliente 360 V3", rota: "cliente-360-v3.html" },
+  // V1 e V2 seguem por URL; apenas a V3 aparece na sidebar.
+  { id: "cliente-360-v3", label: "Cliente 360", rota: "cliente-360-v3.html" },
   // Convergência #4 §15 — Financeiro V3 é o destino para MELI/Shopee (D-8/
   // D-9 não afetam isto: contrato já existe para os dois hoje). Marketplace
   // não suportado por V3 (TikTok legado) ou sem conta resolvida cai em
@@ -111,6 +111,7 @@ export const GLOBAIS = [
 ];
 
 export const ADMIN = [
+  { id: "clientes-unificacao", label: "Unificação de Clientes", rota: "clientes-unificacao.html", unificacaoUi: true },
   // Tokens ML era `adminOnly` em layout.js (e ml-tokens.js:12 já redireciona
   // sozinho quem não é admin) — recuperado só aqui, no grupo Administração,
   // para preservar exatamente a mesma restrição de acesso que já existia.
@@ -187,8 +188,9 @@ const ICONS = {
   lab: '<polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline>',
 };
 
+// V1 e V2 permanecem registradas para acesso direto por URL, fora da sidebar para todos os perfis.
 export const GRUPOS_NAV = [
-  { titulo: "Operação", ids: ["visao", "carteira", "painel-contas", "cliente-360-v2", "cliente-360-v3", "cliente-operacao", "cliente-360"] },
+  { titulo: "Operação", ids: ["visao", "carteira", "painel-contas", "cliente-360-v3", "cliente-operacao"] },
   { titulo: "Performance", ids: ["central-vendas", "financeiro", "margem", "ads", "anuncios", "central-full", "curva-abc"] },
   { titulo: "Execução", ids: ["automacoes", "diagnosticos", "promocoes-ml"] },
   { titulo: "Gestão", ids: ["pessoas", "clientes-contas", "relatorios", "bases"] },
@@ -417,6 +419,7 @@ export function createVfShell(options = {}) {
   const onCommand = options.onCommand || defaultCommand;
   const getUser = options.getUser || readUser;
   const storage = options.storage || safeLocalStorage();
+  let unificacaoUiEnabled = options.unificacaoUiEnabled === true;
 
   const dom = options.dom || buildShellDom();
   if (!dom) return null; // abortou: .vf-sidebar (layout.js) já presente
@@ -578,7 +581,7 @@ export function createVfShell(options = {}) {
       const admin = el("details", "vf-shell__admin");
       admin.innerHTML = "<summary>Administração</summary>";
       const navA = el("nav", "vf-shell__nav");
-      ADMIN.forEach((mod) => navA.appendChild(itemNav(mod, null, null)));
+      ADMIN.filter((mod) => !mod.unificacaoUi || unificacaoUiEnabled).forEach((mod) => navA.appendChild(itemNav(mod, null, null)));
       admin.appendChild(navA);
       host.appendChild(admin);
     }
@@ -1036,6 +1039,12 @@ export function createVfShell(options = {}) {
   const unsubscribe = ctxStore.subscribe((snap) => render(snap));
 
   return {
+    setUnificacaoUiEnabled(value) {
+      const next = value === true;
+      if (next === unificacaoUiEnabled) return;
+      unificacaoUiEnabled = next;
+      render(ctxStore.getSnapshot());
+    },
     render,
     dom,
     abrirOperacao: () => abrirDropdown("operacao"),
@@ -1111,6 +1120,21 @@ function bootProduction() {
   if (!shell) return null; // abortou: .vf-sidebar já presente (layout.js)
 
   vfContext.init({ api: createProductionContextApi(vfApi), user, scope });
+  if (String(user.role || "").toLowerCase() === "admin") {
+    loadUnificacaoAccess().then((access) => {
+      const allowed = access?.uiEnabled === true && access.actor?.role === "admin";
+      shell.setUnificacaoUiEnabled(allowed);
+      const actions = document.getElementById("clientes-header-acoes");
+      if (allowed && actions && !document.getElementById("cu-clientes-shortcut")) {
+        const link = document.createElement("a");
+        link.id = "cu-clientes-shortcut";
+        link.className = "vf-btn vf-btn--secondary";
+        link.href = "clientes-unificacao.html";
+        link.textContent = "Unificar clientes";
+        actions.appendChild(link);
+      }
+    }).catch(() => { /* flag indisponível mantém apenas este item oculto */ });
+  }
   return shell;
 }
 

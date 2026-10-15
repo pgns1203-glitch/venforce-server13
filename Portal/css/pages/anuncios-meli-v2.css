@@ -424,17 +424,17 @@
      painel expandido juntos). Nunca overflow:hidden aqui — ele cortava
      Score e Ação calados em qualquer card abaixo de ~1330px. */
   --am-pad-x: var(--vf-sp-4);
-  --am-gap: var(--vf-sp-2);
+  --am-gap: var(--vf-sp-3); /* respiro entre colunas */
   --am-c-thumb: 44px;
-  --am-c-anuncio: 156px;
+  --am-c-anuncio: 140px;
   --am-c-status: 68px;
-  --am-c-preco: 80px;
+  --am-c-preco: 124px; /* faixa: vigente + cheio riscado lado a lado */
   --am-c-estoque: 56px;
   --am-c-vendidos: 60px;
-  --am-c-fat: 84px;
-  --am-c-metricas: 124px;
-  --am-c-margem: 76px; /* "Em conciliação" (≈75px) inteiro */
-  --am-c-score: 104px;
+  --am-c-fat: 116px; /* "12 un · R$ 1.110,48/un" */
+  --am-c-metricas: 96px; /* "🛒 123 · 10,5%" */
+  --am-c-margem: 124px; /* faixa: "35,5%  R$ 53,18/un" + (i) */
+  --am-c-score: 56px; /* selo compacto, legenda no title */
   --am-c-acao: 56px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -452,15 +452,15 @@
 .vf-page-anuncios-meli .am-listagem > * {
   --am-cols:
     var(--am-c-thumb)
-    minmax(var(--am-c-anuncio), 4fr)
+    minmax(var(--am-c-anuncio), 3fr)
     minmax(var(--am-c-status), 0.8fr)
-    minmax(var(--am-c-preco), 1fr)
-    minmax(var(--am-c-estoque), 0.6fr)
-    minmax(var(--am-c-vendidos), 0.6fr)
-    minmax(var(--am-c-fat), 0.9fr)
-    minmax(var(--am-c-metricas), 1.1fr)
-    minmax(var(--am-c-margem), 0.9fr)
-    minmax(var(--am-c-score), 1fr)
+    minmax(var(--am-c-preco), 1.1fr)
+    minmax(var(--am-c-estoque), 0.7fr)
+    minmax(var(--am-c-vendidos), 0.7fr)
+    minmax(var(--am-c-fat), 1fr)
+    minmax(var(--am-c-metricas), 1fr)
+    minmax(var(--am-c-margem), 1.1fr)
+    minmax(var(--am-c-score), 0.4fr)
     var(--am-c-acao);
   --am-min-w: calc(
     var(--am-c-thumb) + var(--am-c-anuncio) + var(--am-c-status) +
@@ -709,19 +709,30 @@
 }
 
 /* Faixa de preço do agrupador: "preço por variação" é o nome da
-   iniciativa do ML, então a família tem extremos, não um preço. O
-   limite superior entra como linha secundária para não competir em
-   peso com o número principal da coluna. */
-.vf-page-anuncios-meli .am-row__faixa {
+   iniciativa do ML, então a família tem extremos, não um preço. Mesmo
+   desenho da faixa de margem (.am-margem--faixa): mínimo em cima, máximo
+   embaixo, os dois com o peso da coluna, e o cheio riscado de cada um
+   logo abaixo dele, com o mesmo recuo leve do lucro (.am-margem__lucro). */
+.vf-page-anuncios-meli .am-preco-faixa {
   display: flex;
   flex-direction: column;
+  row-gap: var(--vf-sp-1);
   line-height: 1.2;
 }
 
-.vf-page-anuncios-meli .am-row__faixa small {
+.vf-page-anuncios-meli .am-preco-faixa__ponta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-preco-faixa__cheio {
+  padding-left: 6px;
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-medium);
   color: var(--vf-text-muted);
+  text-decoration: line-through;
+  white-space: nowrap;
 }
 
 /* Painel do agrupador. Sem fundo, sem recuo e sem raio: o conteúdo
@@ -1133,6 +1144,32 @@
 .vf-page-anuncios-meli .am-margem--faixa {
   row-gap: var(--vf-sp-1);
 }
+
+/* Lucro por unidade embaixo do %, na mesma cor (classe de status) — menor
+   e sem o peso do display: é o mesmo resultado, em R$. Na família, cada
+   ponta da faixa (.am-margem__ponta) agrupa o % e o lucro dela, para o
+   respiro da faixa separar as pontas e não o % do próprio lucro. */
+.vf-page-anuncios-meli .am-margem__ponta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-margem__lucro {
+  /* Recuo leve: alinhado à esquerda do % ficava um bloco "quadrado",
+     difícil de separar visualmente do valor de cima. */
+  padding-left: 6px;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-anuncios-meli .am-margem__lucro.is-success { color: var(--vf-success-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-warning { color: var(--vf-warning-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-danger  { color: var(--vf-danger-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-info    { color: var(--vf-info-strong); }
+.vf-page-anuncios-meli .am-margem__lucro.is-neutral { color: var(--vf-text-secondary); }
 
 /* "Realizada"/"Projetada" — o selo que diz qual margem é essa. Legenda de
    SKU, mesmo peso visual do resto da tela. */
@@ -1804,12 +1841,13 @@
   gap: 2px;
 }
 
-/* Medidor compacto (52×28, mesma proporção do viewBox 64×34): a linha
-   ficava alta por causa dele. Valor e legenda continuam visíveis. */
+/* Medidor compacto (44×24, mesma proporção do viewBox 64×34): a linha
+   ficava alta por causa dele. O valor fica visível; a legenda vai para o
+   title (ver scoreGaugeHtml). */
 .vf-page-anuncios-meli .am-gauge__wrap {
   position: relative;
-  width: 52px;
-  height: 28px;
+  width: 44px;
+  height: 24px;
 }
 
 .vf-page-anuncios-meli .am-gauge__wrap svg {
@@ -3309,6 +3347,11 @@
     max-width: none;
   }
 
+  /* Radar de subsídios: largura inteira quando a barra empilha. */
+  .vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-reb-abrir {
+    flex: 1 1 auto;
+  }
+
   /* A rolagem horizontal da tabela não depende mais de ponto de quebra:
      vale em qualquer largura abaixo de --am-min-w (ver .am-listagem). */
 }
@@ -3885,4 +3928,669 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   margin: var(--vf-sp-1) 0 0;
   padding-left: var(--vf-sp-4);
   color: var(--vf-text-secondary);
+}
+
+/* ---- Promoções com rebate (painel lateral) ------------------------------
+   Referência → análise → prévia (abas: Recomendados em tabela, Escolher em
+   cards margem × lucro, Sem ganho, Descartados) → participação. Layout =
+   canvas "A + B" aprovado. Ver anuncios-meli.js, "PROMOÇÕES COM REBATE".
+   Só tokens da Fundação. */
+/* Botão "Radar de subsídios" na barra da lista — modelo D (verde-dinheiro,
+   mesmo verde do "+R$ x de rebate"). Ocupa a altura inteira da barra: a
+   barra e as ações esticam, os demais itens das ações seguem no rodapé. */
+.vf-page-anuncios-meli .am-filtros {
+  align-items: stretch;
+}
+
+.vf-page-anuncios-meli .am-filtros .vf-toolbar__actions {
+  align-items: flex-end;
+}
+
+.vf-page-anuncios-meli .am-filtros .vf-toolbar__actions > .am-reb-abrir {
+  align-self: stretch;
+}
+
+.am-reb-abrir {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-success);
+  color: var(--vf-text-on-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-shadow: 0 6px 16px -6px rgba(15, 122, 82, 0.5);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.am-reb-abrir:hover:not(:disabled) {
+  background: var(--vf-success-strong);
+}
+
+.am-reb-abrir:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: var(--vf-focus-offset);
+}
+
+.am-reb-abrir__ico {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.18);
+}
+
+.am-reb-abrir__txt {
+  display: grid;
+  gap: 2px;
+}
+
+.am-reb-abrir__titulo {
+  font-family: var(--vf-font-display);
+  font-weight: 700;
+  font-size: 0.95rem;
+  line-height: 1.15;
+  white-space: nowrap;
+}
+
+.am-reb-abrir__sub {
+  font-size: 0.75rem;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.am-reb-abrir__seta {
+  flex: none;
+  margin-left: 6px;
+  transition: transform 0.15s;
+}
+
+.am-reb-abrir:hover:not(:disabled) .am-reb-abrir__seta {
+  transform: translateX(3px);
+}
+
+.am-reb-abrir:disabled {
+  cursor: not-allowed;
+  background: var(--vf-disabled-bg);
+  color: var(--vf-text-disabled);
+  box-shadow: none;
+}
+
+.am-reb-abrir:disabled .am-reb-abrir__sub {
+  color: var(--vf-text-disabled);
+}
+
+.am-reb-abrir:disabled .am-reb-abrir__ico {
+  background: var(--vf-surface);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-reb-abrir,
+  .am-reb-abrir__seta {
+    transition: none;
+  }
+}
+
+.am-reb-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--vf-z-modal);
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(27, 29, 40, 0.38);
+}
+
+.am-reb-box {
+  display: flex;
+  flex-direction: column;
+  width: 900px;
+  max-width: 100%;
+  height: 100%;
+  background: var(--vf-surface);
+  box-shadow: -12px 0 32px rgba(27, 29, 40, 0.16);
+  color: var(--vf-text);
+  font-family: var(--vf-font-body);
+}
+
+/* Cabeçalho */
+.am-reb-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
+  padding: 22px 28px 16px;
+  border-bottom: 1px solid var(--vf-border);
+}
+.am-reb-head.tem-abas { padding-bottom: 0; }
+
+.am-reb-head__topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-4);
+}
+
+.am-reb-head__txt { display: flex; flex-direction: column; gap: var(--vf-sp-1); min-width: 0; }
+
+.am-reb-titulo {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: 20px;
+  font-weight: var(--vf-fw-bold);
+  line-height: var(--vf-lh-tight);
+}
+.am-reb-titulo:focus { outline: none; }
+.am-reb-titulo:focus-visible { box-shadow: var(--vf-focus-ring); border-radius: var(--vf-radius-sm); }
+
+.am-reb-sub {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text-secondary);
+}
+.am-reb-sub strong { color: var(--vf-text); }
+
+.am-reb-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--vf-primary);
+  text-decoration: underline;
+  cursor: pointer;
+}
+.am-reb-link:hover { color: var(--vf-primary-active); }
+.am-reb-link:focus-visible { outline: none; box-shadow: var(--vf-focus-ring); border-radius: var(--vf-radius-sm); }
+
+.am-reb-x {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface);
+  color: var(--vf-text-secondary);
+  cursor: pointer;
+}
+.am-reb-x:hover { border-color: var(--vf-border-hover); color: var(--vf-text); }
+.am-reb-x:focus-visible { outline: none; box-shadow: var(--vf-focus-ring); }
+
+/* Abas (mesmo desenho de .vf-tabs/.vf-tab, com contador em pílula) */
+.am-reb-abas {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--vf-sp-1);
+  margin-bottom: -1px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.am-reb-aba {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-2) var(--vf-sp-3) 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.am-reb-aba:hover { color: var(--vf-text); }
+.am-reb-aba:focus-visible { outline: none; box-shadow: var(--vf-focus-ring); border-radius: var(--vf-radius-sm); }
+.am-reb-aba.is-active { color: var(--vf-primary-strong); font-weight: var(--vf-fw-semibold); border-bottom-color: var(--vf-primary); }
+
+.am-reb-aba__n {
+  min-width: 20px;
+  padding: 1px 7px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-neutral);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.am-reb-aba.is-active .am-reb-aba__n { background: var(--vf-primary-soft); color: var(--vf-primary-strong); }
+
+/* Corpo rolável */
+.am-reb-corpo {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 28px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.am-reb-intro {
+  margin: 0;
+  color: var(--vf-text-secondary);
+  font-size: var(--vf-fs-sm);
+  line-height: var(--vf-lh-relaxed);
+}
+
+.am-reb-campo { max-width: 100%; }
+.am-reb-campo .vf-select { width: 100%; max-width: 100%; }
+.am-reb-campo .vf-field__hint { margin: 0; }
+
+.am-reb-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2); }
+
+.am-reb-progresso { display: flex; flex-direction: column; gap: var(--vf-sp-2); }
+.am-reb-progresso__txt { margin: 0; font-size: var(--vf-fs-sm); font-variant-numeric: tabular-nums; color: var(--vf-text); }
+
+.am-reb-vazio { margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text-secondary); }
+
+/* Anúncio (miniatura + título + MLB) */
+.am-reb-anuncio { display: flex; align-items: center; gap: var(--vf-sp-3); min-width: 0; }
+
+.am-reb-thumb {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  background: var(--vf-bg-2);
+  object-fit: cover;
+}
+.am-reb-thumb--vazia { display: inline-flex; align-items: center; justify-content: center; color: var(--vf-text-placeholder); }
+
+.am-reb-anuncio__txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.am-reb-anuncio__titulo {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.am-reb-anuncio__id { font-size: var(--vf-fs-xs); color: var(--vf-text-muted); }
+
+/* Aba Recomendados — tabela compacta */
+.am-reb-tab { display: flex; flex-direction: column; min-width: 0; }
+
+.am-reb-tab__linha {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) 170px 240px;
+  gap: var(--vf-sp-3);
+  align-items: center;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.am-reb-tab__cab {
+  padding: var(--vf-sp-3) 0;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+.am-reb-tab input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--vf-primary); }
+
+.am-reb-celula { display: flex; flex-direction: column; gap: 2px; font-size: 13px; min-width: 0; font-variant-numeric: tabular-nums; }
+.am-reb-celula__forte { font-weight: var(--vf-fw-semibold); }
+.am-reb-celula__fraco { color: var(--vf-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Rebate na diagonal sob o preço — mesmo deslocamento dos ganhos (8px). */
+.am-reb-celula__rebate { margin-left: 8px; font-size: var(--vf-fs-xs); font-weight: var(--vf-fw-semibold); color: var(--vf-success); white-space: nowrap; }
+/* Margem · lucro na promoção com rebate: mesmo peso visual do preço, para
+   comparar direto com a coluna Hoje. */
+/* Margem | lucro em duas colunas (Hoje e Com rebate com a mesma largura de
+   coluna); o ganho de cada medida fica logo abaixo dela, levemente deslocado
+   para a direita (efeito diagonal: valor → ganho). */
+.am-reb-celula__par {
+  display: grid;
+  grid-template-columns: minmax(64px, max-content) max-content;
+  column-gap: var(--vf-sp-6);
+  row-gap: 2px;
+  white-space: nowrap;
+}
+.am-reb-celula__par--fraco { color: var(--vf-text-muted); }
+.am-reb-celula__metricas, .am-reb-celula__ganho { display: contents; }
+.am-reb-celula__metricas > span { font-weight: var(--vf-fw-semibold); color: var(--vf-text); }
+.am-reb-celula__ganho > .am-reb-ganho { margin-left: 8px; font-size: var(--vf-fs-xs); }
+
+.am-reb-ganho { font-weight: var(--vf-fw-semibold); color: var(--vf-text-muted); white-space: nowrap; }
+.am-reb-ganho.is-pos { color: var(--vf-success); }
+.am-reb-ganho.is-neg { color: var(--vf-danger-strong); }
+
+/* Aba Escolher — escolha rápida */
+.am-reb-rapida {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-4);
+  padding: 14px 16px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-lg);
+  background: var(--vf-surface-2);
+}
+
+.am-reb-rapida__txt { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 260px; }
+.am-reb-rapida__titulo { font-family: var(--vf-font-display); font-size: var(--vf-fs-sm); font-weight: var(--vf-fw-semibold); }
+.am-reb-rapida__dica { font-size: 13px; color: var(--vf-text-secondary); }
+
+.am-reb-rapida__btns { display: flex; flex-wrap: wrap; gap: var(--vf-sp-2); }
+
+.am-reb-rapida__btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 14px;
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface);
+  color: var(--vf-text);
+  font-family: var(--vf-font-body);
+  font-size: 13px;
+  font-weight: var(--vf-fw-semibold);
+  cursor: pointer;
+}
+.am-reb-rapida__btn:hover { border-color: var(--vf-border-hover); }
+.am-reb-rapida__btn:focus-visible { outline: none; box-shadow: var(--vf-focus-ring); }
+.am-reb-rapida__btn.is-active { border-color: var(--vf-primary); background: var(--vf-primary-soft); color: var(--vf-primary-strong); }
+
+/* Aba Escolher — card por anúncio */
+.am-reb-escolha {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  padding: 14px 16px 16px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-lg);
+  min-width: 0;
+}
+
+.am-reb-escolha__topo { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.am-reb-escolha__topo .am-reb-thumb { width: 32px; height: 32px; border-radius: var(--vf-radius-sm); }
+.am-reb-escolha__titulo {
+  margin: 0;
+  min-width: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.am-reb-escolha__id { flex: none; font-size: var(--vf-fs-xs); color: var(--vf-text-muted); }
+
+.am-reb-opcoes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+
+.am-reb-opcao {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-surface);
+  cursor: pointer;
+  min-width: 0;
+  transition: border-color var(--vf-duration-fast) var(--vf-ease);
+}
+.am-reb-opcao:hover { border-color: var(--vf-border-hover); }
+.am-reb-opcao.is-selecionada { border: 2px solid var(--vf-primary); background: var(--vf-primary-soft); }
+.am-reb-opcao:focus-within { box-shadow: var(--vf-focus-ring); }
+
+.am-reb-opcao__cab {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: 10px 12px 0;
+  font-size: 13px;
+  font-weight: var(--vf-fw-semibold);
+}
+.am-reb-opcao__cab input { flex: none; margin: 0; accent-color: var(--vf-primary); }
+.am-reb-opcao__nome { flex: 1 1 auto; min-width: 0; color: var(--vf-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.am-reb-opcao__rotulo {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-neutral);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  white-space: nowrap;
+}
+.am-reb-opcao.is-selecionada .am-reb-opcao__rotulo { background: var(--vf-surface); color: var(--vf-primary); }
+
+.am-reb-metricas {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--vf-sp-2);
+  padding: 10px 12px 12px;
+}
+
+.am-reb-metrica { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.am-reb-metrica__rotulo {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+.am-reb-metrica__valor {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-lg);
+  font-weight: var(--vf-fw-bold);
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.am-reb-delta {
+  align-self: flex-start;
+  padding: 1px 6px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-neutral-bg);
+  color: var(--vf-neutral);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  white-space: nowrap;
+}
+.am-reb-delta.is-pos { background: var(--vf-success-bg); color: var(--vf-success-strong); }
+.am-reb-delta.is-neg { background: var(--vf-danger-bg); color: var(--vf-danger-strong); }
+
+/* Rebate pequeno sob o preço de venda (só quando a promoção tem subsídio) */
+.am-reb-rebate {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  line-height: 1.3;
+  color: var(--vf-success-strong);
+  white-space: nowrap;
+}
+
+/* Abas Sem ganho / Descartados e execução */
+.am-reb-lista { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.am-reb-lista__item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  padding: var(--vf-sp-3) 0;
+  border-bottom: 1px solid var(--vf-border);
+  min-width: 0;
+}
+.am-reb-lista__item .am-reb-anuncio { flex: 1 1 260px; }
+.am-reb-lista__motivo { flex: 1 1 240px; color: var(--vf-text-secondary); font-size: 13px; overflow-wrap: anywhere; }
+.am-reb-exec__st { flex: 0 0 auto; }
+.am-reb-exec__item.is-falha .am-reb-lista__motivo { color: var(--vf-danger-strong); }
+
+/* Rodapé fixo */
+.am-reb-rodape {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--vf-sp-3) var(--vf-sp-4);
+  padding: var(--vf-sp-4) 28px;
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+}
+
+.am-reb-rodape .vf-btn { height: 44px; padding: 0 18px; font-size: var(--vf-fs-sm); }
+
+.am-reb-resumo-sel { display: flex; flex-direction: column; gap: 2px; margin-right: auto; min-width: 0; }
+.am-reb-contador {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+  font-variant-numeric: tabular-nums;
+}
+.am-reb-resumo-sel__det { font-size: 13px; color: var(--vf-text-secondary); }
+.am-reb-rodape__acoes { display: flex; flex-wrap: wrap; gap: 10px; }
+
+.am-reb-confirma { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2) var(--vf-sp-3); width: 100%; }
+.am-reb-confirma__txt { flex: 1 1 260px; margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text); }
+.am-reb-confirma__acoes { display: flex; flex-wrap: wrap; gap: var(--vf-sp-2); margin-left: auto; }
+
+@media (max-width: 760px) {
+  .am-reb-head, .am-reb-corpo { padding-left: var(--vf-sp-4); padding-right: var(--vf-sp-4); }
+  .am-reb-rodape { padding-left: var(--vf-sp-4); padding-right: var(--vf-sp-4); }
+  .am-reb-tab__cab { display: none; }
+  .am-reb-tab__linha { grid-template-columns: 24px minmax(0, 1fr); row-gap: var(--vf-sp-2); }
+  .am-reb-tab__linha > .am-reb-celula { grid-column: 2; }
+  .am-reb-opcoes { grid-template-columns: minmax(0, 1fr); }
+  .am-reb-rodape .vf-btn { flex: 1 1 auto; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-reb-opcao { transition: none; }
+}
+
+/* ------------------------------------------------------------
+ * Lista mais enxuta (sugestões 3–10 da revisão da listagem)
+ * ------------------------------------------------------------ */
+
+/* Faixa da família (margem e preço): cada extremo numa linha só, com o
+   secundário AO LADO (lucro/un na margem, cheio riscado no preço) — as
+   4 linhas viravam a linha mais alta da lista. Nada some: o cheio e o
+   lucro continuam visíveis, só mudam de posição. */
+.vf-page-anuncios-meli .am-margem--faixa .am-margem__ponta,
+.vf-page-anuncios-meli .am-preco-faixa__ponta {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.vf-page-anuncios-meli .am-margem--faixa .am-margem__lucro,
+.vf-page-anuncios-meli .am-preco-faixa__cheio {
+  padding-left: 0;
+}
+
+.vf-page-anuncios-meli .am-margem--faixa,
+.vf-page-anuncios-meli .am-preco-faixa {
+  row-gap: 2px;
+}
+
+/* Status "Misto": a contagem por status embaixo do selo. */
+.vf-page-anuncios-meli .am-status-misto {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-status-misto__detalhe {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--vf-fs-2xs);
+  line-height: 1.25;
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}
+
+/* ID da família: fora da linha, como ação discreta de copiar que só
+   aparece no hover/foco da linha. */
+.vf-page-anuncios-meli .am-row__copiar-id {
+  padding: 0 4px;
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  cursor: pointer;
+  background: none;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.vf-page-anuncios-meli .am-row:hover .am-row__copiar-id,
+.vf-page-anuncios-meli .am-row:focus-within .am-row__copiar-id,
+.vf-page-anuncios-meli .am-row__copiar-id:focus-visible {
+  opacity: 1;
+}
+
+.vf-page-anuncios-meli .am-row__copiar-id:hover {
+  color: var(--vf-text);
+  border-color: var(--vf-border-strong);
+}
+
+.vf-page-anuncios-meli .am-row__copiar-id:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+/* Curva ABC ao lado do % de faturamento. */
+.vf-page-anuncios-meli .am-faturamento__topo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vf-page-anuncios-meli .am-faturamento__topo .vf-tag {
+  padding: 0 4px;
+  font-size: var(--vf-fs-2xs);
+  line-height: 1.4;
+}
+
+/* Cabeçalho com período: Vendidos (total), Faturamento (janela do Motor) e
+   Métricas (7 dias) olham períodos diferentes — o período fica embaixo do
+   rótulo, em minúsculas, para não competir com ele. */
+.vf-page-anuncios-meli .am-listagem__head-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.vf-page-anuncios-meli .am-listagem__head .am-listagem__head-periodo {
+  font-size: var(--vf-fs-2xs);
+  white-space: nowrap;
+  font-weight: var(--vf-fw-medium);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Unidades vendidas no período — só a contagem, neutra. */
+.vf-page-anuncios-meli .am-faturamento__un {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
 }

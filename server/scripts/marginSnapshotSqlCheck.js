@@ -119,6 +119,93 @@ check("leitura: filtros ANY, busca literal (ILIKE com escape), whitelist de orde
   assert.strictEqual(kpis.porStatus.LOSS, 10);
 });
 
+check("status EFETIVO (overrides do retorno ML): filtro, contagem, KPIs e ordenação por status em Postgres real", async ({ db }) => {
+  const mk = (itemId, status, margem) => ({
+    clienteId: 1, clienteContaId: 2, itemId, titulo: itemId, status, profit: margem, margin: margem / 100, marginPercent: margem, quality: { evidencias: {} },
+  });
+  // Conta 2 já tem 30 itens do check anterior; usa itens novos e filtra por busca para isolar.
+  await repo.upsertProjectionSnapshot({ ...mk("EFET1", "LOSS", -5), titulo: "efet-a" }, db);
+  await repo.upsertProjectionSnapshot({ ...mk("EFET2", "LOSS", -5), titulo: "efet-b" }, db);
+  await repo.upsertProjectionSnapshot({ ...mk("EFET3", "LOSS", -5), titulo: "efet-c" }, db);
+  await repo.upsertProjectionSnapshot({ ...mk("EFET4", "HEALTHY", 20), titulo: "efet-d" }, db);
+  const overrides = { itemIds: ["EFET1", "EFET2"], statuses: ["LOW_MARGIN", "HEALTHY"] };
+  const base = { clienteId: 1, clienteContaId: 2, busca: "efet-" };
+
+  const ids = async (filtro, ordenacao = null) => (await repo.queryProjectionSnapshotsPage({
+    filtro, orderBy: repo.resolverOrdenacao({ ordenacao, direcao: "ASC" }).orderBy, limit: 50, offset: 0, db,
+  })).map((i) => i.itemId);
+
+  // Sem override: SQL de sempre, persistido.
+  const semOv = repo.montarFiltroSnapshots({ ...base, status: ["LOSS"] });
+  assert.strictEqual(semOv.statusExpr, "status");
+  assert.deepStrictEqual((await ids(semOv)).sort(), ["EFET1", "EFET2", "EFET3"]);
+
+  // Com override: o filtro por status vê o EFETIVO.
+  assert.deepStrictEqual((await ids(repo.montarFiltroSnapshots({ ...base, status: ["LOSS"], statusOverrides: overrides }))).sort(), ["EFET3"]);
+  assert.deepStrictEqual((await ids(repo.montarFiltroSnapshots({ ...base, status: ["LOW_MARGIN"], statusOverrides: overrides }))).sort(), ["EFET1"], "persistido LOSS, efetivo LOW_MARGIN");
+  assert.deepStrictEqual((await ids(repo.montarFiltroSnapshots({ ...base, status: ["HEALTHY"], statusOverrides: overrides }))).sort(), ["EFET2", "EFET4"]);
+  const fOv = repo.montarFiltroSnapshots({ ...base, status: ["LOSS", "LOW_MARGIN"], statusOverrides: overrides });
+  assert.strictEqual((await repo.countProjectionSnapshotsFiltrado({ filtro: fOv, db })).total, 2, "contagem acompanha o filtro efetivo");
+
+  // KPIs: cada anúncio conta uma vez, pelo status efetivo.
+  const k = await repo.summarizeProjectionSnapshots({ filtro: repo.montarFiltroSnapshots({ ...base, statusOverrides: overrides }), db });
+  assert.deepStrictEqual([k.total, k.porStatus.LOSS, k.porStatus.LOW_MARGIN, k.porStatus.HEALTHY], [4, 1, 1, 2]);
+  const kPersistido = await repo.summarizeProjectionSnapshots({ filtro: repo.montarFiltroSnapshots(base), db });
+  assert.deepStrictEqual([kPersistido.porStatus.LOSS, kPersistido.porStatus.HEALTHY], [3, 1]);
+
+  // Ordenação por status usa o efetivo (precedência de AÇÃO: LOSS antes de LOW_MARGIN antes de HEALTHY).
+  const ord = await ids(repo.montarFiltroSnapshots({ ...base, statusOverrides: overrides }), "status");
+  assert.strictEqual(ord[0], "EFET3");
+  assert.strictEqual(ord[1], "EFET1");
+  assert.deepStrictEqual(ord.slice(2).sort(), ["EFET2", "EFET4"]);
+
+  // Linhas completas de um lote (para reclassificar), só do catálogo atual.
+  const lote = await repo.listProjectionSnapshotsByItemIds({ clienteId: 1, clienteContaId: 2, itemIds: ["EFET1", "EFET9"], db });
+  assert.deepStrictEqual(lote.map((l) => l.itemId), ["EFET1"]);
+
+  // Listas paralelas inconsistentes ou status inválido são recusados antes do SQL.
+  assert.throws(() => repo.montarFiltroSnapshots({ ...base, statusOverrides: { itemIds: ["A"], statuses: [] } }), /statusOverrides inválido/);
+  assert.throws(() => repo.montarFiltroSnapshots({ ...base, statusOverrides: { itemIds: ["A"], statuses: ["NAO_EXISTE"] } }), /statusOverrides inválido/);
+});
+
+check("worklist (prejuízo → abaixo da meta → resto, maior receita primeiro) e LC somado em prejuízo em Postgres real", async ({ db }) => {
+  const mk = (itemId, status, lc) => ({
+    clienteId: 1, clienteContaId: 2, itemId, titulo: `wl-${itemId}`, status, profit: lc, margin: lc / 100, marginPercent: lc, quality: { evidencias: {} },
+  });
+  const itens = [["WL1", "HEALTHY", 20], ["WL2", "LOSS", -5], ["WL3", "LOW_MARGIN", 3], ["WL4", "LOSS", -8], ["WL5", "HEALTHY", 25], ["WL6", "LOSS", -2], ["WL7", "LOW_MARGIN", 4]];
+  for (const [id, status, lc] of itens) await repo.upsertProjectionSnapshot(mk(id, status, lc), db);
+  const receitas = { WL1: 500, WL2: 100, WL3: 50, WL4: 900, WL5: 20, WL7: 400 }; // WL6 sem receita conhecida = 0
+  const base = { clienteId: 1, clienteContaId: 2, busca: "wl-" };
+  const ordem = repo.resolverOrdenacao({ ordenacao: "worklist" });
+  assert.strictEqual(ordem.direcao, "ASC");
+  assert.strictEqual(repo.resolverOrdenacao({ ordenacao: "worklist", direcao: "DESC" }), null, "direção DESC não existe nessa ordem");
+  const ids = async (filtro, offset = 0, limit = 50) => (await repo.queryProjectionSnapshotsPage({ filtro, orderBy: ordem.orderBy, limit, offset, receitas, db })).map((i) => i.itemId);
+
+  // Status persistido: LOSS por receita (WL4 900 > WL2 100 > WL6 0), LOW por receita (WL7 400 > WL3 50), resto (WL1 500 > WL5 20).
+  assert.deepStrictEqual(await ids(repo.montarFiltroSnapshots(base)), ["WL4", "WL2", "WL6", "WL7", "WL3", "WL1", "WL5"]);
+  // Página estável (sem repetir/pular).
+  const p1 = await ids(repo.montarFiltroSnapshots(base), 0, 3);
+  const p2 = await ids(repo.montarFiltroSnapshots(base), 3, 3);
+  const p3 = await ids(repo.montarFiltroSnapshots(base), 6, 3);
+  assert.deepStrictEqual([...p1, ...p2, ...p3], ["WL4", "WL2", "WL6", "WL7", "WL3", "WL1", "WL5"]);
+
+  // Status EFETIVO: WL2 saiu de Prejuízo (retorno ML) → entra no grupo "abaixo da meta" pela receita.
+  const overrides = { itemIds: ["WL2"], statuses: ["LOW_MARGIN"] };
+  assert.deepStrictEqual(await ids(repo.montarFiltroSnapshots({ ...base, statusOverrides: overrides })), ["WL4", "WL6", "WL7", "WL2", "WL3", "WL1", "WL5"]);
+
+  // Sem receita nenhuma: desempate por item_id (determinístico).
+  const semReceita = (await repo.queryProjectionSnapshotsPage({ filtro: repo.montarFiltroSnapshots(base), orderBy: ordem.orderBy, limit: 50, offset: 0, receitas: null, db })).map((i) => i.itemId);
+  assert.deepStrictEqual(semReceita, ["WL2", "WL4", "WL6", "WL3", "WL7", "WL1", "WL5"]);
+
+  // KPI: LC somado em Prejuízo (persistido e efetivo).
+  const k = await repo.summarizeProjectionSnapshots({ filtro: repo.montarFiltroSnapshots(base), db });
+  assert.strictEqual(k.lcPrejuizo, -15);
+  const kEf = await repo.summarizeProjectionSnapshots({ filtro: repo.montarFiltroSnapshots({ ...base, statusOverrides: overrides }), db });
+  assert.strictEqual(kEf.lcPrejuizo, -10, "o anúncio que saiu de Prejuízo não entra na soma");
+  const sem = await repo.summarizeProjectionSnapshots({ filtro: repo.montarFiltroSnapshots({ ...base, busca: "nada-assim" }), db });
+  assert.strictEqual(sem.lcPrejuizo, 0);
+});
+
 check("fan-out de Base: vínculo da conta e vínculo legado client-level", async ({ db }) => {
   const a = await triggers.resolverContasAfetadasPorBase({ baseId: 1 }, db);
   assert.deepStrictEqual(a.map((c) => c.clienteContaId), [2]);

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Venforce — Integrações externas</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/pages/integracoes-externas.css">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+</head>
+<body class="vf-page vf-page-integracoes-externas" data-vf-scope="global" data-vf-module="integracoes-externas">
+  <!-- Bancada técnica standalone: acesso por URL direta, fora do Shell V3/sidebar. -->
+  <main class="vf-content">
+    <div class="vf-page-shell">
+      <div class="vf-page-container vf-page-container--wide">
+
+        <header class="vf-page-header">
+          <div class="vf-page-header__main">
+            <p class="vf-page-header__eyebrow">Administração · técnico</p>
+            <h1 class="vf-page-header__title">Integrações externas</h1>
+            <p class="vf-page-header__description">Conectores técnicos entre Venforce e serviços externos.</p>
+          </div>
+        </header>
+
+        <div id="state-loading" class="vf-loading-state" role="status" aria-live="polite">
+          <span class="vf-spinner" aria-hidden="true"></span>
+          <p>Consultando status…</p>
+        </div>
+
+        <div id="state-error" class="vf-empty" role="alert" hidden>
+          <p class="vf-empty__title">Não foi possível consultar o status</p>
+          <p id="state-error-msg"></p>
+          <button id="btn-retry" type="button" class="vf-btn vf-btn--secondary">Tentar novamente</button>
+        </div>
+
+        <div id="cards" hidden>
+          <section class="vf-card" aria-labelledby="card-shopee-title">
+            <div class="vf-card__header">
+              <h2 class="vf-card__title" id="card-shopee-title">Shopee · Matriz</h2>
+            </div>
+            <div class="vf-card__body">
+              <dl class="vf-ie-summary" id="shopee-summary"></dl>
+            </div>
+            <div class="vf-table-wrap">
+              <table class="vf-table vf-table--compact">
+                <thead><tr><th>Capacidade</th><th>Estado</th></tr></thead>
+                <tbody id="shopee-capacidades"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="vf-card" aria-labelledby="card-whatsapp-title">
+            <div class="vf-card__header">
+              <h2 class="vf-card__title" id="card-whatsapp-title">WhatsApp · Matriz</h2>
+            </div>
+            <div class="vf-card__body">
+              <p class="vf-ie-note">Placeholder técnico — nada implementado.</p>
+            </div>
+            <div class="vf-table-wrap">
+              <table class="vf-table vf-table--compact">
+                <thead><tr><th>Capacidade</th><th>Estado</th></tr></thead>
+                <tbody id="whatsapp-capacidades"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="integracoes-externas.js"></script>
+</body>
+</html>

@@ -21,6 +21,7 @@ const XLSX = require("xlsx");
 const {
   readSheetRows,
   parseSpreadsheet,
+  parseShopeeCostSpreadsheet,
   detectMeliHeader,
   validateMeliHeaderAtRow,
   detectShopeeHeaderRow,
@@ -788,7 +789,7 @@ function capArray(arr, limit) {
   return { items: list.slice(0, limit), totalCount: list.length, truncated: list.length > limit };
 }
 
-function rawRowsForFile(fileEntry) {
+function rawRowsForFile(fileEntry, { shopeeCost = false } = {}) {
   if (!fileEntry || !fileEntry.classification.sheetUsed) return [];
   try {
     if (fileEntry.classification.type === FILE_TYPES.MELI_VENDAS) {
@@ -801,6 +802,9 @@ function rawRowsForFile(fileEntry) {
     ) {
       return parseSpreadsheet(fileEntry.buffer, fileEntry.classification.headerRowIndex || 0);
     }
+    // Base usada como custo Shopee (inclusive a ambígua): mesma leitura do
+    // fechamento, ID/Model com a precisão da célula (FIN-508).
+    if (shopeeCost) return parseShopeeCostSpreadsheet(fileEntry.buffer, 0);
     // Bases de custo (MELI/Shopee/ambígua) e desconhecidos: linha 0 (sem cabeçalho especial).
     return parseSpreadsheet(fileEntry.buffer, 0);
   } catch (error) {
@@ -893,7 +897,7 @@ function runFechamentoDebug(input) {
     meliCustos: meliCustosResolved ? rawRowsForFile(meliCustosResolved) : [],
     shopeeOrderAll: shopeeOrderAll ? rawRowsForFile(shopeeOrderAll) : [],
     shopeePerformance: shopeePerformance ? rawRowsForFile(shopeePerformance) : [],
-    shopeeCustos: shopeeCustos ? rawRowsForFile(shopeeCustos) : [],
+    shopeeCustos: shopeeCustos ? rawRowsForFile(shopeeCustos, { shopeeCost: true }) : [],
   };
 
   const columns = [];

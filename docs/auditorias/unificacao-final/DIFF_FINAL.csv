@@ -1,0 +1,84 @@
+arquivo,area
+.env.example,executor
+Portal/central-margem-visual.test.js,docs/tests
+Portal/clientes-unificacao-access.js,UI
+Portal/clientes-unificacao-ui.test.js,docs/tests
+Portal/clientes-unificacao.html,UI
+Portal/clientes-unificacao.js,UI
+Portal/clientes-unificacao.postgres.cjs,docs/tests
+Portal/css/pages/clientes-unificacao.css,UI
+Portal/tests/unificacao-browser.cjs,docs/tests
+Portal/ui-ux-wave1-convergence.test.js,docs/tests
+Portal/vf-shell.js,UI
+docs/UNIFICACAO_CLIENTES_EXECUTOR.md,docs/tests
+docs/UNIFICACAO_CLIENTES_PLANO_EXECUCAO.md,docs/tests
+docs/UNIFICACAO_CLIENTES_RELEASE_FINAL.md,docs/tests
+docs/UNIFICACAO_CLIENTES_UI.md,docs/tests
+docs/account-context/ETAPA_1_FUNDACAO_ACCOUNT_AWARE.md,docs/tests
+docs/account-context/VALIDACAO_ETAPA_1.json,docs/tests
+docs/auditorias/unificacao-executor/VALIDACAO.json,docs/tests
+docs/auditorias/unificacao-final/DIFF_FINAL.csv,docs/tests
+docs/auditorias/unificacao-final/VALIDACAO.json,docs/tests
+docs/auditorias/unificacao-stacked/INVENTARIO_FALLBACKS.csv,docs/tests
+docs/auditorias/unificacao-stacked/INVENTARIO_FALLBACKS_RESUMO.json,docs/tests
+docs/auditorias/unificacao-stacked/VALIDACAO.json,docs/tests
+docs/auditorias/unificacao-ui/VALIDACAO.json,docs/tests
+server/config/clientesUnificacao.js,executor
+server/controllers/adsController.js,consumidores
+server/controllers/automacoesController.js,consumidores
+server/controllers/mlController.js,OAuth
+server/index.js,API
+server/package.json,executor
+server/routes/clientesUnificacaoRoutes.js,API
+server/scripts/unificacaoClientes/README.md,unificação plan/validate
+server/scripts/unificacaoClientes/cli.js,unificação plan/validate
+server/scripts/unificacaoClientes/coletarSnapshot.js,unificação plan/validate
+server/scripts/unificacaoClientes/inventory.py,unificação plan/validate
+server/scripts/unificacaoClientes/manifest-v1.example.json,unificação plan/validate
+server/scripts/unificacaoClientes/planner.js,unificação plan/validate
+server/services/ads/mlAdsService.js,consumidores
+server/services/automacoes/contextoPrecificacaoService.js,consumidores
+server/services/automacoes/diagnosticoService.js,consumidores
+server/services/automacoes/precificacaoService.js,consumidores
+server/services/cliente360/cliente360V3SaudeAdsService.js,consumidores
+server/services/clienteContas/accountContextIdentityService.js,account-context
+server/services/clienteContas/accountContextInvariant.js,account-context
+server/services/clienteContas/clienteContaService.js,account-context
+server/services/clientesUnificacao/candidates.js,unificação plan/validate
+server/services/clientesUnificacao/contracts.js,unificação plan/validate
+server/services/clientesUnificacao/manifest.schema.json,unificação plan/validate
+server/services/clientesUnificacao/planner.js,unificação plan/validate
+server/services/clientesUnificacao/references.js,executor
+server/services/clientesUnificacao/repository.js,executor
+server/services/clientesUnificacao/service.js,executor
+server/services/clientesUnificacao/snapshotPlanner.js,unificação plan/validate
+server/services/metricasService.js,consumidores
+server/services/mlTokenService.js,OAuth
+server/services/motorMargem/motorMargemService.js,consumidores
+server/services/visaoService.js,consumidores
+server/sql/migrations/20261014_clientes_unificacao_executor.sql,migration
+server/tests/accountContextFoundation.test.js,docs/tests
+server/tests/accountContextStrict.test.js,docs/tests
+server/tests/adsMetricasAccountContext.test.js,docs/tests
+server/tests/automacoesContaScoped.test.js,docs/tests
+server/tests/automacoesProntidaoConta.test.js,docs/tests
+server/tests/clientesUnificacao.postgres.cjs,docs/tests
+server/tests/clientesUnificacaoApi.test.js,docs/tests
+server/tests/clientesUnificacaoCli.test.js,docs/tests
+server/tests/clientesUnificacaoDomain.test.js,docs/tests
+server/tests/consumerAccountConvergence.test.js,docs/tests
+server/tests/contextoPrecificacaoContaScoped.test.js,docs/tests
+server/tests/contextoPrecificacaoErroCanonico.test.js,docs/tests
+server/tests/helpers/clientesUnificacaoFixture.js,docs/tests
+server/tests/helpers/clientesUnificacaoPostgres.js,docs/tests
+server/tests/mlConectarConta.test.js,docs/tests
+server/tests/motorMargemCarregarWorkspaceContaScoped.test.js,docs/tests
+server/tests/oauthAccountBindingAtomic.test.js,docs/tests
+server/tests/planilhaPrecificacaoSemBaseContaScoped.test.js,docs/tests
+server/tests/precificacaoServiceContaScoped.test.js,docs/tests
+server/tests/precificacaoServiceD8ContaBase.test.js,docs/tests
+server/tests/promocoesRetornoContaScoped.test.js,docs/tests
+server/tests/unificacaoClientesPlanner.test.js,docs/tests
+server/tests/unificacaoClientesReadOnly.test.js,docs/tests
+server/tests/visaoPeriodoContrato.test.js,docs/tests
+server/tests/visaoServiceComposicao.test.js,docs/tests

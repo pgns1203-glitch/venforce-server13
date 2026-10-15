@@ -66,12 +66,25 @@ function resolverPeriodo({ dateFrom, dateTo, now = new Date() }) {
   return { dateFrom: padrao.dateFrom, dateTo: padrao.dateTo };
 }
 
+/**
+ * Meta de margem (fração, 0 < meta < 1).
+ *   - não informada (undefined/null/"") → meta PADRÃO, explícita (DEFAULT_TARGET_MARGIN);
+ *   - informada e válida → ela;
+ *   - informada e fora da faixa / não numérica → erro 400 `margem_alvo_fora_da_faixa`.
+ * Nenhuma conversão de escala ("25" não vira 0,25) e nenhum fallback silencioso
+ * para o padrão quando o valor foi informado e está errado.
+ */
 function parseTargetMargin(raw) {
-  const n = Number(raw);
-  if (!Number.isFinite(n)) return DEFAULT_TARGET_MARGIN;
-  // Aceita 0.12 e 12 — a Central pode mandar em qualquer das duas escalas.
-  const fraction = n > 1 ? n / 100 : n;
-  return fraction > 0 && fraction < 1 ? fraction : DEFAULT_TARGET_MARGIN;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return DEFAULT_TARGET_MARGIN;
+  const n = Number(String(raw).replace(",", "."));
+  if (!Number.isFinite(n) || !(n > 0 && n < 1)) {
+    throw criarErroHttp(400, {
+      ok: false,
+      codigo: "margem_alvo_fora_da_faixa",
+      erro: `margemAlvo fora da faixa: informe uma fração entre 0 e 1 (ex.: 0.12 para 12%); recebido "${String(raw).slice(0, 40)}".`,
+    });
+  }
+  return n;
 }
 
 // Executa `fn` sobre `items` com paralelismo limitado. Evita disparar 40
@@ -762,6 +775,7 @@ async function obterResumo(params = {}, deps = {}) {
   const workspace = await carregarWorkspace(
     {
       clienteSlug: params.clienteSlug,
+      clienteContaId: params.clienteContaId ?? null,
       baseSlug: params.baseSlug,
       dateFrom: params.dateFrom,
       dateTo: params.dateTo,

@@ -152,6 +152,37 @@ function parseSpreadsheet(fileBuffer, skipRows = 0) {
   });
 }
 
+// Base de custos Shopee enviada no fechamento (FIN-508). Com raw:false, um
+// Item/Model de 12 dígitos numa célula numérica "Geral" do Excel chega como
+// "2.39435E+11" e nenhuma variação bate com a Performance. O valor guardado na
+// célula ainda é o inteiro exato — só ele é usado, e só quando PROVADAMENTE
+// tem mais dígitos que o texto (Number(texto) !== valor). Num CSV com
+// "2.39435E+11" o valor já é 239435000000: os dígitos se perderam de verdade,
+// o texto científico fica como veio e o motor o diagnostica, sem inventar ID.
+const TEXTO_NOTACAO_CIENTIFICA = /^\d+(?:[.,]\d+)?e[+-]?\d+$/i;
+
+function preservarInteirosEmNotacaoCientifica(sheet) {
+  for (const [endereco, celula] of Object.entries(sheet)) {
+    if (endereco[0] === "!" || !celula || celula.t !== "n") continue;
+    if (!Number.isSafeInteger(celula.v)) continue;
+    const texto = String(celula.w ?? "").trim();
+    if (!TEXTO_NOTACAO_CIENTIFICA.test(texto)) continue;
+    if (Number(texto.replace(",", ".")) === celula.v) continue;
+    celula.w = String(celula.v);
+  }
+}
+
+function parseShopeeCostSpreadsheet(fileBuffer, skipRows = 0) {
+  const { sheet } = readSheetRows(fileBuffer);
+  preservarInteirosEmNotacaoCientifica(sheet);
+
+  return XLSX.utils.sheet_to_json(sheet, {
+    defval: "",
+    raw: false,
+    range: skipRows,
+  });
+}
+
 function analyzeMeliHeaderCells(cells) {
   const headers = (cells || [])
     .map((cell) => String(cell ?? "").trim())
@@ -283,6 +314,7 @@ module.exports = {
   lerWorkbookPlanilha,
   readSheetRows,
   parseSpreadsheet,
+  parseShopeeCostSpreadsheet,
   MELI_HEADER_FIELDS,
   detectMeliHeader,
   detectMeliHeaderRow,

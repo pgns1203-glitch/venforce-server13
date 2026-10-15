@@ -122,7 +122,7 @@ async function gerarPreviewPrecificacaoMl({
   let details = [];
   if (ids.length > 0) {
     // Observação: o endpoint do ML espera ids separados por vírgula; não codificar vírgulas evita incompatibilidades.
-    const batch = await mlFetch(cliente.id, `/items?ids=${ids.join(",")}`);
+    const batch = await mlFetch(cliente.id, `/items?ids=${ids.join(",")}`, { mlUserId });
     if (!batch.ok) {
       throw criarErroHttp(batch.status, { ok: false, erro: batch.data?.message || "Erro ao buscar detalhes dos itens no ML.", status: batch.status, data: batch.data });
     }
@@ -184,7 +184,7 @@ async function gerarPreviewPrecificacaoMl({
         if (precoEfetivo === null || !listingTypeId || !categoryId) return null;
         const query = `/sites/MLB/listing_prices?price=${encodeURIComponent(precoEfetivo)}&listing_type_id=${encodeURIComponent(listingTypeId)}&category_id=${encodeURIComponent(categoryId)}`;
         try {
-          return await mlFetch(cliente.id, query);
+          return await mlFetch(cliente.id, query, { mlUserId });
         } catch (_) {
           return null;
         }

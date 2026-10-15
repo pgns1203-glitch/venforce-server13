@@ -49,12 +49,64 @@ cenario("índice de custos casa MLB com e sem prefixo", () => {
   assert.strictEqual(baseCustos.lookupCost(index, "MLB0000000000"), null);
 });
 
-cenario("imposto é normalizado para decimal nas duas escalas", () => {
+cenario("alíquota: decimal em [0, 1] passa intacto; fora da faixa NÃO é convertida (12 não vira 0,12) nem vira zero", () => {
   assert.strictEqual(baseCustos.normalizarAliquota(0.12), 0.12, "decimal permanece decimal");
-  assert.strictEqual(baseCustos.normalizarAliquota(12), 0.12, "escala 0–100 vira decimal");
   assert.strictEqual(baseCustos.normalizarAliquota(0), 0, "zero real é preservado");
+  assert.strictEqual(baseCustos.normalizarAliquota(1), 1, "o limite superior é válido");
   assert.strictEqual(baseCustos.normalizarAliquota(null), null, "ausente continua ausente");
+  assert.strictEqual(baseCustos.normalizarAliquota(12), null, "escala 0–100 NÃO é convertida");
   assert.strictEqual(baseCustos.normalizarAliquota(-1), null, "negativo é inválido, não 0");
+  assert.strictEqual(baseCustos.aliquotaInvalida(12), true);
+  assert.strictEqual(baseCustos.aliquotaInvalida(-1), true);
+  assert.strictEqual(baseCustos.aliquotaInvalida(0.12), false);
+  assert.strictEqual(baseCustos.aliquotaInvalida(null), false, "ausente não é inválido");
+});
+
+cenario("alíquota 15 na Base: registra insumo INVÁLIDO com motivo aliquota_fora_da_faixa (sem evidência de imposto) e o item cai em UNVALIDATED", () => {
+  const index = baseCustos.buildCostIndex([{ produto_id: "MLB1", custo_produto: 40, imposto_percentual: 15, taxa_fixa: 0 }]);
+  const bag = C.createEvidenceBag();
+  assert.strictEqual(baseCustos.aplicarEvidenciasDeCusto(bag, { itemId: "MLB1", index, baseSlug: "b" }), true);
+  assert.strictEqual(bag.list(C.FIELDS.TAX_RATE).length, 0, "nenhuma evidência de imposto: nem 15, nem 0,15, nem 0");
+  assert.strictEqual(bag.list(C.FIELDS.COST)[0].value, 40, "o custo válido segue registrado");
+  const invalidos = bag.listInvalid();
+  assert.strictEqual(invalidos.length, 1);
+  assert.deepStrictEqual([invalidos[0].field, invalidos[0].code, invalidos[0].raw], ["taxRate", baseCustos.MOTIVO_ALIQUOTA_FORA_DA_FAIXA, 15]);
+  assert.ok(invalidos[0].reason.includes("aliquota_fora_da_faixa") && invalidos[0].reason.includes("15"));
+
+  const PROJ = { source: C.SOURCES.MELI_API, kind: C.EVIDENCE_KINDS.PROJECTED, quality: C.EVIDENCE_QUALITY.MEASURED, observedAt: "2026-10-13T00:00:00Z" };
+  bag.add(C.FIELDS.PRICE, { ...PROJ, value: 100 });
+  bag.add(C.FIELDS.COMMISSION, { ...PROJ, value: 12 });
+  bag.add(C.FIELDS.FREIGHT, { ...PROJ, value: 20 });
+  const item = C.buildMarginItem({ identity: { itemId: "MLB1" }, bag, now: new Date("2026-10-14T00:00:00Z") });
+  assert.strictEqual(item.quality.status, "UNVALIDATED");
+  assert.strictEqual(item.margin.projected.margin, null, "margem não é calculada com imposto assumido 0 nem 'consertado'");
+  assert.strictEqual(item.margin.projected.computable, false);
+  assert.ok(item.margin.projected.missing.includes("taxRate"));
+  assert.strictEqual(item.quality.invalidInputs[0].code, "aliquota_fora_da_faixa");
+  assert.ok(item.quality.statusReasons[0].includes("aliquota_fora_da_faixa"), item.quality.statusReasons[0]);
+});
+
+cenario("snapshot: alíquota inválida é gravada como UNVALIDATED, margem null e invalidInputs em quality (a leitura mostra o motivo)", () => {
+  const processor = require("../services/motorMargem/marginSnapshotProcessor");
+  const index = baseCustos.buildCostIndex([{ produto_id: "MLB1", custo_produto: 40, imposto_percentual: 15, taxa_fixa: 0 }]);
+  const bag = C.createEvidenceBag();
+  baseCustos.aplicarEvidenciasDeCusto(bag, { itemId: "MLB1", index, baseSlug: "b" });
+  const PROJ = { source: C.SOURCES.MELI_API, kind: C.EVIDENCE_KINDS.PROJECTED, quality: C.EVIDENCE_QUALITY.MEASURED, observedAt: "2026-10-13T00:00:00Z" };
+  bag.add(C.FIELDS.PRICE, { ...PROJ, value: 100 });
+  const item = C.buildMarginItem({ identity: { itemId: "MLB1" }, bag, now: new Date("2026-10-14T00:00:00Z") });
+  const linha = processor.mapItemParaSnapshot({ item, run: { id: 1, clienteId: 1, clienteContaId: 5, marketplace: "meli" }, base: null, observedAt: "2026-10-14T00:00:00Z" });
+  assert.strictEqual(linha.status, "UNVALIDATED");
+  assert.strictEqual(linha.margin, null);
+  assert.strictEqual(linha.quality.invalidInputs[0].code, "aliquota_fora_da_faixa");
+  assert.ok(linha.quality.statusReasons[0].includes("aliquota_fora_da_faixa"));
+});
+
+cenario("alíquota válida na Base: nenhum insumo inválido e a margem é calculada normalmente", () => {
+  const index = baseCustos.buildCostIndex([{ produto_id: "MLB1", custo_produto: 40, imposto_percentual: 0.1, taxa_fixa: 0 }]);
+  const bag = C.createEvidenceBag();
+  baseCustos.aplicarEvidenciasDeCusto(bag, { itemId: "MLB1", index, baseSlug: "b" });
+  assert.deepStrictEqual(bag.listInvalid(), []);
+  assert.strictEqual(bag.list(C.FIELDS.TAX_RATE)[0].value, 0.1);
 });
 
 cenario("item sem linha na base não gera evidência de custo", () => {

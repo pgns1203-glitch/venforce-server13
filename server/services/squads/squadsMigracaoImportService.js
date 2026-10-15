@@ -27,7 +27,7 @@ const { normalizarSlug } = require("./squadService");
 const { auditoria } = require("./squadsMigracaoService");
 const { ROLES_ELEGIVEIS_MEMBERSHIP } = require("./rolesInternas");
 
-const FUNCOES_SQUAD = new Set(["membro", "coordenador"]);
+const FUNCOES_SQUAD = new Set(["membro", "gestor", "coordenador"]);
 const PAPEIS_RESP = new Set(["gestor", "auxiliar", "designer"]);
 // Quem PODE receber membership. Fonte canônica única — ver rolesInternas.js.
 // INCLUI `admin` deliberadamente: um admin coordenar um Squad é legítimo. Este
@@ -234,7 +234,7 @@ async function validarPlano(planoBruto, db = pool, { garantirSchema = true } = {
     }
     if (user.ativo === false) col.aviso(ctx, `usuário ${user.email} está inativo.`);
     const funcao = txt(m?.funcao) || "membro";
-    if (!FUNCOES_SQUAD.has(funcao)) { col.erro(ctx, `funcao "${funcao}" inválida (membro|coordenador).`); continue; }
+    if (!FUNCOES_SQUAD.has(funcao)) { col.erro(ctx, `funcao "${funcao}" inválida (membro|gestor|coordenador).`); continue; }
     if (m?.principal !== undefined && typeof m.principal !== "boolean") {
       col.erro(ctx, `"principal" deve ser boolean.`); continue;
     }

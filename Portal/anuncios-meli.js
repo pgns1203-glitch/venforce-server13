@@ -98,6 +98,10 @@
       familyCache: {},
       familyFetchEmVoo: {},
       familyFetchFalhou: {},
+      // Preço vigente + cheio AO VIVO (só sale_price, GET /precos-ao-vivo) dos
+      // filhos das famílias visíveis — pré-carregado em background para a
+      // linha-mãe riscar a promoção sem precisar expandir.
+      precoAoVivoCache: {},
       performanceCache: {},
       metricasEmVoo: {},
       margemEmVoo: {},
@@ -117,9 +121,16 @@
       // backend não tem o dado para esta linha".
       faturamentoCache: {},
       faturamentoValorCache: {},
+      // Unidades vendidas no período do faturamento (mesma chave do % acima).
+      faturamentoUnidadesCache: {},
+      faturamentoPrecoMedioCache: {},
       faturamentoEmVoo: {},
       faturamentoPorFamiliaCache: {},
       faturamentoValorPorFamiliaCache: {},
+      faturamentoUnidadesPorFamiliaCache: {},
+      faturamentoPrecoMedioPorFamiliaCache: {},
+      // Período (dias) que a resposta do faturamento disse — o cabeçalho mostra.
+      faturamentoPeriodoDias: null,
       faturamentoFamiliaEmVoo: {},
       curvaAbcCache: {},
       curvaAbcEmVoo: {},
@@ -264,7 +275,10 @@
     var classe = scoreClasse(s);
     var dash = (pct / 100 * AM_GAUGE_ARC_LEN).toFixed(1);
     var scoreTxt = score === null || score === undefined ? "—" : s;
-    return '<div class="am-gauge">' +
+    // Selo compacto: a legenda ("Score muito bom") sai da vista e fica no
+    // title + leitor de tela — com tudo em 90 ela não separava anúncio nenhum
+    // e era o que mais alargava a coluna.
+    return '<div class="am-gauge" title="' + escapeAttr(scoreTxt === "—" ? "Sem Score VenForce" : scoreLegenda(s) + " (" + scoreTxt + ")") + '">' +
       '<div class="am-gauge__wrap">' +
         '<svg viewBox="0 0 64 34" width="64" height="34" aria-hidden="true">' +
           '<path d="M4 32 A28 28 0 0 1 60 32" fill="none" stroke-width="6" stroke-linecap="round" class="am-gauge__track"/>' +
@@ -273,7 +287,7 @@
         "</svg>" +
         '<span class="am-gauge__value ' + classe + '">' + scoreTxt + "</span>" +
       "</div>" +
-      '<span class="am-gauge__legenda">' + scoreLegenda(s) + "</span>" +
+      '<span class="am-gauge__legenda vf-visually-hidden">' + scoreLegenda(s) + "</span>" +
     "</div>";
   }
 
@@ -511,11 +525,15 @@
     // expansão que ainda esteja em voo.
     resetarExpansoes();
     resetarCustos();
+    // Promoções com rebate: a análise é de UMA conta. O job continua no
+    // servidor; aqui só se para de acompanhar.
+    if (REB) fecharRebate(true, true);
 
-    if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; return; }
+    if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; atualizarBotaoRebate(); return; }
 
     AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
     AM.contaMlId = ctx.contaId;
+    atualizarBotaoRebate();
     AM.resumo = null;
     AM.anuncios = [];
     AM.paginacao.page = 1;
@@ -543,6 +561,9 @@
     AM.state.familyFetchFalhou = {};
     AM.state.faturamentoPorFamiliaCache = {};
     AM.state.faturamentoFamiliaEmVoo = {};
+    AM.state.faturamentoUnidadesPorFamiliaCache = {};
+    AM.state.faturamentoPrecoMedioPorFamiliaCache = {};
+    AM.state.precoAoVivoCache = {};
     AM.familiaEpoca++;
   }
 
@@ -550,6 +571,7 @@
     document.addEventListener("vf:context", aplicarContextoDoShell);
     bindCustos(el("am-catalogo-container"));
     bindBarrasCustos();
+    if (el("am-reb-abrir")) el("am-reb-abrir").addEventListener("click", abrirRebate);
     // O botão mora no cabeçalho da lista, que é recriado a cada render.
     el("am-catalogo-container").addEventListener("click", function (e) {
       if (e.target.closest("#am-expandir-todos")) alternarTodosGrupos();
@@ -784,6 +806,13 @@
           var chave = linha.tipo === "familia" ? linha.family_id : linha.item_id;
           if (linha.faturamentoPercentual !== undefined) cacheItem[chave] = linha.faturamentoPercentual;
           if (linha.faturamentoValor !== undefined) cacheValor[chave] = linha.faturamentoValor;
+          if (linha.faturamentoUnidades !== undefined) {
+            (linha.tipo === "familia" ? AM.state.faturamentoUnidadesPorFamiliaCache : AM.state.faturamentoUnidadesCache)[chave] = linha.faturamentoUnidades;
+          }
+          if (linha.faturamentoPrecoMedio !== undefined) {
+            (linha.tipo === "familia" ? AM.state.faturamentoPrecoMedioPorFamiliaCache : AM.state.faturamentoPrecoMedioCache)[chave] = linha.faturamentoPrecoMedio;
+          }
+          if (linha.faturamentoPeriodoDias != null) registrarPeriodoFaturamento({ periodoDias: linha.faturamentoPeriodoDias });
           if (linha.curvaAbc !== undefined) cacheAbc[chave] = linha.curvaAbc;
         });
         var aviso = el("am-ordenacao-aviso");
@@ -830,8 +859,28 @@
         '<span class="am-listagem__head-anuncio"><b class="am-listagem__head-rotulo" aria-hidden="true">Anúncio</b>' +
           (temGrupo ? '<button type="button" class="am-expandir-todos" id="am-expandir-todos" aria-pressed="false">Expandir todos</button>' : "") +
         "</span>" +
-        ["Status", "Preço", "Estoque", "Vendidos", "Faturamento", "Métricas 7 dias", "Margem", "Score VenForce", ""].map(function (r) {
-          return '<span aria-hidden="true">' + r + "</span>";
+        // Vendidos, Faturamento e Métricas olham para PERÍODOS diferentes
+        // (desde a criação, a janela do Motor, 7 dias) — sem dizer isso,
+        // "1 vendido" ao lado de "—" de faturamento e "0" vendas em 7d
+        // parecia contradição. O período vai embaixo de cada rótulo; o do
+        // faturamento vem da própria resposta (registrarPeriodoFaturamento).
+        [
+          "Status", "Preço", "Estoque",
+          { r: "Vendidos", p: "total", t: "Total vendido desde a criação do anúncio (Mercado Livre)" },
+          { r: "Faturamento", id: "am-head-fat-periodo",
+            p: AM.state.faturamentoPeriodoDias ? "últ. " + AM.state.faturamentoPeriodoDias + " dias" : "no período",
+            t: "Participação no faturamento e valor faturado na janela de vendas do Motor de Margem" },
+          { r: "Métricas", p: "últ. 7 dias", t: "Visualizações e vendas dos últimos 7 dias" },
+          "Margem", "Score VenForce", "",
+        ].map(function (c) {
+          if (typeof c === "string") return '<span aria-hidden="true">' + c + "</span>";
+          // Continua UM span por coluna (os testes de alinhamento leem
+          // ".am-listagem__head > span" por posição): rótulo em <b>, período
+          // em <small>, os dois dentro do mesmo span.
+          return '<span class="am-listagem__head-col" aria-hidden="true" title="' + escapeAttr(c.t) + '">' +
+            '<b class="am-listagem__head-rotulo">' + c.r + "</b>" +
+            '<small class="am-listagem__head-periodo"' + (c.id ? ' id="' + c.id + '"' : "") + ">" + c.p + "</small>" +
+          "</span>";
         }).join("") +
       "</div>";
     // Mesma grade, mesmas colunas, mesma densidade para os dois tipos de
@@ -848,10 +897,7 @@
     bindEstoqueEditavel(box);
 
     box.querySelectorAll(".am-row--grupo[data-familia]").forEach(function (row) {
-      row.addEventListener("click", function () { alternarGrupo(row); });
-      row.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(row); }
-      });
+      bindLinhaGrupo(row);
     });
     atualizarBotaoExpandir();
 
@@ -974,25 +1020,132 @@
     if (total && c.ativos === total) return { label: "Ativo", classe: "is-success", titulo: "" };
     if (total && c.pausados === total) return { label: "Pausado", classe: "is-warning", titulo: "" };
     if (total && c.encerrados === total) return { label: "Encerrado", classe: "is-danger", titulo: "" };
+    // "Misto" sozinho não diz o que está misturado: a contagem (só o que é
+    // diferente de zero) aparece embaixo do selo, uma linha por status.
+    var partes = [];
+    if (c.ativos) partes.push(plural(c.ativos, "ativo", "ativos"));
+    if (c.pausados) partes.push(plural(c.pausados, "pausado", "pausados"));
+    if (c.encerrados) partes.push(plural(c.encerrados, "encerrado", "encerrados"));
     return {
       label: "Misto",
       classe: "is-info",
       titulo: (c.ativos || 0) + " ativos · " + (c.pausados || 0) + " pausados · " +
               (c.encerrados || 0) + " encerrados",
+      detalhe: partes,
     };
+  }
+
+  function statusGrupoHtml(f) {
+    var st = statusGrupo(f);
+    var selo = '<span class="vf-status ' + st.classe + '"' +
+      (st.titulo ? ' title="' + escapeAttr(st.titulo) + '"' : "") + ">" + st.label + "</span>";
+    if (!st.detalhe || !st.detalhe.length) return selo;
+    return '<span class="am-status-misto">' + selo +
+      '<span class="am-status-misto__detalhe">' +
+        st.detalhe.map(function (t) { return "<span>" + escapeHtml(t) + "</span>"; }).join("") +
+      "</span></span>";
   }
 
   // Preço do agrupador. "Preço por variação" é o nome da própria iniciativa do
   // ML: uma família existe justamente para ter preços diferentes por variação.
   // Faixa quando os extremos diferem, valor único quando coincidem.
-  function precoGrupoHtml(f) {
-    var min = f.preco_min, max = f.preco_max;
-    if (min === null || min === undefined) return "—";
-    if (max === null || max === undefined || Number(min) === Number(max)) {
-      return escapeHtml(formatMoeda(min, f.moeda));
+  //
+  // Cada extremo carrega o preço cheio do MESMO anúncio que o gerou — nunca
+  // um cheio de outro filho — para o riscado da família dizer a mesma coisa
+  // que o riscado do MLB. Fonte: os extremos que a listagem já traz
+  // (preco_min/preco_max + preco_min_original/preco_max_original); depois
+  // que a família é expandida e o Motor responde pelos filhos, os filhos
+  // (AM.state.familyCache) com a mesma regra de celulaPrecoHtml — a linha-mãe
+  // passa a riscar também a promoção que só existe no sale_price ao vivo.
+  function numeroOuNulo(v) {
+    if (v === null || v === undefined || v === "") return null;
+    var n = Number(v);
+    return isNaN(n) ? null : n;
+  }
+
+  function precoAtualECheioDoItem(a) {
+    var cache = AM.state.performanceCache[a.item_id];
+    var m = cache && cache.margem;
+    // Sem o Motor ainda (filho de família fechada), o preço ao vivo leve
+    // (sale_price, ver carregarPrecosAoVivoDaFamilia) vale mais que o
+    // snapshot: é ele que enxerga a promoção de campanha.
+    var vivo = AM.state.precoAoVivoCache[a.item_id];
+    if (!(cache && cache.temMargem) && vivo) {
+      var atualVivo = numeroOuNulo(vivo.precoAtual);
+      return { atual: atualVivo, cheio: precoCheioReal(atualVivo, numeroOuNulo(vivo.precoOriginal)) };
     }
-    return '<span class="am-row__faixa">' + escapeHtml(formatMoeda(min, f.moeda)) +
-      "<small>até " + escapeHtml(formatMoeda(max, f.moeda)) + "</small></span>";
+    var atual = numeroOuNulo(m && m.precoAtual != null ? m.precoAtual : a.preco);
+    var cheioBruto = cache && cache.temMargem
+      ? numeroOuNulo(m && m.precoOriginal)
+      : numeroOuNulo(a.preco_original);
+    return { atual: atual, cheio: precoCheioReal(atual, cheioBruto) };
+  }
+
+  function extremosPrecoGrupo(f) {
+    var pares = [];
+    var familia = AM.state.familyCache[f.family_id];
+    var itens = [];
+    if (familia) {
+      (familia.user_products || []).forEach(function (up) { itens = itens.concat(up.itens || []); });
+    }
+    // Os filhos só assumem quando já existe preço AO VIVO de algum deles —
+    // o leve (sale_price, pré-carregado em background para as famílias
+    // visíveis) ou o do Motor (família expandida). Só com o detalhe da
+    // família em mãos o dado é o mesmo snapshot da listagem, e trocar de
+    // fonte faria a célula piscar sem nenhum dado novo.
+    var aoVivo = itens.some(function (item) {
+      var c = AM.state.performanceCache[item.item_id];
+      return !!(c && c.temMargem) || !!AM.state.precoAoVivoCache[item.item_id];
+    });
+    if (aoVivo) {
+      itens.forEach(function (item) {
+        var p = precoAtualECheioDoItem(item);
+        if (p.atual != null) pares.push(p);
+      });
+    }
+    if (!pares.length) {
+      [[f.preco_min, f.preco_min_original], [f.preco_max, f.preco_max_original]].forEach(function (par) {
+        var atual = numeroOuNulo(par[0]);
+        if (atual != null) pares.push({ atual: atual, cheio: precoCheioReal(atual, numeroOuNulo(par[1])) });
+      });
+    }
+    if (!pares.length) return null;
+    // Empate no vigente: fica o par COM riscado (o maior cheio).
+    var melhor = function (a, b, maior) {
+      if (a.atual !== b.atual) return (maior ? b.atual > a.atual : b.atual < a.atual) ? b : a;
+      return (b.cheio || 0) > (a.cheio || 0) ? b : a;
+    };
+    return {
+      min: pares.reduce(function (acc, p) { return melhor(acc, p, false); }),
+      max: pares.reduce(function (acc, p) { return melhor(acc, p, true); }),
+    };
+  }
+
+  // Valor único: a MESMA célula do MLB (riscado em cima, vigente embaixo).
+  // Faixa: mesmo desenho da faixa de margem (margemFaixaFamiliaHtml) —
+  // mínimo em cima, máximo embaixo, cada vigente com o seu cheio riscado
+  // logo abaixo, no lugar em que a margem mostra o lucro.
+  function precoGrupoHtml(f) {
+    var classe = "am-row__preco";
+    var ext = extremosPrecoGrupo(f);
+    if (!ext) return '<span class="' + classe + '">—</span>';
+    if (ext.min.atual === ext.max.atual) {
+      var p = ext.min.cheio ? ext.min : ext.max;
+      return '<span class="' + classe + (p.cheio ? " " + classe + "--promo" : "") + '">' +
+        precoCelulaConteudoHtml(classe, p.atual, p.cheio, f.moeda) + "</span>";
+    }
+    var ponta = function (faixa, par) {
+      return '<span class="am-preco-faixa__ponta" data-faixa="' + faixa + '">' +
+        '<span class="am-preco-faixa__valor">' + escapeHtml(formatMoeda(par.atual, f.moeda)) + "</span>" +
+        (par.cheio
+          ? '<span class="am-preco-faixa__cheio" title="Preço cheio, antes da promoção">' +
+              escapeHtml(formatMoeda(par.cheio, f.moeda)) + "</span>"
+          : "") +
+      "</span>";
+    };
+    return '<span class="' + classe + ' am-preco-faixa" ' +
+      'title="Faixa de preço dos anúncios desta família (mínimo em cima, máximo embaixo)">' +
+      ponta("min", ext.min) + ponta("max", ext.max) + "</span>";
   }
 
   // Uma linha de agrupador, na MESMA grade de 11 colunas de rowAnuncioHtml.
@@ -1009,15 +1162,15 @@
     var capa = (f.cover && f.cover.thumbnail)
       ? '<img src="' + escapeHtml(f.cover.thumbnail) + '" alt="" loading="lazy" />'
       : iconeImagemSvg();
-    var st = statusGrupo(f);
     var rotulo = f.family_name || "(família sem nome)";
-    // Curva ABC CONSOLIDADA da família (Pareto sobre a receita somada dos
-    // filhos, últ. 30d) — mesma tag/componente do card individual, nunca o
-    // rótulo de um filho isolado. Wrapper SEMPRE renderizado (mesmo sem
-    // classe ainda resolvida) para repintarLinhaDoGrupo/carregarFaturamento-
-    // DasFamiliasVisiveis terem um alvo estável (ver AM.state.curvaAbcPorFamiliaCache).
-    var badgesHtml = '<div class="am-row__badges"><span data-abc-familia="' + escapeAttr(f.family_id) + '">' +
-      curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[f.family_id]) + "</span></div>";
+    var nVar = f.total_user_products || 0, nAnun = f.total_itens || 0;
+    // Uma variação = um anúncio é o caso comum: dizer os dois números iguais
+    // é ruído. Só quando diferem (Clássico + Premium da mesma variação) os
+    // dois aparecem.
+    var contagemHtml = nVar === nAnun
+      ? '<span title="' + escapeAttr(plural(nAnun, "anúncio", "anúncios")) + '">' + plural(nVar, "variação", "variações") + "</span>"
+      : "<span>" + plural(nVar, "variação", "variações") + "</span>" +
+        "<span>" + plural(nAnun, "anúncio", "anúncios") + "</span>";
 
     return '<div class="am-row am-row--grupo" data-familia="' + escapeAttr(f.family_id) + '" ' +
       'tabindex="0" role="button" aria-expanded="false" aria-controls="' + painelId + '" ' +
@@ -1026,25 +1179,22 @@
       '<div class="am-row__main">' +
         '<h3 class="am-row__titulo">' + escapeHtml(rotulo) + "</h3>" +
         '<div class="am-row__ids">' +
-          // O identificador do AGRUPADOR, na mesma posição em que a linha do
-          // anúncio individual mostra o MLB — é o "ID maior" do produto. Vem
-          // rotulado porque, ao contrário de um MLB, family_id é um número
-          // solto: sem o rótulo seria indistinguível de qualquer outro número
-          // da linha. MLBU não aparece aqui nem em lugar nenhum da UI.
-          '<span>Família <span class="vf-mono">' + escapeHtml(f.family_id) + "</span></span>" +
-          "<span>" + plural(f.total_user_products || 0, "variação", "variações") + "</span>" +
-          "<span>" + plural(f.total_itens || 0, "anúncio", "anúncios") + "</span>" +
+          contagemHtml +
+          // O identificador do AGRUPADOR (family_id) é um número longo que
+          // quase ninguém lê: sai da linha e vira um botão de copiar discreto
+          // (aparece no hover/foco da linha). MLBU não aparece em lugar nenhum.
+          '<button type="button" class="am-row__copiar-id" data-copiar-familia="' + escapeAttr(f.family_id) + '" ' +
+            'title="Família ' + escapeAttr(f.family_id) + ' — copiar ID" ' +
+            'aria-label="Copiar o ID da família ' + escapeAttr(f.family_id) + '">ID</button>' +
         "</div>" +
-        badgesHtml +
       "</div>" +
-      '<span class="vf-status ' + st.classe + '"' +
-        (st.titulo ? ' title="' + escapeAttr(st.titulo) + '"' : "") + ">" + st.label + "</span>" +
-      '<span class="am-row__preco">' + precoGrupoHtml(f) + "</span>" +
+      statusGrupoHtml(f) +
+      precoGrupoHtml(f) +
       // A soma que dá sentido ao agrupador: estoque por User Product distinto.
       '<span class="am-row__num" title="Soma do estoque das ' +
-        escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +
+        escapeAttr(plural(nVar, "variação", "variações")) + '">' +
         (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
-      '<span class="am-row__num">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
+      '<span class="am-row__num" title="Total vendido desde a criação do anúncio">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
       // % faturamento CONSOLIDADO da família — vem pronto do backend
       // (dados.faturamento.porFamilia), mesma regra da Curva ABC acima:
       // nunca o percentual de um filho isolado.
@@ -1146,6 +1296,9 @@
           repintarLinhaDoGrupo(familyId);
           return;
         }
+        // Preço ao vivo dos filhos em paralelo às métricas: só sale_price
+        // (sem Motor), e repinta a linha-mãe sozinho quando chega.
+        carregarPrecosAoVivoDaFamilia(familyId);
         return garantirPerformanceDaFamilia(familyId, false).then(function () {
           // Cobre tanto o caminho feliz quanto a falha da chamada de
           // metricas7d: se o agregado ainda não é computável depois desta
@@ -1155,6 +1308,59 @@
           repintarLinhaDoGrupo(familyId);
         });
       });
+    });
+  }
+
+  // Preço vigente + cheio AO VIVO dos filhos de UMA família (GET
+  // /anuncios-meli/precos-ao-vivo — só sale_price, nunca o Motor). Sem isso
+  // a linha-mãe só riscava a promoção depois de expandir: o snapshot da
+  // sincronização não enxerga promoção de campanha. Pede só o que falta no
+  // cache, em lotes do teto da rota; falha deixa o snapshot, sem aviso.
+  var PRECO_AO_VIVO_LOTE = 60;
+  function carregarPrecosAoVivoDaFamilia(familyId) {
+    var familia = AM.state.familyCache[familyId];
+    if (!familia || !AM.clienteAtual) return Promise.resolve();
+    var ids = [];
+    (familia.user_products || []).forEach(function (up) {
+      (up.itens || []).forEach(function (item) {
+        var c = AM.state.performanceCache[item.item_id];
+        if (!AM.state.precoAoVivoCache[item.item_id] && !(c && c.temMargem)) ids.push(item.item_id);
+      });
+    });
+    if (!ids.length) return Promise.resolve();
+
+    var minhaEpoca = AM.familiaEpoca;
+    var lotes = [];
+    for (var i = 0; i < ids.length; i += PRECO_AO_VIVO_LOTE) lotes.push(ids.slice(i, i + PRECO_AO_VIVO_LOTE));
+    return Promise.all(lotes.map(function (lote) {
+      var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
+        "&itemIds=" + encodeURIComponent(lote.join(","));
+      if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+      return api("/anuncios-meli/precos-ao-vivo?" + qs).then(function (r) {
+        if (minhaEpoca !== AM.familiaEpoca) return; // outro cliente/conta assumiu a tela
+        var precos = (r && r.data && r.data.ok && r.data.precos) || {};
+        Object.keys(precos).forEach(function (id) { AM.state.precoAoVivoCache[id] = precos[id]; });
+      }, function () {});
+    })).then(function () {
+      if (minhaEpoca === AM.familiaEpoca) repintarLinhaDoGrupo(familyId);
+    });
+  }
+
+  // Clique/Enter na linha expande; o botão "ID" copia o family_id e NUNCA
+  // escala para a linha (copiar não pode abrir/fechar a família).
+  function bindLinhaGrupo(row) {
+    row.addEventListener("click", function (e) {
+      var copiar = e.target.closest(".am-row__copiar-id");
+      if (copiar) {
+        e.stopPropagation();
+        copiarTexto(copiar.getAttribute("data-copiar-familia"), "ID da família copiado.");
+        return;
+      }
+      alternarGrupo(row);
+    });
+    row.addEventListener("keydown", function (e) {
+      if (e.target.closest(".am-row__copiar-id")) return; // o botão trata o próprio Enter/Espaço
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(row); }
     });
   }
 
@@ -1578,15 +1784,10 @@
     // Mesmos badges do card legado (Catálogo/Full/fotos/Sem SKU/Revisado) —
     // é o MESMO anúncio, só que dentro de uma família; escondê-los aqui
     // seria o card de família mostrar menos informação que o avulso.
-    // Wrapper SEMPRE renderizado (mesmo sem nenhum badge estático) porque a
-    // Curva ABC do filho chega depois (só ao expandir, ver
-    // garantirPerformanceDaFamilia) e precisa de um alvo já existente no DOM
-    // para pintarPerformanceEmCelulas encontrar — um span vazio não aparece
-    // visualmente, então não muda nada quando não há badge nenhum.
+    // A Curva ABC do filho NÃO mora aqui: fica junto do % de faturamento
+    // (ver faturamentoCelulaHtml), que é o dado que a define.
     var badges = badgesAnuncioHtml(a);
-    var badgesHtml = '<span class="am-mlb__badges">' + badges +
-      '<span data-abc-item="' + escapeAttr(a.item_id) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]) + "</span>" +
-    "</span>";
+    var badgesHtml = '<span class="am-mlb__badges">' + badges + "</span>";
 
     return '<div class="am-mlb' + (op.irma ? " am-mlb--irma" : "") +
       '" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
@@ -1602,7 +1803,7 @@
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
       celulaPrecoHtml(a, "am-mlb__preco") +
       celulaEstoqueHtml(a, "am-mlb__num") +
-      '<span class="am-mlb__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
+      '<span class="am-mlb__num" title="Total vendido desde a criação do anúncio">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a) +
@@ -1833,12 +2034,24 @@
   // Sem "carregando": ao contrário de métricas/faturamento (assíncronos,
   // chegam DEPOIS do primeiro paint), o snapshot já está no MESMO objeto
   // que desenhou a linha — a célula nasce PRONTA.
+  // Lucro em R$ por unidade vendida, no preço atual — o `profit` que o Motor
+  // já calcula junto com a margem (margin = profit / price). Aparece embaixo
+  // do %, na MESMA cor dele: os dois são o mesmo resultado em escalas
+  // diferentes. Negativo sai como "−R$ 3,20", nunca "R$ -3,20".
+  function lucroMargemHtml(profit, classe) {
+    if (profit === null || profit === undefined || isNaN(Number(profit))) return "";
+    var n = Number(profit);
+    var texto = (n < 0 ? "−" : "") + formatMoeda(Math.abs(n)) + "/un";
+    return '<span class="am-margem__lucro ' + classe + '" title="Lucro por unidade vendida, no preço atual">' + texto + "</span>";
+  }
+
   function margemProjetadaConteudoHtml(a) {
     var classe = MARGEM_CLASSE[a.margemProjetadaStatus] || "is-neutral";
     if (a.margemProjetadaComputable === true && a.margemProjetadaPercent != null) {
       var tip = "Margem projetada com base no preço atual e custos configurados." +
         margemCalculadaEmFrase(a.margemProjetadaCalculadaEm, a.margemProjetadaFonte);
       return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(a.margemProjetadaPercent) + "</span>" +
+        lucroMargemHtml(a.margemProjetadaProfit, classe) +
         infoDotHtml(tip);
     }
     // Sem snapshot (job nunca rodou) e sem status algum: "—" simples, sem
@@ -1869,7 +2082,10 @@
   //
   // Empilhado em DUAS linhas — mínimo em cima, máximo embaixo — com a MESMA
   // classe (`.am-margem__valor`): os dois são margens válidas, nenhum é
-  // "secundário". Antes o mínimo usava um estilo apagado/menor inspirado no
+  // "secundário". Cada ponta leva a cor do status do Motor do filho que a
+  // gerou (`margemProjetadaMinStatus`/`MaxStatus`, mesma MARGEM_CLASSE da
+  // célula do item) — antes era sempre `is-neutral` e a família ficava preta
+  // enquanto o mesmo % num anúncio avulso aparecia verde. Antes o mínimo usava um estilo apagado/menor inspirado no
   // preço riscado e parecia um valor antigo/desabilitado. `data-faixa`
   // (min/max) só identifica a linha, sem estilo próprio. Min === Max (1 único
   // filho computável) mostra só UM valor, nunca duas linhas iguais.
@@ -1877,12 +2093,20 @@
     if (f.margemProjetadaMinPercent != null && f.margemProjetadaMaxPercent != null) {
       var min = formatarPercentualCompacto(f.margemProjetadaMinPercent);
       var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
-      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo). A ordenação por margem usa a média." +
+      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo), cada uma com o lucro por unidade do anúncio que a gerou. A ordenação por margem usa a média." +
         margemCalculadaEmFrase(f.margemProjetadaCalculadaEm, f.margemProjetadaFonte);
+      var classeMin = MARGEM_CLASSE[f.margemProjetadaMinStatus] || "is-neutral";
+      var classeMax = MARGEM_CLASSE[f.margemProjetadaMaxStatus] || "is-neutral";
+      var ponta = function (faixa, texto, classe, profit) {
+        return '<span class="am-margem__ponta">' +
+          '<span class="am-margem__valor ' + classe + '" data-faixa="' + faixa + '">' + texto + "</span>" +
+          lucroMargemHtml(profit, classe) +
+        "</span>";
+      };
       var linhas = min === max
-        ? '<span class="am-margem__valor is-neutral" data-faixa="unico">' + max + "</span>"
-        : '<span class="am-margem__valor is-neutral" data-faixa="min">' + min + "</span>" +
-          '<span class="am-margem__valor is-neutral" data-faixa="max">' + max + "</span>";
+        ? ponta("unico", max, classeMax, f.margemProjetadaMaxProfit)
+        : ponta("min", min, classeMin, f.margemProjetadaMinProfit) +
+          ponta("max", max, classeMax, f.margemProjetadaMaxProfit);
       return '<span class="am-margem am-margem--faixa" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
         linhas + infoDotHtml(tip) +
       "</span>";
@@ -1897,8 +2121,18 @@
   // no cache quando o operador ordena por ele (ver
   // aplicarOrdenacaoPerformance/AM.state.faturamentoCache), e a célula fica
   // "—" fixo até lá — nunca um spinner para um dado que ninguém pediu ainda.
-  function faturamentoConteudoHtml(v, valorAbsoluto) {
-    if (v === null || v === undefined) return '<span class="am-faturamento__vazio">—</span>';
+  // `abcHtml`: a Curva ABC mora ao lado do %, que é o dado que a define
+  // (antes ficava solta entre os badges do título).
+  // `pedido`: o faturamento desta linha já foi pedido e voltou — aí "—" quer
+  // dizer "sem venda no período", e diz isso no title (antes era igual ao
+  // "ainda não pedido").
+  // `unidades`/`precoMedio`: 3ª linha "N un · R$ X/un" — neutra, sem aviso
+  // (o "↓" e o texto sobre promoção confundiam e saíram de vez).
+  function faturamentoConteudoHtml(v, valorAbsoluto, abcHtml, pedido, unidades, precoMedio) {
+    if (v === null || v === undefined) {
+      var tituloVazio = pedido ? ' title="Sem venda ' + escapeAttr(periodoFaturamentoTexto()) + '"' : "";
+      return '<span class="am-faturamento__topo"><span class="am-faturamento__vazio"' + tituloVazio + ">—</span>" + (abcHtml || "") + "</span>";
+    }
     // Backend manda FRAÇÃO 0–1 (receita/receitaTotalPeriodo — ver
     // montarFaturamento no controller), não um número já em escala 0–100
     // como marginPercent/conversao. formatarPercentualCompacto() é
@@ -1910,8 +2144,33 @@
     // percentual aqui (perderia centavos por causa do arredondamento a 4
     // casas do percentual, ver auditoria "Curva ABC sempre visível +
     // faturamento absoluto").
-    return '<span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
-      '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>";
+    return '<span class="am-faturamento__topo"><span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
+        (abcHtml || "") + "</span>" +
+      '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>" +
+      (unidades === null || unidades === undefined ? "" :
+        '<span class="am-faturamento__un" title="' + escapeAttr("Unidades vendidas " + periodoFaturamentoTexto() +
+            (precoMedio != null ? " e preço médio por unidade vendida" : "")) + '">' +
+          escapeHtml(Number(unidades).toLocaleString("pt-BR") + " un" +
+            (precoMedio != null ? " · " + formatMoeda(precoMedio) + "/un" : "")) + "</span>");
+  }
+
+  // "nos últimos 30 dias" — o período que a resposta do faturamento disse.
+  // Antes de qualquer resposta, "no período" (nunca um número inventado).
+  function periodoFaturamentoTexto() {
+    var d = AM.state.faturamentoPeriodoDias;
+    return d ? "nos últimos " + d + " dias" : "no período";
+  }
+
+  function registrarPeriodoFaturamento(fat) {
+    var d = fat && fat.periodoDias;
+    if (!d || AM.state.faturamentoPeriodoDias === d) return;
+    AM.state.faturamentoPeriodoDias = d;
+    var alvo = el("am-head-fat-periodo");
+    if (alvo) alvo.textContent = "últ. " + d + " dias";
+  }
+
+  function abcItemHtml(itemId) {
+    return '<span data-abc-item="' + escapeAttr(itemId) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[itemId]) + "</span>";
   }
 
   function faturamentoCelulaHtml(itemId) {
@@ -1920,7 +2179,9 @@
     var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, itemId)
       ? AM.state.faturamentoValorCache[itemId] : null;
     return '<span class="am-faturamento" data-faturamento-item="' + escapeAttr(itemId) + '">' +
-      faturamentoConteudoHtml(v, valor) + "</span>";
+      faturamentoConteudoHtml(v, valor, abcItemHtml(itemId),
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, itemId),
+        AM.state.faturamentoUnidadesCache[itemId], AM.state.faturamentoPrecoMedioCache[itemId]) + "</span>";
   }
 
   // Percentual CONSOLIDADO da família — soma dos filhos sobre o faturamento
@@ -1934,7 +2195,10 @@
       ? AM.state.faturamentoValorPorFamiliaCache[familyId] : null;
     return '<span class="am-faturamento" data-faturamento-familia="' + escapeAttr(familyId) +
       '" title="Percentual consolidado da família sobre o faturamento total do período">' +
-      faturamentoConteudoHtml(v, valor) + "</span>";
+      faturamentoConteudoHtml(v, valor,
+        '<span data-abc-familia="' + escapeAttr(familyId) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[familyId]) + "</span>",
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoPorFamiliaCache, familyId),
+        AM.state.faturamentoUnidadesPorFamiliaCache[familyId], AM.state.faturamentoPrecoMedioPorFamiliaCache[familyId]) + "</span>";
   }
 
   // Busca metricas7d, margem e/ou composição da margem para os item_id
@@ -2098,9 +2362,14 @@
         if (pendentesFaturamento.length) {
           var porItem = (dados.faturamento && dados.faturamento.porItem) || {};
           var porItemValor = (dados.faturamento && dados.faturamento.porItemValor) || {};
+          var porItemUnidades = (dados.faturamento && dados.faturamento.porItemUnidades) || {};
+          var porItemPrecoMedio = (dados.faturamento && dados.faturamento.porItemPrecoMedio) || {};
+          registrarPeriodoFaturamento(dados.faturamento);
           pendentesFaturamento.forEach(function (id) {
             AM.state.faturamentoCache[id] = porItem[id] != null ? porItem[id] : null;
             AM.state.faturamentoValorCache[id] = porItemValor[id] != null ? porItemValor[id] : null;
+            AM.state.faturamentoUnidadesCache[id] = porItemUnidades[id] != null ? porItemUnidades[id] : null;
+            AM.state.faturamentoPrecoMedioCache[id] = porItemPrecoMedio[id] != null ? porItemPrecoMedio[id] : null;
           });
         }
         if (pendentesCurvaAbc.length) {
@@ -2154,10 +2423,15 @@
       var dados = r.data;
       var porFamilia = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamilia) || {};
       var porFamiliaValor = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamiliaValor) || {};
+      var porFamiliaUnidades = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamiliaUnidades) || {};
+      var porFamiliaPrecoMedio = (dados && dados.ok && dados.faturamento && dados.faturamento.porFamiliaPrecoMedio) || {};
       var porFamiliaAbc = (dados && dados.ok && dados.curvaAbc && dados.curvaAbc.porFamilia) || {};
+      if (dados && dados.ok) registrarPeriodoFaturamento(dados.faturamento);
       pendentes.forEach(function (familyId) {
         AM.state.faturamentoPorFamiliaCache[familyId] = porFamilia[familyId] != null ? porFamilia[familyId] : null;
         AM.state.faturamentoValorPorFamiliaCache[familyId] = porFamiliaValor[familyId] != null ? porFamiliaValor[familyId] : null;
+        AM.state.faturamentoUnidadesPorFamiliaCache[familyId] = porFamiliaUnidades[familyId] != null ? porFamiliaUnidades[familyId] : null;
+        AM.state.faturamentoPrecoMedioPorFamiliaCache[familyId] = porFamiliaPrecoMedio[familyId] != null ? porFamiliaPrecoMedio[familyId] : null;
         AM.state.curvaAbcPorFamiliaCache[familyId] = porFamiliaAbc[familyId] || null;
         repintarLinhaDoGrupo(familyId);
       });
@@ -2557,10 +2831,7 @@
       substituta.setAttribute("aria-expanded", aberta ? "true" : "false");
       if (aberta) substituta.classList.add("is-aberta");
       linha.parentNode.replaceChild(substituta, linha);
-      substituta.addEventListener("click", function () { alternarGrupo(substituta); });
-      substituta.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(substituta); }
-      });
+      bindLinhaGrupo(substituta);
       return;
     }
   }
@@ -2588,7 +2859,9 @@
       if (!alvo[id]) return;
       var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) ? AM.state.faturamentoCache[id] : null;
       var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, id) ? AM.state.faturamentoValorCache[id] : null;
-      cel.innerHTML = faturamentoConteudoHtml(v, valor);
+      cel.innerHTML = faturamentoConteudoHtml(v, valor, abcItemHtml(id),
+        Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id),
+        AM.state.faturamentoUnidadesCache[id], AM.state.faturamentoPrecoMedioCache[id]);
     });
     // Curva ABC — tag própria (data-abc-item), separada dos badges estáticos
     // (ver curvaAbcBadgeHtml/badgesAnuncioHtml): chega assíncrona, então
@@ -3166,10 +3439,7 @@
         substituta.setAttribute("aria-expanded", aberta ? "true" : "false");
         if (aberta) substituta.classList.add("is-aberta");
         linha.parentNode.replaceChild(substituta, linha);
-        substituta.addEventListener("click", function () { alternarGrupo(substituta); });
-        substituta.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(substituta); }
-        });
+        bindLinhaGrupo(substituta);
       }
       break;
     }
@@ -3293,7 +3563,6 @@
         '<div class="am-row__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" +
           condHtml + skuHtml + variacoesInfoHtml + "</div>" +
         '<div class="am-row__badges">' + badges +
-          '<span data-abc-item="' + escapeAttr(a.item_id) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]) + "</span>" +
         "</div>" +
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +
@@ -3305,7 +3574,7 @@
       // rowGrupoHtml). O item legado COM variações é a mesma exceção, pela
       // mesma razão de fundo (ver estoqueItemHtml acima).
       estoqueItemHtml +
-      '<span class="am-row__num">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
+      '<span class="am-row__num" title="Total vendido desde a criação do anúncio">' + (a.vendidos != null ? a.vendidos : "—") + "</span>" +
       faturamentoCelulaHtml(a.item_id) +
       metricas7dCelulaHtml(a.item_id) +
       margemCelulaHtml(a) +
@@ -3509,6 +3778,7 @@
       }
       if (p.pct == null) return '<span class="am-margem__estado is-neutral" title="' + escapeAttr(p.motivo || "") + '">Sem prévia</span>';
       return '<span class="am-margem__valor ' + classeMargemPct(p.pct) + '">' + formatarPercentualCompacto(p.pct) + "</span>" +
+        lucroMargemHtml(p.profit, classeMargemPct(p.pct)) +
         '<span class="am-custo__tag" title="Margem simulada com o novo custo — ainda não gravada">prévia</span>';
     }
     var v = CUSTOS.margemAoVivo[itemId];
@@ -3517,7 +3787,9 @@
         return '<span class="am-margem__estado ' + (MARGEM_CLASSE[v.status] || "is-neutral") + '">' +
           escapeHtml(MARGEM_LABEL[v.status] || "Indisponível") + "</span>";
       }
-      return '<span class="am-margem__valor ' + (MARGEM_CLASSE[v.status] || classeMargemPct(v.pct)) + '">' + formatarPercentualCompacto(v.pct) + "</span>" +
+      var classeVivo = MARGEM_CLASSE[v.status] || classeMargemPct(v.pct);
+      return '<span class="am-margem__valor ' + classeVivo + '">' + formatarPercentualCompacto(v.pct) + "</span>" +
+        lucroMargemHtml(v.profit, classeVivo) +
         infoDotHtml("Margem recalculada agora pelo Motor com o custo novo. A lista volta a usar o snapshot no próximo cálculo.");
     }
     return null;
@@ -3778,7 +4050,7 @@
           lote.forEach(function (id) {
             var m = margem[id];
             if (!m) return;
-            CUSTOS.margemAoVivo[id] = { pct: m.marginPercent, status: m.status };
+            CUSTOS.margemAoVivo[id] = { pct: m.marginPercent, status: m.status, profit: m.profit };
             // O modal e o preço ao vivo leem este mesmo cache.
             var pc = AM.state.performanceCache[id] || (AM.state.performanceCache[id] = {});
             pc.margem = m;
@@ -3910,6 +4182,7 @@
       CUSTOS.previa[itemId] = {
         valor: valor,
         pct: d.ok && res.computable && res.marginPercent != null ? res.marginPercent : null,
+        profit: d.ok && res.computable && res.profit != null ? res.profit : null,
         motivo: d.ok ? (res.missing && res.missing.length ? "Faltam dados do Motor: " + res.missing.join(", ") : "") : (d.motivo || ""),
       };
       atualizarMargemDaLinhaSemPerderFoco(itemId);
@@ -4009,6 +4282,7 @@
 
   // --- Barras ----------------------------------------------------------------------
   function renderBarraCustos() {
+    atualizarBotaoRebate();
     var box = el("am-custos-barra");
     if (!box) return;
     var slot = el("am-custos-acoes-slot");
@@ -4420,6 +4694,1024 @@
       "</div>";
 
     box.innerHTML = html;
+  }
+
+  // ===========================================================================
+  // PROMOÇÕES COM REBATE — docs/specs/2026-10-15-anuncios-ml-promocoes-rebate.md
+  //
+  // Para os anúncios ATIVOS numa promoção de referência (em geral a Vendex do
+  // mês), procura promoções com subsídio do Mercado Livre e preço menor que
+  // deixem margem e/ou lucro maiores — e só participa com confirmação.
+  //   1. Referência  GET  /anuncios-meli/promocoes-rebate/referencias
+  //   2. Analisando  POST /anuncios-meli/promocoes-rebate/analises → jobId,
+  //                  depois GET /analises/:jobId a cada REB_POLL_MS
+  //   3. Prévia      grupos Recomendados / Escolha / Sem ganho / Descartados
+  //   4. Execução    POST /analises/:jobId/executar (só as escolhas
+  //                  confirmadas), progresso pelo mesmo GET (job.execucao)
+  // A referência NUNCA é tocada. Falha esperada = 200 { ok:false, motivo }.
+  // Nada roda sem clique: o polling para ao fechar, concluir ou falhar.
+  // ===========================================================================
+  var REB = null;
+  var REB_POLL_MS = 1500;
+  // Job que ficou processando quando o modal foi fechado (por conta). O
+  // servidor aceita UMA análise ativa por cliente — reabrir retoma o
+  // acompanhamento em vez de esbarrar em ANALISE_EM_ANDAMENTO.
+  var rebJobEmCurso = {};
+
+  var REB_MOTIVOS = {
+    SEM_CUSTO: "Sem custo na Base de custos — não dá para calcular a margem.",
+    COTACAO_INDISPONIVEL: "O Mercado Livre não devolveu comissão e frete para esse preço agora. Tente de novo mais tarde.",
+    FORA_DA_REFERENCIA: "O anúncio não está ativo na promoção de referência.",
+    SEM_CANDIDATA: "Nenhuma promoção com subsídio do Mercado Livre disponível para este anúncio.",
+    PRECO_NAO_MENOR: "As promoções com subsídio têm preço igual ou maior que o preço de hoje — o rebate não entraria.",
+    ERRO_ML: "O Mercado Livre não respondeu para este anúncio.",
+    JA_EM_REBATE_MELHOR: "Já está numa promoção com rebate melhor — nenhuma outra melhora margem nem lucro.",
+  };
+
+  function rebChaveConta() {
+    return AM.clienteAtual ? AM.clienteAtual.slug + ":" + (AM.contaMlId || "") : "";
+  }
+
+  function atualizarBotaoRebate() {
+    var b = el("am-reb-abrir");
+    if (!b) return;
+    var semConta = !AM.clienteAtual;
+    var editando = !!(CUSTOS && CUSTOS.modo);
+    b.disabled = semConta || editando;
+    b.title = semConta ? "Escolha um cliente e uma conta para analisar"
+      : editando ? "Saia da edição de custos para analisar promoções"
+      : "Procurar promoções com subsídio do Mercado Livre para os anúncios da promoção de referência";
+  }
+
+  function rebQs() {
+    var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug);
+    if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
+    return qs;
+  }
+
+  function rebCorpo(extra) {
+    var corpo = { clienteSlug: AM.clienteAtual.slug };
+    if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
+    Object.keys(extra || {}).forEach(function (k) { corpo[k] = extra[k]; });
+    return corpo;
+  }
+
+  function rebMotivoResposta(r, padrao) {
+    var d = (r && r.data) || {};
+    return d.motivo || d.mensagem || padrao;
+  }
+
+  // --- Formatação ----------------------------------------------------------------
+  function rebNum(v) { return v === null || v === undefined || v === "" || isNaN(Number(v)) ? null : Number(v); }
+
+  function rebPct(v) {
+    var n = rebNum(v);
+    return n === null ? "—" : n.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+  }
+
+  function rebSinal(n) { return n > 0 ? "+" : n < 0 ? "−" : ""; }
+
+  // Ganho com sinal e cor de status (verde ganho / vermelho perda / neutro).
+  function rebGanhoHtml(v, tipo, sufixo) {
+    var n = rebNum(v);
+    if (n === null) return '<span class="am-reb-ganho">—</span>';
+    var abs = Math.abs(n);
+    var txt = tipo === "pp"
+      ? rebSinal(n) + abs.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " p.p."
+      : rebSinal(n) + "R$ " + abs.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (sufixo || "");
+    var classe = n > 0 ? " is-pos" : n < 0 ? " is-neg" : "";
+    return '<span class="am-reb-ganho' + classe + '">' + txt + "</span>";
+  }
+
+  function rebData(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" });
+  }
+
+  function rebVigencia(ref) {
+    var ini = rebData(ref.inicio), fim = rebData(ref.fim);
+    if (ini && fim) return ini + " a " + fim;
+    if (fim) return "até " + fim;
+    if (ini) return "desde " + ini;
+    return "sem vigência informada";
+  }
+
+  function rebThumbHtml(url) {
+    if (url && /^https?:\/\//i.test(String(url))) {
+      return '<img class="am-reb-thumb" src="' + escapeAttr(url) + '" alt="" loading="lazy">';
+    }
+    return '<span class="am-reb-thumb am-reb-thumb--vazia" aria-hidden="true">' + icImagem(16) + "</span>";
+  }
+
+  function rebAnuncioHtml(it) {
+    return '<div class="am-reb-anuncio">' + rebThumbHtml(it.thumbnail) +
+      '<div class="am-reb-anuncio__txt"><span class="am-reb-anuncio__titulo">' + escapeHtml(it.titulo || "Anúncio sem título") + "</span>" +
+      '<span class="am-reb-anuncio__id vf-mono">' + escapeHtml(it.itemId) + "</span></div></div>";
+  }
+
+  function rebMotivoTexto(it) {
+    return it.motivoTexto || REB_MOTIVOS[it.motivo] || (it.motivo ? String(it.motivo) : "");
+  }
+
+  // --- Dados do resultado ----------------------------------------------------------
+  function rebItens(status) {
+    var res = REB && REB.job && REB.job.resultado;
+    return ((res && res.itens) || []).filter(function (it) { return !status || it.status === status; });
+  }
+
+  function rebItemPorId(itemId) {
+    var lista = rebItens();
+    for (var i = 0; i < lista.length; i++) if (lista[i].itemId === itemId) return lista[i];
+    return null;
+  }
+
+  function rebCandidata(it, promotionId) {
+    if (!it || !promotionId) return null;
+    var c = it.candidatas || [];
+    for (var i = 0; i < c.length; i++) if (c[i].promotionId === promotionId) return c[i];
+    return null;
+  }
+
+  // Escolha inicial: recomendados vêm marcados (a sugestão é a mesma nos dois
+  // critérios); itens de Escolha começam em "Manter como está".
+  function rebEscolhasIniciais() {
+    var esc = {};
+    rebItens().forEach(function (it) {
+      if (it.status === "recomendado") {
+        var s = it.sugestao || {};
+        var pid = s.porMargem || s.porLucro || (it.candidatas && it.candidatas[0] && it.candidatas[0].promotionId) || "";
+        esc[it.itemId] = rebCandidata(it, pid) ? pid : "";
+      } else if (it.status === "escolha") {
+        esc[it.itemId] = "";
+      }
+    });
+    return esc;
+  }
+
+  function rebEscolhasSelecionadas() {
+    var out = [];
+    rebItens().forEach(function (it) {
+      if (it.status !== "recomendado" && it.status !== "escolha") return;
+      var c = rebCandidata(it, REB.escolhas[it.itemId]);
+      if (c) out.push({ itemId: it.itemId, promotionId: c.promotionId, tipo: c.tipo });
+    });
+    return out;
+  }
+
+  // "Preferir margem/lucro em todos": só nos itens de Escolha, e só quando a
+  // sugestão daquele critério melhora o próprio critério — senão a referência.
+  // "ref" = Manter como está em todos (nenhuma participação nova).
+  function rebPreferir(criterio) {
+    rebItens("escolha").forEach(function (it) {
+      if (criterio === "ref") { REB.escolhas[it.itemId] = ""; return; }
+      var s = it.sugestao || {};
+      var c = rebCandidata(it, criterio === "margem" ? s.porMargem : s.porLucro);
+      var ganho = c ? rebNum(criterio === "margem" ? c.ganhoMargemPp : c.ganhoLucro) : null;
+      REB.escolhas[it.itemId] = c && ganho !== null && ganho > 0 ? c.promotionId : "";
+    });
+    REB.preferencia = criterio;
+    REB.confirmando = false;
+    renderRebate();
+  }
+
+  // Aba aberta quando a prévia chega: a primeira que tem anúncio.
+  function rebAbaInicial() {
+    var ordem = ["recomendado", "escolha", "sem_ganho", "descartado"];
+    for (var i = 0; i < ordem.length; i++) if (rebItens(ordem[i]).length) return ordem[i];
+    return "recomendado";
+  }
+
+  // Promoção que forma o preço HOJE (base das comparações): a referência ou
+  // uma promoção com rebate em que o anúncio já entrou. Análises salvas antes
+  // do campo `atual` caem na referência, como eram calculadas.
+  function rebAtual(it) {
+    if (it && it.atual) return it.atual;
+    var ref = (it && it.referencia) || {};
+    return {
+      nome: (REB && REB.job && REB.job.referencia && REB.job.referencia.nome) || "Referência", ehReferencia: true,
+      preco: ref.preco, subsidioMl: ref.subsidioMl, meliPercentage: ref.meliPercentage, margemPercent: ref.margemPercent, lucro: ref.lucro,
+    };
+  }
+
+  // --- Abrir / fechar --------------------------------------------------------------
+  function abrirRebate() {
+    if (!AM.clienteAtual || REB || (CUSTOS && CUSTOS.modo)) return;
+    var overlay = document.createElement("div");
+    overlay.className = "am-reb-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "am-reb-titulo");
+    overlay.innerHTML = '<aside class="am-reb-box" aria-label="Radar de subsídios"></aside>';
+    document.body.appendChild(overlay);
+    document.body.classList.add("vf-no-scroll");
+    REB = {
+      overlay: overlay, chave: rebChaveConta(), focoAnterior: document.activeElement,
+      passo: "referencia", referencias: null, padraoId: null, refId: "", erroRefs: null,
+      jobId: null, job: null, erro: null, iniciando: false,
+      escolhas: {}, aba: "recomendado", preferencia: null,
+      confirmando: false, enviando: false, erroExecutar: null,
+      enviadas: [], pollsParado: 0, executou: false, avisoFechar: false,
+      timer: null, seq: 0,
+    };
+
+    overlay.addEventListener("click", onCliqueRebate);
+    overlay.addEventListener("change", onMudancaRebate);
+    overlay.addEventListener("keydown", onTeclaRebate);
+
+    var emCurso = rebJobEmCurso[REB.chave];
+    if (emCurso) {
+      // Retoma a análise/execução que ficou rodando no servidor.
+      REB.jobId = emCurso.jobId;
+      REB.passo = emCurso.fase === "execucao" ? "execucao" : "analisando";
+      REB.enviadas = emCurso.enviadas || [];
+      REB.retomado = true;
+      if (REB.passo === "execucao") REB.executou = true;
+      renderRebate();
+      rebFocarInicio();
+      rebPollar();
+      return;
+    }
+    renderRebate();
+    rebFocarInicio();
+    carregarReferenciasRebate();
+  }
+
+  // `forcar` fecha sem perguntar (troca de conta). Fora isso, no meio da
+  // execução, pergunta inline antes — o servidor continua gravando.
+  function fecharRebate(forcar, trocaDeConta) {
+    if (!REB) return;
+    var reb = REB;
+    var execEmCurso = reb.passo === "execucao" && rebProcessando();
+    if (!forcar && execEmCurso && !reb.avisoFechar) {
+      reb.avisoFechar = true;
+      renderRebate();
+      var b = reb.overlay.querySelector("#am-reb-continuar");
+      if (b) b.focus();
+      return;
+    }
+    // Lembra o job para retomar se ainda estava rodando.
+    if (reb.jobId && (reb.passo === "analisando" || execEmCurso)) {
+      rebJobEmCurso[reb.chave] = { jobId: reb.jobId, fase: reb.passo === "execucao" ? "execucao" : "analise", enviadas: reb.enviadas };
+    } else {
+      delete rebJobEmCurso[reb.chave];
+    }
+    if (reb.timer) clearTimeout(reb.timer);
+    reb.timer = null;
+    reb.seq++;
+    if (reb.overlay.parentNode) reb.overlay.parentNode.removeChild(reb.overlay);
+    document.body.classList.remove("vf-no-scroll");
+    REB = null;
+    // Depois de qualquer execução a lista é relida (preço/promoção mudaram).
+    // Na troca de conta quem recarrega é aplicarContextoDoShell.
+    if (reb.executou && !trocaDeConta) carregarAnuncios();
+    if (!trocaDeConta && reb.focoAnterior && reb.focoAnterior.focus && document.contains(reb.focoAnterior)) reb.focoAnterior.focus();
+  }
+
+  function rebProcessando() {
+    var j = REB && REB.job;
+    if (!REB || REB.passo !== "execucao") return false;
+    if (REB.enviando) return true;
+    return !rebExecucaoConcluida(j);
+  }
+
+  function rebFocarInicio() {
+    if (!REB) return;
+    var t = REB.overlay.querySelector("#am-reb-titulo");
+    if (t) t.focus();
+  }
+
+  // --- Eventos -----------------------------------------------------------------------
+  function onCliqueRebate(e) {
+    if (!REB) return;
+    // Clique no fundo só fecha antes da prévia — depois disso há escolhas
+    // (ou uma execução) que um clique perdido não pode descartar.
+    if (e.target === REB.overlay) { if (REB.passo === "referencia") fecharRebate(false); return; }
+    var b = e.target.closest("[data-reb-acao]");
+    if (!b || b.disabled) return;
+    switch (b.getAttribute("data-reb-acao")) {
+      case "fechar": fecharRebate(false); break;
+      case "fechar-mesmo": REB.avisoFechar = true; fecharRebate(true); break;
+      case "continuar": REB.avisoFechar = false; renderRebate(); break;
+      case "recarregar-refs": carregarReferenciasRebate(); break;
+      case "analisar": iniciarAnaliseRebate(); break;
+      case "voltar-ref":
+      case "trocar-ref":
+        REB.passo = "referencia"; REB.erro = null; REB.job = null; REB.jobId = null;
+        REB.confirmando = false; REB.escolhas = {};
+        delete rebJobEmCurso[REB.chave];
+        renderRebate(); rebFocarInicio();
+        if (!REB.referencias) carregarReferenciasRebate();
+        break;
+      case "preferir-margem": rebPreferir("margem"); break;
+      case "preferir-lucro": rebPreferir("lucro"); break;
+      case "preferir-ref": rebPreferir("ref"); break;
+      case "aba":
+        REB.aba = b.getAttribute("data-reb-aba") || "recomendado";
+        renderRebate();
+        rebFocar('[data-reb-aba="' + REB.aba + '"]');
+        break;
+      case "participar":
+        if (!rebEscolhasSelecionadas().length) return;
+        REB.confirmando = true; REB.erroExecutar = null; renderRebate();
+        rebFocar("#am-reb-confirmar");
+        break;
+      case "cancelar-confirmacao": REB.confirmando = false; renderRebate(); rebFocar("#am-reb-participar"); break;
+      case "confirmar": executarRebate(rebEscolhasSelecionadas()); break;
+      case "retentar": {
+        var falhas = rebFalhas();
+        if (falhas.length) executarRebate(falhas);
+        break;
+      }
+    }
+  }
+
+  function onMudancaRebate(e) {
+    if (!REB) return;
+    var t = e.target;
+    if (t.id === "am-reb-ref") { REB.refId = t.value; renderRebate(); return; }
+    if (t.hasAttribute("data-reb-todos")) {
+      rebItens("recomendado").forEach(function (it) {
+        var s = it.sugestao || {};
+        REB.escolhas[it.itemId] = t.checked ? (s.porMargem || s.porLucro || "") : "";
+      });
+      REB.confirmando = false;
+      renderRebate();
+      return;
+    }
+    var chk = t.getAttribute("data-reb-marcar");
+    if (chk) {
+      var it = rebItemPorId(chk);
+      var s = (it && it.sugestao) || {};
+      REB.escolhas[chk] = t.checked ? (s.porMargem || s.porLucro || "") : "";
+      REB.confirmando = false;
+      renderRebate();
+      return;
+    }
+    var radio = t.getAttribute("data-reb-escolha");
+    if (radio && t.checked) {
+      REB.escolhas[radio] = t.value;
+      REB.preferencia = null;
+      REB.confirmando = false;
+      renderRebate();
+    }
+  }
+
+  function onTeclaRebate(e) {
+    if (!REB) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (REB.confirmando) { REB.confirmando = false; renderRebate(); rebFocar("#am-reb-participar"); return; }
+      if (REB.avisoFechar) { REB.avisoFechar = false; renderRebate(); return; }
+      fecharRebate(false);
+      return;
+    }
+    if (e.key === "Tab") {
+      // Foco preso no modal.
+      var foc = Array.prototype.filter.call(
+        REB.overlay.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'),
+        function (n) { return n.offsetParent !== null; });
+      if (!foc.length) return;
+      var primeiro = foc[0], ultimo = foc[foc.length - 1];
+      if (e.shiftKey && (document.activeElement === primeiro || !REB.overlay.contains(document.activeElement))) { e.preventDefault(); ultimo.focus(); }
+      else if (!e.shiftKey && document.activeElement === ultimo) { e.preventDefault(); primeiro.focus(); }
+    }
+  }
+
+  function rebFocar(sel) {
+    if (!REB) return;
+    var n = REB.overlay.querySelector(sel);
+    if (n) n.focus();
+  }
+
+  // --- 1. Referência -------------------------------------------------------------
+  function carregarReferenciasRebate() {
+    var reb = REB;
+    reb.referencias = null;
+    reb.erroRefs = null;
+    renderRebate();
+    api("/anuncios-meli/promocoes-rebate/referencias?" + rebQs()).then(function (r) {
+      if (REB !== reb) return;
+      var d = r.data || {};
+      if (!d.ok) {
+        reb.erroRefs = rebMotivoResposta(r, "Não foi possível carregar as promoções da conta.");
+        reb.referencias = [];
+      } else {
+        reb.referencias = Array.isArray(d.referencias) ? d.referencias : [];
+        reb.padraoId = d.padraoId || null;
+        var existe = function (id) { return reb.referencias.some(function (x) { return x.id === id; }); };
+        reb.refId = reb.padraoId && existe(reb.padraoId) ? reb.padraoId : "";
+      }
+      var foco = document.activeElement && document.activeElement.id;
+      renderRebate();
+      if (foco === "am-reb-titulo" || !foco) rebFocar("#am-reb-ref");
+    });
+  }
+
+  function rebRefSelecionada() {
+    var lista = (REB && REB.referencias) || [];
+    for (var i = 0; i < lista.length; i++) if (lista[i].id === REB.refId) return lista[i];
+    return null;
+  }
+
+  function iniciarAnaliseRebate() {
+    var reb = REB;
+    var ref = rebRefSelecionada();
+    if (!ref || reb.iniciando) return;
+    reb.iniciando = true;
+    reb.erro = null;
+    renderRebate();
+    api("/anuncios-meli/promocoes-rebate/analises", {
+      method: "POST", body: rebCorpo({ referencia: { id: ref.id, tipo: ref.tipo } }),
+    }).then(function (r) {
+      if (REB !== reb) return;
+      reb.iniciando = false;
+      var d = r.data || {};
+      // ANALISE_EM_ANDAMENTO com jobId: acompanha a que já está rodando.
+      if (d.ok && d.jobId != null || (d.codigo === "ANALISE_EM_ANDAMENTO" && d.jobId != null)) {
+        reb.jobId = d.jobId;
+        reb.job = null;
+        reb.passo = "analisando";
+        renderRebate();
+        rebFocarInicio();
+        rebPollar();
+        return;
+      }
+      reb.erro = rebMotivoResposta(r, "Não foi possível iniciar a análise.");
+      renderRebate();
+    });
+  }
+
+  // --- Polling (2 e 4) ---------------------------------------------------------------
+  function rebPollar() {
+    var reb = REB;
+    if (!reb || !reb.jobId) return;
+    if (reb.timer) clearTimeout(reb.timer);
+    var meuSeq = ++reb.seq;
+    api("/anuncios-meli/promocoes-rebate/analises/" + encodeURIComponent(reb.jobId) + "?" + rebQs()).then(function (r) {
+      if (REB !== reb || reb.seq !== meuSeq) return;
+      var d = r.data || {};
+      if (!d.ok || !d.job) {
+        // Falha de rede pontual não derruba o acompanhamento; resposta
+        // explícita do servidor (ok:false) encerra.
+        if (r.status === 0) { rebAgendar(reb); return; }
+        reb.erro = rebMotivoResposta(r, "Não foi possível acompanhar a análise.");
+        delete rebJobEmCurso[reb.chave];
+        if (reb.passo === "execucao") reb.erroExecutar = reb.erro;
+        renderRebate();
+        return;
+      }
+      var job = d.job;
+      // Logo depois do POST executar, o GET ainda pode trazer o job na fase
+      // de análise: mantém a fila local até o servidor virar a fase.
+      if (reb.passo === "execucao" && job.fase !== "execucao") {
+        reb.job = Object.assign({}, job, { fase: reb.job && reb.job.fase, status: reb.job && reb.job.status, execucao: reb.job && reb.job.execucao });
+        if (job.status === "erro") {
+          reb.erroExecutar = job.erro || "A execução foi interrompida.";
+          reb.job.status = "erro";
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          return;
+        }
+        rebAgendar(reb);
+        return;
+      }
+      reb.job = job;
+      if (reb.passo === "execucao") {
+        if (job.status === "processando") reb.viuProcessando = true;
+        else reb.pollsParado++;
+      }
+      if (reb.passo === "analisando") {
+        if (job.status === "erro") {
+          reb.erro = job.erro || "A análise foi interrompida. Tente de novo.";
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          return;
+        }
+        if (job.fase === "execucao" && job.execucao) {
+          // Retomado depois de fechar no meio da execução.
+          reb.passo = "execucao";
+          reb.executou = true;
+        } else if (job.status === "concluido" && job.resultado) {
+          delete rebJobEmCurso[reb.chave];
+          reb.passo = "previa";
+          reb.escolhas = rebEscolhasIniciais();
+          reb.aba = rebAbaInicial();
+          reb.preferencia = null;
+          renderRebate();
+          rebFocarInicio();
+          return;
+        } else {
+          renderRebate();
+          rebAgendar(reb);
+          return;
+        }
+      }
+      if (reb.passo === "execucao") {
+        if (job.status === "erro" && job.fase === "execucao") {
+          reb.erroExecutar = job.erro || "A execução foi interrompida. Veja abaixo o que já foi feito.";
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          return;
+        }
+        if (rebExecucaoConcluida(job)) {
+          delete rebJobEmCurso[reb.chave];
+          renderRebate();
+          rebFocar(rebFalhas().length ? "#am-reb-retentar" : "#am-reb-fechar-final");
+          return;
+        }
+        renderRebate();
+        rebAgendar(reb);
+      }
+    });
+  }
+
+  function rebAgendar(reb) {
+    reb.timer = setTimeout(function () { if (REB === reb) rebPollar(); }, REB_POLL_MS);
+  }
+
+  // A execução terminou quando o job saiu de "processando" na fase execucao
+  // e nenhum item enviado está pendente. Num retry, o GET pode ainda trazer a
+  // execução ANTERIOR (já concluída, com as falhas): por isso só se aceita
+  // depois de ter visto "processando", ou com o total batendo com o que foi
+  // enviado por 2 polls, ou — rede de segurança para um contrato diferente
+  // do esperado — depois de 4 polls parados.
+  function rebExecucaoConcluida(job) {
+    if (!job || job.fase !== "execucao" || job.status === "processando" || !job.execucao) return false;
+    if (job.status === "erro") return true;
+    var itens = job.execucao.itens || [];
+    if (itens.some(function (x) { return x.status === "pendente"; })) return false;
+    if (!REB || REB.retomado) return true;
+    var enviados = REB.enviadas || [];
+    var cobre = enviados.every(function (e) {
+      return itens.some(function (x) { return x.itemId === e.itemId; });
+    });
+    if (!cobre) return REB.pollsParado >= 4;
+    if (REB.viuProcessando) return true;
+    if (rebNum(job.execucao.total) === enviados.length && REB.pollsParado >= 2) return true;
+    return REB.pollsParado >= 4;
+  }
+
+  // --- 4. Execução -------------------------------------------------------------------
+  function executarRebate(escolhas) {
+    var reb = REB;
+    if (!reb || !escolhas.length || reb.enviando) return;
+    reb.enviando = true;
+    reb.erroExecutar = null;
+    renderRebate();
+    api("/anuncios-meli/promocoes-rebate/analises/" + encodeURIComponent(reb.jobId) + "/executar", {
+      method: "POST", body: rebCorpo({ escolhas: escolhas }),
+    }).then(function (r) {
+      if (REB !== reb) return;
+      reb.enviando = false;
+      var d = r.data || {};
+      if (!d.ok) {
+        reb.erroExecutar = rebMotivoResposta(r, "Não foi possível iniciar a participação.");
+        reb.confirmando = false;
+        renderRebate();
+        rebFocar(reb.passo === "execucao" ? "#am-reb-retentar" : "#am-reb-participar");
+        return;
+      }
+      reb.enviadas = escolhas.slice();
+      reb.passo = "execucao";
+      reb.confirmando = false;
+      reb.executou = true;
+      reb.pollsParado = 0;
+      reb.viuProcessando = false;
+      reb.retomado = false;
+      // O GET ainda pode trazer a execução anterior até o servidor trocar.
+      reb.job = Object.assign({}, reb.job, {
+        fase: "execucao", status: "processando",
+        execucao: { total: escolhas.length, processados: 0, itens: escolhas.map(function (x) {
+          return { itemId: x.itemId, promotionId: x.promotionId, tipo: x.tipo, status: "pendente", codigo: null, motivo: null };
+        }) },
+      });
+      renderRebate();
+      rebFocarInicio();
+      rebPollar();
+    });
+  }
+
+  function rebItensExecucao() {
+    var ex = REB && REB.job && REB.job.execucao;
+    var itens = (ex && ex.itens) || [];
+    // Só o que foi enviado nesta rodada (o servidor pode manter as anteriores).
+    var enviados = REB.enviadas || [];
+    if (!enviados.length) return itens;
+    var filtrados = itens.filter(function (x) { return enviados.some(function (e) { return e.itemId === x.itemId; }); });
+    return filtrados.length ? filtrados : itens;
+  }
+
+  function rebFalhas() {
+    if (!REB || REB.passo !== "execucao" || rebProcessando()) return [];
+    return rebItensExecucao().filter(function (x) { return x.status === "falha"; }).map(function (x) {
+      var tipo = x.tipo;
+      if (!tipo) {
+        var c = rebCandidata(rebItemPorId(x.itemId), x.promotionId);
+        tipo = c ? c.tipo : undefined;
+      }
+      return { itemId: x.itemId, promotionId: x.promotionId, tipo: tipo };
+    });
+  }
+
+  // --- Render ------------------------------------------------------------------------
+  // Painel lateral (layout "A + B" aprovado no canvas): cabeçalho com a
+  // referência, abas na prévia (Recomendados em tabela, Escolher em cards
+  // margem × lucro, Sem ganho, Descartados) e rodapé fixo com o total.
+  var REB_ABAS = [
+    { chave: "recomendado", rotulo: "Recomendados" },
+    { chave: "escolha", rotulo: "Escolher margem ou lucro" },
+    { chave: "sem_ganho", rotulo: "Sem ganho" },
+    { chave: "descartado", rotulo: "Descartados" },
+  ];
+
+  function rebBannerHtml(tipo, msg) {
+    return '<div class="vf-banner is-' + tipo + '"' + (tipo === "danger" ? ' role="alert"' : ' role="status"') +
+      '><div class="vf-banner__content"><p class="vf-banner__description">' + escapeHtml(msg) + "</p></div></div>";
+  }
+
+  function rebProgressoHtml(proc, total, rotulo) {
+    var t = rebNum(total) || 0, p = Math.min(rebNum(proc) || 0, t || Infinity);
+    var pct = t > 0 ? Math.round((p / t) * 100) : 0;
+    return '<div class="am-reb-progresso" data-reb-progresso>' +
+      '<div class="vf-progress" role="progressbar" aria-label="' + escapeAttr(rotulo) + '" aria-valuemin="0" aria-valuemax="' + t + '" aria-valuenow="' + p + '">' +
+        '<div class="vf-progress__bar" style="width:' + pct + '%"></div></div>' +
+      '<p class="am-reb-progresso__txt" aria-live="polite">' + (t > 0 ? p + " de " + t + " anúncios" : "Preparando…") + "</p></div>";
+  }
+
+  function rebSubtituloHtml() {
+    var reb = REB;
+    if (reb.passo === "referencia") return "Escolha a promoção de referência para comparar.";
+    var job = reb.job || {};
+    var nomeRef = (job.referencia && job.referencia.nome) || (rebRefSelecionada() || {}).nome || "";
+    var txt = "Comparando com <strong>" + escapeHtml(nomeRef || "a referência") + "</strong>";
+    if (reb.passo === "previa") {
+      var total = rebItens().length;
+      txt += " · " + total + (total === 1 ? " anúncio analisado" : " anúncios analisados") +
+        ' · <button type="button" class="am-reb-link" id="am-reb-trocar" data-reb-acao="trocar-ref">trocar referência</button>';
+    }
+    return txt;
+  }
+
+  function rebAbasHtml() {
+    var res = (REB.job && REB.job.resultado) || {};
+    var r = res.resumo || {};
+    return '<div class="am-reb-abas" role="tablist" aria-label="Grupos" data-reb-resumo>' + REB_ABAS.map(function (a) {
+      var n = r[a.chave] != null ? r[a.chave] : rebItens(a.chave).length;
+      var ativa = REB.aba === a.chave;
+      return '<button type="button" role="tab" class="am-reb-aba' + (ativa ? " is-active" : "") + '" id="am-reb-aba-' + a.chave + '"' +
+        ' aria-selected="' + (ativa ? "true" : "false") + '" aria-controls="am-reb-painel" tabindex="' + (ativa ? "0" : "-1") + '"' +
+        ' data-reb-acao="aba" data-reb-aba="' + a.chave + '">' + a.rotulo +
+        ' <span class="am-reb-aba__n">' + n + "</span></button>";
+    }).join("") + "</div>";
+  }
+
+  function renderRebate() {
+    if (!REB) return;
+    var reb = REB;
+    var box = reb.overlay.querySelector(".am-reb-box");
+    var focoId = document.activeElement && reb.overlay.contains(document.activeElement) ? document.activeElement.id : "";
+    var corpo = "", rodape = "";
+    var p = reb.passo;
+    if (p === "referencia") { corpo = rebPassoReferenciaHtml(); rodape = rebRodapeReferenciaHtml(); }
+    else if (p === "analisando") { corpo = rebPassoAnalisandoHtml(); rodape = rebRodapeAnalisandoHtml(); }
+    else if (p === "previa") { corpo = rebPassoPreviaHtml(); rodape = rebRodapePreviaHtml(); }
+    else { corpo = rebPassoExecucaoHtml(); rodape = rebRodapeExecucaoHtml(); }
+
+    if (reb.avisoFechar) {
+      rodape = '<div class="am-reb-confirma" role="alert">' +
+        '<p class="am-reb-confirma__txt">A participação continua no Mercado Livre mesmo se você fechar. Reabra o "Radar de subsídios" para acompanhar.</p>' +
+        '<div class="am-reb-confirma__acoes">' +
+          '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-mesmo" data-reb-acao="fechar-mesmo">Fechar mesmo assim</button>' +
+          '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-continuar" data-reb-acao="continuar">Continuar acompanhando</button>' +
+        "</div></div>";
+    }
+
+    var scroll = box.querySelector(".am-reb-corpo");
+    var scrollTop = scroll ? scroll.scrollTop : 0;
+    var chaveRender = p + ":" + (p === "previa" ? reb.aba : "");
+    var abas = p === "previa";
+
+    box.innerHTML = '<header class="am-reb-head' + (abas ? " tem-abas" : "") + '">' +
+        '<div class="am-reb-head__topo"><div class="am-reb-head__txt">' +
+          '<h2 class="am-reb-titulo" id="am-reb-titulo" tabindex="-1">Radar de subsídios</h2>' +
+          '<p class="am-reb-sub">' + rebSubtituloHtml() + "</p></div>" +
+          '<button type="button" class="am-reb-x" id="am-reb-x" data-reb-acao="fechar" aria-label="Fechar">' + icFechar() + "</button></div>" +
+        (abas ? rebAbasHtml() : "") +
+      "</header>" +
+      '<div class="am-reb-corpo"' + (abas ? ' id="am-reb-painel" role="tabpanel" aria-labelledby="am-reb-aba-' + reb.aba + '"' : "") + ">" + corpo + "</div>" +
+      '<footer class="am-reb-rodape">' + rodape + "</footer>";
+
+    var novoScroll = box.querySelector(".am-reb-corpo");
+    if (novoScroll && chaveRender === reb.ultimoPassoRender) novoScroll.scrollTop = scrollTop;
+    reb.ultimoPassoRender = chaveRender;
+    if (focoId) {
+      var n = document.getElementById(focoId);
+      if (n && reb.overlay.contains(n)) n.focus();
+    }
+  }
+
+  function rebPassoReferenciaHtml() {
+    var reb = REB;
+    var html = '<p class="am-reb-intro">Vamos olhar só os anúncios ativos nesta promoção e procurar promoções com subsídio do Mercado Livre e preço menor, que deixem margem ou lucro maiores. A promoção de referência não é alterada.</p>';
+    if (reb.referencias === null) return html + estadoHtml("loading", "Carregando promoções da conta…");
+    if (reb.erroRefs) {
+      return html + rebBannerHtml("danger", reb.erroRefs) +
+        '<div class="am-reb-cluster"><button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-reb-acao="recarregar-refs">Tentar de novo</button></div>';
+    }
+    if (!reb.referencias.length) {
+      return html + estadoHtml("empty", "Nenhuma promoção ativa ou programada nesta conta",
+        "Para usar esta análise, os anúncios precisam estar numa promoção de referência (por exemplo, a Vendex do mês).");
+    }
+    var ref = rebRefSelecionada();
+    html += '<div class="vf-field am-reb-campo"><label class="vf-field__label" for="am-reb-ref">Promoção de referência</label>' +
+      '<select id="am-reb-ref" class="vf-select">' +
+      (reb.refId ? "" : '<option value="" selected>Escolha a promoção de referência…</option>') +
+      reb.referencias.map(function (x) {
+        var txt = (x.nome || x.id) + " · " + (x.tipoLabel || x.tipo || "") + " · " + rebVigencia(x);
+        return '<option value="' + escapeAttr(x.id) + '"' + (x.id === reb.refId ? " selected" : "") + ">" + escapeHtml(txt) + "</option>";
+      }).join("") + "</select>";
+    if (ref) {
+      html += '<p class="vf-field__hint">' + escapeHtml(ref.tipoLabel || ref.tipo || "") + " · " + escapeHtml(rebVigencia(ref)) +
+        (ref.id === reb.padraoId ? " · sugerida para este mês" : "") + "</p>";
+    } else if (!reb.padraoId) {
+      html += '<p class="vf-field__hint">Não encontramos a Vendex deste mês — escolha a promoção de referência.</p>';
+    }
+    html += "</div>";
+    if (reb.erro) html += rebBannerHtml("danger", reb.erro);
+    return html;
+  }
+
+  function rebRodapeReferenciaHtml() {
+    var reb = REB;
+    var pode = !!rebRefSelecionada() && !reb.iniciando;
+    return '<div class="am-reb-rodape__acoes">' +
+      '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-cancelar" data-reb-acao="fechar">Cancelar</button>' +
+      '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-analisar" data-reb-acao="analisar"' + (pode ? "" : " disabled") + ">" +
+      (reb.iniciando ? "Iniciando…" : "Analisar") + "</button></div>";
+  }
+
+  function rebPassoAnalisandoHtml() {
+    var reb = REB;
+    var job = reb.job || {};
+    if (reb.erro) return rebBannerHtml("danger", reb.erro);
+    var prog = job.progresso || {};
+    return '<p class="am-reb-intro">Procurando promoções com subsídio e preço menor, com margem e lucro cotados ao vivo no Mercado Livre.</p>' +
+      rebProgressoHtml(prog.processados, prog.total, "Progresso da análise") +
+      '<p class="vf-field__hint">Pode levar alguns minutos em contas grandes. Se fechar, a análise continua e você retoma ao reabrir.</p>';
+  }
+
+  function rebRodapeAnalisandoHtml() {
+    if (REB.erro) {
+      return '<div class="am-reb-rodape__acoes">' +
+        '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-erro" data-reb-acao="fechar">Fechar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-voltar" data-reb-acao="voltar-ref">Voltar</button></div>';
+    }
+    return '<div class="am-reb-rodape__acoes"><button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-an" data-reb-acao="fechar">Fechar</button></div>';
+  }
+
+  // --- Prévia ------------------------------------------------------------------------
+  function rebPassoPreviaHtml() {
+    var reb = REB;
+    var html = "";
+    if (reb.erroExecutar) html += rebBannerHtml("danger", reb.erroExecutar);
+    var rec = rebItens("recomendado"), esc = rebItens("escolha");
+    if (!rec.length && !esc.length && (reb.aba === "recomendado" || reb.aba === "escolha")) {
+      html += estadoHtml("empty", "Nenhuma promoção com rebate melhora estes anúncios agora",
+        "Veja os motivos nas abas Sem ganho e Descartados. A referência continua como está.");
+      return html;
+    }
+    if (reb.aba === "recomendado") return html + rebAbaRecomendadosHtml(rec);
+    if (reb.aba === "escolha") return html + rebAbaEscolhaHtml(esc);
+    if (reb.aba === "sem_ganho") {
+      return html + rebAbaListaHtml("sem_ganho", rebItens("sem_ganho"), "Nenhuma promoção com subsídio melhora margem nem lucro destes anúncios.");
+    }
+    return html + rebAbaListaHtml("descartado", rebItens("descartado"), "");
+  }
+
+  function rebAbaRecomendadosHtml(rec) {
+    if (!rec.length) return '<p class="am-reb-vazio">Nenhum anúncio em que a mesma promoção melhore margem e lucro.</p>';
+    var reb = REB;
+    var todos = rec.every(function (it) { return !!reb.escolhas[it.itemId]; });
+    return '<div class="am-reb-tab" role="table" aria-label="Anúncios recomendados" data-reb-grupo-sec="recomendado">' +
+      '<div class="am-reb-tab__linha am-reb-tab__cab" role="row">' +
+        '<span role="columnheader"><input type="checkbox" id="am-reb-todos" data-reb-todos aria-label="Selecionar todos"' + (todos ? " checked" : "") + "></span>" +
+        '<span role="columnheader">Anúncio</span>' +
+        '<span role="columnheader">Hoje</span>' +
+        '<span role="columnheader">Com rebate</span>' +
+      "</div>" +
+      rec.map(function (it, i) {
+        var s = it.sugestao || {};
+        var c = rebCandidata(it, s.porMargem || s.porLucro) || (it.candidatas || [])[0];
+        var marcado = !!(c && reb.escolhas[it.itemId] === c.promotionId);
+        var hoje = rebAtual(it);
+        return '<div class="am-reb-tab__linha" role="row" data-reb-item="' + escapeAttr(it.itemId) + '">' +
+          '<span role="cell"><input type="checkbox" id="am-reb-chk-' + i + '" data-reb-marcar="' + escapeAttr(it.itemId) + '"' +
+            (marcado ? " checked" : "") + (c ? "" : " disabled") + ' aria-label="Participar com ' + escapeAttr(it.titulo || it.itemId) + '"></span>' +
+          '<span role="cell">' + rebAnuncioHtml(it) + "</span>" +
+          '<span role="cell" class="am-reb-celula">' +
+            '<span class="am-reb-celula__forte">' + formatMoeda(hoje.preco) +
+              "</span>" +
+            (rebNum(hoje.subsidioMl) > 0 ? '<span class="am-reb-celula__rebate">+' + formatMoeda(hoje.subsidioMl) + " de rebate</span>" : "") +
+            '<span class="am-reb-celula__par am-reb-celula__par--fraco">' +
+              "<span>" + rebPct(hoje.margemPercent) + "</span><span>" + formatMoeda(hoje.lucro) + "</span></span>" +
+            '<span class="am-reb-celula__fraco" data-reb-hoje-nome>' + escapeHtml(hoje.nome || "") + "</span></span>" +
+          '<span role="cell" class="am-reb-celula am-reb-celula--nova">' + (c
+            ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + "</span>" +
+              // Rebate na diagonal, logo abaixo e à direita do preço (como os ganhos).
+              (rebNum(c.subsidioMl) > 0 ? '<span class="am-reb-celula__rebate" data-reb-rebate>+' + formatMoeda(c.subsidioMl) + " de rebate</span>" : "") +
+              // Margem e lucro em duas colunas; o ganho de cada um fica logo
+              // abaixo do próprio valor.
+              '<span class="am-reb-celula__par">' +
+                '<span class="am-reb-celula__metricas" data-reb-com-rebate><span>' + rebPct(c.margemPercent) + "</span><span>" + formatMoeda(c.lucro) + "</span></span>" +
+                '<span class="am-reb-celula__ganho" data-reb-ganho>' + rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs", "/un") + "</span>" +
+              "</span>" +
+              '<span class="am-reb-celula__fraco"' + (c.tipoLabel ? ' title="' + escapeAttr(c.tipoLabel) + '"' : "") + ">" + escapeHtml(c.nome || c.promotionId) + "</span>"
+            : "—") + "</span>" +
+          "</div>";
+      }).join("") + "</div>";
+  }
+
+  function rebAbaEscolhaHtml(esc) {
+    if (!esc.length) return '<p class="am-reb-vazio">Nenhum anúncio pedindo escolha entre margem e lucro.</p>';
+    var pref = REB.preferencia;
+    var btn = function (id, acao, chave, rotulo) {
+      var ativo = pref === chave;
+      return '<button type="button" role="radio" class="am-reb-rapida__btn' + (ativo ? " is-active" : "") + '" id="' + id + '" data-reb-acao="' + acao + '"' +
+        ' aria-checked="' + (ativo ? "true" : "false") + '">' + (ativo ? icCheck(14) : "") + rotulo + "</button>";
+    };
+    var n = esc.length;
+    return '<section class="am-reb-rapida" aria-labelledby="am-reb-rapida-t">' +
+        '<div class="am-reb-rapida__txt"><span class="am-reb-rapida__titulo" id="am-reb-rapida-t">Escolha rápida para ' +
+          (n === 1 ? "o anúncio" : "os " + n + " anúncios") + "</span>" +
+          '<span class="am-reb-rapida__dica">Marca a mesma opção em todos. Depois você ainda pode trocar card a card.</span></div>' +
+        '<div class="am-reb-rapida__btns" role="radiogroup" aria-labelledby="am-reb-rapida-t">' +
+          btn("am-reb-pref-margem", "preferir-margem", "margem", "Maior margem") +
+          btn("am-reb-pref-lucro", "preferir-lucro", "lucro", "Maior lucro") +
+          btn("am-reb-pref-ref", "preferir-ref", "ref", "Manter como está") +
+        "</div></section>" +
+      esc.map(function (it, i) { return rebEscolhaItemHtml(it, i); }).join("");
+  }
+
+  // tipo "preco": queda de preço de venda é boa (verde), alta é ruim.
+  function rebDeltaHtml(v, tipo) {
+    var n = rebNum(v);
+    if (n === null) return '<span class="am-reb-delta">atual</span>';
+    var abs = Math.abs(n);
+    var txt = tipo === "pp"
+      ? rebSinal(n) + abs.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " p.p."
+      : rebSinal(n) + "R$ " + abs.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    var bom = tipo === "preco" ? n < 0 : n > 0;
+    var ruim = tipo === "preco" ? n > 0 : n < 0;
+    return '<span class="am-reb-delta am-reb-ganho' + (bom ? " is-pos" : ruim ? " is-neg" : "") + '">' + txt + "</span>";
+  }
+
+  // Rebate pequeno sob o preço de venda — só quando a promoção tem subsídio.
+  // Rebate pequeno sob o lucro (é dinheiro que entra no lucro) — só quando
+  // a promoção tem subsídio.
+  function rebRebateHtml(subsidio) {
+    if (!(rebNum(subsidio) > 0)) return "";
+    return '<span class="am-reb-rebate">+' + formatMoeda(subsidio) + " de rebate</span>";
+  }
+
+  function rebOpcaoHtml(o, nomeRadio, id, itemId, atual) {
+    var sel = atual === o.valor;
+    return '<label class="am-reb-opcao' + (sel ? " is-selecionada" : "") + '" for="' + id + '">' +
+      '<span class="am-reb-opcao__cab"><input type="radio" id="' + id + '" name="' + nomeRadio + '" value="' + escapeAttr(o.valor) + '" data-reb-escolha="' + escapeAttr(itemId) + '"' +
+        (sel ? " checked" : "") + '><span class="am-reb-opcao__nome" title="' + escapeAttr(o.promo || "") + '">' + escapeHtml(o.promo || "") + "</span>" +
+        '<span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
+      '<span class="am-reb-metricas">' +
+        '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Preço de venda</span>' +
+          '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebDeltaHtml(o.dPreco, "preco") + "</span>" +
+        '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Margem</span>' +
+          '<span class="am-reb-metrica__valor">' + rebPct(o.margem) + "</span>" + rebDeltaHtml(o.dMargem, "pp") + "</span>" +
+        '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Lucro/un</span>' +
+          '<span class="am-reb-metrica__valor">' + formatMoeda(o.lucro) + "</span>" + rebDeltaHtml(o.dLucro, "rs") + rebRebateHtml(o.subsidio) + "</span>" +
+      "</span></label>";
+  }
+
+  function rebEscolhaItemHtml(it, i) {
+    var s = it.sugestao || {};
+    var atual = REB.escolhas[it.itemId] || "";
+    var nome = "am-reb-esc-" + i;
+    var hoje = rebAtual(it);
+    var opcoes = [{
+      valor: "", rotulo: "Manter como está", margem: hoje.margemPercent, lucro: hoje.lucro, dMargem: null, dLucro: null, dPreco: null,
+      promo: hoje.nome, preco: hoje.preco, subsidio: hoje.subsidioMl, pct: hoje.meliPercentage,
+    }];
+    var vistos = {};
+    function add(pid, rotulo) {
+      var c = rebCandidata(it, pid);
+      if (!c || vistos[pid]) return;
+      vistos[pid] = true;
+      opcoes.push({
+        valor: c.promotionId, rotulo: rotulo, margem: c.margemPercent, lucro: c.lucro, dMargem: c.ganhoMargemPp, dLucro: c.ganhoLucro,
+        // Queda do preço de venda em relação ao de hoje (centavos, sem resíduo de float).
+        dPreco: rebNum(c.preco) !== null && rebNum(hoje.preco) !== null ? Math.round(c.preco * 100 - hoje.preco * 100) / 100 : null,
+        promo: c.nome || c.promotionId, preco: c.preco, subsidio: c.subsidioMl, pct: c.meliPercentage,
+      });
+    }
+    if (s.porMargem && s.porMargem === s.porLucro) add(s.porMargem, "Maior margem e lucro");
+    add(s.porMargem, "Maior margem");
+    add(s.porLucro, "Maior lucro");
+    (it.candidatas || []).forEach(function (c) { add(c.promotionId, "Outra opção"); });
+
+    return '<article class="am-reb-escolha" data-reb-item="' + escapeAttr(it.itemId) + '">' +
+      '<div class="am-reb-escolha__topo">' + rebThumbHtml(it.thumbnail) +
+        '<h3 class="am-reb-escolha__titulo">' + escapeHtml(it.titulo || "Anúncio sem título") + "</h3>" +
+        '<span class="am-reb-escolha__id vf-mono">' + escapeHtml(it.itemId) + "</span></div>" +
+      '<fieldset class="am-reb-opcoes"><legend class="vf-visually-hidden">Promoção para ' + escapeHtml(it.titulo || it.itemId) + "</legend>" +
+        opcoes.map(function (o, k) { return rebOpcaoHtml(o, nome, nome + "-" + k, it.itemId, atual); }).join("") +
+      "</fieldset></article>";
+  }
+
+  function rebAbaListaHtml(chave, itens, dica) {
+    if (!itens.length) return '<p class="am-reb-vazio">Nenhum anúncio neste grupo.</p>';
+    return (dica ? '<p class="am-reb-intro">' + escapeHtml(dica) + "</p>" : "") +
+      '<ul class="am-reb-lista" data-reb-grupo="' + chave + '">' + itens.map(function (it) {
+        var m = rebMotivoTexto(it);
+        return '<li class="am-reb-lista__item" data-reb-item="' + escapeAttr(it.itemId) + '">' + rebAnuncioHtml(it) +
+          (m ? '<span class="am-reb-lista__motivo">' + escapeHtml(m) + "</span>" : "") + "</li>";
+      }).join("") + "</ul>";
+  }
+
+  function rebRodapePreviaHtml() {
+    var reb = REB;
+    var sel = rebEscolhasSelecionadas();
+    var n = sel.length;
+    var nRec = sel.filter(function (x) { var it = rebItemPorId(x.itemId); return it && it.status === "recomendado"; }).length;
+    var nEsc = n - nRec;
+    var nomeRef = (reb.job.referencia && reb.job.referencia.nome) || "referência";
+    if (reb.confirmando && n) {
+      return '<div class="am-reb-confirma" role="alertdialog" aria-labelledby="am-reb-confirma-txt">' +
+        '<p class="am-reb-confirma__txt" id="am-reb-confirma-txt">Participar de ' + n + (n === 1 ? " promoção em 1 anúncio" : " promoções em " + n + " anúncios") +
+          "? A promoção <strong>" + escapeHtml(nomeRef) + "</strong> permanece ativa em todos — nada nela é alterado.</p>" +
+        '<div class="am-reb-confirma__acoes">' +
+          '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-cancelar-conf" data-reb-acao="cancelar-confirmacao"' + (reb.enviando ? " disabled" : "") + ">Voltar</button>" +
+          '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-confirmar" data-reb-acao="confirmar"' + (reb.enviando ? " disabled" : "") + ">" +
+            (reb.enviando ? "Enviando…" : "Confirmar participação") + "</button>" +
+        "</div></div>";
+    }
+    var det = nRec + (nRec === 1 ? " recomendada" : " recomendadas") + " + " + nEsc + (nEsc === 1 ? " escolhida" : " escolhidas") +
+      " · a " + escapeHtml(nomeRef) + " continua ativa em todos.";
+    return '<div class="am-reb-resumo-sel">' +
+        '<span class="am-reb-contador" data-reb-contador aria-live="polite">' + (n === 1 ? "1 participação selecionada" : n + " participações selecionadas") + "</span>" +
+        '<span class="am-reb-resumo-sel__det">' + det + "</span></div>" +
+      '<div class="am-reb-rodape__acoes">' +
+        '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-prev" data-reb-acao="fechar">Cancelar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-participar" data-reb-acao="participar"' + (n ? "" : " disabled") + ">" +
+          (n ? "Participar de " + n : "Participar") + "</button></div>";
+  }
+
+  // --- Execução ------------------------------------------------------------------------
+  function rebPassoExecucaoHtml() {
+    var reb = REB;
+    var ex = (reb.job && reb.job.execucao) || {};
+    var itens = rebItensExecucao();
+    var proc = itens.length ? itens.filter(function (x) { return x.status !== "pendente"; }).length : ex.processados;
+    var total = itens.length || ex.total;
+    var concluida = !rebProcessando();
+    var ok = itens.filter(function (x) { return x.status === "ok"; }).length;
+    var falhas = itens.filter(function (x) { return x.status === "falha"; }).length;
+    var html = "";
+    if (reb.erroExecutar) html += rebBannerHtml("danger", reb.erroExecutar);
+    if (concluida) {
+      html += rebBannerHtml(falhas ? "warning" : "success",
+        ok + (ok === 1 ? " participação confirmada" : " participações confirmadas") + " no Mercado Livre" +
+        (falhas ? " · " + falhas + (falhas === 1 ? " falhou" : " falharam") : "") + ". A referência continua ativa.");
+    } else {
+      html += '<p class="am-reb-intro">Participando das promoções, um anúncio por vez. Cada um é relido no Mercado Livre antes de gravar.</p>' +
+        rebProgressoHtml(proc, total, "Progresso da participação");
+    }
+    html += '<ul class="am-reb-lista am-reb-exec" data-reb-exec>' + itens.map(function (x) {
+      var it = rebItemPorId(x.itemId) || { itemId: x.itemId };
+      var c = rebCandidata(it, x.promotionId);
+      var st = x.status === "ok" ? '<span class="vf-status is-success">Participando</span>'
+        : x.status === "falha" ? '<span class="vf-status is-danger">Falhou</span>'
+        : '<span class="vf-status is-empty">Na fila</span>';
+      var det = x.status === "ok"
+        ? (c ? escapeHtml(c.nome || c.promotionId) : "") + (rebNum(x.precoConfirmado) !== null ? " · " + formatMoeda(x.precoConfirmado) : "")
+        : x.status === "falha" ? escapeHtml(x.motivo || REB_MOTIVOS[x.codigo] || "Não foi possível participar.")
+        : (c ? escapeHtml(c.nome || c.promotionId) : "");
+      return '<li class="am-reb-lista__item am-reb-exec__item is-' + escapeAttr(x.status || "pendente") + '" data-reb-exec-item="' + escapeAttr(x.itemId) + '">' +
+        rebAnuncioHtml(it) + '<span class="am-reb-exec__st">' + st + "</span>" +
+        (det ? '<span class="am-reb-lista__motivo">' + det + "</span>" : "") + "</li>";
+    }).join("") + "</ul>";
+    return html;
+  }
+
+  function rebRodapeExecucaoHtml() {
+    var reb = REB;
+    if (rebProcessando()) {
+      return '<div class="am-reb-resumo-sel"><span class="am-reb-contador">Gravando no Mercado Livre…</span></div>' +
+        '<div class="am-reb-rodape__acoes"><button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-exec" data-reb-acao="fechar">Fechar</button></div>';
+    }
+    var nFalhas = rebFalhas().length;
+    return '<div class="am-reb-rodape__acoes">' +
+      (nFalhas ? '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-retentar" data-reb-acao="retentar"' + (reb.enviando ? " disabled" : "") + ">" +
+        (reb.enviando ? "Enviando…" : "Tentar de novo as falhas (" + nFalhas + ")") + "</button>" : "") +
+      '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-fechar-final" data-reb-acao="fechar">Fechar</button></div>';
   }
 
   function bindPaginacao(prefixo, pag, irPara) {

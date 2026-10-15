@@ -28,7 +28,9 @@ const variacoesLegadoEstoqueService = require("../services/meliAnuncios/meliVari
 const precoService = require("../services/meliAnuncios/meliPrecoService");
 const promocoesService = require("../services/meliAnuncios/meliPromocoesService");
 const promocoesEscritaService = require("../services/meliAnuncios/meliPromocoesEscritaService");
+const promocoesRebateService = require("../services/meliAnuncios/meliPromocoesRebateService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
+const precoAoVivoService = require("../services/meliAnuncios/meliPrecoAoVivoService");
 const custosLoteService = require("../services/meliAnuncios/meliCustosLoteService");
 const custosPlanilhaService = require("../services/meliAnuncios/meliCustosPlanilhaService");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/activityLogService");
@@ -326,6 +328,13 @@ function montarUnidadesVendidasGlobal(resultadoVendas, itemIds, porFamiliaItens)
 //  - `porFamiliaMinPercent`/`porFamiliaMaxPercent`: faixa (mínimo/máximo) de
 //    `marginPercent` entre os filhos com snapshot computável — puramente
 //    VISUAL, célula da listagem ("10,0% – 30,0%").
+//  - `porFamiliaMinStatus`/`porFamiliaMaxStatus`: `status` do Motor do filho
+//    que deu o mínimo/máximo — a célula da família pinta cada ponta da faixa
+//    com a MESMA cor que esse filho teria na própria linha (nunca uma regra de
+//    cor nova inventada no frontend a partir do %).
+//  - `porFamiliaMinProfit`/`porFamiliaMaxProfit`: `profit` (R$ por unidade,
+//    no preço atual) desse MESMO filho — o lucro exibido ao lado de cada
+//    ponta da faixa. Nunca a soma `porFamiliaProfit`, que mistura unidades.
 //  - `porFamiliaMediaPercent`: MÉDIA SIMPLES de `marginPercent` dos mesmos
 //    filhos — o valor usado para RANKING (`porFamilia`, o campo que o
 //    comparator genérico de `listarAgrupadoOrdenadoPorMotor` lê). Diferente
@@ -373,6 +382,10 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
   const porFamilia = {};
   const porFamiliaMinPercent = {};
   const porFamiliaMaxPercent = {};
+  const porFamiliaMinStatus = {};
+  const porFamiliaMaxStatus = {};
+  const porFamiliaMinProfit = {};
+  const porFamiliaMaxProfit = {};
   const porFamiliaMediaPercent = {};
   const porFamiliaProfit = {};
   const porFamiliaCalculadoEm = {};
@@ -385,6 +398,10 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
     let fonteMaisRecente = null;
     let min = null;
     let max = null;
+    let minStatus = null;
+    let maxStatus = null;
+    let minProfit = null;
+    let maxProfit = null;
     let somaMargem = 0;
     let qtdMargem = 0;
     for (const itemId of itensDaFamilia) {
@@ -398,8 +415,9 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
       if (s.computable && s.marginPercent != null) {
         somaMargem += s.marginPercent;
         qtdMargem += 1;
-        if (min == null || s.marginPercent < min) min = s.marginPercent;
-        if (max == null || s.marginPercent > max) max = s.marginPercent;
+        const profit = s.profit != null ? s.profit : null;
+        if (min == null || s.marginPercent < min) { min = s.marginPercent; minStatus = s.status || null; minProfit = profit; }
+        if (max == null || s.marginPercent > max) { max = s.marginPercent; maxStatus = s.status || null; maxProfit = profit; }
       }
     }
     porFamiliaProfit[familyId] = somaProfit != null ? Math.round(somaProfit * 100) / 100 : null;
@@ -408,13 +426,19 @@ function montarMargemProjetadaGlobal(snapshotPorItem, itemIds, porFamiliaItens) 
     const media = qtdMargem > 0 ? Math.round((somaMargem / qtdMargem) * 100) / 100 : null;
     porFamiliaMinPercent[familyId] = min;
     porFamiliaMaxPercent[familyId] = max;
+    porFamiliaMinStatus[familyId] = minStatus;
+    porFamiliaMaxStatus[familyId] = maxStatus;
+    porFamiliaMinProfit[familyId] = minProfit;
+    porFamiliaMaxProfit[familyId] = maxProfit;
     porFamiliaMediaPercent[familyId] = media;
     porFamilia[familyId] = media;
   }
 
   return {
     porItem, porItemProfit, porItemComputable, porItemStatus, porItemCalculadoEm, porItemOrigemJob, porItemFonte,
-    porFamilia, porFamiliaMinPercent, porFamiliaMaxPercent, porFamiliaMediaPercent,
+    porFamilia, porFamiliaMinPercent, porFamiliaMaxPercent, porFamiliaMinStatus, porFamiliaMaxStatus,
+    porFamiliaMinProfit, porFamiliaMaxProfit,
+    porFamiliaMediaPercent,
     porFamiliaProfit, porFamiliaCalculadoEm, porFamiliaFonte,
   };
 }
@@ -489,6 +513,10 @@ async function anexarMargemProjetadaNaPagina(anuncios, { clienteId, clienteConta
       anuncio.margemProjetadaFonte = faixa.porFamiliaFonte[fid] || null;
       anuncio.margemProjetadaMinPercent = ouNull(faixa.porFamiliaMinPercent[fid]);
       anuncio.margemProjetadaMaxPercent = ouNull(faixa.porFamiliaMaxPercent[fid]);
+      anuncio.margemProjetadaMinStatus = faixa.porFamiliaMinStatus[fid] || null;
+      anuncio.margemProjetadaMaxStatus = faixa.porFamiliaMaxStatus[fid] || null;
+      anuncio.margemProjetadaMinProfit = ouNull(faixa.porFamiliaMinProfit[fid]);
+      anuncio.margemProjetadaMaxProfit = ouNull(faixa.porFamiliaMaxProfit[fid]);
       anuncio.margemProjetadaMediaPercent = ouNull(faixa.porFamiliaMediaPercent[fid]);
     } else {
       const s = snapshotPorItem.get(String(anuncio.item_id));
@@ -702,6 +730,12 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
       anuncio.faturamentoValor = anuncio.tipo === "familia"
         ? (ranking.porFamiliaValor[anuncio.family_id] != null ? ranking.porFamiliaValor[anuncio.family_id] : null)
         : (ranking.porItemValor[anuncio.item_id] != null ? ranking.porItemValor[anuncio.item_id] : null);
+      const mapaUn = anuncio.tipo === "familia" ? ranking.porFamiliaUnidades : ranking.porItemUnidades;
+      const chaveUn = anuncio.tipo === "familia" ? anuncio.family_id : anuncio.item_id;
+      anuncio.faturamentoUnidades = mapaUn && mapaUn[chaveUn] != null ? mapaUn[chaveUn] : null;
+      const mapaMedio = anuncio.tipo === "familia" ? ranking.porFamiliaPrecoMedio : ranking.porItemPrecoMedio;
+      anuncio.faturamentoPrecoMedio = mapaMedio && mapaMedio[chaveUn] != null ? mapaMedio[chaveUn] : null;
+      anuncio.faturamentoPeriodoDias = ranking.periodoDias != null ? ranking.periodoDias : null;
     }
   }
   // Campos extras da margem projetada. `campoResposta` já escreveu o valor
@@ -738,6 +772,12 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
           ? ranking.porFamiliaMinPercent[anuncio.family_id] : null;
         anuncio.margemProjetadaMaxPercent = ranking.porFamiliaMaxPercent[anuncio.family_id] != null
           ? ranking.porFamiliaMaxPercent[anuncio.family_id] : null;
+        anuncio.margemProjetadaMinStatus = ranking.porFamiliaMinStatus[anuncio.family_id] || null;
+        anuncio.margemProjetadaMaxStatus = ranking.porFamiliaMaxStatus[anuncio.family_id] || null;
+        anuncio.margemProjetadaMinProfit = ranking.porFamiliaMinProfit[anuncio.family_id] != null
+          ? ranking.porFamiliaMinProfit[anuncio.family_id] : null;
+        anuncio.margemProjetadaMaxProfit = ranking.porFamiliaMaxProfit[anuncio.family_id] != null
+          ? ranking.porFamiliaMaxProfit[anuncio.family_id] : null;
         anuncio.margemProjetadaMediaPercent = ranking.porFamiliaMediaPercent[anuncio.family_id] != null
           ? ranking.porFamiliaMediaPercent[anuncio.family_id] : null;
       } else {
@@ -1113,6 +1153,21 @@ function diasNoPeriodo(periodo) {
   return Number.isFinite(dias) && dias > 0 ? dias : null;
 }
 
+// Unidades das linhas que TÊM receita (as sem `receita_produto` contam
+// unidade mas não receita — ver centralVendasEvidenceAdapter.novoAgregado).
+// Sem a cobertura (agregado de teste/legado), cai em `unidades`.
+function unidadesComReceita(agregado) {
+  const cob = agregado && agregado.receitaCobertura;
+  if (cob && Number.isFinite(cob.unidadesComValor)) return cob.unidadesComValor;
+  return (agregado && agregado.unidades) || 0;
+}
+
+// Preço MÉDIO vendido = receita ÷ unidades COM receita (nunca ÷ todas).
+function precoMedioDe(receita, unidades) {
+  if (!receita || !(unidades > 0)) return null;
+  return Math.round((receita / unidades) * 100) / 100;
+}
+
 // % que a receita do item representa sobre a receita de TODO o período
 // (porMlb inteiro, do Motor de Margem/Central de Vendas — mesma fonte que já
 // alimenta `margem[itemId]`) — nunca só a receita do lote de itemIds pedido,
@@ -1138,6 +1193,10 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
 
   const porItem = {};
   const porItemValor = {};
+  // Unidades vendidas no período (mesmo agregado do Motor que dá a receita).
+  // null quando o item não vendeu — sem venda é ausência, como o percentual.
+  const porItemUnidades = {};
+  const porItemPrecoMedio = {};
   for (const itemId of itemIds) {
     const agregado = porMlb.get(String(itemId));
     const receita = agregado ? agregado.receita : null;
@@ -1146,25 +1205,37 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
         ? Math.round((receita / receitaTotalPeriodo) * 10000) / 10000
         : null;
     porItemValor[itemId] = receita != null ? Math.round(receita * 100) / 100 : null;
+    porItemUnidades[itemId] = receita != null && agregado ? agregado.unidades || 0 : null;
+    porItemPrecoMedio[itemId] = receita != null && agregado ? precoMedioDe(receita, unidadesComReceita(agregado)) : null;
   }
 
   const porFamilia = {};
   const porFamiliaValor = {};
+  const porFamiliaUnidades = {};
+  const porFamiliaPrecoMedio = {};
   for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
     let receitaFamilia = 0;
     let teveReceita = false;
+    let unidadesFamilia = 0;
+    let unidadesComReceitaFamilia = 0;
     for (const itemId of itensDaFamilia) {
       const agregado = porMlb.get(String(itemId));
       if (agregado && agregado.receita) { receitaFamilia += agregado.receita; teveReceita = true; }
+      if (agregado) { unidadesFamilia += agregado.unidades || 0; unidadesComReceitaFamilia += unidadesComReceita(agregado); }
     }
     porFamilia[familyId] =
       teveReceita && receitaTotalPeriodo > 0
         ? Math.round((receitaFamilia / receitaTotalPeriodo) * 10000) / 10000
         : null;
     porFamiliaValor[familyId] = teveReceita ? Math.round(receitaFamilia * 100) / 100 : null;
+    porFamiliaUnidades[familyId] = teveReceita ? unidadesFamilia : null;
+    porFamiliaPrecoMedio[familyId] = teveReceita ? precoMedioDe(receitaFamilia, unidadesComReceitaFamilia) : null;
   }
 
-  return { periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia, porItemValor, porFamiliaValor };
+  return {
+    periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia, porItemValor, porFamiliaValor,
+    porItemUnidades, porFamiliaUnidades, porItemPrecoMedio, porFamiliaPrecoMedio,
+  };
 }
 
 // Reaproveita cliente360ProdutosEngine.classificarCurvaAbc (mesmo critério de
@@ -1500,6 +1571,45 @@ async function performance(req, res) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
     console.error("[anuncios-meli] performance:", err.message);
     return res.status(500).json({ ok: false, motivo: "Erro ao carregar métricas e margem." });
+  }
+}
+
+// GET /anuncios-meli/precos-ao-vivo?clienteSlug=&clienteContaId=&itemIds=a,b
+// Preço vigente + cheio AO VIVO (sale_price) sem o Motor de Margem — ver
+// meliPrecoAoVivoService. O front usa para a linha da família riscar a
+// promoção antes de expandir (pré-carregamento em background).
+async function precosAoVivo(req, res) {
+  try {
+    const { clienteSlug } = req.query || {};
+    const clienteContaId = extrairClienteContaId(req.query && req.query.clienteContaId);
+    if (!clienteSlug) {
+      return res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    }
+    const itemIds = String((req.query && req.query.itemIds) || "")
+      .split(",").map((s) => s.trim()).filter(Boolean);
+    if (!itemIds.length) return res.json({ ok: true, precos: {} });
+
+    const cliente = await anunciosService.resolverCliente(clienteSlug);
+    if (!cliente) {
+      return res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    }
+    const contexto = await anunciosService.resolverContextoConta({
+      clienteId: cliente.id,
+      clienteContaId,
+      requireUsableGrant: true,
+    });
+    const precos = await precoAoVivoService.precosAoVivo({
+      clienteId: cliente.id,
+      contaId: contexto.contaId,
+      includeLegacy: contexto.includeLegacy,
+      mlUserId: contexto.mlUserId,
+      itemIds,
+    });
+    return res.json({ ok: true, precos });
+  } catch (err) {
+    if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+    console.error("[anuncios-meli] precos-ao-vivo:", err.message);
+    return res.status(500).json({ ok: false, motivo: "Erro ao buscar preços ao vivo." });
   }
 }
 
@@ -1984,6 +2094,109 @@ function participarPromocao(req, res) {
 
 function sairPromocao(req, res) {
   return escritaAceitePromocao(req, res, promocoesEscritaService.sairPromocao, "sairPromocao");
+}
+
+// ----------------------------------------------------------------------------
+// "Promoções com rebate" (docs/specs/2026-10-15-anuncios-ml-promocoes-rebate.md)
+//   GET  /anuncios-meli/promocoes-rebate/referencias?clienteSlug=&clienteContaId=
+//   POST /anuncios-meli/promocoes-rebate/analises            body: { clienteSlug, clienteContaId?, referencia:{id,tipo}, itemIds? }
+//   GET  /anuncios-meli/promocoes-rebate/analises/:jobId?clienteSlug=&clienteContaId=
+//   POST /anuncios-meli/promocoes-rebate/analises/:jobId/executar body: { clienteSlug, clienteContaId?, escolhas:[{itemId,promotionId,tipo}] }
+//
+// Disparado só por clique. A regra inteira mora em meliPromocoesRebateService;
+// aqui é fiação: cliente pelo slug, conta pela mesma regra dos vizinhos (2+
+// contas sem clienteContaId → 409 de ambiguidade), falha esperada como
+// 200 + ok:false + codigo/motivo. A promoção de referência nunca é tocada.
+// ----------------------------------------------------------------------------
+async function resolverClienteEContaRebate(req, res, origem, requireUsableGrant) {
+  const fonte = (origem === "query" ? req.query : req.body) || {};
+  const { clienteSlug } = fonte;
+  if (!clienteSlug) {
+    res.status(400).json({ ok: false, motivo: "Informe o clienteSlug." });
+    return null;
+  }
+  const cliente = await anunciosService.resolverCliente(clienteSlug);
+  if (!cliente) {
+    res.status(404).json({ ok: false, motivo: "Cliente não encontrado." });
+    return null;
+  }
+  const contexto = await anunciosService.resolverContextoConta({
+    clienteId: cliente.id,
+    clienteContaId: extrairClienteContaId(fonte.clienteContaId),
+    requireUsableGrant,
+  });
+  return { cliente, contexto };
+}
+
+function responderRebate(res, r) {
+  const { httpStatus, ...corpo } = r;
+  return res.status(httpStatus || 200).json(corpo);
+}
+
+function tratarErroRebate(res, err, rotulo) {
+  if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
+  // Erros estruturais de conta/grant (resolveMarketplaceAccountContext) já
+  // trazem status e código próprios — repassados como vieram.
+  if (err.statusCode && err.statusCode < 500 && err.code) {
+    return res.status(err.statusCode).json({ ok: false, codigo: err.code, motivo: err.message });
+  }
+  console.error(`[anuncios-meli] ${rotulo}:`, err.message);
+  return res.status(500).json({ ok: false, motivo: "Erro interno em Promoções com rebate." });
+}
+
+async function promocoesRebateReferencias(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "query", true);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.listarReferencias({ clienteId: r.cliente.id, mlUserId: r.contexto.mlUserId });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateReferencias");
+  }
+}
+
+async function promocoesRebateIniciarAnalise(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "body", true);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.iniciarAnalise({
+      cliente: r.cliente, contexto: r.contexto, body: req.body || {}, user: req.user || null,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateIniciarAnalise");
+  }
+}
+
+async function promocoesRebateLerAnalise(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "query", false);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.lerJob({
+      jobId: req.params.jobId, cliente: r.cliente, mlUserId: r.contexto.mlUserId,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateLerAnalise");
+  }
+}
+
+async function promocoesRebateExecutar(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "body", true);
+    if (!r) return undefined;
+    const out = await promocoesRebateService.iniciarExecucao({
+      jobId: req.params.jobId,
+      cliente: r.cliente,
+      mlUserId: r.contexto.mlUserId,
+      body: req.body || {},
+      user: req.user || null,
+      ip: req.headers ? extrairIp(req) : null,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesRebateExecutar");
+  }
 }
 
 // ----------------------------------------------------------------------------
@@ -3629,12 +3842,17 @@ module.exports = {
   listarAgrupado,
   detalheFamilia,
   performance,
+  precosAoVivo,
   detalhe,
   variacoesLegado,
   promocoes,
   aplicarPromocao,
   participarPromocao,
   sairPromocao,
+  promocoesRebateReferencias,
+  promocoesRebateIniciarAnalise,
+  promocoesRebateLerAnalise,
+  promocoesRebateExecutar,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   adicionarImagem,

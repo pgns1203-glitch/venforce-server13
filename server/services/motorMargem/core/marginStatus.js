@@ -54,6 +54,31 @@ const LABELS = {
   [STATUS.HEALTHY]: "Saudável",
 };
 
+// Códigos de integridade: problema no DADO que independe do status financeiro.
+const INTEGRITY = {
+  CUSTO_SUSPEITO: "custo_suspeito",
+};
+
+/**
+ * Custo igual ou acima do preço quase nunca é prejuízo real: costuma ser custo
+ * errado na Base (unidade, caixa × unidade, kit). Margem de −113% é um número
+ * calculável, mas não sustenta decisão de preço — precisa de revisão do dado.
+ *
+ * Regra única: usada pelo núcleo (status) e pela leitura do snapshot.
+ *
+ * @returns {{code:string, reason:string}|null}
+ */
+function detectIntegrityIssue({ price = null, cost = null } = {}) {
+  const p = price === null || price === undefined || price === "" ? null : Number(price);
+  const c = cost === null || cost === undefined || cost === "" ? null : Number(cost);
+  if (p === null || c === null || !Number.isFinite(p) || !Number.isFinite(c)) return null;
+  if (!(p > 0) || c < p) return null;
+  return {
+    code: INTEGRITY.CUSTO_SUSPEITO,
+    reason: `Custo (R$ ${c.toFixed(2)}) igual ou acima do preço (R$ ${p.toFixed(2)}): confira o custo na Base antes de decidir o preço.`,
+  };
+}
+
 /**
  * @param {object} input
  *  - margin            margem usada para julgar (fração; realizada tem
@@ -65,7 +90,9 @@ const LABELS = {
  *  - hasOrders         houve venda no período analisado
  *  - settlementPending venda sem conciliação financeira confirmada
  *  - targetMargin      meta de margem (fração)
- * @returns {{status:string, severity:string, label:string, reasons:string[]}}
+ *  - integrityIssue    resultado de detectIntegrityIssue (ou null)
+ *  - invalidInputs     [{field, code, reason}] insumos entregues porém inutilizáveis
+ * @returns {{status:string, severity:string, label:string, reasons:string[], integrityCode:string|null}}
  */
 function classifyStatus(input = {}) {
   const {
@@ -77,9 +104,19 @@ function classifyStatus(input = {}) {
     hasOrders = false,
     settlementPending = false,
     targetMargin = DEFAULT_TARGET_MARGIN,
+    integrityIssue = null,
+    invalidInputs = [],
   } = input;
 
   const reasons = [];
+
+  // 0. UNVALIDATED por insumo INVÁLIDO — a fonte entregou o valor, mas ele não
+  // pode ser usado (ex.: alíquota fora de [0, 1]). Vale mesmo que haja outra
+  // margem calculável: o dado da Base precisa ser corrigido antes.
+  if (invalidInputs.length) {
+    for (const entry of invalidInputs) reasons.push(entry.reason);
+    return finish(STATUS.UNVALIDATED, reasons, invalidInputs[0].code);
+  }
 
   // 1. UNVALIDATED — falta insumo obrigatório. Nem margem ruim, nem boa: nenhuma.
   if (!computable || margin === null) {
@@ -92,6 +129,10 @@ function classifyStatus(input = {}) {
   }
 
   // 2. SUSPECT_DATA — o número existe, mas não sustenta decisão.
+  if (integrityIssue) {
+    reasons.push(integrityIssue.reason);
+    return finish(STATUS.SUSPECT_DATA, reasons, integrityIssue.code);
+  }
   if (hasConflict) {
     reasons.push("Fontes em conflito em uma variável do cálculo.");
     return finish(STATUS.SUSPECT_DATA, reasons);
@@ -129,12 +170,13 @@ function classifyStatus(input = {}) {
   return finish(STATUS.HEALTHY, reasons);
 }
 
-function finish(status, reasons) {
+function finish(status, reasons, integrityCode = null) {
   return {
     status,
     severity: SEVERITY[status],
     label: LABELS[status],
     reasons,
+    integrityCode,
   };
 }
 
@@ -144,5 +186,7 @@ module.exports = {
   SEVERITY,
   LABELS,
   DEFAULT_TARGET_MARGIN,
+  INTEGRITY,
   classifyStatus,
+  detectIntegrityIssue,
 };

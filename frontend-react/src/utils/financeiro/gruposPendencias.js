@@ -9,15 +9,16 @@
 //   planilha   Corrigir por planilha — as MESMAS pendências seguras, quando
 //              são muitas para digitar uma a uma (ou quando o operador prefere).
 //   bloqueadas Bloqueadas / dependem de decisão — o que não dá para gravar com
-//              segurança sem uma escolha explícita (Shopee: o Item já tem o
-//              registro de outra variação) ou sem corrigir fora daqui (sem ID
-//              do Item, custo ambíguo, 2+ registros do mesmo Item).
+//              segurança sem uma escolha explícita (Shopee: a venda não traz o
+//              Model e o Item tem uma variação na base) ou sem corrigir fora
+//              daqui (sem ID do Item, custo ambíguo, várias variações e a venda
+//              não diz qual).
 //
 // Quem decide "seguro / ambíguo / insuficiente" é identidadeDaPendencia
 // (baseCustos.js), com os registros REAIS da base. Aqui só se agrupa — nenhuma
 // regra de matching nova e nenhum número financeiro.
 
-import { identidadeDaPendencia, normalizarId } from "./baseCustos.js";
+import { identidadeDaPendencia, normalizarId, normalizarIdShopee } from "./baseCustos.js";
 
 // Até aqui, digitar uma a uma é mais rápido que montar planilha.
 export const LIMITE_CORRECAO_INDIVIDUAL = 12;
@@ -51,16 +52,22 @@ export function classificarPendencias({
   const modoPadrao = corrigiveis.length > limite ? "planilha" : "portal";
   const modo = preferencia || modoPadrao;
 
-  // Pendências seguras do MESMO Item: a base guarda um registro por Item, então
+  // Pendências seguras do MESMO registro da base (MELI: o mesmo MLB; Shopee:
+  // o mesmo Item + Model — variações diferentes têm registros próprios):
   // gravar a segunda substitui a primeira. A tela avisa em cada uma.
-  const porItem = new Map();
-  for (const p of corrigiveis) {
+  const registroDe = (p) => {
     const id = normalizarId(marketplace, p.itemId);
-    if (id) porItem.set(id, (porItem.get(id) || 0) + 1);
+    if (!id) return "";
+    return marketplace === "shopee" ? `${id}|${normalizarIdShopee(p.modelId)}` : id;
+  };
+  const porRegistro = new Map();
+  for (const p of corrigiveis) {
+    const k = registroDe(p);
+    if (k) porRegistro.set(k, (porRegistro.get(k) || 0) + 1);
   }
   const mesmoItem = {};
   for (const p of corrigiveis) {
-    const n = porItem.get(normalizarId(marketplace, p.itemId)) || 0;
+    const n = porRegistro.get(registroDe(p)) || 0;
     if (n > 1) mesmoItem[p.chave] = n;
   }
 

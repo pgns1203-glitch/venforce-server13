@@ -34,7 +34,7 @@ const CONTA_1 = { id: 101, cliente_id: 90, marketplace: "meli", nome: "ML Conta 
 const CONTA_2 = { id: 102, cliente_id: 90, marketplace: "meli", nome: "ML Conta 2", slug: "cliente-x-meli-2", external_account_id: "222", is_primary: false, ativo: true, metadata_json: {}, created_at: new Date(), updated_at: new Date() };
 
 const BASE = { id: 501, slug: "base-1", nome: "Base 1", ativo: true, created_at: new Date(), updated_at: new Date() };
-const VINCULO = { id: 601, cliente_id: 90, base_id: 501, marketplace: "meli", ativo: true, updated_at: new Date() };
+const VINCULO = { id: 601, cliente_id: 90, cliente_conta_id: 101, base_id: 501, marketplace: "meli", ativo: true, updated_at: new Date() };
 
 function grant({ id, cliente_conta_id, ml_user_id, is_primary }) {
   return {
@@ -62,6 +62,13 @@ class MemoryDb {
 
   async query(sql, params = []) {
     const q = String(sql).replace(/\s+/g, " ").trim();
+    if (q.startsWith("SELECT id, cliente_id FROM cliente_contas WHERE marketplace")) {
+      return { rows: this.contas.filter((c) => c.marketplace === "meli" && String(c.external_account_id) === String(params[0])) };
+    }
+    if (q.startsWith("SELECT id, cliente_id, cliente_conta_id, ml_user_id FROM ml_tokens")) {
+      return { rows: this.grants.filter((g) => String(g.ml_user_id) === String(params[0])) };
+    }
+
     if (["BEGIN", "COMMIT", "ROLLBACK"].includes(q) || q.includes("pg_advisory")) return { rows: [] };
 
     if (q.startsWith("SELECT id, nome, slug FROM clientes WHERE slug = $1 AND ativo = true")) {
@@ -78,8 +85,8 @@ class MemoryDb {
       const c = this.contas.find((x) => x.id === Number(params[0]));
       return { rows: c ? [c] : [] };
     }
-    if (q.startsWith("SELECT COUNT(*)::int AS total FROM cliente_contas WHERE cliente_id = $1 AND marketplace = $2 AND ativo = true")) {
-      const total = this.contas.filter((c) => c.cliente_id === Number(params[0]) && c.marketplace === params[1] && c.ativo).length;
+    if (q.startsWith("SELECT COUNT(*)::int AS total FROM cliente_contas")) {
+      const total = this.contas.filter((c) => c.cliente_id === Number(params[0]) && c.marketplace === (params[1] || "meli") && c.ativo).length;
       return { rows: [{ total }] };
     }
 
@@ -99,9 +106,11 @@ class MemoryDb {
       return {
         rows: [{
           id: BASE.id, vinculo_id: VINCULO.id, base_id: BASE.id,
+          cliente_id: VINCULO.cliente_id, cliente_conta_id: VINCULO.cliente_conta_id,
+          marketplace: "meli", vinculo_marketplace: "meli", vinculo_ativo: true,
           slug: BASE.slug, nome: BASE.nome, ativo: BASE.ativo,
           created_at: BASE.created_at, updated_at: BASE.updated_at,
-        }],
+        }, { ...BASE, id: 502, slug: "base-2", cliente_id: 90, cliente_conta_id: 102, marketplace: "meli", vinculo_marketplace: "meli", vinculo_ativo: true }],
       };
     }
 

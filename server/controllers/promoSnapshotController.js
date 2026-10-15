@@ -53,6 +53,9 @@ function createPromoSnapshotController({ read = defaultRead, oportunidades = def
     clienteSlug,
     clienteContaId: req.query.clienteContaId,
     periodo: req.query.periodo,
+    veredito: req.query.veredito,
+    tipo: req.query.tipo,
+    cotacao: req.query.cotacao,
     page: req.query.page,
     limit: req.query.limit,
   })), "oportunidades");

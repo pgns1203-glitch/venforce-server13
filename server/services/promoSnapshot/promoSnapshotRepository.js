@@ -803,15 +803,64 @@ async function listarLinhasSnapshot({ clienteContaId, sellerId, runId, page, lim
 }
 
 /**
- * Oportunidades do snapshot atual — UMA consulta, paginada NO BANCO: casa as
- * promoções disponíveis com o Margin Snapshot da MESMA conta e as vendas do
- * período, filtra margem pós-promoção positiva, deixa 1 linha por anúncio,
- * ordena e devolve só `limit` linhas + o total (precificacaoOportunidadesSql).
+ * Retorno ML (subsídio, R$ por unidade) das promoções EM ANDAMENTO
+ * (`started`/`active`) dos anúncios informados, no snapshot atual da
+ * conta+seller — UMA consulta para o lote inteiro (sem N+1). Só leitura: não
+ * cria tabela nem dispara sincronização.
+ *
+ * Por anúncio: `promocoes` (em andamento com subsídio > 0) e `rebate` (o
+ * subsídio quando há exatamente uma; null quando 0 ou quando há mais de uma,
+ * porque somar/escolher seria adivinhar qual delas fixa o preço).
+ *
+ * @returns {Promise<Map<string,{promocoes:number, rebate:number|null}>>}
  */
-async function listarOportunidadesPaginadas({ clienteContaId, sellerId, runId, vendasPorMlb, page, limit }, db = pool) {
-  if (!sellerId) throw new Error("listarOportunidadesPaginadas: sellerId é obrigatório.");
-  const { sqlOportunidadesPaginadas, lerPagina } = require("../motorMargem/precificacao/precificacaoOportunidadesSql");
-  const { sql, params } = sqlOportunidadesPaginadas({
+async function mapRebatesAtivosPorItem({ clienteContaId, marketplace = "meli", sellerId, itemIds }, db = pool) {
+  const ids = Array.from(new Set((itemIds || []).map((x) => String(x)).filter(Boolean)));
+  if (!clienteContaId || !sellerId || !ids.length) return new Map();
+  return lerRebatesAtivos({ clienteContaId, marketplace, sellerId, itemIds: ids }, db);
+}
+
+/**
+ * Mesmo contrato, para a CONTA inteira (todos os anúncios com promoção em
+ * andamento com retorno ML). Uma consulta; o resultado é limitado pelo
+ * catálogo da conta (um item por linha).
+ */
+async function mapRebatesAtivosDaConta({ clienteContaId, marketplace = "meli", sellerId }, db = pool) {
+  if (!clienteContaId || !sellerId) return new Map();
+  return lerRebatesAtivos({ clienteContaId, marketplace, sellerId, itemIds: null }, db);
+}
+
+async function lerRebatesAtivos({ clienteContaId, marketplace, sellerId, itemIds }, db) {
+  const r = await db.query(
+    `SELECT p.item_id::text AS item_id,
+            COUNT(*)::int AS promocoes,
+            MAX(p.subsidio_ml) AS subsidio
+       FROM promo_snapshot_contas c
+       JOIN promo_snapshot_itens p
+         ON p.run_id = c.current_run_id AND p.cliente_conta_id = c.cliente_conta_id AND p.seller_id = c.seller_id
+      WHERE c.cliente_conta_id = $1 AND c.marketplace = $2 AND c.seller_id = $3
+        AND ($4::text[] IS NULL OR p.item_id = ANY($4::text[]))
+        AND LOWER(COALESCE(p.status, '')) IN ('started', 'active')
+        AND p.subsidio_ml > 0
+      GROUP BY p.item_id`,
+    [clienteContaId, marketplace, String(sellerId), itemIds]
+  );
+  return new Map(r.rows.map((row) => {
+    const promocoes = Number(row.promocoes || 0);
+    return [row.item_id, { promocoes, rebate: promocoes === 1 ? numOrNull(row.subsidio) : null }];
+  }));
+}
+
+/**
+ * Promoções ELEGÍVEIS do snapshot atual, casadas com o Margin Snapshot da
+ * mesma conta — UMA consulta para a conta inteira (precificacaoOportunidadesSql).
+ * O banco só seleciona (elegibilidade); LC', ΔLC, veredito, ordem e página saem
+ * do `core.calcularCenario` no serviço — uma fórmula só.
+ */
+async function listarOportunidadesElegiveis({ clienteId, clienteContaId, sellerId, runId }, db = pool) {
+  if (!sellerId) throw new Error("listarOportunidadesElegiveis: sellerId é obrigatório.");
+  const { sqlOportunidadesElegiveis, lerLinhas } = require("../motorMargem/precificacao/precificacaoOportunidadesSql");
+  const { sql, params } = sqlOportunidadesElegiveis({
     fonteSql: `
       SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno,
              NULL::text AS fonte_titulo, p.nome AS promo_nome, p.promotion_id AS promo_id,
@@ -823,11 +872,9 @@ async function listarOportunidadesPaginadas({ clienteContaId, sellerId, runId, v
          AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,
     paramsFonte: [runId, clienteContaId, String(sellerId)],
     clienteContaId,
-    vendasPorMlb,
-    page,
-    limit,
+    clienteId,
   });
-  return lerPagina(await db.query(sql, params));
+  return { rows: lerLinhas(await db.query(sql, params)) };
 }
 
 /**
@@ -901,7 +948,9 @@ module.exports = {
   reconcileStaleRunningRuns,
   obterConta,
   listarLinhasSnapshot,
-  listarOportunidadesPaginadas,
+  listarOportunidadesElegiveis,
+  mapRebatesAtivosPorItem,
+  mapRebatesAtivosDaConta,
   listarContasElegiveis,
   linhaPublica,
   COLUNAS_ITEM,

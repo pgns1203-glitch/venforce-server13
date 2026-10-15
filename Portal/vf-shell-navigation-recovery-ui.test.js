@@ -181,14 +181,10 @@ async function check(name, fn) {
 // (nenhuma delas exige contexto — cada uma tem seletor próprio na página).
 const TELAS_RESTAURADAS = [
   { modulo: "cliente-operacao", rotaEsperada: "cliente-operacao.html" },
-  { modulo: "cliente-360", rotaEsperada: "cliente-360.html" },
   { modulo: "promocoes-ml", rotaEsperada: "promocoes-retorno.html" },
   { modulo: "central-full", rotaEsperada: "full-gestao.html" },
   { modulo: "curva-abc", rotaEsperada: "fechamento.html" },
 ];
-// Cliente 360 V2 é MODULOS (precisa de cliente+operação selecionados — ela
-// É sobre um cliente específico, ao contrário das GLOBAIS acima), testada
-// separadamente na seção "com cliente/operação selecionados" abaixo.
 const TELAS_ADMIN_RESTAURADAS = [
   { modulo: "ml-tokens", rotaEsperada: "ml-tokens.html" },
   { modulo: "criar-anuncios-meli", rotaEsperada: "criar-anuncios-meli.html" },
@@ -196,7 +192,7 @@ const TELAS_ADMIN_RESTAURADAS = [
 // Telas que a missão de recuperação deliberadamente NÃO devolve ao menu —
 // nenhuma delas tem `data-module` correspondente hoje; se aparecerem aqui é
 // porque viraram vf-shell.js sem essa decisão ser revisada.
-const IDS_QUE_NAO_DEVEM_EXISTIR = ["dashboard", "design-templates", "clickup-executivo", "estudio-templates"];
+const IDS_QUE_NAO_DEVEM_EXISTIR = ["dashboard", "design-templates", "clickup-executivo", "estudio-templates", "cliente-360", "cliente-360-v2"];
 
 async function run() {
   const server = await startServer();
@@ -237,11 +233,6 @@ async function run() {
         assert.strictEqual(arquivo, tela.rotaEsperada, `"${tela.modulo}" aponta para "${arquivo}", esperado "${tela.rotaEsperada}"`);
       });
     }
-
-    await check("item Cliente 360 V2 existe no Shell V3 (desabilitado sem cliente/operação — é MODULOS)", async () => {
-      const existe = await cdp.evaluate("Boolean(document.querySelector('.vf-shell__item[data-module=cliente-360-v2]'))");
-      assert.ok(existe, "nenhum .vf-shell__item[data-module=cliente-360-v2] no DOM — Cliente 360 V2 não foi recuperada");
-    });
 
     await check("Visão continua presente e não foi substituída por nenhuma tela recuperada", async () => {
       const existe = await cdp.evaluate("Boolean(document.querySelector('.vf-shell__item[data-module=visao]'))");
@@ -301,14 +292,12 @@ async function run() {
     await cdp.evaluate("document.querySelector('.vf-menu__item').click()");
     await waitFor(cdp, "window.VF.context.getState() === 'READY'", "contexto não chegou a READY com 1 conta ativa");
 
-    await check("com cliente/operação selecionados, Cliente 360 V2 aponta para cliente-360-react.html com ?slug= (nunca ?cliente=, nunca o Vue órfão)", async () => {
-      const href = await cdp.evaluate(
-        "document.querySelector('.vf-shell__item[data-module=cliente-360-v2]').getAttribute('href')"
-      );
-      assert.ok(href.startsWith("cliente-360-react.html"), `Cliente 360 V2 deveria apontar para cliente-360-react.html, veio: ${href}`);
-      assert.ok(!href.startsWith("cliente-360-v2.html"), `Cliente 360 V2 apontou para o bundle Vue órfão: ${href}`);
-      assert.ok(href.includes("slug=n97"), `esperado slug=n97 no link de Cliente 360 V2, veio: ${href}`);
-      assert.ok(!/[?&]cliente=/.test(href), `Cliente 360 V2 não deveria receber ?cliente= (a página não lê esse nome): ${href}`);
+    await check("Cliente 360 usa V3; V1 e V2 ficam fora da sidebar", async () => {
+      const href = await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=cliente-360-v3]').getAttribute('href')");
+      assert.ok(href.startsWith("cliente-360-v3.html"));
+      for (const id of ["cliente-360", "cliente-360-v2"]) {
+        assert.strictEqual(await cdp.evaluate(`Boolean(document.querySelector('.vf-shell__item[data-module="${id}"]'))`), false);
+      }
     });
 
     await check("com cliente/operação selecionados, Central Full recebe ?clienteContaId= (nunca ?conta=)", async () => {
@@ -319,17 +308,9 @@ async function run() {
       assert.ok(!/[?&]conta=/.test(href), `Central Full não deveria receber ?conta= (a página lê clienteContaId): ${href}`);
     });
 
-    // cliente-operacao.js e cliente-360.js não leem `cliente`/`conta`/`periodo`
-    // da URL (cada um tem seletor próprio) — por isso o ?cliente=&conta= que o
-    // buildHref() padrão anexa aqui é inofensivo (mesmo contrato "links
-    // normais entre os dois mundos" já usado por Relatórios/Bases), não um
-    // parâmetro inventado com semântica errada. O teste real de correção é o
-    // slug/clienteContaId acima, que SÃO lidos pelas páginas de destino.
-    await check("Cliente Operação e Cliente 360 (vanilla) continuam navegáveis com o contrato padrão do Shell", async () => {
+    await check("Cliente Operacao preserva o link no Shell", async () => {
       const hrefOperacao = await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=cliente-operacao]').getAttribute('href')");
-      const href360 = await cdp.evaluate("document.querySelector('.vf-shell__item[data-module=cliente-360]').getAttribute('href')");
       assert.ok(hrefOperacao.startsWith("cliente-operacao.html"), `href inesperado para Cliente Operação: ${hrefOperacao}`);
-      assert.ok(href360.startsWith("cliente-360.html"), `href inesperado para Cliente 360: ${href360}`);
     });
 
     console.log(`\n✓ ${checks} verificações de recuperação de navegação (fix/v3-navigation-recovery)`);

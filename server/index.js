@@ -66,6 +66,7 @@ const {
 } = require("./services/fechamentoFinanceiro/shopeePerformanceService");
 const authRoutes = require("./routes/authRoutes");
 const logsRoutes = require("./routes/logsRoutes");
+const clientesUnificacaoRoutes = require("./routes/clientesUnificacaoRoutes");
 const fechamentosFinanceiroRoutes = require("./routes/fechamentosFinanceiroRoutes");
 const fechamentoDebugRoutes = require("./routes/fechamentoDebugRoutes");
 const fechamentoIncidentesRoutes = require("./routes/fechamentoIncidentesRoutes");
@@ -93,6 +94,7 @@ const cliente360V3Routes = require("./routes/cliente360V3Routes");
 const centralVendasRoutes = require("./routes/centralVendasRoutes");
 const motorMargemRoutes = require("./routes/motorMargemRoutes");
 const margemPrecificacaoRoutes = require("./routes/margemPrecificacaoRoutes");
+const margemSimularRoutes = require("./routes/margemSimularRoutes");
 const promoSnapshotRoutes = require("./routes/promoSnapshotRoutes");
 const diagnosticoInicialRoutes = require("./routes/diagnosticoInicialRoutes");
 const adsRoutes = require("./routes/adsRoutes");
@@ -106,6 +108,7 @@ const clickupRoutes = require("./routes/clickupRoutes");
 const externalFirebaseRoutes = require("./routes/externalFirebaseRoutes");
 const tiktokShopRoutes = require("./routes/tiktokShopRoutes");
 const shopeeRoutes = require("./routes/shopeeRoutes");
+const integracoesMatrizRoutes = require("./routes/integracoesMatrizRoutes");
 const sellerRoutes = require("./routes/sellerRoutes");
 const { ensureCentralVendasTables } = require("./services/centralVendas/centralVendasRepository");
 const centralVendasNoturnoScheduler = require("./services/centralVendas/centralVendasNoturnoScheduler");
@@ -130,6 +133,7 @@ const {
   ensureAnunciosMargemProjetadaSnapshotSchema,
   ensureMargemPrecificacaoSchema,
   ensurePromoSnapshotSchema,
+  ensurePromocoesRebateSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -138,6 +142,7 @@ const {
   normalizarSkuIdTikTok,
   erroSkuIdDuplicadoTikTok,
   ensureColunasCustos,
+  chaveDadosCusto,
 } = require("./services/bases/baseCustosService");
 const baseImportService = require("./services/bases/baseImportService");
 const baseDependenciesService = require("./services/bases/baseDependenciesService");
@@ -461,7 +466,48 @@ function parsePlanilha(buffer, originalName, marketplace) {
       produto_nome: null,
       variacao_nome: null,
       tem_custo: true,
+      ...(isShopee ? { _linha: linhaPlanilhaAtual } : {}),
     });
+  }
+
+  if (isShopee) {
+    // FIN-508 — Shopee: a identidade da linha é Item + Model (a variação). O
+    // mesmo Item com Models diferentes é o ESPERADO (cada variação tem o seu
+    // custo). O que não pode é a MESMA variação duas vezes:
+    //   · valores idênticos  → duplicidade inofensiva, mantém uma linha;
+    //   · valores divergentes → 422. Nunca escolher um custo arbitrário.
+    // Linha sem Model é a linha "pai" do Item (legado): uma por Item.
+    const porVariacao = new Map();
+    const unicas = [];
+    const mesmoValor = (a, b, casas) => Math.round(a * 10 ** casas) === Math.round(b * 10 ** casas);
+    for (const linha of resultado) {
+      const chave = `${linha.produto_id}|${linha.id_model || ""}`;
+      const anterior = porVariacao.get(chave);
+      if (!anterior) {
+        porVariacao.set(chave, linha);
+        unicas.push(linha);
+        continue;
+      }
+      const igual =
+        mesmoValor(anterior.custo_produto, linha.custo_produto, 2) &&
+        mesmoValor(anterior.imposto_percentual, linha.imposto_percentual, 6) &&
+        mesmoValor(anterior.taxa_fixa, linha.taxa_fixa, 2);
+      if (!igual) {
+        const variacao = linha.id_model ? `Item ${linha.produto_id} / Model ${linha.id_model}` : `Item ${linha.produto_id} (sem Model)`;
+        const erroLinha = new Error(
+          `${variacao} aparece em mais de uma linha com custo ou imposto diferentes ` +
+          `(linhas ${anterior._linha} e ${linha._linha}). Corrija a planilha: cada variação só pode ter um custo.`
+        );
+        erroLinha.statusCode = 422;
+        erroLinha.payload = { ok: false, code: "SHOPEE_VARIACAO_DUPLICADA", erro: erroLinha.message };
+        throw erroLinha;
+      }
+    }
+    resultado.length = 0;
+    for (const linha of unicas) {
+      delete linha._linha;
+      resultado.push(linha);
+    }
   }
 
   if (isTikTok) {
@@ -746,10 +792,10 @@ CREATE TABLE IF NOT EXISTS callbacks (
   CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
     ON custos (base_id, sku_id) WHERE sku_id <> '';
 `);
-    await pool.query(`
-  CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_produto_sku_legado
-    ON custos (base_id, produto_id, sku) WHERE sku_id = '';
-`);
+    // MELI/Shopee: identidade com o Model ID (FIN-508). Mesmo caminho do boot —
+    // nunca recriar aqui o antigo uq_custos_base_produto_sku_legado, que
+    // achatava as variações Shopee do mesmo Item.
+    await ensureColunasCustos();
 
     await pool.query(`
       ALTER TABLE ml_tokens ADD COLUMN IF NOT EXISTS cliente_id INTEGER REFERENCES clientes(id) ON DELETE CASCADE;
@@ -806,6 +852,7 @@ END $$;
 
 app.use("/auth", authRoutes);
 app.use("/admin/logs", logsRoutes);
+app.use("/admin/clientes-unificacao", clientesUnificacaoRoutes);
 app.use("/admin/observability", observabilityRoutes);
 app.use("/dashboard", dashboardRoutes);
 app.use("/fechamentos", fechamentosFinanceiroRoutes);
@@ -821,6 +868,7 @@ app.use("/clientes", clienteResponsaveisRoutes);
 app.use("/cliente-imagens", clienteImagemRoutes);
 app.use("/", tiktokShopRoutes);
 app.use("/shopee", shopeeRoutes);
+app.use("/integracoes", integracoesMatrizRoutes);
 app.use("/", automacoesRoutes);
 app.use("/", entregasClienteRoutes);
 app.use("/", basesRoutes);
@@ -836,6 +884,9 @@ app.use("/operacao/central-margem", motorMargemRoutes);
 // Central de Margem — camada SEGURA de precificação (preview + gates +
 // idempotência + auditoria). Escrita no ML só com MARGIN_PRICING_WRITE_*.
 app.use("/operacao/central-margem", margemPrecificacaoRoutes);
+// Central de Margem — simulação de cenários (preço/promoção/insumos) de um
+// MLB de uma conta. Somente leitura; a conta do corpo define o escopo.
+app.use("/api/margem", margemSimularRoutes);
 // Central de Margem — Promo Snapshot por conta (lê o banco; POST /sync só
 // enfileira leitura no ML, nunca aplica promoção).
 app.use("/operacao/central-margem", promoSnapshotRoutes);
@@ -952,15 +1003,19 @@ app.get("/api/bases/:baseSlug", apiKeyMiddleware, async (req, res) => {
     }
     const base = baseResult.rows[0];
     const custos = await pool.query(
-      "SELECT produto_id, custo_produto, imposto_percentual, taxa_fixa FROM custos WHERE base_id = $1",
+      "SELECT produto_id, sku_id, sku, custo_produto, imposto_percentual, taxa_fixa, id_model FROM custos WHERE base_id = $1",
       [base.id]
     );
     const dados = {};
     for (const row of custos.rows) {
-      dados[row.produto_id] = {
+      // MELI: chave = MLB, como sempre. Shopee com Model (FIN-508): uma chave
+      // por variação — senão as variações do mesmo Item se sobrescreviam aqui.
+      const variacaoShopee = String(base.marketplace || "").toLowerCase() === "shopee" && row.id_model;
+      dados[chaveDadosCusto(row, base.marketplace)] = {
         custo_produto: parseFloat(row.custo_produto),
         imposto_percentual: parseFloat(row.imposto_percentual),
-        taxa_fixa: parseFloat(row.taxa_fixa)
+        taxa_fixa: parseFloat(row.taxa_fixa),
+        ...(variacaoShopee ? { produto_id: row.produto_id, id_model: row.id_model } : {})
       };
     }
     const duracao = Date.now() - inicio;
@@ -1034,11 +1089,8 @@ app.get("/bases/:baseId", authMiddleware, requireAutomacoesAccess, requireBaseNa
       // linha. MELI/Shopee nunca preenchem sku_id, e a chave continua sendo só
       // o produto_id (comportamento inalterado). O `sku` textual ainda entra na
       // chave das linhas TikTok legadas, que não têm sku_id.
-      const chave = row.sku_id
-        ? row.sku_id
-        : row.sku
-          ? `${row.produto_id}::${row.sku}`
-          : row.produto_id;
+      // FIN-508: Shopee com Model ganha uma chave por variação (Item::model:X).
+      const chave = chaveDadosCusto(row, base.marketplace);
       dados[chave] = {
         produto_id: row.produto_id,
         sku_id: row.sku_id || null,
@@ -2069,6 +2121,13 @@ const server = app.listen(PORT, () => {
   // chama o mesmo runner como proteção, nunca como mecanismo principal.
   ensureMargemPrecificacaoSchema().catch((err) => {
     console.error("[schema] erro ao garantir schema de margem_precificacao_aplicacoes no boot:", err.message);
+  });
+
+  // Anúncios ML — "Promoções com rebate": tabela de jobs (análise/execução
+  // disparadas por clique). Aditiva, serializada por advisory lock; o serviço
+  // chama o mesmo runner como proteção.
+  ensurePromocoesRebateSchema().catch((err) => {
+    console.error("[schema] erro ao garantir schema de promocoes_rebate_jobs no boot:", err.message);
   });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`

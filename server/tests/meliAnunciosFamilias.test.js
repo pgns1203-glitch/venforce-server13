@@ -270,6 +270,11 @@ class MockDb {
         if (num(a.preco) != null) {
           g.preco_min = g.preco_min == null ? num(a.preco) : Math.min(g.preco_min, num(a.preco));
           g.preco_max = g.preco_max == null ? num(a.preco) : Math.max(g.preco_max, num(a.preco));
+          // Cheio do MESMO anúncio que deu o extremo (ARRAY_AGG ... ORDER BY preco, preco_original DESC)[1].
+          const p = num(a.preco), po = num(a.preco_original);
+          const ganhaCheio = (par) => po != null && (par.o == null || po > par.o);
+          if (!g._min || p < g._min.p || (p === g._min.p && ganhaCheio(g._min))) g._min = { p, o: po };
+          if (!g._max || p > g._max.p || (p === g._max.p && ganhaCheio(g._max))) g._max = { p, o: po };
         }
         if (a.moeda != null) g.moeda = g.moeda == null || a.moeda < g.moeda ? a.moeda : g.moeda;
         if (num(a.score_venforce) != null) {
@@ -320,6 +325,8 @@ class MockDb {
           vendidos_total: g.vendidos_total,
           preco_min: g.preco_min,
           preco_max: g.preco_max,
+          preco_min_original: g._min ? g._min.o : null,
+          preco_max_original: g._max ? g._max.o : null,
           moeda: g.moeda,
           score_min: g.score_min,
           total_ativos: g.total_ativos,
@@ -402,6 +409,11 @@ class MockDb {
         if (num(a.preco) != null) {
           g.preco_min = g.preco_min == null ? num(a.preco) : Math.min(g.preco_min, num(a.preco));
           g.preco_max = g.preco_max == null ? num(a.preco) : Math.max(g.preco_max, num(a.preco));
+          // Cheio do MESMO anúncio que deu o extremo (ARRAY_AGG ... ORDER BY preco, preco_original DESC)[1].
+          const p = num(a.preco), po = num(a.preco_original);
+          const ganhaCheio = (par) => po != null && (par.o == null || po > par.o);
+          if (!g._min || p < g._min.p || (p === g._min.p && ganhaCheio(g._min))) g._min = { p, o: po };
+          if (!g._max || p > g._max.p || (p === g._max.p && ganhaCheio(g._max))) g._max = { p, o: po };
         }
         if (a.moeda != null) g.moeda = g.moeda == null || a.moeda < g.moeda ? a.moeda : g.moeda;
         if (num(a.score_venforce) != null) {
@@ -423,7 +435,8 @@ class MockDb {
         return {
           grupo_key: g.grupo_key, family_id: g.family_id, family_name: g.family_name, item_id: g.item_id,
           total_itens: g.total_itens, total_user_products: g.ups.size, vendidos_total: g.vendidos_total,
-          preco_min: g.preco_min, preco_max: g.preco_max, moeda: g.moeda, score_min: g.score_min,
+          preco_min: g.preco_min, preco_max: g.preco_max,
+          preco_min_original: g._min ? g._min.o : null, preco_max_original: g._max ? g._max.o : null, moeda: g.moeda, score_min: g.score_min,
           total_ativos: g.total_ativos, total_pausados: g.total_pausados, total_encerrados: g.total_encerrados,
           estoque_total: estoqueTotal,
         };
@@ -803,7 +816,7 @@ async function run() {
   //    Status: consenso, ou "misto" — a família não tem status no ML.
   await withMockDb({
     anuncios: [
-      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", preco: 89.9, status: "active", score_venforce: 88 }),
+      anuncioFixture({ item_id: "MLB-a", user_product_id: "UP1", preco: 89.9, preco_original: 99.9, status: "active", score_venforce: 88 }),
       anuncioFixture({ item_id: "MLB-b", user_product_id: "UP2", preco: 129.9, status: "paused", score_venforce: 42 }),
     ],
     userProducts: [upFixture({ user_product_id: "UP1" }), upFixture({ user_product_id: "UP2" })],
@@ -811,10 +824,12 @@ async function run() {
     const fam = (await meliFamiliaService.listarAgrupado({ clienteId: 1 })).anuncios[0];
     assert.strictEqual(Number(fam.preco_min), 89.9);
     assert.strictEqual(Number(fam.preco_max), 129.9);
+    assert.strictEqual(Number(fam.preco_min_original), 99.9, "o cheio acompanha o anúncio do preço mínimo");
+    assert.strictEqual(fam.preco_max_original, null, "o máximo sem promoção não herda o cheio do mínimo");
     assert.strictEqual(fam.moeda, "BRL");
     assert.strictEqual(fam.score_min, 42, "o score do agrupador é o PIOR do grupo");
     assert.deepStrictEqual(fam.status_contagem, { ativos: 1, pausados: 1, encerrados: 0 });
-    console.log("  ✓ H. preço em faixa, score mínimo e contagem de status por agrupador");
+    console.log("  ✓ H. preço em faixa (com o cheio de cada extremo), score mínimo e contagem de status por agrupador");
   });
 
   // ── ORDENAÇÃO ÚNICA ────────────────────────────────────────────────────

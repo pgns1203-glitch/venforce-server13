@@ -356,6 +356,43 @@ async function run() {
     assert.strictEqual(r2.status, "recomendado", "429 na cotação é tentado de novo");
     ok("429 respeitado: promoções e cotação com nova tentativa");
   }
+  {
+    // Anúncio que JÁ está numa promoção com rebate ativa (fora da referência):
+    // ela forma o preço hoje (sale_price → ATIVA) e é a base da comparação.
+    const jaAtiva = normalizarPromocao({ id: "P-JA", type: "SMART", status: "started", ref_id: "OFFER-JA", price: 95, original_price: 100, meli_percentage: 5, seller_percentage: 0, name: "Smart já ativa" }, 0, "OFFER-JA");
+    assert.strictEqual(jaAtiva.statusExibicao, "ATIVA");
+    const lista = (...extra) => [refAtiva(100), jaAtiva, ...extra];
+
+    assert.strictEqual(svc.localizarPromoAtual(lista(), refAtiva(100)).id, "P-JA");
+    assert.strictEqual(svc.localizarPromoAtual([refAtiva(100)], refAtiva(100)).id, "C-MLB1", "sem ATIVA → base = referência");
+
+    const igual = await svc.avaliarItem(entrada(), depsItem({ lista: lista(smart("P-OK", { original: 100, meli: 5 })) }));
+    assert.strictEqual(igual.status, "sem_ganho", "candidata a 95 não é menor que o preço de hoje (95) — antes saía recomendada contra a Vendex");
+    assert.strictEqual(igual.motivo, "JA_EM_REBATE_MELHOR");
+    assert.ok(/rebate melhor/.test(igual.motivoTexto));
+    assert.deepStrictEqual(
+      { id: igual.atual.promotionId, nome: igual.atual.nome, ref: igual.atual.ehReferencia, preco: igual.atual.preco, sub: igual.atual.subsidioMl, pct: igual.atual.meliPercentage },
+      { id: "P-JA", nome: "Smart já ativa", ref: false, preco: 95, sub: 5, pct: 5 }
+    );
+
+    const pior = await svc.avaliarItem(entrada(), depsItem({ lista: lista(smart("P-RUIM", { original: 100, meli: 1, seller: 9 })) }));
+    assert.strictEqual(pior.status, "sem_ganho");
+    assert.strictEqual(pior.motivo, "JA_EM_REBATE_MELHOR", "candidata mais barata mas pior que a promoção atual");
+    assert.strictEqual(pior.atual.lucro, 17.1);
+
+    const melhor = await svc.avaliarItem(entrada(), depsItem({ lista: lista(smart("P-MELHOR", { original: 100, meli: 10 })) }));
+    assert.strictEqual(melhor.status, "recomendado");
+    assert.deepStrictEqual({ m: melhor.atual.margemPercent, l: melhor.atual.lucro }, { m: 18, l: 17.1 }, "margem/lucro de hoje = na promoção ativa");
+    assert.deepStrictEqual({ m: melhor.referencia.margemPercent, l: melhor.referencia.lucro }, { m: null, l: null }, "a Vendex não forma o preço: sem margem dela");
+    const c = melhor.candidatas[0];
+    assert.deepStrictEqual({ id: c.promotionId, preco: c.preco, l: c.lucro, gL: c.ganhoLucro }, { id: "P-MELHOR", preco: 90, l: 18.2, gL: 1.1 }, "ganho contra o preço de hoje, não contra a Vendex");
+
+    const naRef = await svc.avaliarItem(entrada(), depsItem({ lista: [normalizarPromocao({ id: "C-MLB1", type: "SELLER_CAMPAIGN", status: "started", price: 100, original_price: 120, name: "Vendex - Outubro" }, 0, "C-MLB1"), smart("P-OK")] }));
+    assert.strictEqual(naRef.status, "recomendado");
+    assert.strictEqual(naRef.atual.ehReferencia, true);
+    assert.strictEqual(naRef.referencia.margemPercent, 16);
+    ok("já numa promoção com rebate: base = preço de hoje, sem_ganho JA_EM_REBATE_MELHOR, ganho contra a ativa");
+  }
 
   // ── 7. Job: iniciar análise + worker ──────────────────────────────────────
   const cliente = { id: 1, slug: "cliente-a" };
@@ -575,7 +612,13 @@ async function run() {
     assert.strictEqual(revalidar({ promo: cand, lista: [cand] }).codigo, "REFERENCIA_INATIVA");
     assert.strictEqual(revalidar({ promo: { ...cand, status: "started" }, lista: [refAtiva(100)] }).codigo, "PROMOCAO_JA_PARTICIPA");
     assert.strictEqual(revalidar({ promo: { ...cand, subsidioMl: 0 }, lista: [refAtiva(100)] }).codigo, "SEM_SUBSIDIO");
-    ok("revalidação antes de gravar: preço, referência ativa, candidate, subsídio");
+    const jaAtiva = normalizarPromocao({ id: "P-JA", type: "SMART", status: "started", ref_id: "OFFER-JA", price: 95, original_price: 100, meli_percentage: 5, name: "Smart já ativa" }, 0, "OFFER-JA");
+    const r = revalidar({ promo: cand, lista: [refAtiva(100), jaAtiva, cand] });
+    assert.strictEqual(r.codigo, "PRECO_NAO_MENOR", "promoção com rebate ativa a 95 — candidata a 95 não entraria");
+    assert.ok(/Smart já ativa/.test(r.motivo));
+    const barata = smart("P-B", { original: 100, meli: 10 });
+    assert.deepStrictEqual(revalidar({ promo: barata, lista: [refAtiva(100), jaAtiva, barata] }), { ok: true });
+    ok("revalidação antes de gravar: preço (contra o de hoje), referência ativa, candidate, subsídio");
   }
 
   {

@@ -12,6 +12,10 @@
 // o job nasce numa requisição, roda em background no mesmo processo e morre
 // com ela (job 'processando' sem atualização há mais de 10 min = 'erro').
 //
+// Base da comparação = a promoção que forma o preço HOJE (sale_price →
+// statusExibicao "ATIVA"): a referência ou uma promoção com rebate em que o
+// anúncio já entrou. Candidata precisa ser mais barata que ESSE preço.
+//
 // Peças reaproveitadas (nenhuma fórmula nova):
 //   promoções do item ..... meliPromocoesService.listarPromocoesDoItemDetalhado
 //                           (mesma leitura ao vivo do modal, sem engolir 429)
@@ -62,6 +66,9 @@ const MOTIVOS = Object.freeze({
   // Aditivo ao contrato: o anúncio está na referência no ML mas não existe em
   // meli_anuncios (sem título/categoria/tipo para cotar) — sincronizar resolve.
   ANUNCIO_NAO_SINCRONIZADO: "ANUNCIO_NAO_SINCRONIZADO",
+  // O preço de hoje já vem de OUTRA promoção com rebate (não a referência) e
+  // nenhuma candidata melhora margem nem lucro sobre ela — vai para sem_ganho.
+  JA_EM_REBATE_MELHOR: "JA_EM_REBATE_MELHOR",
 });
 
 const MOTIVO_TEXTO = Object.freeze({
@@ -69,9 +76,10 @@ const MOTIVO_TEXTO = Object.freeze({
   COTACAO_INDISPONIVEL: "O Mercado Livre não informou comissão ou frete neste preço — nada foi estimado.",
   FORA_DA_REFERENCIA: "O anúncio não está ativo na promoção de referência.",
   SEM_CANDIDATA: "Nenhuma promoção com subsídio do Mercado Livre disponível para este anúncio.",
-  PRECO_NAO_MENOR: "As promoções com subsídio têm preço igual ou maior que o da referência — o rebate nunca entraria.",
+  PRECO_NAO_MENOR: "As promoções com subsídio têm preço igual ou maior que o preço de hoje — o rebate nunca entraria.",
   ERRO_ML: "Não foi possível ler as promoções do anúncio no Mercado Livre.",
   ANUNCIO_NAO_SINCRONIZADO: "Anúncio não encontrado no VenForce — sincronize os anúncios deste cliente.",
+  JA_EM_REBATE_MELHOR: "Já está numa promoção com rebate melhor — nenhuma outra melhora margem nem lucro.",
 });
 
 const STATUS_ITEM_ORDEM = { recomendado: 0, escolha: 1, sem_ganho: 2, descartado: 3 };
@@ -207,22 +215,47 @@ function localizarReferencia(promocoes, referencia) {
 }
 
 /**
+ * Promoção que forma o preço de venda HOJE: a que o ML aponta em
+ * sale_price.metadata.promotion_id (statusExibicao "ATIVA", ver
+ * meliPromocoesService) — pode ser a própria referência ou uma ACEITE com
+ * rebate em que o anúncio já entrou. No ML vale o menor preço para o
+ * comprador, então é contra ESTE preço que uma candidata precisa ganhar.
+ * Sem uma ATIVA identificável (o ML não informou ou houve ambiguidade), a
+ * base é a referência — o comportamento anterior.
+ */
+function localizarPromoAtual(promocoes, referenciaPromo) {
+  const ativa = (promocoes || []).find(
+    (p) =>
+      p &&
+      p.statusExibicao === "ATIVA" &&
+      STATUS_ATIVOS.has(String(p.status || "").toLowerCase()) &&
+      num(p.precoFinal) > 0
+  );
+  return ativa || referenciaPromo || null;
+}
+
+function mesmaPromocao(a, b) {
+  return Boolean(a && b && String(a.id) === String(b.id) && mesmoTipo(a.tipo, b.tipo));
+}
+
+/**
  * Candidatas de UM item, todas as condições da regra 3:
  *   tipo ACEITE (preço definido pelo ML), subsídio do ML (meliPercentage > 0
  *   e subsidioMl > 0), status candidate, preço conhecido e ESTRITAMENTE menor
- *   que o da referência em centavos — no ML vale o menor preço para o
- *   comprador, então com preço igual ou maior o rebate nunca entra.
- * A própria referência nunca é candidata.
+ *   que o preço de HOJE em centavos (`base`: a promoção que forma o preço —
+ *   a referência ou uma promoção com rebate já ativa) — no ML vale o menor
+ *   preço para o comprador, então com preço igual ou maior o rebate nunca
+ *   entra. A referência e a base nunca são candidatas.
  *
  * @returns {{ candidatas: object[], motivo: null|'SEM_CANDIDATA'|'PRECO_NAO_MENOR' }}
  */
-function filtrarCandidatas(promocoes, referenciaPromo) {
-  const precoRef = centavos(referenciaPromo && referenciaPromo.precoFinal);
+function filtrarCandidatas(promocoes, referenciaPromo, base = referenciaPromo) {
+  const precoRef = centavos(base && base.precoFinal);
   const candidatas = [];
   let algumaComPrecoNaoMenor = false;
   for (const p of promocoes || []) {
     if (!p) continue;
-    if (referenciaPromo && String(p.id) === String(referenciaPromo.id) && mesmoTipo(p.tipo, referenciaPromo.tipo)) continue;
+    if (mesmaPromocao(p, referenciaPromo) || mesmaPromocao(p, base)) continue;
     if (!TIPOS_ESCRITA_ACEITE.has(String(p.tipo || "").toUpperCase())) continue;
     if (String(p.status || "").toLowerCase() !== "candidate") continue;
     if (!(num(p.meliPercentage) > 0) || !(num(p.subsidioMl) > 0)) continue;
@@ -391,8 +424,9 @@ function validarEscolhas(escolhasBrutas, resultado, referencia) {
 /**
  * Gancho `antesDeEscrever` de participarPromocaoAceite: revalida na MESMA
  * releitura ao vivo que a escrita fez (nada de cache do frontend):
- * candidata ainda candidate, com subsídio, preço ainda MENOR que o da
- * referência, e a referência ainda ativa no anúncio.
+ * candidata ainda candidate, com subsídio, preço ainda MENOR que o preço de
+ * hoje (a promoção que forma o preço — referência ou outra com rebate já
+ * ativa), e a referência ainda ativa no anúncio.
  */
 function criarRevalidacao(referencia) {
   return function revalidar({ promo, lista }) {
@@ -403,9 +437,11 @@ function criarRevalidacao(referencia) {
     if (!ref) {
       return falha("REFERENCIA_INATIVA", "A promoção de referência não está mais ativa neste anúncio. Nada foi enviado.");
     }
+    const atual = localizarPromoAtual(lista, ref);
     const pc = centavos(promo.precoFinal);
-    if (pc === null || pc >= centavos(ref.precoFinal)) {
-      return falha("PRECO_NAO_MENOR", "O preço desta promoção não é mais menor que o da referência — o rebate não entraria. Nada foi enviado.");
+    if (pc === null || pc >= centavos(atual.precoFinal)) {
+      const deQuem = mesmaPromocao(atual, ref) ? "o da referência" : `o preço de hoje (${atual.nome || atual.id})`;
+      return falha("PRECO_NAO_MENOR", `O preço desta promoção não é mais menor que ${deQuem} — o rebate não entraria. Nada foi enviado.`);
     }
     if (!(num(promo.subsidioMl) > 0)) {
       return falha("SEM_SUBSIDIO", "Esta promoção não tem mais subsídio do Mercado Livre. Nada foi enviado.");
@@ -802,6 +838,8 @@ async function avaliarItem({ itemId, anuncio, naReferencia, referencia, custos, 
     motivo: null,
     motivoTexto: null,
     referencia: { preco: null, subsidioMl: null, margemPercent: null, lucro: null },
+    // Promoção que forma o preço HOJE — base de todas as comparações.
+    atual: null,
     candidatas: [],
     sugestao: null,
   };
@@ -824,8 +862,30 @@ async function avaliarItem({ itemId, anuncio, naReferencia, referencia, custos, 
     margemPercent: null, lucro: null,
   };
 
-  const { candidatas, motivo } = filtrarCandidatas(lido.promocoes, refPromo);
-  if (!candidatas.length) return descartar(motivo);
+  const promoAtual = localizarPromoAtual(lido.promocoes, refPromo);
+  const atualEhReferencia = mesmaPromocao(promoAtual, refPromo);
+  const subsidioAtual = num(promoAtual.subsidioMl) > 0 ? num(promoAtual.subsidioMl) : 0;
+  base.atual = {
+    promotionId: String(promoAtual.id),
+    tipo: promoAtual.tipo || null,
+    tipoLabel: promoAtual.tipoLabel || rotuloTipoPromocao(promoAtual.tipo),
+    nome: promoAtual.nome || null,
+    ehReferencia: atualEhReferencia,
+    preco: round2(num(promoAtual.precoFinal)),
+    subsidioMl: round2(subsidioAtual),
+    meliPercentage: subsidioAtual > 0 ? round2(num(promoAtual.meliPercentage)) : null,
+    margemPercent: null,
+    lucro: null,
+  };
+  // Já numa promoção com rebate que não é a referência: sem candidata melhor,
+  // o anúncio fica como está (sem_ganho), não é descartado.
+  const jaEmRebate = !atualEhReferencia && subsidioAtual > 0;
+  const semGanhoRebate = () => ({
+    ...base, status: "sem_ganho", motivo: MOTIVOS.JA_EM_REBATE_MELHOR, motivoTexto: MOTIVO_TEXTO.JA_EM_REBATE_MELHOR,
+  });
+
+  const { candidatas, motivo } = filtrarCandidatas(lido.promocoes, refPromo, promoAtual);
+  if (!candidatas.length) return jaEmRebate ? semGanhoRebate() : descartar(motivo);
 
   if (!custos || custos.erro) {
     return descartar(MOTIVOS.SEM_CUSTO, custos && custos.erro ? `Base de Custos indisponível: ${custos.erro}` : null);
@@ -839,12 +899,19 @@ async function avaliarItem({ itemId, anuncio, naReferencia, referencia, custos, 
   const cotar = criarCotacaoDoItem(d, { clienteId, itemId, anuncio, mlUserId });
   const insumos = { custo: custos.custo, aliquota: aliq, taxaFixa: custos.taxaFixa };
 
-  const mRef = margemNoPreco({ ...insumos, preco: refPromo.precoFinal, rebate: subsidioRef, cotacao: await cotar(refPromo.precoFinal) });
-  if (!mRef.ok) {
-    return descartar(MOTIVOS.COTACAO_INDISPONIVEL, `${MOTIVO_TEXTO.COTACAO_INDISPONIVEL} (preço da referência: ${mRef.motivo})`);
+  const mAtual = margemNoPreco({ ...insumos, preco: promoAtual.precoFinal, rebate: subsidioAtual, cotacao: await cotar(promoAtual.precoFinal) });
+  if (!mAtual.ok) {
+    const qual = atualEhReferencia ? "preço da referência" : "preço de hoje";
+    return descartar(MOTIVOS.COTACAO_INDISPONIVEL, `${MOTIVO_TEXTO.COTACAO_INDISPONIVEL} (${qual}: ${mAtual.motivo})`);
   }
-  base.referencia.margemPercent = round2(mRef.margemRatio * 100);
-  base.referencia.lucro = round2(mRef.lucro);
+  base.atual.margemPercent = round2(mAtual.margemRatio * 100);
+  base.atual.lucro = round2(mAtual.lucro);
+  // Margem/lucro "na referência" só existem quando é ela que forma o preço;
+  // senão não seriam o hoje e não entram na comparação.
+  if (atualEhReferencia) {
+    base.referencia.margemPercent = base.atual.margemPercent;
+    base.referencia.lucro = base.atual.lucro;
+  }
 
   const avaliadas = [];
   const ignoradas = [];
@@ -855,7 +922,8 @@ async function avaliarItem({ itemId, anuncio, naReferencia, referencia, custos, 
   }
   if (!avaliadas.length) return descartar(MOTIVOS.COTACAO_INDISPONIVEL, null, { candidatasIgnoradas: ignoradas });
 
-  const cls = classificarItem({ referencia: { margemRatio: mRef.margemRatio, lucro: mRef.lucro }, candidatas: avaliadas });
+  const cls = classificarItem({ referencia: { margemRatio: mAtual.margemRatio, lucro: mAtual.lucro }, candidatas: avaliadas });
+  if (cls.status === "sem_ganho" && jaEmRebate) return { ...semGanhoRebate(), candidatasIgnoradas: ignoradas };
   return { ...base, status: cls.status, candidatas: cls.candidatas, sugestao: cls.sugestao, candidatasIgnoradas: ignoradas };
 }
 
@@ -924,7 +992,7 @@ async function executarAnalise(jobId, deps = {}) {
           r = {
             itemId, titulo: null, thumbnail: null, status: "descartado", motivo: MOTIVOS.ERRO_ML,
             motivoTexto: `${MOTIVO_TEXTO.ERRO_ML} (${(err && err.message) || "erro"})`,
-            referencia: { preco: null, subsidioMl: null, margemPercent: null, lucro: null }, candidatas: [], sugestao: null,
+            referencia: { preco: null, subsidioMl: null, margemPercent: null, lucro: null }, atual: null, candidatas: [], sugestao: null,
           };
         }
         processados += 1;
@@ -1145,6 +1213,7 @@ module.exports = {
   escolherReferenciaPadrao,
   ordenarReferencias,
   localizarReferencia,
+  localizarPromoAtual,
   filtrarCandidatas,
   margemNoPreco,
   classificarItem,

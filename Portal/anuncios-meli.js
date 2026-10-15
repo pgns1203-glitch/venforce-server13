@@ -4716,8 +4716,9 @@
     COTACAO_INDISPONIVEL: "O Mercado Livre não devolveu comissão e frete para esse preço agora. Tente de novo mais tarde.",
     FORA_DA_REFERENCIA: "O anúncio não está ativo na promoção de referência.",
     SEM_CANDIDATA: "Nenhuma promoção com subsídio do Mercado Livre disponível para este anúncio.",
-    PRECO_NAO_MENOR: "As promoções com subsídio têm preço igual ou maior que o da referência — o rebate não entraria.",
+    PRECO_NAO_MENOR: "As promoções com subsídio têm preço igual ou maior que o preço de hoje — o rebate não entraria.",
     ERRO_ML: "O Mercado Livre não respondeu para este anúncio.",
+    JA_EM_REBATE_MELHOR: "Já está numa promoção com rebate melhor — nenhuma outra melhora margem nem lucro.",
   };
 
   function rebChaveConta() {
@@ -4827,7 +4828,7 @@
   }
 
   // Escolha inicial: recomendados vêm marcados (a sugestão é a mesma nos dois
-  // critérios); itens de Escolha começam em "Manter só a referência".
+  // critérios); itens de Escolha começam em "Manter como está".
   function rebEscolhasIniciais() {
     var esc = {};
     rebItens().forEach(function (it) {
@@ -4854,7 +4855,7 @@
 
   // "Preferir margem/lucro em todos": só nos itens de Escolha, e só quando a
   // sugestão daquele critério melhora o próprio critério — senão a referência.
-  // "ref" = Manter só a referência em todos.
+  // "ref" = Manter como está em todos (nenhuma participação nova).
   function rebPreferir(criterio) {
     rebItens("escolha").forEach(function (it) {
       if (criterio === "ref") { REB.escolhas[it.itemId] = ""; return; }
@@ -4875,10 +4876,16 @@
     return "recomendado";
   }
 
-  // Nome curto da referência para rótulos ("Vendex" quando é a Vendex).
-  function rebNomeCurtoRef() {
-    var nome = (REB && REB.job && REB.job.referencia && REB.job.referencia.nome) || "";
-    return /vendex/i.test(nome) ? "Vendex" : "referência";
+  // Promoção que forma o preço HOJE (base das comparações): a referência ou
+  // uma promoção com rebate em que o anúncio já entrou. Análises salvas antes
+  // do campo `atual` caem na referência, como eram calculadas.
+  function rebAtual(it) {
+    if (it && it.atual) return it.atual;
+    var ref = (it && it.referencia) || {};
+    return {
+      nome: (REB && REB.job && REB.job.referencia && REB.job.referencia.nome) || "Referência", ehReferencia: true,
+      preco: ref.preco, subsidioMl: ref.subsidioMl, meliPercentage: ref.meliPercentage, margemPercent: ref.margemPercent, lucro: ref.lucro,
+    };
   }
 
   // --- Abrir / fechar --------------------------------------------------------------
@@ -5484,7 +5491,7 @@
       '<div class="am-reb-tab__linha am-reb-tab__cab" role="row">' +
         '<span role="columnheader"><input type="checkbox" id="am-reb-todos" data-reb-todos aria-label="Selecionar todos"' + (todos ? " checked" : "") + "></span>" +
         '<span role="columnheader">Anúncio</span>' +
-        '<span role="columnheader">Hoje na ' + rebNomeCurtoRef() + "</span>" +
+        '<span role="columnheader">Hoje</span>' +
         '<span role="columnheader">Com rebate</span>' +
         '<span role="columnheader" class="am-reb-col-ganho">Ganho</span>' +
       "</div>" +
@@ -5492,14 +5499,16 @@
         var s = it.sugestao || {};
         var c = rebCandidata(it, s.porMargem || s.porLucro) || (it.candidatas || [])[0];
         var marcado = !!(c && reb.escolhas[it.itemId] === c.promotionId);
-        var ref = it.referencia || {};
+        var hoje = rebAtual(it);
         return '<div class="am-reb-tab__linha" role="row" data-reb-item="' + escapeAttr(it.itemId) + '">' +
           '<span role="cell"><input type="checkbox" id="am-reb-chk-' + i + '" data-reb-marcar="' + escapeAttr(it.itemId) + '"' +
             (marcado ? " checked" : "") + (c ? "" : " disabled") + ' aria-label="Participar com ' + escapeAttr(it.titulo || it.itemId) + '"></span>' +
           '<span role="cell">' + rebAnuncioHtml(it) + "</span>" +
           '<span role="cell" class="am-reb-celula">' +
-            '<span class="am-reb-celula__forte">' + formatMoeda(ref.preco) + "</span>" +
-            '<span class="am-reb-celula__fraco">' + rebPct(ref.margemPercent) + " · " + formatMoeda(ref.lucro) + "</span></span>" +
+            '<span class="am-reb-celula__forte">' + formatMoeda(hoje.preco) +
+              (rebNum(hoje.subsidioMl) > 0 ? ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(hoje.subsidioMl) + " ML</span>" : "") + "</span>" +
+            '<span class="am-reb-celula__fraco">' + rebPct(hoje.margemPercent) + " · " + formatMoeda(hoje.lucro) + "</span>" +
+            '<span class="am-reb-celula__fraco" data-reb-hoje-nome>' + escapeHtml(hoje.nome || "") + "</span></span>" +
           '<span role="cell" class="am-reb-celula">' + (c
             ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + ' <span class="am-reb-celula__rebate">+ ' + formatMoeda(c.subsidioMl) + " ML</span></span>" +
               '<span class="am-reb-celula__fraco">' + escapeHtml(c.nome || c.promotionId) + (c.tipoLabel ? " · " + escapeHtml(c.tipoLabel) : "") + "</span>"
@@ -5527,7 +5536,7 @@
         '<div class="am-reb-rapida__btns" role="radiogroup" aria-labelledby="am-reb-rapida-t">' +
           btn("am-reb-pref-margem", "preferir-margem", "margem", "Maior margem") +
           btn("am-reb-pref-lucro", "preferir-lucro", "lucro", "Maior lucro") +
-          btn("am-reb-pref-ref", "preferir-ref", "ref", "Manter só a " + rebNomeCurtoRef()) +
+          btn("am-reb-pref-ref", "preferir-ref", "ref", "Manter como está") +
         "</div></section>" +
       esc.map(function (it, i) { return rebEscolhaItemHtml(it, i); }).join("");
   }
@@ -5570,11 +5579,10 @@
     var s = it.sugestao || {};
     var atual = REB.escolhas[it.itemId] || "";
     var nome = "am-reb-esc-" + i;
-    var ref = it.referencia || {};
-    var nomeRef = (REB.job && REB.job.referencia && REB.job.referencia.nome) || "Referência";
+    var hoje = rebAtual(it);
     var opcoes = [{
-      valor: "", rotulo: "Só a " + rebNomeCurtoRef(), margem: ref.margemPercent, lucro: ref.lucro, dMargem: null, dLucro: null,
-      promo: nomeRef, preco: ref.preco, subsidio: ref.subsidioMl, pct: ref.meliPercentage,
+      valor: "", rotulo: "Manter como está", margem: hoje.margemPercent, lucro: hoje.lucro, dMargem: null, dLucro: null,
+      promo: hoje.nome, preco: hoje.preco, subsidio: hoje.subsidioMl, pct: hoje.meliPercentage,
     }];
     var vistos = {};
     function add(pid, rotulo) {

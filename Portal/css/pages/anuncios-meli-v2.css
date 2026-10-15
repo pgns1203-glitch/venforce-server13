@@ -4384,3 +4384,10 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   letter-spacing: 0;
   text-transform: none;
 }
+
+/* Unidades vendidas no período — só a contagem, neutra. */
+.vf-page-anuncios-meli .am-faturamento__un {
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}

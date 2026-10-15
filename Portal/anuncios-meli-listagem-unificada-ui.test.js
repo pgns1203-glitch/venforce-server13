@@ -1475,12 +1475,10 @@ async function run() {
           selo: f1.querySelector('.am-status-misto .vf-status').textContent.trim(),
           detalhe: det ? Array.from(det.children).map(function(e){ return e.textContent; }) : null,
           cobertura: document.querySelectorAll('.am-cobertura').length,
-          unidadesFat: document.querySelectorAll('.am-faturamento__un').length,
         }; })()`);
       assert.strictEqual(r.selo, "Misto");
       assert.deepStrictEqual(r.detalhe, ["3 ativos", "1 pausado"], "só os status com contagem, um por linha");
       assert.strictEqual(r.cobertura, 0, "a coluna de estoque mostra só o número (cobertura removida a pedido)");
-      assert.strictEqual(r.unidadesFat, 0, "o faturamento não mostra mais 'N un ↓' (confundia o usuário)");
     });
 
     await check("10b2 — família 1 variação = 1 anúncio mostra um número só; Curva ABC mora no faturamento; score é selo compacto", async () => {
@@ -3453,6 +3451,8 @@ async function run() {
             porFamilia: { "FAM-1": 0.333, "FAM-2": 0.044 },
             porItemValor: { "MLB-SEMUP": 950.5, "MLB-SEMVAR": 11 },
             porFamiliaValor: { "FAM-1": 3330, "FAM-2": 44 },
+            porItemUnidades: { "MLB-SEMUP": 12, "MLB-SEMVAR": 1 },
+            porFamiliaUnidades: { "FAM-1": 1234, "FAM-2": 2 },
           },
           curvaAbc: {
             periodoDias: 30,
@@ -3483,6 +3483,19 @@ async function run() {
         assert.strictEqual(valorAbsolutoSemup, "R$ 950,50", `célula precisa mostrar o valor absoluto (R$), nunca o texto antigo "do faturamento": recebido "${valorAbsolutoSemup}"`);
         const valorAbsolutoFam = await cdp.evaluate(`document.querySelector('${linhaFam("FAM-1")} .am-faturamento__legenda').textContent.trim()`);
         assert.strictEqual(valorAbsolutoFam, "R$ 3.330,00", "família usa o valor ABSOLUTO consolidado (porFamiliaValor, soma dos filhos), nunca o de um filho isolado");
+
+        // 3ª linha: só a contagem de unidades vendidas, neutra — sem preço
+        // médio nem "↓" (confundiam o usuário).
+        const un = await cdp.evaluate(`(function(){
+          var i = document.querySelector('.am-row[data-item="MLB-SEMUP"] .am-faturamento__un');
+          var f = document.querySelector('${linhaFam("FAM-1")} .am-faturamento__un');
+          return { item: i && i.textContent.trim(), fam: f && f.textContent.trim(), titulo: i && i.getAttribute('title'),
+            seta: document.querySelectorAll('.am-faturamento__un.is-abaixo').length };
+        })()`);
+        assert.strictEqual(un.item, "12 un");
+        assert.strictEqual(un.fam, "1.234 un", "família soma as unidades dos filhos");
+        assert.strictEqual(un.titulo, "Unidades vendidas nos últimos 30 dias");
+        assert.strictEqual(un.seta, 0, "sem o aviso de preço médio");
 
         // Curva ABC: tag SEMPRE visível quando existe dado — sem nenhuma
         // ordenação selecionada — e SEM o prefixo "ABC" (só a letra).

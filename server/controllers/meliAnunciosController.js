@@ -730,6 +730,9 @@ async function listarAgrupadoOrdenadoPorMotor({ cliente, clienteContaId, include
       anuncio.faturamentoValor = anuncio.tipo === "familia"
         ? (ranking.porFamiliaValor[anuncio.family_id] != null ? ranking.porFamiliaValor[anuncio.family_id] : null)
         : (ranking.porItemValor[anuncio.item_id] != null ? ranking.porItemValor[anuncio.item_id] : null);
+      const mapaUn = anuncio.tipo === "familia" ? ranking.porFamiliaUnidades : ranking.porItemUnidades;
+      const chaveUn = anuncio.tipo === "familia" ? anuncio.family_id : anuncio.item_id;
+      anuncio.faturamentoUnidades = mapaUn && mapaUn[chaveUn] != null ? mapaUn[chaveUn] : null;
       anuncio.faturamentoPeriodoDias = ranking.periodoDias != null ? ranking.periodoDias : null;
     }
   }
@@ -1173,6 +1176,9 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
 
   const porItem = {};
   const porItemValor = {};
+  // Unidades vendidas no período (mesmo agregado do Motor que dá a receita).
+  // null quando o item não vendeu — sem venda é ausência, como o percentual.
+  const porItemUnidades = {};
   for (const itemId of itemIds) {
     const agregado = porMlb.get(String(itemId));
     const receita = agregado ? agregado.receita : null;
@@ -1181,25 +1187,33 @@ function montarFaturamento(porMlb, itemIds, periodo, porFamiliaItens) {
         ? Math.round((receita / receitaTotalPeriodo) * 10000) / 10000
         : null;
     porItemValor[itemId] = receita != null ? Math.round(receita * 100) / 100 : null;
+    porItemUnidades[itemId] = receita != null && agregado ? agregado.unidades || 0 : null;
   }
 
   const porFamilia = {};
   const porFamiliaValor = {};
+  const porFamiliaUnidades = {};
   for (const [familyId, itensDaFamilia] of (porFamiliaItens || new Map())) {
     let receitaFamilia = 0;
     let teveReceita = false;
+    let unidadesFamilia = 0;
     for (const itemId of itensDaFamilia) {
       const agregado = porMlb.get(String(itemId));
       if (agregado && agregado.receita) { receitaFamilia += agregado.receita; teveReceita = true; }
+      if (agregado) unidadesFamilia += agregado.unidades || 0;
     }
     porFamilia[familyId] =
       teveReceita && receitaTotalPeriodo > 0
         ? Math.round((receitaFamilia / receitaTotalPeriodo) * 10000) / 10000
         : null;
     porFamiliaValor[familyId] = teveReceita ? Math.round(receitaFamilia * 100) / 100 : null;
+    porFamiliaUnidades[familyId] = teveReceita ? unidadesFamilia : null;
   }
 
-  return { periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia, porItemValor, porFamiliaValor };
+  return {
+    periodoDias: diasNoPeriodo(periodo), receitaTotalPeriodo, porItem, porFamilia, porItemValor, porFamiliaValor,
+    porItemUnidades, porFamiliaUnidades,
+  };
 }
 
 // Reaproveita cliente360ProdutosEngine.classificarCurvaAbc (mesmo critério de

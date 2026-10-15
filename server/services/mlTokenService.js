@@ -4,6 +4,11 @@ const ML_CLIENT_ID = process.env.ML_CLIENT_ID || "";
 const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET || "";
 const OAUTH_TOKEN_URL = "https://api.mercadolibre.com/oauth/token";
 const REFRESH_WINDOW_MS = 5 * 60 * 1000;
+// Prazo do POST OAuth de renovação. Sem ele (fetch não tem timeout próprio), um
+// ML lento mantinha a renovação — e o lock do grant — pendurados indefinidamente.
+const OAUTH_REFRESH_TIMEOUT_MS = 15000;
+const LOCK_CONNECT_TIMEOUT_MS = 10000;
+const LOCK_QUERY_TIMEOUT_MS = 10000;
 const ADVISORY_GRANT_LOCK_NAMESPACE = 1296845908;
 const ADVISORY_CLIENT_LOCK_NAMESPACE = 1296845907;
 const PERMANENT_STATUSES = new Set(["revoked", "blocked", "invalid"]);
@@ -107,9 +112,147 @@ function backoffMsForFailure(failures) {
   return Math.min(6 * 60 * 60 * 1000, 60 * 60 * 1000 * (2 ** (count - 4)));
 }
 
-function createService({ db = pool, fetchFn = (...args) => fetch(...args), nowFn = () => new Date(), sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)), logger = console } = {}) {
+// Conexão de lock DEDICADA, FORA do pool compartilhado (mesmo padrão do
+// "Atualizar dados" do Painel de Contas). O advisory lock de sessão precisa de
+// uma sessão viva durante o POST OAuth; tirá-la do pool deixava uma conexão
+// presa por renovação lenta e esgotava o pool. Aqui a sessão é própria: o pool
+// segue livre, e se o processo morrer o Postgres solta o lock junto com ela.
+function criarConexaoLockDedicada() {
+  const { Client } = require("pg");
+  const { configConexao } = require("../config/databaseConexao");
+  return new Client({
+    ...configConexao(),
+    application_name: "venforce-ml-refresh-lock",
+    connectionTimeoutMillis: LOCK_CONNECT_TIMEOUT_MS,
+    query_timeout: LOCK_QUERY_TIMEOUT_MS,
+    keepAlive: true,
+  });
+}
+
+// Banco injetado que NÃO é o pool real (testes com banco em memória): o lock
+// usa uma conexão desse banco, na mesma interface do Client dedicado.
+function conexaoLockViaBanco(banco) {
+  let cliente = null;
+  return {
+    on() {},
+    async connect() { cliente = await banco.connect(); },
+    query: (sql, params) => cliente.query(sql, params),
+    async end() { if (cliente) { const c = cliente; cliente = null; c.release(); } },
+  };
+}
+
+function createService({
+  db = pool,
+  fetchFn = (...args) => fetch(...args),
+  nowFn = () => new Date(),
+  sleepFn = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  logger = console,
+  refreshTimeoutMs = OAUTH_REFRESH_TIMEOUT_MS,
+  criarConexaoLock = db === pool ? criarConexaoLockDedicada : () => conexaoLockViaBanco(db),
+} = {}) {
   const legacyBackoffByGrantId = new Map();
   const legacyFailureCountByGrantId = new Map();
+  // Fila local por grant: renovações simultâneas NESTE processo rodam uma por
+  // vez (a 2ª relê o grant já renovado e não faz POST), sem empilhar uma sessão
+  // de lock esperando por chamada. Entre processos quem decide é o advisory lock.
+  const filaLocalPorGrant = new Map();
+
+  async function emFilaLocal(grantId, fn) {
+    const chave = Number(grantId);
+    const anterior = filaLocalPorGrant.get(chave) || Promise.resolve();
+    let liberar;
+    const atual = new Promise((resolve) => { liberar = resolve; });
+    const cauda = anterior.then(() => atual);
+    filaLocalPorGrant.set(chave, cauda);
+    await anterior;
+    try {
+      return await fn();
+    } finally {
+      liberar();
+      if (filaLocalPorGrant.get(chave) === cauda) filaLocalPorGrant.delete(chave);
+    }
+  }
+
+  // Lock de sessão do grant numa conexão dedicada. { locked, liberar }.
+  async function adquirirLockDoGrant(grantId) {
+    const conexao = criarConexaoLock();
+    let encerrada = false;
+    const encerrar = async () => {
+      if (encerrada) return;
+      encerrada = true;
+      try { await conexao.end(); } catch (_) { /* a sessão já caiu: o Postgres soltou o lock */ }
+    };
+    // Sem listener, um 'error' da conexão (rede/restart do Postgres) derrubaria
+    // o processo. O Postgres já soltou o lock da sessão; a renovação segue.
+    conexao.on("error", (err) => {
+      logger.warn(JSON.stringify({ event: "ml_grant_lock_connection_lost", grant_id: Number(grantId), error: sanitizeErrorMessage(err) }));
+      encerrar();
+    });
+    let locked = false;
+    try {
+      await conexao.connect();
+      for (let attempt = 0; attempt < 8 && !locked; attempt += 1) {
+        const lockResult = await conexao.query(
+          `SELECT pg_try_advisory_lock($1, $2) AS locked`,
+          [ADVISORY_GRANT_LOCK_NAMESPACE, Number(grantId)]
+        );
+        locked = lockResult.rows[0]?.locked === true;
+        if (!locked) await sleepFn(250);
+      }
+    } catch (err) {
+      await encerrar();
+      throw err;
+    }
+    if (!locked) {
+      await encerrar();
+      return { locked: false, liberar: async () => {} };
+    }
+    return {
+      locked: true,
+      liberar: async () => {
+        try {
+          await conexao.query(`SELECT pg_advisory_unlock($1, $2)`, [ADVISORY_GRANT_LOCK_NAMESPACE, Number(grantId)]);
+        } catch (unlockError) {
+          logger.error(JSON.stringify({ event: "ml_grant_unlock_failed", grant_id: Number(grantId), error: sanitizeErrorMessage(unlockError) }));
+        }
+        await encerrar();
+      },
+    };
+  }
+
+  // POST OAuth com prazo: o AbortSignal cancela o fetch real e a corrida com o
+  // timer garante o prazo mesmo para um fetchFn que não respeite o signal.
+  async function postarRenovacao(refreshToken) {
+    const controller = new AbortController();
+    let timer;
+    const prazo = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error(`Timeout de ${Math.round(refreshTimeoutMs / 1000)}s na renovação OAuth do Mercado Livre.`));
+      }, refreshTimeoutMs);
+    });
+    const chamada = (async () => {
+      const response = await fetchFn(OAUTH_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          grant_type: "refresh_token",
+          client_id: ML_CLIENT_ID,
+          client_secret: ML_CLIENT_SECRET,
+          refresh_token: refreshToken,
+        }),
+        signal: controller.signal,
+      });
+      const data = await response.json().catch(() => ({}));
+      return { response, data };
+    })();
+    chamada.catch(() => {}); // perdeu a corrida para o prazo: o erro tardio não vira unhandledRejection
+    try {
+      return await Promise.race([chamada, prazo]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   function hasPrimaryColumn(grant) {
     return grant?._has_is_primary === true;
@@ -356,25 +499,21 @@ function createService({ db = pool, fetchFn = (...args) => fetch(...args), nowFn
     }
   }
 
-  async function refreshMlGrant(grantId, {
+  async function refreshMlGrant(grantId, options = {}) {
+    return emFilaLocal(grantId, () => renovarComLock(grantId, options));
+  }
+
+  async function renovarComLock(grantId, {
     force = false,
     ignoreBackoff = false,
     staleAccessToken = null,
     refreshWindowMs = REFRESH_WINDOW_MS,
   } = {}) {
-    const lockClient = await db.connect();
-    let locked = false;
+    // O lock fica numa conexão DEDICADA: nenhuma conexão do pool é segurada
+    // durante o POST OAuth (as queries abaixo pegam e devolvem uma por vez).
+    const lock = await adquirirLockDoGrant(grantId);
     try {
-      for (let attempt = 0; attempt < 8 && !locked; attempt += 1) {
-        const lockResult = await lockClient.query(
-          `SELECT pg_try_advisory_lock($1, $2) AS locked`,
-          [ADVISORY_GRANT_LOCK_NAMESPACE, Number(grantId)]
-        );
-        locked = lockResult.rows[0]?.locked === true;
-        if (!locked) await sleepFn(250);
-      }
-
-      if (!locked) {
+      if (!lock.locked) {
         const latest = await findGrantById(grantId);
         if (latest && !grantNeedsRefresh(latest, nowFn(), refreshWindowMs)) return latest;
         const err = new Error("Renovação deste grant já está em andamento.");
@@ -409,17 +548,7 @@ function createService({ db = pool, fetchFn = (...args) => fetch(...args), nowFn
       let response;
       let data;
       try {
-        response = await fetchFn(OAUTH_TOKEN_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
-            grant_type: "refresh_token",
-            client_id: ML_CLIENT_ID,
-            client_secret: ML_CLIENT_SECRET,
-            refresh_token: grant.refresh_token,
-          }),
-        });
-        data = await response.json().catch(() => ({}));
+        ({ response, data } = await postarRenovacao(grant.refresh_token));
       } catch (networkError) {
         const failure = await registerRefreshFailure(grant, networkError);
         const err = new Error(failure.message);
@@ -462,14 +591,7 @@ function createService({ db = pool, fetchFn = (...args) => fetch(...args), nowFn
       logger.log(JSON.stringify({ event: "ml_grant_refreshed", grant_id: grant.id, cliente_id: grant.cliente_id, ml_user_id: String(grant.ml_user_id) }));
       return updated.rows[0] || { ...grant, access_token: data.access_token, refresh_token: refreshToken, expires_at: expiresAt, token_status: "valid" };
     } finally {
-      if (locked) {
-        try {
-          await lockClient.query(`SELECT pg_advisory_unlock($1, $2)`, [ADVISORY_GRANT_LOCK_NAMESPACE, Number(grantId)]);
-        } catch (unlockError) {
-          logger.error(JSON.stringify({ event: "ml_grant_unlock_failed", grant_id: Number(grantId), error: sanitizeErrorMessage(unlockError) }));
-        }
-      }
-      lockClient.release();
+      await lock.liberar();
     }
   }
 
@@ -626,6 +748,7 @@ function createService({ db = pool, fetchFn = (...args) => fetch(...args), nowFn
 const service = createService();
 
 module.exports = {
+  OAUTH_REFRESH_TIMEOUT_MS,
   ...service,
   createMlTokenService: createService,
   grantNeedsRefresh,

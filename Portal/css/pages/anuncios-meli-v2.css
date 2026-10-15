@@ -1145,6 +1145,9 @@
 }
 
 .vf-page-anuncios-meli .am-margem__lucro {
+  /* Recuo leve: alinhado à esquerda do % ficava um bloco "quadrado",
+     difícil de separar visualmente do valor de cima. */
+  padding-left: 6px;
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-medium);
   white-space: nowrap;

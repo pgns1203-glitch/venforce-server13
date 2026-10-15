@@ -264,7 +264,10 @@
     var classe = scoreClasse(s);
     var dash = (pct / 100 * AM_GAUGE_ARC_LEN).toFixed(1);
     var scoreTxt = score === null || score === undefined ? "—" : s;
-    return '<div class="am-gauge">' +
+    // Selo compacto: a legenda ("Score muito bom") sai da vista e fica no
+    // title + leitor de tela — com tudo em 90 ela não separava anúncio nenhum
+    // e era o que mais alargava a coluna.
+    return '<div class="am-gauge" title="' + escapeAttr(scoreTxt === "—" ? "Sem Score VenForce" : scoreLegenda(s) + " (" + scoreTxt + ")") + '">' +
       '<div class="am-gauge__wrap">' +
         '<svg viewBox="0 0 64 34" width="64" height="34" aria-hidden="true">' +
           '<path d="M4 32 A28 28 0 0 1 60 32" fill="none" stroke-width="6" stroke-linecap="round" class="am-gauge__track"/>' +
@@ -273,7 +276,7 @@
         "</svg>" +
         '<span class="am-gauge__value ' + classe + '">' + scoreTxt + "</span>" +
       "</div>" +
-      '<span class="am-gauge__legenda">' + scoreLegenda(s) + "</span>" +
+      '<span class="am-gauge__legenda vf-visually-hidden">' + scoreLegenda(s) + "</span>" +
     "</div>";
   }
 
@@ -848,10 +851,7 @@
     bindEstoqueEditavel(box);
 
     box.querySelectorAll(".am-row--grupo[data-familia]").forEach(function (row) {
-      row.addEventListener("click", function () { alternarGrupo(row); });
-      row.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(row); }
-      });
+      bindLinhaGrupo(row);
     });
     atualizarBotaoExpandir();
 
@@ -974,12 +974,30 @@
     if (total && c.ativos === total) return { label: "Ativo", classe: "is-success", titulo: "" };
     if (total && c.pausados === total) return { label: "Pausado", classe: "is-warning", titulo: "" };
     if (total && c.encerrados === total) return { label: "Encerrado", classe: "is-danger", titulo: "" };
+    // "Misto" sozinho não diz o que está misturado: a contagem (só o que é
+    // diferente de zero) aparece embaixo do selo, uma linha por status.
+    var partes = [];
+    if (c.ativos) partes.push(plural(c.ativos, "ativo", "ativos"));
+    if (c.pausados) partes.push(plural(c.pausados, "pausado", "pausados"));
+    if (c.encerrados) partes.push(plural(c.encerrados, "encerrado", "encerrados"));
     return {
       label: "Misto",
       classe: "is-info",
       titulo: (c.ativos || 0) + " ativos · " + (c.pausados || 0) + " pausados · " +
               (c.encerrados || 0) + " encerrados",
+      detalhe: partes,
     };
+  }
+
+  function statusGrupoHtml(f) {
+    var st = statusGrupo(f);
+    var selo = '<span class="vf-status ' + st.classe + '"' +
+      (st.titulo ? ' title="' + escapeAttr(st.titulo) + '"' : "") + ">" + st.label + "</span>";
+    if (!st.detalhe || !st.detalhe.length) return selo;
+    return '<span class="am-status-misto">' + selo +
+      '<span class="am-status-misto__detalhe">' +
+        st.detalhe.map(function (t) { return "<span>" + escapeHtml(t) + "</span>"; }).join("") +
+      "</span></span>";
   }
 
   // Preço do agrupador. "Preço por variação" é o nome da própria iniciativa do
@@ -1089,15 +1107,15 @@
     var capa = (f.cover && f.cover.thumbnail)
       ? '<img src="' + escapeHtml(f.cover.thumbnail) + '" alt="" loading="lazy" />'
       : iconeImagemSvg();
-    var st = statusGrupo(f);
     var rotulo = f.family_name || "(família sem nome)";
-    // Curva ABC CONSOLIDADA da família (Pareto sobre a receita somada dos
-    // filhos, últ. 30d) — mesma tag/componente do card individual, nunca o
-    // rótulo de um filho isolado. Wrapper SEMPRE renderizado (mesmo sem
-    // classe ainda resolvida) para repintarLinhaDoGrupo/carregarFaturamento-
-    // DasFamiliasVisiveis terem um alvo estável (ver AM.state.curvaAbcPorFamiliaCache).
-    var badgesHtml = '<div class="am-row__badges"><span data-abc-familia="' + escapeAttr(f.family_id) + '">' +
-      curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[f.family_id]) + "</span></div>";
+    var nVar = f.total_user_products || 0, nAnun = f.total_itens || 0;
+    // Uma variação = um anúncio é o caso comum: dizer os dois números iguais
+    // é ruído. Só quando diferem (Clássico + Premium da mesma variação) os
+    // dois aparecem.
+    var contagemHtml = nVar === nAnun
+      ? '<span title="' + escapeAttr(plural(nAnun, "anúncio", "anúncios")) + '">' + plural(nVar, "variação", "variações") + "</span>"
+      : "<span>" + plural(nVar, "variação", "variações") + "</span>" +
+        "<span>" + plural(nAnun, "anúncio", "anúncios") + "</span>";
 
     return '<div class="am-row am-row--grupo" data-familia="' + escapeAttr(f.family_id) + '" ' +
       'tabindex="0" role="button" aria-expanded="false" aria-controls="' + painelId + '" ' +
@@ -1106,24 +1124,23 @@
       '<div class="am-row__main">' +
         '<h3 class="am-row__titulo">' + escapeHtml(rotulo) + "</h3>" +
         '<div class="am-row__ids">' +
-          // O identificador do AGRUPADOR, na mesma posição em que a linha do
-          // anúncio individual mostra o MLB — é o "ID maior" do produto. Vem
-          // rotulado porque, ao contrário de um MLB, family_id é um número
-          // solto: sem o rótulo seria indistinguível de qualquer outro número
-          // da linha. MLBU não aparece aqui nem em lugar nenhum da UI.
-          '<span>Família <span class="vf-mono">' + escapeHtml(f.family_id) + "</span></span>" +
-          "<span>" + plural(f.total_user_products || 0, "variação", "variações") + "</span>" +
-          "<span>" + plural(f.total_itens || 0, "anúncio", "anúncios") + "</span>" +
+          contagemHtml +
+          // O identificador do AGRUPADOR (family_id) é um número longo que
+          // quase ninguém lê: sai da linha e vira um botão de copiar discreto
+          // (aparece no hover/foco da linha). MLBU não aparece em lugar nenhum.
+          '<button type="button" class="am-row__copiar-id" data-copiar-familia="' + escapeAttr(f.family_id) + '" ' +
+            'title="Família ' + escapeAttr(f.family_id) + ' — copiar ID" ' +
+            'aria-label="Copiar o ID da família ' + escapeAttr(f.family_id) + '">ID</button>' +
         "</div>" +
-        badgesHtml +
       "</div>" +
-      '<span class="vf-status ' + st.classe + '"' +
-        (st.titulo ? ' title="' + escapeAttr(st.titulo) + '"' : "") + ">" + st.label + "</span>" +
+      statusGrupoHtml(f) +
       precoGrupoHtml(f) +
-      // A soma que dá sentido ao agrupador: estoque por User Product distinto.
-      '<span class="am-row__num" title="Soma do estoque das ' +
-        escapeAttr(plural(f.total_user_products || 0, "variação", "variações")) + '">' +
-        (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
+      // A soma que dá sentido ao agrupador: estoque por User Product distinto,
+      // com a cobertura (dias de estoque no ritmo dos últ. 7d) embaixo.
+      '<span class="am-row__num am-estoque-cel" title="Soma do estoque das ' +
+        escapeAttr(plural(nVar, "variação", "variações")) + '">' +
+        "<span>" + (f.estoque_total != null ? f.estoque_total : "—") + "</span>" +
+        coberturaEstoqueHtml(f.estoque_total, metricas7dAgregadoDoGrupo(f.family_id)) + "</span>" +
       '<span class="am-row__num">' + (f.vendidos_total != null ? f.vendidos_total : "—") + "</span>" +
       // % faturamento CONSOLIDADO da família — vem pronto do backend
       // (dados.faturamento.porFamilia), mesma regra da Curva ABC acima:
@@ -1235,6 +1252,24 @@
           repintarLinhaDoGrupo(familyId);
         });
       });
+    });
+  }
+
+  // Clique/Enter na linha expande; o botão "ID" copia o family_id e NUNCA
+  // escala para a linha (copiar não pode abrir/fechar a família).
+  function bindLinhaGrupo(row) {
+    row.addEventListener("click", function (e) {
+      var copiar = e.target.closest(".am-row__copiar-id");
+      if (copiar) {
+        e.stopPropagation();
+        copiarTexto(copiar.getAttribute("data-copiar-familia"), "ID da família copiado.");
+        return;
+      }
+      alternarGrupo(row);
+    });
+    row.addEventListener("keydown", function (e) {
+      if (e.target.closest(".am-row__copiar-id")) return; // o botão trata o próprio Enter/Espaço
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(row); }
     });
   }
 
@@ -1654,15 +1689,10 @@
     // Mesmos badges do card legado (Catálogo/Full/fotos/Sem SKU/Revisado) —
     // é o MESMO anúncio, só que dentro de uma família; escondê-los aqui
     // seria o card de família mostrar menos informação que o avulso.
-    // Wrapper SEMPRE renderizado (mesmo sem nenhum badge estático) porque a
-    // Curva ABC do filho chega depois (só ao expandir, ver
-    // garantirPerformanceDaFamilia) e precisa de um alvo já existente no DOM
-    // para pintarPerformanceEmCelulas encontrar — um span vazio não aparece
-    // visualmente, então não muda nada quando não há badge nenhum.
+    // A Curva ABC do filho NÃO mora aqui: fica junto do % de faturamento
+    // (ver faturamentoCelulaHtml), que é o dado que a define.
     var badges = badgesAnuncioHtml(a);
-    var badgesHtml = '<span class="am-mlb__badges">' + badges +
-      '<span data-abc-item="' + escapeAttr(a.item_id) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]) + "</span>" +
-    "</span>";
+    var badgesHtml = '<span class="am-mlb__badges">' + badges + "</span>";
 
     return '<div class="am-mlb' + (op.irma ? " am-mlb--irma" : "") +
       '" data-item="' + escapeAttr(a.item_id) + '" tabindex="0" role="button" ' +
@@ -1916,7 +1946,7 @@
   function lucroMargemHtml(profit, classe) {
     if (profit === null || profit === undefined || isNaN(Number(profit))) return "";
     var n = Number(profit);
-    var texto = (n < 0 ? "−" : "") + formatMoeda(Math.abs(n));
+    var texto = (n < 0 ? "−" : "") + formatMoeda(Math.abs(n)) + "/un";
     return '<span class="am-margem__lucro ' + classe + '" title="Lucro por unidade vendida, no preço atual">' + texto + "</span>";
   }
 
@@ -1996,8 +2026,12 @@
   // no cache quando o operador ordena por ele (ver
   // aplicarOrdenacaoPerformance/AM.state.faturamentoCache), e a célula fica
   // "—" fixo até lá — nunca um spinner para um dado que ninguém pediu ainda.
-  function faturamentoConteudoHtml(v, valorAbsoluto) {
-    if (v === null || v === undefined) return '<span class="am-faturamento__vazio">—</span>';
+  // `abcHtml`: a Curva ABC mora ao lado do %, que é o dado que a define
+  // (antes ficava solta entre os badges do título).
+  function faturamentoConteudoHtml(v, valorAbsoluto, abcHtml) {
+    if (v === null || v === undefined) {
+      return '<span class="am-faturamento__topo"><span class="am-faturamento__vazio">—</span>' + (abcHtml || "") + "</span>";
+    }
     // Backend manda FRAÇÃO 0–1 (receita/receitaTotalPeriodo — ver
     // montarFaturamento no controller), não um número já em escala 0–100
     // como marginPercent/conversao. formatarPercentualCompacto() é
@@ -2009,8 +2043,13 @@
     // percentual aqui (perderia centavos por causa do arredondamento a 4
     // casas do percentual, ver auditoria "Curva ABC sempre visível +
     // faturamento absoluto").
-    return '<span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
+    return '<span class="am-faturamento__topo"><span class="am-faturamento__valor">' + formatarPercentualCompacto(v * 100) + "</span>" +
+        (abcHtml || "") + "</span>" +
       '<span class="am-faturamento__legenda">' + formatMoeda(valorAbsoluto) + "</span>";
+  }
+
+  function abcItemHtml(itemId) {
+    return '<span data-abc-item="' + escapeAttr(itemId) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[itemId]) + "</span>";
   }
 
   function faturamentoCelulaHtml(itemId) {
@@ -2019,7 +2058,7 @@
     var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, itemId)
       ? AM.state.faturamentoValorCache[itemId] : null;
     return '<span class="am-faturamento" data-faturamento-item="' + escapeAttr(itemId) + '">' +
-      faturamentoConteudoHtml(v, valor) + "</span>";
+      faturamentoConteudoHtml(v, valor, abcItemHtml(itemId)) + "</span>";
   }
 
   // Percentual CONSOLIDADO da família — soma dos filhos sobre o faturamento
@@ -2033,7 +2072,8 @@
       ? AM.state.faturamentoValorPorFamiliaCache[familyId] : null;
     return '<span class="am-faturamento" data-faturamento-familia="' + escapeAttr(familyId) +
       '" title="Percentual consolidado da família sobre o faturamento total do período">' +
-      faturamentoConteudoHtml(v, valor) + "</span>";
+      faturamentoConteudoHtml(v, valor,
+        '<span data-abc-familia="' + escapeAttr(familyId) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcPorFamiliaCache[familyId]) + "</span>") + "</span>";
   }
 
   // Busca metricas7d, margem e/ou composição da margem para os item_id
@@ -2656,10 +2696,7 @@
       substituta.setAttribute("aria-expanded", aberta ? "true" : "false");
       if (aberta) substituta.classList.add("is-aberta");
       linha.parentNode.replaceChild(substituta, linha);
-      substituta.addEventListener("click", function () { alternarGrupo(substituta); });
-      substituta.addEventListener("keydown", function (e) {
-        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(substituta); }
-      });
+      bindLinhaGrupo(substituta);
       return;
     }
   }
@@ -2687,7 +2724,17 @@
       if (!alvo[id]) return;
       var v = Object.prototype.hasOwnProperty.call(AM.state.faturamentoCache, id) ? AM.state.faturamentoCache[id] : null;
       var valor = Object.prototype.hasOwnProperty.call(AM.state.faturamentoValorCache, id) ? AM.state.faturamentoValorCache[id] : null;
-      cel.innerHTML = faturamentoConteudoHtml(v, valor);
+      cel.innerHTML = faturamentoConteudoHtml(v, valor, abcItemHtml(id));
+    });
+    // Cobertura do estoque do avulso: depende das métricas 7d que acabaram de
+    // chegar. Só o alvo próprio é trocado — a célula de estoque pode estar em
+    // edição e não pode ser reconstruída por baixo do operador.
+    document.querySelectorAll("[data-cobertura-item]").forEach(function (alvoCob) {
+      var id = alvoCob.getAttribute("data-cobertura-item");
+      if (!alvo[id]) return;
+      var cache = AM.state.performanceCache[id];
+      var est = alvoCob.getAttribute("data-cobertura-estoque");
+      alvoCob.innerHTML = coberturaEstoqueHtml(est === "" ? null : est, cache && cache.temMetricas ? cache.metricas7d : null);
     });
     // Curva ABC — tag própria (data-abc-item), separada dos badges estáticos
     // (ver curvaAbcBadgeHtml/badgesAnuncioHtml): chega assíncrona, então
@@ -2848,12 +2895,45 @@
   // comporta igual nos dois, mas continua vestida como a coluna do seu nível.
   // `.am-estoque` é o que marca "esta célula é editável" — é por ela que o
   // bind acha as células e que os handlers de linha sabem não abrir o modal.
-  function celulaEstoqueHtml(a, classeColuna) {
+  // Cobertura: quantos dias o estoque dura no ritmo de vendas dos últ. 7d.
+  // Só onde o estoque e as vendas falam do MESMO conjunto — linha da família
+  // (soma por variação × soma das vendas) e anúncio avulso. No MLB filho o
+  // estoque é da variação, compartilhado com o irmão Clássico/Premium, e as
+  // vendas são só dele: a conta sairia inflada, então ele não mostra.
+  // Sem métricas ainda (ou sem estoque) não mostra nada — nunca um palpite.
+  function coberturaEstoqueHtml(estoque, m) {
+    if (estoque === null || estoque === undefined || estoque === "" || !m || m.vendas == null) return "";
+    var e = Number(estoque);
+    if (!(e > 0)) return "";
+    if (m.vendas === 0) {
+      return '<span class="am-cobertura is-warning" title="Nenhuma venda nos últimos 7 dias com ' +
+        escapeAttr(String(e)) + ' unidades em estoque">sem venda 7d</span>';
+    }
+    var dias = e / (m.vendas / 7);
+    var texto = dias > 365 ? "> 1 ano" : dias < 1 ? "< 1 dia" : "≈ " + plural(Math.round(dias), "dia", "dias");
+    var classe = dias < 7 ? "is-danger" : dias > 90 ? "is-warning" : "is-neutral";
+    return '<span class="am-cobertura ' + classe + '" title="Cobertura: dias de estoque no ritmo de vendas dos últimos 7 dias (' +
+      escapeAttr(String(m.vendas)) + ' vendas)">' + escapeHtml(texto) + "</span>";
+  }
+
+  // Alvo estável da cobertura do anúncio avulso: as métricas 7d chegam
+  // depois do primeiro paint (ver pintarPerformanceEmCelulas).
+  function coberturaItemHtml(itemId, estoque) {
+    var cache = AM.state.performanceCache[itemId];
+    return '<span class="am-cobertura-alvo" data-cobertura-item="' + escapeAttr(itemId) +
+      '" data-cobertura-estoque="' + escapeAttr(estoque == null ? "" : estoque) + '">' +
+      coberturaEstoqueHtml(estoque, cache && cache.temMetricas ? cache.metricas7d : null) + "</span>";
+  }
+
+  // `opcoes.cobertura` liga a linha de cobertura (só no avulso, ver acima).
+  function celulaEstoqueHtml(a, classeColuna, opcoes) {
     var tem = a.estoque != null;
+    var cobertura = !!(opcoes && opcoes.cobertura);
     return '<span class="' + (classeColuna || "am-mlb__num") + ' am-estoque" data-estoque-item="' +
       escapeAttr(a.item_id) + '" data-estoque-valor="' +
-      escapeAttr(tem ? a.estoque : "") + '">' +
-      botaoEstoqueHtml(tem ? String(a.estoque) : "—") + "</span>";
+      escapeAttr(tem ? a.estoque : "") + '"' + (cobertura ? ' data-estoque-cobertura="1"' : "") + ">" +
+      botaoEstoqueHtml(tem ? String(a.estoque) : "—") +
+      (cobertura ? coberturaItemHtml(a.item_id, tem ? a.estoque : null) : "") + "</span>";
   }
 
   function bindEstoqueEditavel(raiz) {
@@ -2874,7 +2954,10 @@
     var bruto = cel.getAttribute("data-estoque-valor");
     cel.removeAttribute("data-estoque-editando");
     cel.classList.remove("is-editando", "is-salvando");
-    cel.innerHTML = botaoEstoqueHtml(bruto === "" || bruto === null ? "—" : bruto);
+    cel.innerHTML = botaoEstoqueHtml(bruto === "" || bruto === null ? "—" : bruto) +
+      (cel.getAttribute("data-estoque-cobertura") === "1"
+        ? coberturaItemHtml(cel.getAttribute("data-estoque-item"), bruto === "" ? null : bruto)
+        : "");
   }
 
   function abrirEditorEstoque(cel) {
@@ -3265,10 +3348,7 @@
         substituta.setAttribute("aria-expanded", aberta ? "true" : "false");
         if (aberta) substituta.classList.add("is-aberta");
         linha.parentNode.replaceChild(substituta, linha);
-        substituta.addEventListener("click", function () { alternarGrupo(substituta); });
-        substituta.addEventListener("keydown", function (e) {
-          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); alternarGrupo(substituta); }
-        });
+        bindLinhaGrupo(substituta);
       }
       break;
     }
@@ -3380,9 +3460,10 @@
     // listener (bindEstoqueEditavel só encontra `.am-estoque`), só o número.
     // Mesma decisão já tomada pra linha do AGRUPADOR (ver comentário abaixo).
     var estoqueItemHtml = temVariacoesLegado
-      ? '<span class="am-row__num" title="O estoque deste anúncio é por variação — abra as variações para editar.">' +
-        (a.estoque != null ? escapeHtml(String(a.estoque)) : "—") + "</span>"
-      : celulaEstoqueHtml(a, "am-row__num");
+      ? '<span class="am-row__num am-estoque-cel" title="O estoque deste anúncio é por variação — abra as variações para editar.">' +
+        "<span>" + (a.estoque != null ? escapeHtml(String(a.estoque)) : "—") + "</span>" +
+        coberturaItemHtml(a.item_id, a.estoque) + "</span>"
+      : celulaEstoqueHtml(a, "am-row__num", { cobertura: true });
 
     return '<div class="am-row" data-item="' + escapeHtml(a.item_id) + '" tabindex="0" role="button" ' +
       'aria-label="Ver detalhes de ' + escapeHtml(a.titulo || a.item_id) + '">' +
@@ -3392,7 +3473,6 @@
         '<div class="am-row__ids"><span class="vf-mono">' + escapeHtml(a.item_id) + "</span>" +
           condHtml + skuHtml + variacoesInfoHtml + "</div>" +
         '<div class="am-row__badges">' + badges +
-          '<span data-abc-item="' + escapeAttr(a.item_id) + '">' + curvaAbcBadgeHtml(AM.state.curvaAbcCache[a.item_id]) + "</span>" +
         "</div>" +
       "</div>" +
       '<span class="vf-status ' + st.classe + '">' + st.label + "</span>" +

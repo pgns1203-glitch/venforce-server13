@@ -428,13 +428,13 @@
   --am-c-thumb: 44px;
   --am-c-anuncio: 156px;
   --am-c-status: 68px;
-  --am-c-preco: 80px;
-  --am-c-estoque: 56px;
+  --am-c-preco: 124px; /* faixa: vigente + cheio riscado lado a lado */
+  --am-c-estoque: 64px; /* "sem venda 7d" da cobertura */
   --am-c-vendidos: 60px;
   --am-c-fat: 84px;
-  --am-c-metricas: 124px;
-  --am-c-margem: 76px; /* "Em conciliação" (≈75px) inteiro */
-  --am-c-score: 104px;
+  --am-c-metricas: 96px; /* "🛒 123 · 10,5%" */
+  --am-c-margem: 124px; /* faixa: "35,5%  R$ 53,18/un" + (i) */
+  --am-c-score: 56px; /* selo compacto, legenda no title */
   --am-c-acao: 56px;
   overflow-x: auto;
   overflow-y: hidden;
@@ -454,13 +454,13 @@
     var(--am-c-thumb)
     minmax(var(--am-c-anuncio), 4fr)
     minmax(var(--am-c-status), 0.8fr)
-    minmax(var(--am-c-preco), 1fr)
+    minmax(var(--am-c-preco), 1.2fr)
     minmax(var(--am-c-estoque), 0.6fr)
     minmax(var(--am-c-vendidos), 0.6fr)
     minmax(var(--am-c-fat), 0.9fr)
     minmax(var(--am-c-metricas), 1.1fr)
-    minmax(var(--am-c-margem), 0.9fr)
-    minmax(var(--am-c-score), 1fr)
+    minmax(var(--am-c-margem), 1.2fr)
+    minmax(var(--am-c-score), 0.5fr)
     var(--am-c-acao);
   --am-min-w: calc(
     var(--am-c-thumb) + var(--am-c-anuncio) + var(--am-c-status) +
@@ -1841,12 +1841,13 @@
   gap: 2px;
 }
 
-/* Medidor compacto (52×28, mesma proporção do viewBox 64×34): a linha
-   ficava alta por causa dele. Valor e legenda continuam visíveis. */
+/* Medidor compacto (44×24, mesma proporção do viewBox 64×34): a linha
+   ficava alta por causa dele. O valor fica visível; a legenda vai para o
+   title (ver scoreGaugeHtml). */
 .vf-page-anuncios-meli .am-gauge__wrap {
   position: relative;
-  width: 52px;
-  height: 28px;
+  width: 44px;
+  height: 24px;
 }
 
 .vf-page-anuncios-meli .am-gauge__wrap svg {
@@ -3922,4 +3923,115 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   margin: var(--vf-sp-1) 0 0;
   padding-left: var(--vf-sp-4);
   color: var(--vf-text-secondary);
+}
+
+/* ------------------------------------------------------------
+ * Lista mais enxuta (sugestões 3–10 da revisão da listagem)
+ * ------------------------------------------------------------ */
+
+/* Faixa da família (margem e preço): cada extremo numa linha só, com o
+   secundário AO LADO (lucro/un na margem, cheio riscado no preço) — as
+   4 linhas viravam a linha mais alta da lista. Nada some: o cheio e o
+   lucro continuam visíveis, só mudam de posição. */
+.vf-page-anuncios-meli .am-margem--faixa .am-margem__ponta,
+.vf-page-anuncios-meli .am-preco-faixa__ponta {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.vf-page-anuncios-meli .am-margem--faixa .am-margem__lucro,
+.vf-page-anuncios-meli .am-preco-faixa__cheio {
+  padding-left: 0;
+}
+
+.vf-page-anuncios-meli .am-margem--faixa,
+.vf-page-anuncios-meli .am-preco-faixa {
+  row-gap: 2px;
+}
+
+/* Status "Misto": a contagem por status embaixo do selo. */
+.vf-page-anuncios-meli .am-status-misto {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-status-misto__detalhe {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--vf-fs-2xs);
+  line-height: 1.25;
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}
+
+/* ID da família: fora da linha, como ação discreta de copiar que só
+   aparece no hover/foco da linha. */
+.vf-page-anuncios-meli .am-row__copiar-id {
+  padding: 0 4px;
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  cursor: pointer;
+  background: none;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.vf-page-anuncios-meli .am-row:hover .am-row__copiar-id,
+.vf-page-anuncios-meli .am-row:focus-within .am-row__copiar-id,
+.vf-page-anuncios-meli .am-row__copiar-id:focus-visible {
+  opacity: 1;
+}
+
+.vf-page-anuncios-meli .am-row__copiar-id:hover {
+  color: var(--vf-text);
+  border-color: var(--vf-border-strong);
+}
+
+.vf-page-anuncios-meli .am-row__copiar-id:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: 1px;
+}
+
+/* Curva ABC ao lado do % de faturamento. */
+.vf-page-anuncios-meli .am-faturamento__topo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.vf-page-anuncios-meli .am-faturamento__topo .vf-tag {
+  padding: 0 4px;
+  font-size: var(--vf-fs-2xs);
+  line-height: 1.4;
+}
+
+/* Estoque + cobertura (dias de estoque no ritmo dos últ. 7d). */
+.vf-page-anuncios-meli .am-estoque-cel,
+.vf-page-anuncios-meli .am-estoque[data-estoque-cobertura] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.vf-page-anuncios-meli .am-cobertura {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  white-space: nowrap;
+}
+
+.vf-page-anuncios-meli .am-cobertura.is-neutral { color: var(--vf-text-muted); }
+.vf-page-anuncios-meli .am-cobertura.is-warning { color: var(--vf-warning-strong); }
+.vf-page-anuncios-meli .am-cobertura.is-danger  { color: var(--vf-danger-strong); }
+
+/* Alinha a cobertura com o número do botão de estoque (que tem recuo). */
+.vf-page-anuncios-meli .am-estoque[data-estoque-cobertura] .am-cobertura-alvo {
+  padding-left: var(--vf-sp-1);
 }

@@ -676,6 +676,33 @@ async function run() {
       assert.strictEqual(await cdp.evaluate(texto("#am-expandir-todos")), "Expandir todos");
     });
 
+    await check("X2 — 'N sem custo nesta página' reconta ao expandir/recolher, mesmo com o custo dos filhos já no cache", async () => {
+      // Aviso × "+ Custo" visíveis (MLB distintos): os dois têm de bater.
+      const leitura = `(() => {
+        const aviso = document.querySelector(".am-custos-acoes__aviso");
+        const n = aviso ? Number((aviso.textContent.match(/(\\d+) sem custo/) || [])[1]) : 0;
+        const ids = new Set(Array.from(document.querySelectorAll("#am-catalogo-container .am-custo__add"))
+          .filter((b) => b.offsetParent !== null)
+          .map((b) => b.closest(".am-margem").getAttribute("data-margem-item")));
+        return { aviso: n, visiveis: ids.size };
+      })()`;
+      const grupos = `Array.from(document.querySelectorAll("#am-catalogo-container .am-row--grupo[data-familia]"))`;
+      // X1 terminou com tudo recolhido e os filhos já lidos (cache quente).
+      assert.ok(await cdp.evaluate(`${grupos}.every(g => g.getAttribute("aria-expanded") === "false")`));
+      const fechado = await cdp.evaluate(leitura);
+      assert.strictEqual(fechado.aviso, fechado.visiveis, "recolhido: " + JSON.stringify(fechado));
+      const antesLeituras = SERVIDOR.lotes.length;
+      await cdp.evaluate(`document.getElementById("am-expandir-todos").click()`);
+      await waitFor(cdp, `${grupos}.every(g => !g.nextElementSibling.hidden && !g.nextElementSibling.getAttribute("data-carregando"))`, "famílias não abriram");
+      const aberto = await cdp.evaluate(leitura);
+      assert.ok(aberto.visiveis > fechado.visiveis, "o fixture tem filho sem custo dentro de família: " + JSON.stringify(aberto));
+      assert.strictEqual(aberto.aviso, aberto.visiveis, "expandido: " + JSON.stringify(aberto));
+      assert.strictEqual(SERVIDOR.lotes.length, antesLeituras, "recontar não grava nada");
+      await cdp.evaluate(`document.getElementById("am-expandir-todos").click()`);
+      const recolhido = await cdp.evaluate(leitura);
+      assert.deepStrictEqual(recolhido, fechado);
+    });
+
     // ── Sem Base ───────────────────────────────────────────────────────────
     await check("B1 — sem Base vinculada: aviso com 'Vincular base', sem '+ Custo' nem 'Editar custos'", async () => {
       SERVIDOR.base = null;

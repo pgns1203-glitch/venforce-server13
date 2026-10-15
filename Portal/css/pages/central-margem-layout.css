@@ -144,3 +144,80 @@
   .cm-drawer .cm-banc__card--manual { grid-template-columns: minmax(0, 1fr) auto; }
 }
 .cm-drawer .cm-chip.is-static { cursor: default; opacity: .85; }
+
+/* ── Aba Promoções: tabela de decisão ───────────────────────────────────────── */
+/* Cabeçalho sticky dentro de um contêiner que rola na vertical; células 12px × 16px; altura uniforme. */
+.vf-page-central-margem .cm-opps-wrap { max-height: 72vh; overflow: auto; }
+.vf-page-central-margem .cm-opps-table { width: 100%; min-width: 0; table-layout: auto; border-collapse: separate; border-spacing: 0; }
+.vf-page-central-margem .cm-opps-table td.num { font-size: var(--vf-fs-sm); }
+.vf-page-central-margem .cm-opps-table thead th {
+  position: sticky; top: 0; z-index: 2; padding: 10px 12px 10px 16px; background: var(--vf-surface-2);
+  border-bottom: 1px solid var(--vf-border); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+}
+/* Larguras-alvo (Produto 28% · Promo 12% · Preço→Promo 11% · Banca 11% · Frete 9% · LC 11% · Margem 9% · Veredito+ações 9%);
+   o piso em px mantém o conteúdo legível em telas estreitas (aí a tabela rola na horizontal dentro do contêiner). */
+.vf-page-central-margem .cm-opps-table th:nth-child(1), .vf-page-central-margem .cm-opps-table td:nth-child(1) { width: 28%; min-width: 220px; }
+.vf-page-central-margem .cm-opps-table th:nth-child(2), .vf-page-central-margem .cm-opps-table td:nth-child(2) { width: 12%; min-width: 130px; }
+.vf-page-central-margem .cm-opps-table th:nth-child(3), .vf-page-central-margem .cm-opps-table td:nth-child(3) { width: 11%; min-width: 124px; }
+.vf-page-central-margem .cm-opps-table th:nth-child(4), .vf-page-central-margem .cm-opps-table td:nth-child(4) { width: 11%; min-width: 104px; }
+.vf-page-central-margem .cm-opps-table th:nth-child(5), .vf-page-central-margem .cm-opps-table td:nth-child(5) { width: 9%; min-width: 92px; }
+.vf-page-central-margem .cm-opps-table th:nth-child(6), .vf-page-central-margem .cm-opps-table td:nth-child(6) { width: 11%; min-width: 108px; }
+.vf-page-central-margem .cm-opps-table th:nth-child(7), .vf-page-central-margem .cm-opps-table td:nth-child(7) { width: 9%; min-width: 92px; }
+.vf-page-central-margem .cm-opps-table th:nth-child(8), .vf-page-central-margem .cm-opps-table td:nth-child(8) { width: 9%; min-width: 172px; }
+.vf-page-central-margem .cm-opps-table tbody tr.cm-promo-row > td { padding: 12px 16px; height: 92px; vertical-align: middle; border-bottom: 1px solid var(--vf-border); }
+.vf-page-central-margem .cm-promo-row { cursor: pointer; }
+.vf-page-central-margem .cm-promo-row:hover > td { background: var(--vf-surface-hover); }
+.vf-page-central-margem .cm-promo-row:focus-visible { outline: 2px solid var(--vf-primary); outline-offset: -2px; }
+.vf-page-central-margem .cm-promo-row.is-open > td { background: var(--vf-primary-soft); }
+.vf-page-central-margem .cm-opps-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.vf-page-central-margem .cm-opps-table th.num { text-align: right; }
+
+/* Produto e Promo: título em até 2 linhas com reticências; MLB, vendas e tipo em cinza embaixo */
+.vf-page-central-margem .cm-clamp2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; line-height: 1.3; }
+.vf-page-central-margem .cm-c-produto .cm-prod-meta, .vf-page-central-margem .cm-c-promo .cm-prod-meta { display: block; margin-top: 2px; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); overflow: hidden; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; max-height: 2.6em; }
+.vf-page-central-margem .cm-c-promo .cm-promo-more { margin-top: 2px; }
+
+/* "antes → depois" em duas linhas: antes cinza, depois forte, Δ em chip */
+.vf-page-central-margem .cm-2l { display: inline-flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.vf-page-central-margem .cm-2l__antes { color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
+.vf-page-central-margem .cm-2l__depois { color: var(--vf-text); font-weight: 600; }
+.vf-page-central-margem .cm-2l__depois.is-pendente { color: var(--vf-text-muted); font-weight: 500; font-style: italic; }
+.vf-page-central-margem .cm-2l__depois.cm-negative { color: var(--vf-danger-strong); }
+.vf-page-central-margem .cm-2l__depois.cm-low { color: var(--vf-warning-strong); }
+.vf-page-central-margem .cm-2l__depois.cm-good { color: var(--vf-success-strong); }
+.vf-page-central-margem .cm-chip-delta { display: inline-block; margin-top: 2px; padding: 0 7px; border-radius: 999px; background: var(--vf-surface-hover); color: var(--vf-text-secondary); font-size: var(--vf-fs-2xs); font-weight: 600; white-space: nowrap; }
+.vf-page-central-margem .cm-chip-delta.is-good { background: var(--vf-success-bg); color: var(--vf-success-strong); }
+.vf-page-central-margem .cm-chip-delta.is-bad { background: var(--vf-danger-bg); color: var(--vf-danger-strong); }
+
+/* Veredito em chip com fundo suave; nota curta e ações (Simular, Participar) */
+.vf-page-central-margem .cm-c-veredito { white-space: normal; }
+.vf-page-central-margem .cm-c-veredito .vf-status { padding: 2px 10px; border-radius: 999px; font-weight: 600; }
+.vf-page-central-margem .cm-c-veredito .vf-status.is-success { background: var(--vf-success-bg); }
+.vf-page-central-margem .cm-c-veredito .vf-status.is-warning { background: var(--vf-warning-bg); }
+.vf-page-central-margem .cm-c-veredito .vf-status.is-danger { background: var(--vf-danger-bg); }
+.vf-page-central-margem .cm-c-veredito .vf-status.is-neutral { background: var(--vf-surface-hover); }
+.vf-page-central-margem .cm-c-veredito .vf-status::before { display: none; }
+.vf-page-central-margem .cm-promo-nota { display: block; margin-top: 2px; max-width: 148px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
+.vf-page-central-margem .cm-promo-nota.is-warn { color: var(--vf-warning-strong); }
+.vf-page-central-margem .cm-promo-acoes { display: flex; flex-wrap: wrap; gap: var(--vf-sp-1); margin-top: 6px; }
+.vf-page-central-margem .cm-promo-acoes .vf-btn[disabled] { cursor: not-allowed; }
+
+/* Detalhe expandido: a mesma cascata Hoje × Promo do drawer */
+.vf-page-central-margem .cm-promo-detail > td { padding: var(--vf-sp-3) 16px var(--vf-sp-4); background: var(--vf-surface-2); border-bottom: 1px solid var(--vf-border); }
+.vf-page-central-margem .cm-promo-detail[hidden] { display: none; }
+.vf-page-central-margem .cm-promo-detail__grid { display: grid; grid-template-columns: minmax(300px, 5fr) minmax(0, 6fr); gap: var(--vf-sp-4); align-items: start; }
+.vf-page-central-margem .cm-promo-detail__dir { display: flex; flex-direction: column; gap: var(--vf-sp-2); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela { width: 100%; border-collapse: collapse; font-size: var(--vf-fs-sm); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela th, .vf-page-central-margem .cm-promo-detail .cm-banc__tabela td { padding: 5px 8px; border-bottom: 1px solid var(--vf-border); text-align: left; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela thead th { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela td.num, .vf-page-central-margem .cm-promo-detail .cm-banc__tabela th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela tr.is-mudou td:nth-child(3) { background: var(--vf-warning-bg); font-weight: 600; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__total th, .vf-page-central-margem .cm-promo-detail .cm-banc__total td { border-top: 2px solid var(--vf-border); font-weight: 700; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela td.is-up { color: var(--vf-success-strong); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela td.is-down { color: var(--vf-danger-strong); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__sinal { display: inline-block; width: 1em; color: var(--vf-text-muted); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__sub { margin: 0 0 var(--vf-sp-1); color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__banca-linha, .vf-page-central-margem .cm-promo-detail .cm-banc__empate { margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text-secondary); }
+.vf-page-central-margem .cm-promo-origem { margin: 0; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
+@media (max-width: 960px) { .vf-page-central-margem .cm-promo-detail__grid { grid-template-columns: minmax(0, 1fr); } }

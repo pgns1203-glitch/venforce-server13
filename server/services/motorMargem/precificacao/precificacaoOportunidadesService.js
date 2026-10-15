@@ -63,6 +63,12 @@ function round2(v) {
   return v === null ? null : Math.round((v + Number.EPSILON) * 100) / 100;
 }
 
+function iso(valor) {
+  if (!valor) return null;
+  const d = valor instanceof Date ? valor : new Date(valor);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : null;
+}
+
 function erroHttp(statusCode, codigo, motivo) {
   const err = new Error(motivo);
   err.statusCode = statusCode;
@@ -181,7 +187,7 @@ function precoCheioDaLinha(snap, precoOriginalPromo) {
 // Uma candidata a partir de (promoção, snapshot de margem) — mesma régua para
 // as duas fontes. null = fora do ranking (ativa / sem desconto efetivo).
 function montarCandidata(args) {
-  const { itemId, promocao, precoPromo, precoOriginalPromo = null, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false, rebateAtual = null, rebateIndisponivel = null, cotacaoReal = null } = args;
+  const { itemId, promocao, precoPromo, precoOriginalPromo = null, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false, rebateAtual = null, rebateIndisponivel = null, cotacaoReal = null, listaFonte = "promo_snapshot", listaObservadaEm = null } = args;
   if (motivoForaDoRanking({ status: promocao && promocao.status, precoPromo, precoAtual: snap.price })) return null;
 
   // Composição de hoje: a mesma da tabela (snapshot + retorno ML em andamento).
@@ -213,6 +219,21 @@ function montarCandidata(args) {
     },
   });
 
+  // De onde vêm os NÚMEROS da linha (nunca rotular "ao vivo" o que não é):
+  //   simular     — cotação REAL completa (comissão e frete em P') sobre a lista do Promo Snapshot: a mesma
+  //                 entrada, o mesmo núcleo e o mesmo resultado do POST /api/margem/simular para o cenário;
+  //   estimativa  — comissão = taxa do snapshot × P' e frete do snapshot (sem consulta ao ML), ou lista do
+  //                 diagnóstico legado (o /simular não lê essa fonte: P' e retorno ML não são os dele);
+  //   bloqueado   — a cotação foi tentada e não veio completa: o veredito é `bloqueado`, nada é estimado.
+  const cotacaoCompleta = Boolean(cotacaoReal) && cotacaoReal.comissao !== null && cotacaoReal.comissao !== undefined &&
+    (cotacaoReal.frete_aplicavel === false || (cotacaoReal.frete !== null && cotacaoReal.frete !== undefined));
+  let numerosOrigem;
+  let numerosMotivo = null;
+  if (!cotacaoReal) { numerosOrigem = "estimativa"; numerosMotivo = "comissao_e_frete_do_snapshot"; }
+  else if (!cotacaoCompleta) { numerosOrigem = "bloqueado"; numerosMotivo = "cotacao_indisponivel"; }
+  else if (listaFonte !== "promo_snapshot") { numerosOrigem = "estimativa"; numerosMotivo = "lista_do_diagnostico_legado"; }
+  else numerosOrigem = "simular";
+
   const vendas = vendasPorMlb.get(itemId) || null;
   const unidades = vendasIndisponivel ? null : vendas ? num(vendas.unidades) || 0 : 0;
   const temHistorico = unidades !== null && unidades > 0;
@@ -235,7 +256,10 @@ function montarCandidata(args) {
     // Vendas indisponíveis (Central de Vendas falhou): null, nunca "0 un.".
     unidades,
     receita: vendasIndisponivel ? null : vendas ? num(vendas.receita) : null,
-    estimado: !cotacaoReal,
+    estimado: numerosOrigem === "estimativa",
+    numeros: { origem: numerosOrigem, motivo: numerosMotivo },
+    // De qual lista veio a promoção (e quando): a fonte da linha, separada da origem dos números.
+    lista: { fonte: listaFonte, observada_em: listaObservadaEm },
     // O mesmo cenário do /simular:
     veredito: calc.veredito,
     veredito_motivo: calc.motivo,
@@ -256,14 +280,18 @@ function montarCandidata(args) {
     flags: {
       ...calc.flags,
       // A faixa de frete só se conhece cotando: estimando, a lista não afirma.
-      mudou_faixa_frete: cotacaoReal ? calc.flags.mudou_faixa_frete : null,
+      mudou_faixa_frete: cotacaoCompleta ? calc.flags.mudou_faixa_frete : null,
       sem_historico: !temHistorico,
     },
     atual: calc.atual,
     cenario: calc.cenario,
     meta: calc.meta,
     cotacao: cotacaoReal
-      ? { ao_vivo: true, fonte: "ml_listing_prices", consultado_em: cotacaoReal.consultado_em, evidencia: evidenciaDaCotacao(cotacaoReal) }
+      ? {
+        // `ao_vivo` só quando comissão E frete vieram do ML; cotação tentada que falhou diz o porquê.
+        ao_vivo: cotacaoCompleta, fonte: "ml_listing_prices", consultado_em: cotacaoReal.consultado_em, evidencia: evidenciaDaCotacao(cotacaoReal),
+        ...(cotacaoCompleta ? {} : { falhou: true, motivo: "A cotação ao vivo não veio completa para este preço; nada foi estimado." }),
+      }
       : {
         ao_vivo: false,
         fonte: "estimada_snapshot",
@@ -303,6 +331,7 @@ function resumoDaOpcao(c) {
     banca_aviso: c.banca_aviso,
     flags: c.flags,
     estimado: c.estimado,
+    numeros: c.numeros,
   };
 }
 
@@ -453,8 +482,10 @@ function comClasse(promocao, d) {
 }
 
 // Linha do banco (promoção × snapshot) → candidata, com a mesma régua nas duas fontes.
-function candidataDaLinha(r, promocao, vendasPorMlb, vendasIndisponivel, rebates) {
+function candidataDaLinha(r, promocao, vendasPorMlb, vendasIndisponivel, rebates, lista = {}) {
   return montarCandidata({
+    listaFonte: lista.fonte || "promo_snapshot",
+    listaObservadaEm: iso(lista.observadaEm || r.promo_observado_em),
     itemId: String(r.item_id),
     promocao,
     precoPromo: num(r.preco_promo),
@@ -544,7 +575,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
     // Leitura desta promoção falhou no último run: é a última leitura boa.
     herdada: r.promo_herdado === true,
     observadaEm: r.promo_observado_em || null,
-  }, d), vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
+  }, d), vendasPorMlb, Boolean(indisponivel), rebates, { fonte: "promo_snapshot" })).filter(Boolean);
   return respostaDaLista({
     d, cliente, sellerId, tipo, cotacao,
     base: {
@@ -619,7 +650,7 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
   const rebates = await carregarRebatesDaConta({ clienteContaId: conta.id, sellerId, db: d.db, promoRepo: deps.promoRepository, logger: deps.logger });
   const candidatas = rows.map((r) => candidataDaLinha(r, comClasse({
     id: r.promo_id || null, chave: r.chave || null, nome: r.promo_nome || null, tipo: r.promo_tipo || null, status: r.promo_status || null,
-  }, d), vendasPorMlb, Boolean(indisponivel), rebates)).filter(Boolean);
+  }, d), vendasPorMlb, Boolean(indisponivel), rebates, { fonte: "diagnostico_legado", observadaEm: diag.created_at })).filter(Boolean);
   return respostaDaLista({
     d, cliente, sellerId, tipo, cotacao,
     base: { ...base, periodo: periodoPublico(periodo), ...vendasPublico(indisponivel) },

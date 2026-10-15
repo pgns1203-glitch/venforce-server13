@@ -133,7 +133,9 @@
     promoTop: {},
     oppsLive: "idle",
     promoExpanded: {},
+    promoDetail: {},
     pendingPromoId: null,
+    pendingReview: false,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
@@ -546,6 +548,7 @@
         state.oppsFilters = { veredito: "entrar", tipo: "" };
         state.oppsPage = 1;
         state.promoExpanded = {};
+        state.promoDetail = {};
         setView(ir.getAttribute("data-top-go"));
         loadOpportunities();
         return;
@@ -588,21 +591,43 @@
         return;
       }
       var button = event.target.closest("[data-opp-item]");
-      if (!button) return;
-      // "Simular" abre o drawer já com ESTA promoção selecionada e simulada.
-      openDrawer(button.getAttribute("data-opp-item"), "pricing", null, button, { fromOpportunity: true, promoId: button.getAttribute("data-promo-id") || null });
+      if (button) {
+        // "Simular" abre o drawer já com ESTA promoção selecionada e simulada.
+        openDrawer(button.getAttribute("data-opp-item"), "pricing", null, button, { fromOpportunity: true, promoId: button.getAttribute("data-promo-id") || null });
+        return;
+      }
+      var participar = event.target.closest("[data-opp-participar]");
+      if (participar) {
+        if (participar.disabled) return;
+        // "Participar" abre a Bancada na promoção e já pede o preview (relê ao vivo, gates, fingerprint).
+        openDrawer(participar.getAttribute("data-opp-participar"), "pricing", null, participar, { fromOpportunity: true, promoId: participar.getAttribute("data-promo-id") || null, autoReview: true });
+        return;
+      }
+      if (event.target.closest("a, button, input, select, textarea")) return;
+      var linha = event.target.closest("tr.cm-promo-row");
+      if (linha) alternarDetalhePromo(linha);
+    });
+
+    refs.oppsHost.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      var linha = event.target.closest && event.target.closest("tr.cm-promo-row");
+      if (!linha || event.target !== linha) return;
+      event.preventDefault();
+      alternarDetalhePromo(linha);
     });
 
     refs.promoVeredito.addEventListener("change", function () {
       state.oppsFilters.veredito = refs.promoVeredito.value || "";
       state.oppsPage = 1;
       state.promoExpanded = {};
+      state.promoDetail = {};
       loadOpportunities();
     });
     refs.promoTipo.addEventListener("change", function () {
       state.oppsFilters.tipo = refs.promoTipo.value || "";
       state.oppsPage = 1;
       state.promoExpanded = {};
+      state.promoDetail = {};
       loadOpportunities();
     });
 
@@ -762,6 +787,7 @@
     state.oppsFilters = { veredito: "", tipo: "" };
     state.oppsTipos = [];
     state.promoExpanded = {};
+    state.promoDetail = {};
     state.pendingPromoId = null;
     state.periodParam = lerPeriodoDoShell();
     if (clienteMudou) {
@@ -1697,15 +1723,20 @@
     if (isSnapshotMode()) {
       var listings = state.snapshot && state.snapshot.kpis && state.snapshot.kpis.listings;
       if (listings) partes.push(listings.total + " anúncios · " + listings.active + " ativos · " + listings.paused + " pausados");
-      var calc = state.snapshot && state.snapshot.lastCalculatedAt;
-      if (calc) partes.push("Atualizado " + formatShortDateTime(calc));
+      if (state.snapshot) partes.push(atualizadoTexto(state.snapshot.lastCalculatedAt));
     } else if (state.data) {
       partes.push(coverageLabel(state.data.coverage));
-      if (state.data.lastUpdated) partes.push("Atualizado " + formatShortDateTime(state.data.lastUpdated));
+      partes.push(atualizadoTexto(state.data.lastUpdated));
     } else if (state.loading) {
       partes.push("Carregando leitura…");
     }
     refs.summaryLine.textContent = partes.join(" · ");
+  }
+
+  // "Atualizado dd/mm hh:mm" com a data real; sem data (ou inválida): "sem data registrada" — nunca "Atualizado —".
+  function atualizadoTexto(valor) {
+    var texto = valor ? formatShortDateTime(valor) : "—";
+    return texto === "—" ? "Atualizado: sem data registrada" : "Atualizado " + texto;
   }
 
   function formatShortDateTime(value) {
@@ -1992,6 +2023,27 @@
     return "";
   }
 
+  /** Expande/recolhe o detalhe (Hoje × Promo) de UMA linha, sem redesenhar a tabela. */
+  function alternarDetalhePromo(linha) {
+    var id = linha.getAttribute("data-opp");
+    state.promoDetail[id] = !state.promoDetail[id];
+    linha.classList.toggle("is-open", state.promoDetail[id]);
+    linha.setAttribute("aria-expanded", state.promoDetail[id] ? "true" : "false");
+    var detalhes = refs.oppsHost.querySelectorAll("tr[data-promo-detail]");
+    Array.prototype.forEach.call(detalhes, function (d) {
+      if (d.getAttribute("data-promo-detail") !== id) return;
+      var celula = d.firstElementChild;
+      if (state.promoDetail[id]) {
+        var lista = state.opps && state.opps.status === "ok" ? state.opps.oportunidades || [] : [];
+        var op = lista.filter(function (x) { return x.itemId === id; })[0];
+        celula.innerHTML = op ? promoDetalheConteudoHtml(op) : "";
+      } else {
+        celula.innerHTML = "";
+      }
+      d.hidden = !state.promoDetail[id];
+    });
+  }
+
   function setPromotionsFilters() {
     if (!refs.promoVeredito) return;
     refs.promoVeredito.value = state.oppsFilters.veredito || "";
@@ -2013,14 +2065,48 @@
     refs.promoTipo.value = atual;
   }
 
+  // Origem dos NÚMEROS da linha (o servidor diz: numeros.origem). Nunca se rotula "ao vivo" o que não é:
+  //   simular     — cotação real completa sobre a lista do Promo Snapshot = o mesmo resultado do simulador;
+  //   estimativa  — comissão/frete do snapshot (sem consulta ao ML) ou promoção vinda do diagnóstico legado;
+  //   bloqueado   — a cotação foi tentada e não veio completa (nada foi estimado).
+  var NUMEROS_MOTIVO_UI = {
+    comissao_e_frete_do_snapshot: "comissão e frete do snapshot, sem consulta ao Mercado Livre",
+    lista_do_diagnostico_legado: "a promoção vem do diagnóstico legado, que o simulador não lê",
+    cotacao_indisponivel: "a cotação ao vivo não veio completa para este preço",
+  };
+
+  function numerosDaPagina() {
+    var o = state.opps;
+    var linhas = o && o.status === "ok" ? (o.oportunidades || []) : [];
+    var contagem = { total: linhas.length, simular: 0, estimativa: 0, bloqueado: 0, primeiroMotivo: null };
+    linhas.forEach(function (l) {
+      var origem = l.numeros && l.numeros.origem;
+      if (origem === "simular") contagem.simular += 1;
+      else if (origem === "bloqueado") contagem.bloqueado += 1;
+      else contagem.estimativa += 1;
+      if (origem !== "simular" && !contagem.primeiroMotivo && l.numeros && l.numeros.motivo) contagem.primeiroMotivo = l.numeros.motivo;
+    });
+    return contagem;
+  }
+
+  // Segunda linha do badge: "Números: …" — só diz "cotação ao vivo" quando TODA linha da página é do simulador.
   function renderPromotionsLive() {
     if (!refs.promosLive) return;
+    var c = numerosDaPagina();
     var texto = "";
-    if (state.oppsLive === "loading") texto = "cotando a página ao vivo no Mercado Livre…";
-    else if (state.oppsLive === "ok") texto = "cotação ao vivo · comissão e frete reais em cada preço";
-    else if (state.oppsLive === "error") texto = "cotação ao vivo indisponível — valores estimados";
+    if (state.oppsLive === "loading") texto = "Números: cotando a página ao vivo no Mercado Livre…";
+    else if (state.oppsLive === "error") texto = "Números: estimativa — a cotação ao vivo está indisponível agora";
+    else if (state.oppsLive === "ok") {
+      var bloqueadas = c.bloqueado ? " · " + c.bloqueado + (c.bloqueado === 1 ? " linha bloqueada" : " linhas bloqueadas") + " (a cotação não veio completa)" : "";
+      if (c.simular > 0 && c.estimativa === 0) texto = "Números: cotação ao vivo · comissão e frete reais em cada preço (mesmo cálculo do simulador)" + bloqueadas;
+      else if (c.simular > 0) texto = "Números: cotação ao vivo em " + c.simular + " de " + c.total + " linhas · " + c.estimativa + (c.estimativa === 1 ? " marcada" : " marcadas") + " como estimativa" + bloqueadas;
+      else if (c.total) texto = "Números: estimativa — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || "não vieram do simulador");
+    } else if (c.total) {
+      texto = "Números: estimativa — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || NUMEROS_MOTIVO_UI.comissao_e_frete_do_snapshot);
+    }
     refs.promosLive.textContent = texto;
     refs.promosLive.setAttribute("data-cm-live", state.oppsLive || "idle");
+    refs.promosLive.setAttribute("data-cm-numeros", c.simular > 0 && c.estimativa === 0 && state.oppsLive === "ok" ? "simular" : c.total ? "estimativa" : "");
   }
 
   function veredictoChipHtml(veredito) {
@@ -2028,17 +2114,32 @@
     return '<span class="vf-status ' + ui.tone + '" data-cm-veredito="' + escapeHtml(veredito || "bloqueado") + '">' + escapeHtml(ui.label) + "</span>";
   }
 
-  function arrowPair(antes, depois, depoisTitle) {
-    return escapeHtml(antes || "—") + '<span class="cm-promo-arrow" aria-hidden="true">→</span>' +
-      (depoisTitle ? '<span title="' + escapeHtml(depoisTitle) + '">' + escapeHtml(depois || "—") + "</span>" : escapeHtml(depois || "—"));
+  // "antes → depois" em duas linhas: antes em cinza, depois forte; o Δ vai em chip (verde/vermelho) quando existe.
+  function antesDepois(antes, depois, extraHtml, depoisClasse) {
+    return '<span class="cm-2l"><span class="cm-2l__antes">' + escapeHtml(antes || "—") + '</span><span class="cm-2l__depois' + (depoisClasse ? " " + depoisClasse : "") + '">' + escapeHtml(depois || "—") + "</span>" + (extraHtml || "") + "</span>";
   }
 
-  function deltaHtml(delta) {
-    if (delta === null || delta === undefined) return "";
-    var tone = delta > 0 ? "is-good" : delta < 0 ? "is-bad" : "";
-    return '<span class="cm-promo-delta ' + tone + '" data-cm-delta-lc>Δ ' + escapeHtml(formatMoney(delta, true)) + "</span>";
+  function chipDelta(valor, texto, attr) {
+    if (valor === null || valor === undefined || !texto) return "";
+    var tom = valor > 0 ? "is-good" : valor < 0 ? "is-bad" : "";
+    return '<span class="cm-chip-delta ' + tom + '"' + (attr ? " " + attr : "") + ">" + escapeHtml(texto) + "</span>";
   }
 
+  function ppTexto(delta) {
+    var n = contract.numberOrNull(delta);
+    if (n === null) return null;
+    return (n > 0 ? "+" : "") + (n * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 }) + " pp";
+  }
+
+  // Quem banca é medido contra o preço CHEIO. Sem ele, o seller banca é "—" e o motivo é dito;
+  // banca negativa nunca aparece sem o aviso do porquê.
+  function bancaAvisoHtml(r) {
+    var codigo = r && (r.banca_aviso || r.banca_motivo);
+    if (!codigo) return "";
+    return ' <span class="cm-promo-flag is-warn" data-cm-banca-aviso="' + escapeHtml(codigo) + '" title="' + escapeHtml(motivoTexto(codigo)) + '">⚠</span>';
+  }
+
+  // Marcas que explicam a linha (só o essencial na linha; o resto vai no detalhe expandido).
   function promoFlagsHtml(op) {
     var flags = op.flags || {};
     var itens = [];
@@ -2053,32 +2154,78 @@
     } else if (op.veredito_motivo) {
       itens.push('<span class="cm-promo-flag">' + escapeHtml(motivoTexto(op.veredito_motivo)) + "</span>");
     }
-    if (op.estimado) itens.push('<span class="cm-promo-flag" data-cm-flag="estimado" title="Comissão e frete estimados do snapshot; a cotação ao vivo confirma.">estimado</span>');
+    if (op.estimado) itens.push('<span class="cm-promo-flag" data-cm-flag="estimado" title="' + escapeHtml(((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "Números estimados") + ".") + '">estimativa</span>');
     return itens.length ? '<div class="cm-promo-flags">' + itens.join("") + "</div>" : "";
   }
 
   function freteCelula(op) {
     var atual = op.atual || {};
     var cen = op.cenario || {};
-    if (op.estimado) {
-      return arrowPair(formatMoney(atual.frete), "a cotar", "A faixa de frete só se confirma cotando ao vivo.");
+    // "a cotar" só enquanto o frete não foi cotado; cotação tentada que falhou diz "indisponível" (nada é estimado).
+    var viva = op.cotacao && (op.cotacao.ao_vivo === true || op.cotacao.falhou === true);
+    var aviso = op.flags && op.flags.mudou_faixa_frete === true
+      ? ' <span class="cm-promo-flag is-warn" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
+    if (!viva) {
+      return antesDepois(formatMoney(atual.frete), "a cotar", "", "is-pendente");
     }
     var depois = cen.frete === null || cen.frete === undefined ? "indisponível" : formatMoney(cen.frete);
-    return arrowPair(formatMoney(atual.frete), depois);
+    return '<span class="cm-2l"><span class="cm-2l__antes">' + escapeHtml(formatMoney(atual.frete) || "—") + '</span><span class="cm-2l__depois">' + escapeHtml(depois) + aviso + "</span></span>";
   }
 
-  // Quem banca é medido contra o preço CHEIO. Sem ele, o seller banca é "—" e o motivo é dito;
-  // banca negativa nunca aparece sem o aviso do porquê.
-  function bancaAvisoHtml(r) {
-    var codigo = r && (r.banca_aviso || r.banca_motivo);
-    if (!codigo) return "";
-    return ' <span class="cm-promo-flag is-warn" data-cm-banca-aviso="' + escapeHtml(codigo) + '" title="' + escapeHtml(motivoTexto(codigo)) + '">⚠</span>';
+  // Por que o Participar está (ou não) liberado: só entrar / entrar_se_girar E "Pode participar pelo VenForce".
+  function participarSpec(promo, veredito, motivo) {
+    promo = promo || {};
+    var base = { disabled: true, title: "" };
+    if (promo.grupo === "ativa") return Object.assign(base, { title: "Esta promoção já está ativa neste anúncio." });
+    if (promo.grupo === "participa") return Object.assign(base, { title: "Você já participa desta promoção (ela não forma o preço agora)." });
+    if (promo.grupo !== "pode") return Object.assign(base, { title: (promo.escrita && promo.escrita.motivo) || "Só pelo Mercado Livre: a inscrição é feita no painel do Mercado Livre." });
+    if (veredito === "bloqueado") return Object.assign(base, { title: "Bloqueado: " + (motivoTexto(motivo) || "sem motivo informado") + "." });
+    if (veredito === "nao_entrar") return Object.assign(base, { title: "Veredito “Não entrar”: " + (motivoTexto(motivo) || "a promoção não compensa") + "." });
+    if (veredito !== "entrar" && veredito !== "entrar_se_girar") return Object.assign(base, { title: "Sem veredito para participar." });
+    return { disabled: false, title: "Abre o preview da participação (relê a promoção ao vivo e avalia os gates)." };
+  }
+
+  function acoesPromoHtml(itemId, promo, veredito, motivo, ghost) {
+    var spec = participarSpec(promo, veredito, motivo);
+    var promoId = promo && promo.id ? promo.id : "";
+    return '<span class="cm-promo-acoes">' +
+      '<button class="vf-btn vf-btn--sm' + (ghost ? " vf-btn--ghost" : "") + '" type="button" data-opp-item="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '">Simular</button>' +
+      '<button class="vf-btn vf-btn--sm vf-btn--primary" type="button" data-opp-participar="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '"' +
+        (spec.disabled ? " disabled" : "") + ' title="' + escapeHtml(spec.title) + '">Participar</button></span>';
+  }
+
+  // Fonte da lista e origem dos números, desta linha.
+  function origemLinhaHtml(op) {
+    var lista = op.lista || {};
+    var origemLista = lista.fonte === "diagnostico_legado" ? "diagnóstico legado" : "Promo Snapshot";
+    var quando = lista.observada_em ? formatShortDateTime(lista.observada_em) : null;
+    if (!quando || quando === "—") quando = "data desconhecida";
+    var num = op.numeros || {};
+    var numerosTxt = num.origem === "simular"
+      ? "cotação ao vivo" + (op.cotacao && op.cotacao.consultado_em ? " às " + formatShortDateTime(op.cotacao.consultado_em) : "") + " (mesmo cálculo do simulador)"
+      : num.origem === "bloqueado" ? "cotação ao vivo incompleta — " + (NUMEROS_MOTIVO_UI[num.motivo] || "sem números")
+        : "estimativa — " + (NUMEROS_MOTIVO_UI[num.motivo] || "não vieram do simulador");
+    return '<p class="cm-promo-origem" data-cm-origem-linha="' + escapeHtml(num.origem || "") + '">Lista: ' + escapeHtml(origemLista) + " · " + escapeHtml(quando) + " · Números: " + escapeHtml(numerosTxt) + ".</p>";
+  }
+
+  // Detalhe expansível: a mesma cascata Hoje × Promo do drawer + quem banca e volume de empate.
+  function promoDetalheConteudoHtml(op) {
+    return '<div class="cm-promo-detail__grid">' +
+      '<div class="cm-promo-detail__esq"><h4 class="cm-banc__sub">Hoje × Promoção</h4>' + cascataHtml(op.atual, { resultado: op, hipotese: false, somenteLeitura: true }) + "</div>" +
+      '<div class="cm-promo-detail__dir">' + bancaRodapeHtml(op) + empateHtml(op) + promoFlagsHtml(op) + origemLinhaHtml(op) + "</div></div>";
+  }
+
+  // O conteúdo só existe enquanto a linha está aberta (nada de cascatas escondidas no DOM).
+  function promoDetalheHtml(op, aberto) {
+    return '<tr class="cm-promo-detail" data-promo-detail="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="8">' + (aberto ? promoDetalheConteudoHtml(op) : "") + "</td></tr>";
   }
 
   function promoRowHtml(op) {
     var atual = op.atual || {};
     var cen = op.cenario || {};
     var promo = op.promocao || {};
+    var aberto = state.promoDetail[op.itemId] === true;
+    var flags = op.flags || {};
     var quando = promo.herdada ? formatShortDateTime(promo.observadaEm) : null;
     var herdada = promo.herdada
       ? '<span class="cm-prod-meta cm-opps-herdada" title="A leitura desta promoção falhou na última atualização; mostrando a leitura anterior' +
@@ -2090,22 +2237,35 @@
     var unidades = op.unidades === null || op.unidades === undefined
       ? unavailable("vendas —", "Vendas indisponíveis neste período (a leitura da Central de Vendas falhou).")
       : escapeHtml(formatInt(op.unidades) + " un. no período");
+    var semHist = flags.sem_historico ? ' <span class="cm-promo-flag" data-cm-flag="sem-historico" title="Sem vendas no período: o impacto é por unidade.">sem histórico</span>' : "";
+    var estimativa = op.estimado
+      ? ' <span class="cm-promo-flag" data-cm-flag="estimado" title="' + escapeHtml(((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "Números estimados") + ".") + '">estimativa</span>' : "";
+
     var banca = (op.seller_banca === null || op.seller_banca === undefined) && (op.ml_banca === null || op.ml_banca === undefined)
-      ? "—"
-      : escapeHtml(formatMoney(op.seller_banca) || "—") + '<span class="cm-promo-arrow" aria-hidden="true">/</span>' + escapeHtml(formatMoney(op.ml_banca) || "—") + bancaAvisoHtml(op);
-    return '<tr class="cm-promo-row" data-opp="' + escapeHtml(op.itemId) + '">' +
-      "<td><strong>" + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + '</span><span class="cm-prod-meta">' + unidades + "</span>" + mais + "</td>" +
-      "<td>" + escapeHtml(promo.nome || promo.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(promo.tipo || "") + "</span>" + herdada + "</td>" +
-      '<td class="num">' + arrowPair(formatMoney(op.precoAtual), formatMoney(op.precoPromocao)) +
-        (op.delta_preco_atual !== null && op.delta_preco_atual !== undefined ? '<span class="cm-prod-meta" data-cm-delta-preco title="Variação contra o preço de hoje">' + escapeHtml(formatMoney(-op.delta_preco_atual, true) || "") + "</span>" : "") + "</td>" +
-      '<td class="num" data-cm-banca>' + banca + "</td>" +
+      ? "—" + bancaAvisoHtml(op)
+      : '<span class="cm-2l" data-cm-banca-dupla title="Você banca / ML banca"><span class="cm-2l__depois">' + escapeHtml(formatMoney(op.seller_banca) || "—") + bancaAvisoHtml(op) + '</span><span class="cm-2l__antes">' + escapeHtml(formatMoney(op.ml_banca) || "—") + "</span></span>";
+
+    var precoChip = op.desconto_ratio !== null && op.desconto_ratio !== undefined
+      ? '<span class="cm-chip-delta" data-cm-desc-pct title="Desconto sobre o preço cheio' + (op.delta_preco_atual !== null && op.delta_preco_atual !== undefined ? " · contra o preço de hoje: " + escapeHtml(formatMoney(-op.delta_preco_atual, true) || "R$ 0,00") : "") + '">' + (op.desconto_ratio < 0 ? "+" : "−") + escapeHtml(formatPercent(Math.abs(op.desconto_ratio))) + "</span>"
+      : "";
+    var margemClasse = marginClass(cen.margem_ratio === undefined ? null : cen.margem_ratio, {});
+
+    // Linha curta sob o veredito: o motivo do bloqueio, o volume de empate ou o motivo do veredito.
+    var nota = "";
+    if (op.veredito === "bloqueado") nota = '<span class="cm-promo-nota is-warn" data-cm-flag="bloqueado" title="' + escapeHtml("Bloqueado: " + (motivoTexto(op.veredito_motivo) || "sem motivo informado")) + '">bloqueado · ' + escapeHtml(motivoTexto(op.veredito_motivo) || "sem motivo informado") + "</span>";
+    else if (op.veredito === "entrar_se_girar" && op.empate_volume !== null && op.empate_volume !== undefined) nota = '<span class="cm-promo-nota" data-cm-flag="empate" title="Volume a mais para empatar o LC total de hoje.">precisa vender ' + escapeHtml(formatPercent(op.empate_volume, true)) + "</span>";
+    else if (op.veredito_motivo) nota = '<span class="cm-promo-nota" title="' + escapeHtml(motivoTexto(op.veredito_motivo)) + '">' + escapeHtml(motivoTexto(op.veredito_motivo)) + "</span>";
+
+    return '<tr class="cm-promo-row' + (aberto ? " is-open" : "") + '" data-opp="' + escapeHtml(op.itemId) + '" tabindex="0" aria-expanded="' + (aberto ? "true" : "false") + '" data-cm-numeros="' + escapeHtml((op.numeros && op.numeros.origem) || "") + '">' +
+      '<td class="cm-c-produto"><strong class="cm-clamp2" title="' + escapeHtml(op.titulo) + '">' + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + " · " + unidades + semHist + "</span></td>" +
+      '<td class="cm-c-promo"><strong class="cm-clamp2" title="' + escapeHtml(promo.nome || promo.tipo || "—") + '">' + escapeHtml(promo.nome || promo.tipo || "—") + '</strong><span class="cm-prod-meta">' + escapeHtml(promo.tipo || "") + estimativa + "</span>" + herdada + mais + "</td>" +
+      '<td class="num cm-c-preco">' + antesDepois(formatMoney(op.precoAtual), formatMoney(op.precoPromocao), precoChip) + "</td>" +
+      '<td class="num cm-c-banca" data-cm-banca>' + banca + "</td>" +
       '<td class="num" data-cm-frete>' + freteCelula(op) + "</td>" +
-      '<td class="num" data-cm-lc>' + arrowPair(formatMoney(atual.lc), formatMoney(cen.lc)) + deltaHtml(op.delta_lc) + "</td>" +
-      '<td class="num" data-cm-margem><span class="' + marginClass(cen.margem_ratio === undefined ? null : cen.margem_ratio, {}) + '">' +
-        arrowPair(formatPercent(atual.margem_ratio), formatPercent(cen.margem_ratio)) + "</span></td>" +
-      "<td>" + veredictoChipHtml(op.veredito) + promoFlagsHtml(op) + "</td>" +
-      '<td class="vf-table__actions"><button class="vf-btn vf-btn--sm" type="button" data-opp-item="' + escapeHtml(op.itemId) +
-        '" data-promo-id="' + escapeHtml(promo.id || "") + '">Simular</button></td></tr>' +
+      '<td class="num" data-cm-lc>' + antesDepois(formatMoney(atual.lc), formatMoney(cen.lc), chipDelta(op.delta_lc, op.delta_lc === null || op.delta_lc === undefined ? null : "Δ " + formatMoney(op.delta_lc, true), "data-cm-delta-lc")) + "</td>" +
+      '<td class="num" data-cm-margem>' + antesDepois(formatPercent(atual.margem_ratio), formatPercent(cen.margem_ratio), chipDelta(op.delta_margem_ratio, ppTexto(op.delta_margem_ratio)), margemClasse) + "</td>" +
+      '<td class="cm-c-veredito">' + veredictoChipHtml(op.veredito) + nota + acoesPromoHtml(op.itemId, promo, op.veredito, op.veredito_motivo, false) + "</td></tr>" +
+      promoDetalheHtml(op, aberto) +
       promoOptionsHtml(op);
   }
 
@@ -2113,7 +2273,7 @@
   function promoOptionsHtml(op) {
     if (!(op.opcoes && op.opcoes.length)) return "";
     var aberto = state.promoExpanded[op.itemId] === true;
-    return '<tr class="cm-promo-options" data-promo-options="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="9"><table class="vf-table vf-table--compact"><tbody>' +
+    return '<tr class="cm-promo-options" data-promo-options="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="8"><table class="vf-table vf-table--compact"><tbody>' +
       op.opcoes.map(function (opcao) {
         var promo = opcao.promocao || {};
         return '<tr data-promo-option="' + escapeHtml(promo.id || "") + '">' +
@@ -2122,7 +2282,7 @@
           '<td class="num">' + (opcao.delta_lc === null || opcao.delta_lc === undefined ? "—" : escapeHtml("Δ " + formatMoney(opcao.delta_lc, true))) + "</td>" +
           '<td class="num">' + escapeHtml(formatPercent(opcao.margemDepois) || "—") + "</td>" +
           "<td>" + veredictoChipHtml(opcao.veredito) + (opcao.veredito === "bloqueado" ? '<span class="cm-promo-flag is-warn"> · ' + escapeHtml(motivoTexto(opcao.veredito_motivo)) + "</span>" : "") + "</td>" +
-          '<td class="vf-table__actions"><button class="vf-btn vf-btn--sm vf-btn--ghost" type="button" data-opp-item="' + escapeHtml(op.itemId) + '" data-promo-id="' + escapeHtml(promo.id || "") + '">Simular</button></td></tr>';
+          '<td class="vf-table__actions">' + acoesPromoHtml(op.itemId, promo, opcao.veredito, opcao.veredito_motivo, true) + "</td></tr>";
       }).join("") + "</tbody></table></td></tr>";
   }
 
@@ -2172,7 +2332,7 @@
     // Data real da fonte; sem data (ou inválida) diz "data desconhecida" — nunca "—".
     var geradoTxt = fonte.geradoEm ? formatShortDateTime(fonte.geradoEm) : null;
     if (!geradoTxt || geradoTxt === "—") geradoTxt = "data desconhecida";
-    refs.oppsMeta.textContent = origem + " · " + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "");
+    refs.oppsMeta.textContent = "Lista: " + origem + " · " + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "");
     refs.resultCount.textContent = formatInt(o.total || 0) + (Number(o.total) === 1 ? " anúncio" : " anúncios");
     if (!o.oportunidades || !o.oportunidades.length) {
       var filtrado = state.oppsFilters.veredito || state.oppsFilters.tipo;
@@ -2181,12 +2341,12 @@
         : "Nenhuma promoção disponível que valha entrar nesta conta (promoções já ativas e as que não baixam o preço não contam).") + "</p>";
       return;
     }
-    refs.oppsHost.innerHTML = '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead><tr>' +
-      '<th>Produto</th><th>Promo</th><th class="num">Preço → promo</th><th class="num">Seller banca / ML banca</th><th class="num">Frete antes → depois</th>' +
-      '<th class="num">LC/un antes → depois</th><th class="num">Margem antes → depois</th><th>Veredito</th><th><span class="vf-visually-hidden">Ação</span></th>' +
+    refs.oppsHost.innerHTML = '<div class="vf-table-wrap cm-opps-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead><tr>' +
+      '<th>Produto</th><th>Promo</th><th class="num">Preço → promo</th><th class="num" title="Você banca / ML banca">Seller / ML</th><th class="num">Frete</th>' +
+      '<th class="num">LC/un</th><th class="num">Margem</th><th>Veredito</th>' +
       "</tr></thead><tbody>" + o.oportunidades.map(promoRowHtml).join("") + "</tbody></table></div>" + oppsPagerHtml(o) +
       '<p class="cm-opps-foot">' + escapeHtml(o.criterio || "") + (o.cotacao && o.cotacao.modo === "viva"
-        ? " Página cotada ao vivo (comissão e frete reais em cada preço)."
+        ? " Linhas com cotação ao vivo completa usam o mesmo cálculo do simulador; as marcadas como estimativa, não."
         : " Valores estimados com a taxa de comissão e o frete do snapshot até a cotação ao vivo terminar.") + "</p>";
   }
 
@@ -3021,6 +3181,7 @@
     state.drawerTab = DRAWER_TABS.indexOf(tabName) !== -1 ? tabName : "pricing";
     if (variableKey && contract.VARIABLE_META[variableKey]) state.evidenceVariable = variableKey;
     state.pendingPromoId = opts && opts.promoId ? String(opts.promoId) : null;
+    state.pendingReview = Boolean(opts && opts.autoReview && state.pendingPromoId);
     if (!mesmoItem) {
       resetItemState(item);
       loadBancada(item);
@@ -3050,7 +3211,14 @@
     if (achada) {
       state.drawerTab = "pricing";
       state.bancada.selecionado = promoIdDe(achada);
+      // "Participar" da aba Promoções: com a Bancada pronta, já abre o preview (o botão decide se pode).
+      if (state.pendingReview) {
+        state.pendingReview = false;
+        var chave = drawerKey();
+        root.setTimeout(function () { if (chave === drawerKey()) reviewDaBancada(); }, 0);
+      }
     } else {
+      state.pendingReview = false;
       // Nunca cai em "Preço manual" em silêncio: a promoção pedida não está na leitura atual.
       state.bancada.aviso = "A promoção escolhida não está mais na leitura atual das promoções deste anúncio; mostrando o preço manual.";
     }
@@ -3531,7 +3699,7 @@
       // Retorno ML só aparece quando existe em algum dos lados (o resto da cascata é sempre mostrado).
       if (l.chave === "rebate" && !a && !c) return "";
       var mudou = c !== null && c !== undefined && a !== null && a !== undefined && a !== c;
-      var celula = l.chave === "custo" || l.chave === "taxa_fixa" ? hipCelulaHtml(l.chave, c, exibicao) : escapeHtml(money(c));
+      var celula = (l.chave === "custo" || l.chave === "taxa_fixa") && !exibicao.somenteLeitura ? hipCelulaHtml(l.chave, c, exibicao) : escapeHtml(money(c));
       var aviso = l.chave === "frete" && mudouFrete ? ' <span class="cm-banc__faixa" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
       return '<tr data-cm-linha="' + l.chave + '"' + (mudou ? ' class="is-mudou"' : "") + '><th scope="row">' + (l.sinal ? '<span class="cm-banc__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) + aviso + "</th>" +
         '<td class="num">' + escapeHtml(money(a)) + '</td><td class="num">' + celula + "</td><td></td></tr>";
@@ -4574,6 +4742,7 @@
     setDrawerTab: setDrawerTab,
     applyPreset: applyPreset,
     reload: loadCentral,
+    atualizadoTexto: atualizadoTexto,
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

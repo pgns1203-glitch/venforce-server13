@@ -8,6 +8,17 @@
 //   margem'   = LC' / P'
 //   ΔLC       = LC' − LC_atual
 //
+// QUEM BANCA o desconto (sempre sobre o PREÇO CHEIO — o preço sem promoção —,
+// nunca sobre o preço atual, que já pode ser promocional):
+//   desconto_total    = preço_cheio − P'
+//   ml_banca          = retorno ML (rebate) do cenário
+//   seller_banca      = desconto_total − ml_banca
+//   delta_preco_atual = P_atual − P'   (campo à parte: quanto o preço CAI hoje)
+// Sem preço cheio informado, `seller_banca`/`desconto_total` ficam null com
+// `banca_motivo: 'sem_preco_cheio'` (nunca se cai no preço atual). Banca
+// negativa não some: sai com `banca_aviso` explicando (preço acima do cheio,
+// ou retorno ML maior que o desconto).
+//
 // Convenções (as do núcleo): valores monetários POR UNIDADE em R$; alíquota e
 // margens em FRAÇÃO 0–1 (0,1284 = 12,84%); null = ausente, nunca zero.
 //
@@ -62,6 +73,14 @@ const MOTIVOS = Object.freeze({
   PROMOCAO_SEM_PRECO: "promocao_sem_preco",
   LIMITE_DE_COTACOES: "limite_de_cotacoes_excedido",
   SEM_PRECO_VIAVEL: "sem_preco_viavel",
+});
+
+// Motivos/avisos de "quem banca" — NÃO bloqueiam o veredito (o LC não depende
+// do preço cheio): só dizem por que `seller_banca` não existe ou é negativo.
+const BANCA = Object.freeze({
+  SEM_PRECO_CHEIO: "sem_preco_cheio",
+  PRECO_ACIMA_DO_CHEIO: "preco_acima_do_cheio",
+  RETORNO_MAIOR_QUE_DESCONTO: "retorno_maior_que_desconto",
 });
 
 // Promoção em andamento no Mercado Livre (status BRUTO do ML).
@@ -264,6 +283,7 @@ function calcularAtual({ atual = {}, frete_aplicavel = true } = {}) {
  * @param {object} p
  * @param {object} p.atual     { preco, custo, aliquota, taxa_fixa, comissao, frete, rebate }  — composição de hoje
  * @param {object} p.cenario   { tipo: 'preco'|'promo'|'insumos', preco: P', rebate?: R$, status_promocao?: string,
+ *                              preco_cheio? (preço sem promoção), preco_cheio_fonte? (texto, devolvido como veio),
  *                              custo?, aliquota?, taxa_fixa? (hipótese; ausente = os de `atual`) }
  * @param {object} p.cotacao   { comissao, frete } em P' (null = indisponível) + { frete_aplicavel?: false } para logística sem frete previsto
  * @param {object} p.meta      { margem_alvo, margem_minima? }  (frações)
@@ -348,9 +368,27 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
     ? round6(lcAtual / lcNovo - 1)
     : null;
 
-  const desconto = precoAtual !== null && precoNovo !== null && precoNovo > 0 ? round2(precoAtual - precoNovo) : null;
+  // Quem banca (ver o cabeçalho): o desconto é medido contra o PREÇO CHEIO.
+  const precoCheio = num(cenario.preco_cheio);
+  const precoNovoValido = precoNovo !== null && precoNovo > 0;
+  const deltaPrecoAtual = precoAtual !== null && precoNovoValido ? round2(precoAtual - precoNovo) : null;
   const mlBanca = rebateNovo;
-  const sellerBanca = desconto !== null && rebateNovo !== null ? round2(desconto - rebateNovo) : null;
+  let descontoTotal = null;
+  let descontoRatio = null;
+  let sellerBanca = null;
+  let bancaMotivo = null;
+  let bancaAviso = null;
+  if (precoNovoValido && mlBanca !== null) {
+    if (precoCheio === null || precoCheio <= 0) {
+      bancaMotivo = BANCA.SEM_PRECO_CHEIO;
+    } else {
+      descontoTotal = round2(precoCheio - precoNovo);
+      descontoRatio = round6((precoCheio - precoNovo) / precoCheio);
+      sellerBanca = round2(descontoTotal - mlBanca);
+      if (descontoTotal < 0) bancaAviso = BANCA.PRECO_ACIMA_DO_CHEIO;
+      else if (sellerBanca < 0) bancaAviso = BANCA.RETORNO_MAIOR_QUE_DESCONTO;
+    }
+  }
   const deltaMargem = atualLinha.margem_ratio !== null && margemNova !== null ? round6(margemNova - atualLinha.margem_ratio) : null;
 
   // Faixa de frete: vem da COTAÇÃO (frete' ≠ frete), sem limiar fixo no código.
@@ -384,9 +422,15 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
     },
     atual: atualLinha,
     cenario: cenarioLinha,
-    desconto,
+    preco_cheio: precoCheio !== null && precoCheio > 0 ? round2(precoCheio) : null,
+    preco_cheio_fonte: precoCheio !== null && precoCheio > 0 && cenario.preco_cheio_fonte ? String(cenario.preco_cheio_fonte) : null,
+    desconto_total: descontoTotal,
+    desconto_ratio: descontoRatio,
     ml_banca: mlBanca,
     seller_banca: sellerBanca,
+    delta_preco_atual: deltaPrecoAtual,
+    banca_motivo: bancaMotivo,
+    banca_aviso: bancaAviso,
     delta_lc: deltaLc,
     delta_margem_ratio: deltaMargem,
     empate_volume: empateVolume,
@@ -438,9 +482,15 @@ function resultadoBloqueado(motivo, { flags = {}, meta = {} } = {}) {
     },
     atual: linhaVazia(null),
     cenario: linhaVazia(null),
-    desconto: null,
+    preco_cheio: null,
+    preco_cheio_fonte: null,
+    desconto_total: null,
+    desconto_ratio: null,
     ml_banca: null,
     seller_banca: null,
+    delta_preco_atual: null,
+    banca_motivo: null,
+    banca_aviso: null,
     delta_lc: null,
     delta_margem_ratio: null,
     empate_volume: null,
@@ -452,6 +502,7 @@ function resultadoBloqueado(motivo, { flags = {}, meta = {} } = {}) {
 module.exports = {
   VEREDITOS,
   MOTIVOS,
+  BANCA,
   STATUS_PROMOCAO_ATIVA,
   TOLERANCIA_VALOR,
   calcularCenario,

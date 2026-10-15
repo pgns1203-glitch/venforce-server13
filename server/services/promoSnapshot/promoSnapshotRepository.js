@@ -866,7 +866,7 @@ async function listarOportunidadesElegiveis({ clienteId, clienteContaId, sellerI
              NULL::text AS fonte_titulo, p.nome AS promo_nome, p.promotion_id AS promo_id,
              p.promotion_type AS promo_tipo, p.status AS promo_status, p.status_exibicao AS promo_status_exibicao,
              p.preco_final_fonte AS promo_preco_fonte, p.data_fim AS promo_fim, p.herdado AS promo_herdado,
-             p.observed_at AS promo_observado_em
+             p.observed_at AS promo_observado_em, p.preco_original AS promo_preco_original
         FROM promo_snapshot_itens p
        WHERE p.run_id = $1 AND p.cliente_conta_id = $2 AND p.seller_id = $3
          AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`,

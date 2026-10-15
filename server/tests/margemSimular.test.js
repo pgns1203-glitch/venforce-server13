@@ -147,6 +147,60 @@ cenario("94,90 → 89,77 com retorno 3,30: ΔLC negativo, entrar_se_girar, empat
   assert.strictEqual(r.atual.lc, LINHA_BASE.profit);
 });
 
+// ── Quem banca: sobre o preço CHEIO do item, não sobre o preço atual (já promocional) ──
+
+cenario("quem banca: preço atual 112,42 já em promoção, cheio 141,90 (do item): desconto 31,65 sobre o cheio, ML 6,62, seller 25,03; Δ vs hoje 2,17 à parte", async () => {
+  const linha = { ...LINHA_BASE, price: 112.42, listPrice: 141.9, commission: 15.74, freight: 18.9, cost: 40 };
+  const w = mundo({ linhaBase: linha, promocoes: [promoLinha("P1", { precoFinal: 110.25, subsidioMl: 6.62, precoOriginal: 141.9 })] });
+  const r = await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]));
+  const c = r.cenarios[0];
+  assert.strictEqual(c.preco_cheio, 141.9);
+  assert.strictEqual(c.preco_cheio_fonte, "margin_snapshot");
+  assert.strictEqual(c.desconto_total, 31.65);
+  assert.strictEqual(c.ml_banca, 6.62);
+  assert.strictEqual(c.seller_banca, 25.03);
+  assert.strictEqual(c.delta_preco_atual, 2.17);
+  assert.strictEqual(c.banca_aviso, null);
+  assert.deepStrictEqual(c.evidencia.preco_cheio, { fonte: "margin_snapshot", calculado_em: "2026-10-13T06:00:00.000Z" });
+});
+
+cenario("quem banca: o cheio do ITEM tem prioridade sobre o original_price da promoção (a fonte é dita)", async () => {
+  const w = mundo({ linhaBase: { ...LINHA_BASE, listPrice: 100 }, promocoes: [promoLinha("P1", { precoOriginal: 94.9 })] });
+  const c = (await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]))).cenarios[0];
+  assert.strictEqual(c.preco_cheio, 100);
+  assert.strictEqual(c.preco_cheio_fonte, "margin_snapshot");
+  assert.strictEqual(c.desconto_total, 10.23);
+});
+
+cenario("quem banca: sem cheio no item, usa o original_price da promoção — declarado como promo_snapshot", async () => {
+  const w = mundo({ promocoes: [promoLinha("P1", { precoOriginal: 94.9 })] });
+  const c = (await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]))).cenarios[0];
+  assert.strictEqual(c.preco_cheio_fonte, "promo_snapshot");
+  assert.strictEqual(c.seller_banca, 1.83);
+  assert.strictEqual(c.evidencia.preco_cheio.fonte, "promo_snapshot");
+});
+
+cenario("quem banca: sem cheio em lugar nenhum ⇒ seller banca null + sem_preco_cheio (o veredito continua)", async () => {
+  const w = mundo({ promocoes: [promoLinha("P1", { precoOriginal: null })] });
+  const c = (await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]))).cenarios[0];
+  assert.strictEqual(c.preco_cheio, null);
+  assert.strictEqual(c.seller_banca, null);
+  assert.strictEqual(c.desconto_total, null);
+  assert.strictEqual(c.banca_motivo, "sem_preco_cheio");
+  assert.strictEqual(c.ml_banca, 3.3);
+  assert.strictEqual(c.veredito, "entrar_se_girar");
+  assert.deepStrictEqual(c.evidencia.preco_cheio, { fonte: null, motivo: "sem_preco_cheio" });
+});
+
+cenario("quem banca: cenário `preco` manual também usa o cheio do item (sem retorno ML: o seller banca todo o desconto)", async () => {
+  const w = mundo({ linhaBase: { ...LINHA_BASE, listPrice: 100 } });
+  const c = (await rodar(w, pedido([{ tipo: "preco", preco: 90 }]))).cenarios[0];
+  assert.strictEqual(c.desconto_total, 10);
+  assert.strictEqual(c.ml_banca, 0);
+  assert.strictEqual(c.seller_banca, 10);
+  assert.strictEqual(c.delta_preco_atual, 4.9);
+});
+
 cenario("cenário `preco`: P' digitado; faixa de frete mudou ⇒ mudou_faixa_frete=true e frete' ≠ frete", async () => {
   const w = mundo();
   const r = await rodar(w, pedido([{ tipo: "preco", preco: 74.9 }]));

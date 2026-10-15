@@ -1838,6 +1838,9 @@
     lc_por_unidade_cai: "LC por unidade cai",
     margem_abaixo_da_meta: "margem abaixo da meta",
     margem_abaixo_do_minimo: "margem abaixo do mínimo",
+    sem_preco_cheio: "sem preço cheio para calcular quem banca o desconto",
+    preco_acima_do_cheio: "o preço está acima do preço cheio: não é desconto",
+    retorno_maior_que_desconto: "o retorno do Mercado Livre é maior que o desconto sobre o preço cheio",
     sem_preco_viavel: "sem preço viável para a meta",
     meta_inviavel: "a meta não é atingível com estes custos",
     dados_ausentes: "faltam dados para calcular",
@@ -2064,6 +2067,14 @@
     return arrowPair(formatMoney(atual.frete), depois);
   }
 
+  // Quem banca é medido contra o preço CHEIO. Sem ele, o seller banca é "—" e o motivo é dito;
+  // banca negativa nunca aparece sem o aviso do porquê.
+  function bancaAvisoHtml(r) {
+    var codigo = r && (r.banca_aviso || r.banca_motivo);
+    if (!codigo) return "";
+    return ' <span class="cm-promo-flag is-warn" data-cm-banca-aviso="' + escapeHtml(codigo) + '" title="' + escapeHtml(motivoTexto(codigo)) + '">⚠</span>';
+  }
+
   function promoRowHtml(op) {
     var atual = op.atual || {};
     var cen = op.cenario || {};
@@ -2081,12 +2092,12 @@
       : escapeHtml(formatInt(op.unidades) + " un. no período");
     var banca = (op.seller_banca === null || op.seller_banca === undefined) && (op.ml_banca === null || op.ml_banca === undefined)
       ? "—"
-      : escapeHtml(formatMoney(op.seller_banca) || "—") + '<span class="cm-promo-arrow" aria-hidden="true">/</span>' + escapeHtml(formatMoney(op.ml_banca) || "—");
+      : escapeHtml(formatMoney(op.seller_banca) || "—") + '<span class="cm-promo-arrow" aria-hidden="true">/</span>' + escapeHtml(formatMoney(op.ml_banca) || "—") + bancaAvisoHtml(op);
     return '<tr class="cm-promo-row" data-opp="' + escapeHtml(op.itemId) + '">' +
       "<td><strong>" + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + '</span><span class="cm-prod-meta">' + unidades + "</span>" + mais + "</td>" +
       "<td>" + escapeHtml(promo.nome || promo.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(promo.tipo || "") + "</span>" + herdada + "</td>" +
       '<td class="num">' + arrowPair(formatMoney(op.precoAtual), formatMoney(op.precoPromocao)) +
-        (op.desconto !== null && op.desconto !== undefined ? '<span class="cm-prod-meta">' + escapeHtml(formatMoney(-op.desconto, true) || "") + "</span>" : "") + "</td>" +
+        (op.delta_preco_atual !== null && op.delta_preco_atual !== undefined ? '<span class="cm-prod-meta" data-cm-delta-preco title="Variação contra o preço de hoje">' + escapeHtml(formatMoney(-op.delta_preco_atual, true) || "") + "</span>" : "") + "</td>" +
       '<td class="num" data-cm-banca>' + banca + "</td>" +
       '<td class="num" data-cm-frete>' + freteCelula(op) + "</td>" +
       '<td class="num" data-cm-lc>' + arrowPair(formatMoney(atual.lc), formatMoney(cen.lc)) + deltaHtml(op.delta_lc) + "</td>" +
@@ -3518,7 +3529,7 @@
     return '<div class="cm-banc__promo" data-cm-promo-info="' + escapeHtml(promoIdDe(promo)) + '"><strong>' + escapeHtml(p.nome || p.tipo || "Promoção") + "</strong>" +
       '<span class="cm-prod-meta">' + escapeHtml([p.tipo, p.status_exibicao || p.status, periodo].filter(Boolean).join(" · ")) + "</span>" +
       '<dl class="cm-banc__banca"><div><dt>Preço</dt><dd>' + escapeHtml(money(promo.cenario && promo.cenario.preco)) + "</dd></div>" +
-      "<div><dt>Seller banca</dt><dd>" + escapeHtml(money(promo.seller_banca)) + "</dd></div><div><dt>ML banca</dt><dd>" + escapeHtml(money(promo.ml_banca)) + "</dd></div></dl></div>";
+      "<div><dt>Seller banca</dt><dd>" + escapeHtml(money(promo.seller_banca)) + bancaAvisoHtml(promo) + "</dd></div><div><dt>ML banca</dt><dd>" + escapeHtml(money(promo.ml_banca)) + "</dd></div></dl></div>";
   }
 
   function formatShortDate(value) {

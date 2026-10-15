@@ -443,9 +443,16 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
       } else {
         gates.push(gate("promocao_preco", "PROMOCAO", "ok", "Preço promocional válido", "O Mercado Livre ainda valida a faixa permitida ao confirmar."));
       }
-      const precoOriginal = num(promocao.precoOriginal) ?? m.precoLista ?? m.precoAtual;
+      // Quem banca é medido contra o preço CHEIO (original da promoção, ou o de lista do
+      // item) — nunca contra o preço atual, que já pode ser promocional. Sem nenhum dos
+      // dois: banca null + `sem_preco_cheio` (não cai no preço atual).
+      const precoOriginal = num(promocao.precoOriginal) ?? m.precoLista ?? null;
       const desconto = novoPreco !== null && precoOriginal !== null ? round2(precoOriginal - novoPreco) : null;
       const mlBanca = rebate || null;
+      const sellerBanca = desconto !== null ? round2(desconto - (mlBanca || 0)) : null;
+      let bancaAviso = null;
+      if (desconto !== null && desconto < 0) bancaAviso = "preco_acima_do_cheio";
+      else if (sellerBanca !== null && sellerBanca < 0) bancaAviso = "retorno_maior_que_desconto";
       promoOut = {
         id: String(promocao.id),
         tipo: promocao.tipo,
@@ -459,7 +466,10 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
         descontoReais: desconto,
         descontoPercentual: desconto !== null && precoOriginal ? round2((desconto / precoOriginal) * 100) : null,
         mlBanca,
-        sellerBanca: desconto !== null ? round2(desconto - (mlBanca || 0)) : null,
+        sellerBanca,
+        deltaPrecoAtual: novoPreco !== null && m.precoAtual !== null ? round2(m.precoAtual - novoPreco) : null,
+        bancaMotivo: precoOriginal === null ? "sem_preco_cheio" : null,
+        bancaAviso,
         meliPercentage: num(promocao.meliPercentage),
         sellerPercentage: num(promocao.sellerPercentage),
         escrita,

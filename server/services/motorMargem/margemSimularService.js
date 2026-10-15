@@ -246,6 +246,19 @@ function casaPromocao(linha, id) {
   return String(linha.promocaoChave) === alvo || String(linha.promotionId || "") === alvo || String(linha.refId || "") === alvo;
 }
 
+// Preço CHEIO (sem promoção) do anúncio, para o "quem banca": o do item
+// (`list_price` do Margin Snapshot = regular_amount do sale_price) e, só se o
+// item não o tem, o `original_price` da própria promoção. A fonte é dita na
+// resposta; sem nenhum dos dois o núcleo devolve banca nula com
+// `sem_preco_cheio` — nunca o preço atual (que já pode ser promocional).
+function resolverPrecoCheio(snapshot, promocao) {
+  const doItem = snapshot ? num(snapshot.listPrice) : null;
+  if (doItem !== null && doItem > 0) return { valor: doItem, fonte: "margin_snapshot" };
+  const daPromo = promocao ? num(promocao.preco_original) : null;
+  if (daPromo !== null && daPromo > 0) return { valor: daPromo, fonte: "promo_snapshot" };
+  return { valor: null, fonte: null };
+}
+
 // ─── Montagem dos cenários ───────────────────────────────────────────────────
 
 // Cada pedido vira 1+ "tarefas" (todas_promos expande). A tarefa diz o que o
@@ -306,6 +319,20 @@ function deveCotar(tarefa, atual) {
 
 const evidenciaCotacao = evidenciaDaCotacao;
 
+// Campos de preço cheio de um cenário (vão para o núcleo) a partir do contexto.
+function evidenciaPrecoCheio(ctx, promocao) {
+  const r = resolverPrecoCheio(ctx.snapshot, promocao);
+  if (r.valor === null) return { fonte: null, motivo: "sem_preco_cheio" };
+  return r.fonte === "margin_snapshot"
+    ? { fonte: r.fonte, calculado_em: ctx.snapshotCalculadoEm || null }
+    : { fonte: r.fonte, observado_em: promocao ? promocao.observado_em : null };
+}
+
+function precoCheioDoCenario(ctx, promocao) {
+  const r = resolverPrecoCheio(ctx.snapshot, promocao);
+  return { preco_cheio: r.valor, preco_cheio_fonte: r.fonte };
+}
+
 function calcularTarefa(tarefa, ctx) {
   const { atual, flags, meta, cotacoes, evidenciaBase, rebateAtual } = ctx;
   const saidaBase = { tipo: tarefa.tipo, entrada: tarefa.entrada };
@@ -327,6 +354,7 @@ function calcularTarefa(tarefa, ctx) {
         custo: pick("custo", atual.custo),
         aliquota: pick("aliquota", atual.aliquota),
         taxa_fixa: pick("taxa_fixa", atual.taxa_fixa),
+        ...precoCheioDoCenario(ctx, null),
       },
       // Hipótese do operador: comissão e frete são os informados (ou os de hoje); não há recotação.
       cotacao: { comissao: pick("comissao", atual.comissao), frete: pick("frete", atual.frete), frete_aplicavel: ctx.freteAplicavel },
@@ -336,21 +364,21 @@ function calcularTarefa(tarefa, ctx) {
     return {
       ...saidaBase,
       ...resultado,
-      evidencia: { ...evidenciaBase, preco: { fonte: "informado", consultado_em: null }, hipotese: true },
+      evidencia: { ...evidenciaBase, preco: { fonte: "informado", consultado_em: null }, preco_cheio: evidenciaPrecoCheio(ctx, null), hipotese: true },
     };
   }
 
   const cotacao = deveCotar(tarefa, atual) ? cotacoes.get(Number(tarefa.preco).toFixed(2)) || null : null;
   const resultado = core.calcularCenario({
     atual,
-    cenario: { tipo: tarefa.tipo, preco: tarefa.preco, rebate: tarefa.rebate, status_promocao: tarefa.status_promocao },
+    cenario: { tipo: tarefa.tipo, preco: tarefa.preco, rebate: tarefa.rebate, status_promocao: tarefa.status_promocao, ...precoCheioDoCenario(ctx, tarefa.promocao) },
     cotacao: cotacao
       ? cotacaoParaNucleo(cotacao)
       : { comissao: null, frete: null, frete_aplicavel: ctx.freteAplicavel },
     meta,
     flags,
   });
-  const evidencia = { ...evidenciaBase, ...(evidenciaCotacao(cotacao) || {}) };
+  const evidencia = { ...evidenciaBase, ...(evidenciaCotacao(cotacao) || {}), preco_cheio: evidenciaPrecoCheio(ctx, tarefa.promocao) };
   if (tarefa.tipo === "promo") {
     evidencia.preco = { fonte: "promo_snapshot", observado_em: tarefa.promocao.observado_em, fonte_do_preco: tarefa.promocao.preco_final_fonte };
     evidencia.rebate = {
@@ -409,7 +437,7 @@ async function resolverPrecoAlvo(tarefa, ctx) {
     const cotacao = await cotador.cotar(preco);
     const cen = core.calcularCenario({
       atual,
-      cenario: { tipo: "preco", preco },
+      cenario: { tipo: "preco", preco, ...precoCheioDoCenario(ctx, null) },
       cotacao: cotacaoParaNucleo(cotacao),
       meta: metaUsada,
       flags,
@@ -531,7 +559,10 @@ async function simular({ user, body } = {}, deps = {}) {
         taxa_fixa: { fonte: "margin_snapshot", calculado_em: iso(snapshot.calculatedAt), base_id: snapshot.baseId },
       };
 
-  const ctx = { atual, flags, meta, cotacoes, evidenciaBase, freteAplicavel: cotador.freteAplicavel, rebateAtual: atualRebate, cotador };
+  const ctx = {
+    atual, flags, meta, cotacoes, evidenciaBase, freteAplicavel: cotador.freteAplicavel, rebateAtual: atualRebate, cotador,
+    snapshot: semSnapshot ? null : snapshot, snapshotCalculadoEm: semSnapshot ? null : iso(snapshot.calculatedAt),
+  };
   const cenarios = [];
   for (const t of tarefas) {
     // preco_alvo itera (cada passo depende da cotação do anterior); os demais já têm a cotação em mãos.

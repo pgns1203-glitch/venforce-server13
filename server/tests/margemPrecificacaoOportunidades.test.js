@@ -60,6 +60,7 @@ function fakeDb({ head = [{ id: 11, created_at: new Date().toISOString(), parcia
           .map((r) => ({
             item_id: r.item_id, chave: String(r._id).padStart(6, "0"), preco_promo: r.preco_promocao, retorno: r.retorno_ml,
             fonte_titulo: r.titulo, promo_nome: r.campanha, promo_id: r.campanha_id, promo_tipo: r.tipo_promocao, promo_status: r._status || null,
+            promo_preco_original: r.preco_original === undefined ? null : r.preco_original,
           }));
         const snapPorItem = new Map(snaps.map((x) => [x.item_id, x]));
         const anuncioPorItem = new Map(anuncios.map((x) => [x.item_id, x]));
@@ -87,6 +88,35 @@ function deps(db, vendas = new Map()) {
     },
   };
 }
+
+cenario("quem banca: cheio do item (list_price) → desconto sobre o cheio; sem ele, original_price da promoção; sem nenhum, null + sem_preco_cheio", async () => {
+  const itens = [
+    diagRow("MLB11", { preco: 90, retorno: 4.5 }),
+    diagRow("MLB12", { preco: 90, retorno: 4.5 }),
+    { ...diagRow("MLB13", { preco: 90, retorno: 4.5 }), preco_original: null },
+  ];
+  const snaps = [
+    { ...snapRow("MLB11", { price: 100 }), list_price: 120 },
+    snapRow("MLB12", { price: 100 }),
+    snapRow("MLB13", { price: 100 }),
+  ];
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos" }, deps(fakeDb({ itens, snaps })));
+  const por = Object.fromEntries(r.oportunidades.map((o) => [o.itemId, o]));
+  assert.strictEqual(por.MLB11.preco_cheio, 120);
+  assert.strictEqual(por.MLB11.preco_cheio_fonte, "margin_snapshot");
+  assert.strictEqual(por.MLB11.desconto_total, 30);
+  assert.strictEqual(por.MLB11.seller_banca, 25.5);
+  assert.strictEqual(por.MLB11.delta_preco_atual, 10, "a queda contra o preço atual fica à parte");
+  assert.strictEqual(por.MLB12.preco_cheio, 100, "diagRow: original_price 100");
+  assert.strictEqual(por.MLB12.preco_cheio_fonte, "promo_snapshot");
+  assert.strictEqual(por.MLB12.seller_banca, 5.5);
+  assert.strictEqual(por.MLB13.seller_banca, null);
+  assert.strictEqual(por.MLB13.banca_motivo, "sem_preco_cheio");
+  assert.strictEqual(por.MLB13.ml_banca, 4.5);
+  for (const o of r.oportunidades) {
+    if (o.seller_banca !== null && o.seller_banca < 0) assert.ok(o.banca_aviso, `${o.itemId}: seller banca negativa sem aviso`);
+  }
+});
 
 cenario("sem diagnóstico concluído (ou tabela inexistente): indisponível, com a explicação da dependência bulk", async () => {
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ head: [] })));

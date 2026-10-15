@@ -164,10 +164,21 @@ function metaDaLinha(snap) {
     : { margem_alvo: core.DEFAULT_TARGET_MARGIN, margem_minima: 0 };
 }
 
+// Preço CHEIO (sem promoção) para o "quem banca": o do item (`list_price` do
+// Margin Snapshot) e, só se o item não o tem, o `original_price` da promoção;
+// a fonte vai junto. Sem nenhum dos dois o núcleo diz `sem_preco_cheio`.
+function precoCheioDaLinha(snap, precoOriginalPromo) {
+  const doItem = num(snap.list_price);
+  if (doItem !== null && doItem > 0) return { preco_cheio: doItem, preco_cheio_fonte: "margin_snapshot" };
+  const daPromo = num(precoOriginalPromo);
+  if (daPromo !== null && daPromo > 0) return { preco_cheio: daPromo, preco_cheio_fonte: "promo_snapshot" };
+  return { preco_cheio: null, preco_cheio_fonte: null };
+}
+
 // Uma candidata a partir de (promoção, snapshot de margem) — mesma régua para
 // as duas fontes. null = fora do ranking (ativa / sem desconto efetivo).
 function montarCandidata(args) {
-  const { itemId, promocao, precoPromo, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false, rebateAtual = null, rebateIndisponivel = null, cotacaoReal = null } = args;
+  const { itemId, promocao, precoPromo, precoOriginalPromo = null, retornoMl, snap, titulo, vendasPorMlb, vendasIndisponivel = false, rebateAtual = null, rebateIndisponivel = null, cotacaoReal = null } = args;
   if (motivoForaDoRanking({ status: promocao && promocao.status, precoPromo, precoAtual: snap.price })) return null;
 
   // Composição de hoje: a mesma da tabela (snapshot + retorno ML em andamento).
@@ -187,7 +198,7 @@ function montarCandidata(args) {
       preco: num(snap.price), custo: num(snap.cost), aliquota: num(snap.tax_rate), taxa_fixa: num(snap.fixed_fee),
       comissao: num(snap.commission), frete: num(snap.freight), rebate: rebateEmAndamento === null ? 0 : rebateEmAndamento,
     },
-    cenario: { tipo: "promo", preco: num(precoPromo), rebate: retornoMl || 0, status_promocao: promocao && promocao.status },
+    cenario: { tipo: "promo", preco: num(precoPromo), rebate: retornoMl || 0, status_promocao: promocao && promocao.status, ...precoCheioDaLinha(snap, precoOriginalPromo) },
     // Sem cotação real, a estimativa é DECLARADA (sem consulta ao ML): taxa de comissão do snapshot × P' e frete do snapshot.
     cotacao: cotacaoReal
       ? cotacaoParaNucleo(cotacaoReal)
@@ -229,9 +240,15 @@ function montarCandidata(args) {
     delta_lc: calc.delta_lc,
     delta_margem_ratio: calc.delta_margem_ratio,
     empate_volume: calc.empate_volume,
-    desconto: calc.desconto,
+    preco_cheio: calc.preco_cheio,
+    preco_cheio_fonte: calc.preco_cheio_fonte,
+    desconto_total: calc.desconto_total,
+    desconto_ratio: calc.desconto_ratio,
     ml_banca: calc.ml_banca,
     seller_banca: calc.seller_banca,
+    delta_preco_atual: calc.delta_preco_atual,
+    banca_motivo: calc.banca_motivo,
+    banca_aviso: calc.banca_aviso,
     impacto_lc: impacto,
     flags: {
       ...calc.flags,
@@ -278,6 +295,9 @@ function resumoDaOpcao(c) {
     lucroDepois: c.lucroDepois,
     seller_banca: c.seller_banca,
     ml_banca: c.ml_banca,
+    desconto_total: c.desconto_total,
+    banca_motivo: c.banca_motivo,
+    banca_aviso: c.banca_aviso,
     flags: c.flags,
     estimado: c.estimado,
   };
@@ -431,8 +451,9 @@ function candidataDaLinha(r, promocao, vendasPorMlb, vendasIndisponivel, rebates
       titulo: r.snap_titulo, image_url: r.image_url, price: r.price, cost: r.cost, tax_rate: r.tax_rate,
       fixed_fee: r.fixed_fee, commission_rate: r.commission_rate, freight: r.freight, margin: r.margin,
       commission: r.snap_commission, profit: r.snap_profit, snap_target_margin: r.snap_target_margin,
-      anuncio_logistic_type: r.anuncio_logistic_type,
+      anuncio_logistic_type: r.anuncio_logistic_type, list_price: r.snap_list_price,
     },
+    precoOriginalPromo: num(r.promo_preco_original),
     titulo: r.fonte_titulo || null,
     vendasPorMlb,
     vendasIndisponivel,
@@ -571,7 +592,7 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, sync, params
     fonteSql: `
       SELECT i.item_id::text AS item_id, i.id::text AS chave, i.preco_promocao AS preco_promo, i.retorno_ml AS retorno,
              i.titulo AS fonte_titulo, i.campanha AS promo_nome, i.campanha_id AS promo_id,
-             i.tipo_promocao AS promo_tipo, NULLIF(${statusSql}, '') AS promo_status
+             i.tipo_promocao AS promo_tipo, NULLIF(${statusSql}, '') AS promo_status, i.preco_original AS promo_preco_original
         FROM promocoes_diagnostico_itens i
        WHERE i.diagnostico_id = $1 AND i.item_id IS NOT NULL AND i.item_id <> ''
          AND i.preco_promocao IS NOT NULL AND i.preco_promocao > 0

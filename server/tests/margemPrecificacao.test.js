@@ -487,6 +487,29 @@ cenario("promoção DEAL elegível: preço sugerido, desconto, ML banca (rebate)
   assert.strictEqual(r.bloqueado, false);
 });
 
+cenario("quem banca (preview): contra o preço ORIGINAL da promoção, nunca contra o preço atual; Δ vs hoje à parte", async () => {
+  // Anúncio já vendendo a 140 (promoção em andamento); preço cheio 149,90; nova oferta a 129,90 com retorno 5,20.
+  const c = criarCenario({ motor: motorItem({ preco: 140 }), promocoes: [promo({ id: "P-DEAL-1", precoOriginal: 149.9, precoFinal: 129.9, subsidioMl: 5.2 })] });
+  const r = await previewPromo(c, criarRepoMemoria(), "P-DEAL-1", { precoVisto: 140 });
+  assert.strictEqual(r.promocao.descontoReais, 20, "149,90 − 129,90 (e não 140 − 129,90 = 10,10)");
+  assert.strictEqual(r.promocao.mlBanca, 5.2);
+  assert.strictEqual(r.promocao.sellerBanca, 14.8);
+  assert.strictEqual(r.promocao.deltaPrecoAtual, 10.1);
+  assert.strictEqual(r.promocao.bancaAviso, null);
+  assert.strictEqual(r.promocao.bancaMotivo, null);
+});
+
+cenario("quem banca (preview): sem preço original da promoção nem de lista do item → null + sem_preco_cheio (não cai no preço atual)", async () => {
+  const sem = { ...promo({ id: "P-DEAL-1" }), precoOriginal: null };
+  const c = criarCenario({ motor: motorItem({ preco: 149.9 }), promocoes: [sem] });
+  const r = await previewPromo(c, criarRepoMemoria());
+  assert.strictEqual(r.promocao.sellerBanca, null);
+  assert.strictEqual(r.promocao.descontoReais, null);
+  assert.strictEqual(r.promocao.bancaMotivo, "sem_preco_cheio");
+  assert.strictEqual(r.promocao.mlBanca, 5.2);
+  assert.strictEqual(r.promocao.deltaPrecoAtual, 20);
+});
+
 cenario("SELLER_CAMPAIGN ativa (aplicada) → ALTERAR; NÃO APLICADA e PROGRAMADA → só simulação", async () => {
   const ativa = await previewPromo(cenarioPromo({ promocoes: [promo({ id: "S1", tipo: "SELLER_CAMPAIGN", status: "started", statusExibicao: "ATIVA" })] }), criarRepoMemoria(), "S1");
   assert.strictEqual(ativa.promocao.escrita.acao, "ALTERAR");

@@ -466,6 +466,9 @@ async function run() {
       assert.strictEqual(await cdp.evaluate(menuAberto), true, "seta não abriu o menu");
       assert.strictEqual(await cdp.evaluate(`${q('[data-custos-acao="menu"]')}.getAttribute("aria-expanded")`), "true");
       assert.ok(await cdp.evaluate(`!!document.querySelector('#am-custos-menu [data-custos-acao="importar"]')`), "Importar fica no menu");
+      assert.ok(await cdp.evaluate(`(() => { const m = document.getElementById("am-custos-menu").getBoundingClientRect();
+        const b = document.querySelector(".am-custos-split").getBoundingClientRect();
+        return Math.abs(m.left - b.left) <= 1 && Math.abs(m.width - b.width) <= 1; })()`), "menu não tem a largura do botão");
       await cdp.evaluate(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
       assert.strictEqual(await cdp.evaluate(menuAberto), false, "Esc não fechou o menu");
       await cdp.evaluate(`${q('[data-custos-acao="menu"]')}.click()`);

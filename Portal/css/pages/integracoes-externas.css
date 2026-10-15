@@ -1,0 +1,23 @@
+/* Portal/css/pages/integracoes-externas.css
+ * Bancada técnica standalone. Estrutura vem da Fundação V2; aqui só o resumo
+ * (rótulo/valor) e o espaçamento entre cards. */
+
+.vf-page-integracoes-externas #cards { display: grid; gap: var(--vf-space-4, 16px); }
+
+.vf-ie-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--vf-space-4, 16px);
+  margin: 0;
+}
+.vf-ie-summary > div { display: grid; gap: 4px; }
+.vf-ie-summary dt {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+.vf-ie-summary dd { margin: 0; }
+
+.vf-ie-note { margin: 0; color: var(--vf-text-secondary); font-size: var(--vf-fs-sm); }
+
+/* Estados alternam via [hidden]; os componentes V2 definem display próprio. */
+.vf-page-integracoes-externas [hidden] { display: none !important; }

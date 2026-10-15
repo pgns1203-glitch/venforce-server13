@@ -453,6 +453,21 @@ async function run() {
       await waitFor(cdp, q('[data-custos-acao="entrar"]'), "botão Editar custos ausente");
       assert.match(await cdp.evaluate(texto(".am-custos-acoes")), /1 sem custo nesta página/);
     });
+    await check("C2b — split: corpo = Editar custos, seta abre/fecha o menu com Importar; altura da barra", async () => {
+      const menuAberto = `!document.getElementById("am-custos-menu").hidden`;
+      assert.strictEqual(await cdp.evaluate(menuAberto), false, "menu começa fechado");
+      assert.ok(await cdp.evaluate(`(() => { const b = document.querySelector(".am-custos-split").getBoundingClientRect();
+        const t = document.querySelector(".am-filtros").getBoundingClientRect(); return b.height >= t.height - 34; })()`), "split não cobre a altura da barra");
+      await cdp.evaluate(`${q('[data-custos-acao="menu"]')}.click()`);
+      assert.strictEqual(await cdp.evaluate(menuAberto), true, "seta não abriu o menu");
+      assert.strictEqual(await cdp.evaluate(`${q('[data-custos-acao="menu"]')}.getAttribute("aria-expanded")`), "true");
+      assert.ok(await cdp.evaluate(`!!document.querySelector('#am-custos-menu [data-custos-acao="importar"]')`), "Importar fica no menu");
+      await cdp.evaluate(`document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))`);
+      assert.strictEqual(await cdp.evaluate(menuAberto), false, "Esc não fechou o menu");
+      await cdp.evaluate(`${q('[data-custos-acao="menu"]')}.click()`);
+      await cdp.evaluate(`document.querySelector(".am-filtro-busca").click()`);
+      assert.strictEqual(await cdp.evaluate(menuAberto), false, "clique fora não fechou o menu");
+    });
 
     // ── Pontual ────────────────────────────────────────────────────────────
     await check("C3 — '+ Custo' abre o campo na célula sem abrir o modal", async () => {
@@ -600,8 +615,9 @@ async function run() {
 
     // ── Importar base de custo ───────────────────────────────────────────────
     await check("I1 — 'Importar base de custo' abre o modal com os 3 passos", async () => {
-      await waitFor(cdp, q('[data-custos-acao="importar"]'), "botão importar ausente");
-      await cdp.evaluate(`${q('[data-custos-acao="importar"]')}.click()`);
+      await waitFor(cdp, q('[data-custos-acao="menu"]'), "seta do split ausente");
+      await cdp.evaluate(`${q('[data-custos-acao="menu"]')}.click()`);
+      await cdp.evaluate(`${q('#am-custos-menu [data-custos-acao="importar"]')}.click()`);
       await waitFor(cdp, q(".am-imp-box"), "modal de importação não abriu");
       assert.match(await cdp.evaluate(texto(".am-imp-box")), /Base de custos Custo com uma planilha/);
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(".am-imp-passo").length`), 3);

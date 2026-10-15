@@ -3648,6 +3648,7 @@
       salvando: false,
       pergunta: null,
       soSemCusto: false,
+      menuAberto: false, // menu do split "Editar custos" (Importar base de custo)
       previa: {},
       previaTimer: {},
       margemAoVivo: {},
@@ -4302,15 +4303,35 @@
       // Na linha da busca quando há o slot; senão, na barra própria.
       var alvo = slot || box;
       if (slot) box.innerHTML = "";
+      // Split (modelo B aprovado): o corpo entra em "Editar custos", a seta
+      // abre o menu com "Importar base de custo". O aviso "N sem custo nesta
+      // página" vira a segunda linha do botão. Altura inteira da barra, ao
+      // lado do Radar de subsídios.
       alvo.innerHTML = '<div class="am-custos-acoes">' +
-        // Mesma altura/fonte dos campos de busca e ordenação ao lado
-        // (vf-btn no tamanho padrão, aviso com a altura de controle).
-        (semCusto ? '<span class="am-custos-acoes__aviso" title="Anúncios desta página sem custo na Base">' +
-          icAlerta(14) + " " + semCusto + " sem custo nesta página</span>" : "") +
-        '<button type="button" class="vf-btn vf-btn--secondary" data-custos-acao="importar">' +
-          icPlanilha(14) + " Importar base de custo</button>" +
-        '<button type="button" class="vf-btn vf-btn--secondary" data-custos-acao="entrar">' +
-          icLapis(14) + " Editar custos</button>" +
+        '<div class="am-custos-split">' +
+          '<button type="button" class="am-custos-split__main" data-custos-acao="entrar">' +
+            '<span class="am-custos-split__ico" aria-hidden="true">' + icLapis(16) + "</span>" +
+            '<span class="am-custos-split__txt"><span class="am-custos-split__titulo">Editar custos</span>' +
+              (semCusto ? '<span class="am-custos-split__sub am-custos-acoes__aviso" title="Anúncios desta página sem custo na Base">' +
+                semCusto + " sem custo nesta página</span>"
+                : '<span class="am-custos-split__sub">Custo do produto na Base</span>') +
+            "</span></button>" +
+          '<button type="button" class="am-custos-split__seta" data-custos-acao="menu" aria-label="Mais opções de custo"' +
+            ' aria-haspopup="menu" aria-expanded="' + (CUSTOS.menuAberto ? "true" : "false") + '" aria-controls="am-custos-menu">' +
+            '<svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>' +
+          "</button>" +
+        "</div>" +
+        '<div class="am-custos-menu vf-menu" id="am-custos-menu" role="menu"' + (CUSTOS.menuAberto ? "" : " hidden") + ">" +
+          '<button type="button" class="am-custos-menu__opc" role="menuitem" data-custos-acao="importar">' +
+            '<span class="am-custos-menu__ico" aria-hidden="true">' + icPlanilha(16) + "</span>" +
+            '<span><span class="am-custos-menu__titulo">Importar base de custo</span>' +
+            '<span class="am-custos-menu__desc">Baixe a planilha com todos os MLB, preencha e envie. Célula vazia não apaga nada.</span></span></button>' +
+          '<div class="am-custos-menu__sep" role="separator"></div>' +
+          '<button type="button" class="am-custos-menu__opc" role="menuitem" data-custos-acao="entrar">' +
+            '<span class="am-custos-menu__ico" aria-hidden="true">' + icLapis(16) + "</span>" +
+            '<span><span class="am-custos-menu__titulo">Editar custos na lista</span>' +
+            '<span class="am-custos-menu__desc">Mesmo que clicar no botão.</span></span></button>' +
+        "</div>" +
         "</div>";
       return;
     }
@@ -4383,7 +4404,10 @@
     function onClick(e) {
       var b = e.target.closest("[data-custos-acao]");
       if (!b || b.disabled) return;
-      switch (b.getAttribute("data-custos-acao")) {
+      var acao = b.getAttribute("data-custos-acao");
+      if (acao === "menu") { alternarMenuCustos(!CUSTOS.menuAberto); return; }
+      if (CUSTOS.menuAberto) alternarMenuCustos(false, true);
+      switch (acao) {
         case "entrar": entrarModoCustos(); break;
         case "importar": abrirImportacaoCustos(); break;
         case "sair": sairModoCustos(false); break;
@@ -4430,6 +4454,25 @@
       });
     }
     if (savebar) savebar.addEventListener("click", onClick);
+    // Menu do split: fecha com clique fora e com Esc (foco volta à seta).
+    document.addEventListener("click", function (e) {
+      if (CUSTOS.menuAberto && !e.target.closest(".am-custos-acoes")) alternarMenuCustos(false, true);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && CUSTOS.menuAberto) { alternarMenuCustos(false); }
+    });
+  }
+
+  // Abre/fecha o menu do split sem repintar a barra inteira. `semFoco` evita
+  // roubar o foco quando o fechamento vem de outra ação.
+  function alternarMenuCustos(abrir, semFoco) {
+    CUSTOS.menuAberto = !!abrir;
+    var menu = el("am-custos-menu");
+    var seta = document.querySelector('[data-custos-acao="menu"]');
+    if (menu) menu.hidden = !abrir;
+    if (seta) seta.setAttribute("aria-expanded", abrir ? "true" : "false");
+    if (abrir && menu) { var primeiro = menu.querySelector("[role=menuitem]"); if (primeiro) primeiro.focus(); }
+    else if (!abrir && !semFoco && seta) seta.focus();
   }
 
   // ===========================================================================

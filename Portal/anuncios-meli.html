@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="css/vf-tokens-v2.css" />
   <link rel="stylesheet" href="css/vf-components-v2.css" />
-  <link rel="stylesheet" href="css/pages/anuncios-meli-v2.css?v=20261015-8" />
+  <link rel="stylesheet" href="css/pages/anuncios-meli-v2.css?v=20261015-9" />
   <link rel="stylesheet" href="css/vf-shell.css">
 </head>
 <body class="vf-page vf-page-anuncios-meli" data-vf-scope="account" data-vf-module="anuncios">
@@ -98,6 +98,11 @@
                 </div>
                 <div class="vf-toolbar__actions">
                   <span class="vf-tag is-primary am-hidden" id="am-filtros-ativos">Filtros ativos</span>
+                  <!-- Ações de custo fora do modo de edição: split "Editar custos"
+                       + menu "Importar base de custo", na mesma linha da busca e
+                       antes do Radar. O aviso sem Base e a faixa do modo ficam em
+                       #am-custos-barra. -->
+                  <div id="am-custos-acoes-slot" class="am-custos-acoes-slot"></div>
                   <!-- Radar de subsídios (Promoções com rebate): só com cliente+conta
                        e fora do modo "Editar custos". Ocupa a altura inteira da
                        barra. Ver anuncios-meli.js, "PROMOÇÕES COM REBATE". -->
@@ -112,10 +117,6 @@
                     </span>
                     <svg class="am-reb-abrir__seta" width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 8h9M8.5 4.5L12 8l-3.5 3.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" /></svg>
                   </button>
-                  <!-- Ações de custo fora do modo de edição ("Importar base de
-                       custo" / "Editar custos"): na mesma linha da busca. O
-                       aviso sem Base e a faixa do modo ficam em #am-custos-barra. -->
-                  <div id="am-custos-acoes-slot" class="am-custos-acoes-slot"></div>
                 </div>
               </div>
               <div id="am-ordenacao-aviso" class="vf-alert is-warning" role="status" hidden></div>
@@ -145,6 +146,6 @@
   <div class="vf-toast-stack" id="am-toast-stack" role="status" aria-live="polite" aria-atomic="false"></div>
 
   <script type="module" src="vf-shell.js"></script>
-  <script src="anuncios-meli.js?v=20261015-11"></script>
+  <script src="anuncios-meli.js?v=20261015-12"></script>
 </body>
 </html>

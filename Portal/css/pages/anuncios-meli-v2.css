@@ -4138,7 +4138,8 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 .am-reb-celula { display: flex; flex-direction: column; gap: 2px; font-size: 13px; min-width: 0; font-variant-numeric: tabular-nums; }
 .am-reb-celula__forte { font-weight: var(--vf-fw-semibold); }
 .am-reb-celula__fraco { color: var(--vf-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.am-reb-celula__rebate { font-weight: var(--vf-fw-medium); color: var(--vf-success); }
+/* Rebate na diagonal sob o preço — mesmo deslocamento dos ganhos (8px). */
+.am-reb-celula__rebate { margin-left: 8px; font-size: var(--vf-fs-xs); font-weight: var(--vf-fw-semibold); color: var(--vf-success); white-space: nowrap; }
 /* Margem · lucro na promoção com rebate: mesmo peso visual do preço, para
    comparar direto com a coluna Hoje. */
 /* Margem | lucro em duas colunas (Hoje e Com rebate com a mesma largura de

@@ -536,6 +536,7 @@
     AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
     AM.contaMlId = ctx.contaId;
     atualizarBotaoRebate();
+    AM.sync = null;
     AM.resumo = null;
     AM.anuncios = [];
     AM.paginacao.page = 1;
@@ -701,11 +702,13 @@
             '<button type="button" class="vf-btn vf-btn--secondary" id="am-sync-novos">Atualizar novos</button>' +
             '<button type="button" class="vf-btn vf-btn--primary" id="am-sync-completo">Sincronização completa</button>' +
           "</div>" +
+          syncStatusHtml() +
         "</div>" +
       "</div>";
 
     el("am-sync-novos").addEventListener("click", function () { sincronizar("novos"); });
     el("am-sync-completo").addEventListener("click", function () { sincronizar("completo"); });
+    renderSyncStatus();
   }
 
   function carregarResumo() {
@@ -9914,30 +9917,81 @@
   }
 
   // ===========================================================================
-  // Sincronização
+  // Sincronização — NÃO bloqueia a tela. O andamento fica no próprio card de
+  // sincronização (AM.sync, desenhado por syncStatusHtml dentro do HUD) em
+  // duas etapas explícitas:
+  //   1. "sincronizando": POST /anuncios-meli/sync (grava os anúncios);
+  //   2. "recalculando": EXATAMENTE o "Atualizar leitura" da Central de
+  //      Margem — POST .../snapshot/refresh (reaproveita o run que o backend
+  //      já enfileirou no sync), polling do run, e a lista é relida quando ele
+  //      termina (antes disso a data "calculada em" ainda é a antiga).
+  // Antes era um modal que travava a tela e sumia no OK com a margem ainda
+  // calculando — o operador achava que tinha acabado.
   // ===========================================================================
-  // Recálculo da margem após o sync — EXATAMENTE o "Atualizar leitura" da
-  // Central de Margem: POST .../snapshot/refresh (reaproveita o run que o
-  // backend já enfileirou no sync), acompanha o run e relê a lista quando
-  // ele termina. Antes a lista era relida no OK, com o cálculo ainda na fila,
-  // e a data "calculada em" não mudava.
   var MARGEM_POLL_MS = Number(window.__VF_AM_MARGEM_POLL_MS__) || 4000;
   var margemRecalculo = { seq: 0, timer: null };
 
-  function margemRecalculoTexto(texto) {
-    var p = el("am-sync-margem");
-    if (p) p.textContent = texto;
+  function syncEmAndamento() {
+    return !!(AM.sync && (AM.sync.fase === "sincronizando" || AM.sync.fase === "recalculando"));
   }
 
-  function margemRecalculoProgresso(run) {
-    if (run && run.totalItems) {
-      return "Recalculando a margem dos anúncios… " + (run.processedItems || 0) + " de " + run.totalItems + ".";
+  function horaAgora() {
+    var d = new Date();
+    function dois(n) { return (n < 10 ? "0" : "") + n; }
+    return dois(d.getHours()) + ":" + dois(d.getMinutes());
+  }
+
+  function syncStatusHtml() {
+    var s = AM.sync;
+    if (!s || !AM.clienteAtual || s.slug !== AM.clienteAtual.slug) return "";
+    var andamento = s.fase === "sincronizando" || s.fase === "recalculando";
+    var tom = andamento ? "is-andamento" : s.fase === "ok" ? "is-ok" : s.fase === "aviso" ? "is-aviso" : "is-erro";
+    var icone = andamento
+      ? '<span class="vf-spinner am-sync-status__spinner" aria-hidden="true"></span>'
+      : '<span class="am-sync-status__icone" aria-hidden="true">' + (s.fase === "ok" ? "✓" : "!") + "</span>";
+    var etapa = andamento
+      ? '<span class="am-sync-status__etapa">Etapa ' + (s.fase === "sincronizando" ? "1" : "2") + " de 2</span>"
+      : "";
+    return '<div class="am-sync-status ' + tom + '" id="am-sync-status" role="status" aria-live="polite">' +
+      icone +
+      '<div class="am-sync-status__texto">' +
+        '<p class="am-sync-status__titulo">' + escapeHtml(s.titulo) + etapa + "</p>" +
+        (s.detalhe ? '<p class="am-sync-status__detalhe">' + escapeHtml(s.detalhe) + "</p>" : "") +
+      "</div>" +
+      (andamento ? "" : '<button type="button" class="am-sync-status__fechar" data-sync-fechar aria-label="Dispensar aviso">×</button>') +
+    "</div>";
+  }
+
+  // Atualiza só o status e os botões — sem redesenhar o HUD inteiro.
+  function renderSyncStatus() {
+    var area = document.querySelector(".am-sync-area");
+    if (!area) return;
+    var atual = el("am-sync-status");
+    var html = syncStatusHtml();
+    if (atual) atual.outerHTML = html || "";
+    else if (html) area.insertAdjacentHTML("beforeend", html);
+    var fechar = area.querySelector("[data-sync-fechar]");
+    if (fechar) fechar.addEventListener("click", function () { setSync(null); });
+    var andamento = syncEmAndamento();
+    ["am-sync-novos", "am-sync-completo"].forEach(function (id) {
+      var b = el(id);
+      if (!b) return;
+      b.disabled = andamento;
+      b.setAttribute("aria-busy", andamento && AM.sync && AM.sync.botao === id ? "true" : "false");
+    });
+  }
+
+  function setSync(dados) {
+    AM.sync = dados;
+    renderSyncStatus();
+  }
+
+  function recalcularMargemAposSync(resumoSync) {
+    var botao = AM.sync && AM.sync.botao;
+    if (!AM.clienteAtual || !AM.contaMlId) {
+      setSync({ slug: AM.clienteAtual && AM.clienteAtual.slug, fase: "ok", botao: botao, titulo: "Sincronização concluída", detalhe: resumoSync });
+      return;
     }
-    return "Recalculando a margem dos anúncios…";
-  }
-
-  function recalcularMargemAposSync() {
-    if (!AM.clienteAtual || !AM.contaMlId) return;
     margemRecalculo.seq += 1;
     if (margemRecalculo.timer) clearTimeout(margemRecalculo.timer);
     var seq = margemRecalculo.seq;
@@ -9947,12 +10001,21 @@
     function mesmaTela() {
       return seq === margemRecalculo.seq && AM.clienteAtual && AM.clienteAtual.slug === slug && AM.contaMlId === conta;
     }
-    margemRecalculoTexto("Recalculando a margem dos anúncios…");
+    function fase(f, titulo, detalhe) {
+      setSync({ slug: slug, fase: f, botao: botao, titulo: titulo, detalhe: detalhe });
+    }
+    function progresso(run) {
+      return run && run.totalItems
+        ? (run.processedItems || 0) + " de " + run.totalItems + " anúncios recalculados."
+        : "Aguardando o cálculo começar.";
+    }
+    fase("recalculando", "Anúncios sincronizados · recalculando a margem", resumoSync);
     api(base, { method: "POST", body: { clienteContaId: conta } }).then(function (r) {
       if (!mesmaTela()) return;
       var d = r.data || {};
       if (!d.ok || !d.runId) {
-        margemRecalculoTexto("Não foi possível recalcular a margem agora. Use \"Atualizar leitura\" na Central de Margem.");
+        fase("aviso", "Anúncios sincronizados · margem não recalculada",
+          "Não foi possível recalcular a margem agora. Use \"Atualizar leitura\" na Central de Margem.");
         return;
       }
       function tick() {
@@ -9963,21 +10026,25 @@
           var run = s.data && s.data.ok ? s.data.run : null;
           // Falha pontual de rede não encerra o acompanhamento.
           if (!run || (run.status !== "completed" && run.status !== "failed")) {
-            if (run) margemRecalculoTexto(margemRecalculoProgresso(run));
+            if (run) fase("recalculando", "Anúncios sincronizados · recalculando a margem", progresso(run));
             margemRecalculo.timer = setTimeout(tick, MARGEM_POLL_MS);
             return;
           }
           if (run.status === "completed") {
-            margemRecalculoTexto("Margem recalculada: " + (run.successItems || 0) + " anúncio(s).");
-            toast("Margem recalculada: " + (run.successItems || 0) + " anúncio(s).", "is-success");
+            var falhas = run.failedItems || 0;
+            fase(falhas ? "aviso" : "ok", "Sincronização concluída",
+              "Margem recalculada às " + horaAgora() + " · " + (run.successItems || 0) + " anúncio(s)" +
+              (falhas ? " · " + falhas + " mantiveram o valor anterior." : "."));
+            toast("Sincronização concluída e margem recalculada.", "is-success");
           } else {
-            margemRecalculoTexto("O recálculo da margem falhou. Tente \"Atualizar leitura\" na Central de Margem.");
+            fase("aviso", "Anúncios sincronizados · recálculo da margem falhou",
+              "A margem mostrada é a do cálculo anterior. Tente \"Atualizar leitura\" na Central de Margem.");
             toast("O recálculo da margem falhou.", "is-danger");
           }
           carregarResumo(); carregarAnuncios();
         });
       }
-      margemRecalculoTexto(margemRecalculoProgresso(d.run));
+      fase("recalculando", "Anúncios sincronizados · recalculando a margem", progresso(d.run));
       margemRecalculo.timer = setTimeout(tick, MARGEM_POLL_MS);
     });
   }
@@ -9985,50 +10052,43 @@
   function sincronizar(modo) {
     // Sem operação escolhida o Shell nem exibe esta tela (scope="account"):
     // nenhuma guarda de cardinalidade própria aqui (R8).
-    if (!AM.clienteAtual) return;
-    var overlay = document.createElement("div");
-    overlay.className = "am-sync-overlay vf-overlay is-open";
-    overlay.id = "am-sync-overlay";
-    overlay.setAttribute("role", "dialog");
-    overlay.setAttribute("aria-modal", "true");
-    overlay.setAttribute("aria-labelledby", "am-sync-titulo");
-    overlay.innerHTML = '<div class="am-sync-box vf-modal vf-modal--sm">' +
-      '<div class="vf-modal__body"><div class="vf-loading-state" aria-live="polite"><span class="vf-spinner" aria-hidden="true"></span><strong id="am-sync-titulo">' +
-      (modo === "completo" ? "Sincronização completa em andamento" : "Buscando anúncios novos") +
-      "</strong><span>Consultando a API do Mercado Livre. Pode levar alguns minutos.</span></div></div></div>";
-    document.body.appendChild(overlay);
-    document.body.classList.add("vf-no-scroll");
+    if (!AM.clienteAtual || syncEmAndamento()) return;
+    var slug = AM.clienteAtual.slug;
+    var conta = AM.contaMlId;
+    var botao = modo === "completo" ? "am-sync-completo" : "am-sync-novos";
+    setSync({
+      slug: slug, fase: "sincronizando", botao: botao,
+      titulo: modo === "completo" ? "Sincronização completa em andamento" : "Buscando anúncios novos",
+      detalhe: "Consultando o Mercado Livre. Pode levar alguns minutos — você pode continuar usando a tela.",
+    });
 
     api("/anuncios-meli/sync", {
       method: "POST",
-      body: { clienteSlug: AM.clienteAtual.slug, modo: modo, clienteContaId: AM.contaMlId || undefined },
+      body: { clienteSlug: slug, modo: modo, clienteContaId: conta || undefined },
     }).then(function (r) {
-      var box = overlay.querySelector(".am-sync-box");
+      if (!AM.clienteAtual || AM.clienteAtual.slug !== slug || AM.contaMlId !== conta) return;
       var d = r.data || {};
-      if (d.ok) {
-        var msg;
-        if (d.totalSalvos > 0) {
-          msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Sincronização concluída</p><p class="vf-banner__description">' + (d.totalEncontrados || 0) +
-            " anúncios na conta · " + d.totalSalvos + " gravados/atualizados.</p>" +
-            (d.limitado ? '<p class="vf-banner__description">O limite de itens por sincronização foi atingido. Rode novamente para continuar.</p>' : "") +
-            '<p class="vf-banner__description" id="am-sync-margem" aria-live="polite"></p>' + "</div></div>";
-        } else {
-          msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Tudo em dia</p><p class="vf-banner__description">' + escapeHtml(d.mensagem || "Nenhum anúncio novo para gravar.") + "</p>" + '<p class="vf-banner__description" id="am-sync-margem" aria-live="polite"></p>' + "</div></div>";
-        }
-        box.innerHTML = '<div class="vf-modal__body">' + msg + '</div><div class="vf-modal__footer"><button type="button" class="vf-btn vf-btn--primary" id="am-sync-ok">OK</button></div>';
-        carregarResumo(); carregarAnuncios();
-        recalcularMargemAposSync();
-      } else {
-        box.innerHTML = '<div class="vf-modal__body"><div class="vf-banner is-danger" role="alert"><div class="vf-banner__content"><p class="vf-banner__title">Não foi possível sincronizar</p><p class="vf-banner__description">' +
-          escapeHtml(d.motivo || "Erro ao consultar o Mercado Livre.") + "</p>" +
-          (d.codigo === "NO_TOKEN" ? '<p class="vf-banner__description">Conecte a conta do Mercado Livre deste cliente na tela de Clientes.</p>' : "") +
-          '</div></div></div><div class="vf-modal__footer"><button type="button" class="vf-btn vf-btn--secondary" id="am-sync-ok">Fechar</button></div>';
+      if (!d.ok) {
+        setSync({
+          slug: slug, fase: "erro", botao: botao,
+          titulo: "Não foi possível sincronizar",
+          detalhe: (d.motivo || "Erro ao consultar o Mercado Livre.") +
+            (d.codigo === "NO_TOKEN" ? " Conecte a conta do Mercado Livre deste cliente na tela de Clientes." : ""),
+        });
+        return;
       }
-      var btn = el("am-sync-ok");
-      if (btn) btn.addEventListener("click", function () {
-        if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
-        document.body.classList.remove("vf-no-scroll");
-      });
+      var resumoSync = d.totalSalvos > 0
+        ? (d.totalEncontrados || 0) + " anúncios na conta · " + d.totalSalvos + " gravados/atualizados." +
+          (d.limitado ? " O limite por sincronização foi atingido; rode novamente para continuar." : "")
+        : (d.mensagem || "Nenhum anúncio novo para gravar.");
+      // Lista relida já (anúncios novos aparecem); a margem é relida de novo
+      // quando o recálculo terminar.
+      carregarResumo(); carregarAnuncios();
+      if (modo !== "completo" && !(d.totalSalvos > 0)) {
+        setSync({ slug: slug, fase: "ok", botao: botao, titulo: "Tudo em dia", detalhe: resumoSync });
+        return;
+      }
+      recalcularMargemAposSync(resumoSync);
     });
   }
 

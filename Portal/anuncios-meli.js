@@ -2024,18 +2024,15 @@
   }
 
   // Célula de Margem da LISTAGEM (linha avulsa e filho expandido de
-  // família) — fonte ÚNICA é o snapshot de margem projetada que já vem
-  // PRONTO no próprio `anuncio` (margemProjetadaPercent/Computable/Status/
-  // CalculadaEm, ver anexarMargemProjetadaNaPagina no controller e
-  // garantirFamiliaDetalhe). NUNCA lê AM.state.performanceCache/dados.margem
-  // de GET /performance — esse endpoint continua vivo só para
-  // faturamento/Curva ABC/métricas 7d e para a seção "Composição da margem"
-  // do MODAL (live, Motor de Margem — ver margemConteudoHtml, função
-  // irmã desta, usada só pelo modal).
-  //
-  // Sem "carregando": ao contrário de métricas/faturamento (assíncronos,
-  // chegam DEPOIS do primeiro paint), o snapshot já está no MESMO objeto
-  // que desenhou a linha — a célula nasce PRONTA.
+  // família) — nasce PRONTA com o snapshot de margem projetada que já vem no
+  // próprio `anuncio` (margemProjetadaPercent/Computable/Status/CalculadaEm,
+  // ver anexarMargemProjetadaNaPagina no controller e garantirFamiliaDetalhe),
+  // sem estado "carregando". Quando a margem AO VIVO do Motor chega (GET
+  // /performance com incluirRebateAtivo, ver margemAoVivoHtml), ela substitui
+  // o snapshot: o snapshot é uma foto do último job e erra quando o preço
+  // muda depois dele (Oferta relâmpago) e não soma o retorno ML da promoção
+  // ativa — caso real Red Fish 15/10/2026, 5 variações com 25,1% na lista e
+  // 23,4%/29,0% no modal. A ORDENAÇÃO por margem continua no snapshot.
   // Lucro em R$ por unidade vendida, no preço atual — o `profit` que o Motor
   // já calcula junto com a margem (margin = profit / price). Aparece embaixo
   // do %, na MESMA cor dele: os dois são o mesmo resultado em escalas
@@ -2091,30 +2088,79 @@
   // preço riscado e parecia um valor antigo/desabilitado. `data-faixa`
   // (min/max) só identifica a linha, sem estilo próprio. Min === Max (1 único
   // filho computável) mostra só UM valor, nunca duas linhas iguais.
+  // Faixa AO VIVO da família: só quando TODOS os filhos já têm a margem do
+  // Motor (família expandida) — uma faixa com parte ao vivo e parte snapshot
+  // misturaria duas fotos de momentos diferentes. null = usa o snapshot.
+  function faixaFamiliaAoVivo(familyId) {
+    var fam = AM.state.familyCache[familyId];
+    if (!fam) return null;
+    var pontas = [];
+    var completo = true;
+    (fam.user_products || []).forEach(function (up) {
+      (up.itens || []).forEach(function (item) {
+        var c = AM.state.performanceCache[item.item_id];
+        if (!c || !c.temMargem) { completo = false; return; }
+        var m = c.margem;
+        if (m && m.marginPercent != null) pontas.push({ pct: m.marginPercent, profit: m.profit, status: m.status });
+      });
+    });
+    if (!completo || !pontas.length) return null;
+    var min = pontas[0];
+    var max = pontas[0];
+    pontas.forEach(function (p) {
+      if (p.pct < min.pct) min = p;
+      if (p.pct > max.pct) max = p;
+    });
+    return { min: min, max: max };
+  }
+
   function margemFaixaFamiliaHtml(f) {
-    if (f.margemProjetadaMinPercent != null && f.margemProjetadaMaxPercent != null) {
-      var min = formatarPercentualCompacto(f.margemProjetadaMinPercent);
-      var max = formatarPercentualCompacto(f.margemProjetadaMaxPercent);
-      var tip = "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo), cada uma com o lucro por unidade do anúncio que a gerou. A ordenação por margem usa a média." +
-        margemCalculadaEmFrase(f.margemProjetadaCalculadaEm, f.margemProjetadaFonte);
-      var classeMin = MARGEM_CLASSE[f.margemProjetadaMinStatus] || "is-neutral";
-      var classeMax = MARGEM_CLASSE[f.margemProjetadaMaxStatus] || "is-neutral";
+    var vivo = faixaFamiliaAoVivo(f.family_id);
+    if (vivo || (f.margemProjetadaMinPercent != null && f.margemProjetadaMaxPercent != null)) {
+      var min = formatarPercentualCompacto(vivo ? vivo.min.pct : f.margemProjetadaMinPercent);
+      var max = formatarPercentualCompacto(vivo ? vivo.max.pct : f.margemProjetadaMaxPercent);
+      var tip = vivo
+        ? "Faixa de margem dos anúncios desta família (mínimo em cima, máximo embaixo), calculada agora pelo Motor no preço atual de cada um, já com o retorno ML da promoção ativa quando há. A ordenação por margem usa o último cálculo salvo."
+        : "Faixa de Margem Projetada dos anúncios desta família (mínimo em cima, máximo embaixo), cada uma com o lucro por unidade do anúncio que a gerou. A ordenação por margem usa a média." +
+          margemCalculadaEmFrase(f.margemProjetadaCalculadaEm, f.margemProjetadaFonte);
+      var classeMin = MARGEM_CLASSE[vivo ? vivo.min.status : f.margemProjetadaMinStatus] || "is-neutral";
+      var classeMax = MARGEM_CLASSE[vivo ? vivo.max.status : f.margemProjetadaMaxStatus] || "is-neutral";
       var ponta = function (faixa, texto, classe, profit) {
         return '<span class="am-margem__ponta">' +
           '<span class="am-margem__valor ' + classe + '" data-faixa="' + faixa + '">' + texto + "</span>" +
           lucroMargemHtml(profit, classe) +
         "</span>";
       };
+      var profitMin = vivo ? vivo.min.profit : f.margemProjetadaMinProfit;
+      var profitMax = vivo ? vivo.max.profit : f.margemProjetadaMaxProfit;
       var linhas = min === max
-        ? ponta("unico", max, classeMax, f.margemProjetadaMaxProfit)
-        : ponta("min", min, classeMin, f.margemProjetadaMinProfit) +
-          ponta("max", max, classeMax, f.margemProjetadaMaxProfit);
+        ? ponta("unico", max, classeMax, profitMax)
+        : ponta("min", min, classeMin, profitMin) +
+          ponta("max", max, classeMax, profitMax);
       return '<span class="am-margem am-margem--faixa" data-margem-familia="' + escapeAttr(f.family_id) + '">' +
         linhas + infoDotHtml(tip) +
       "</span>";
     }
-    return '<span class="am-margem am-margem--indisponivel" ' +
+    return '<span class="am-margem am-margem--indisponivel" data-margem-familia="' + escapeAttr(f.family_id) + '" ' +
       'title="Nenhum anúncio desta família tem margem projetada calculada">—</span>';
+  }
+
+  // Repinta a faixa das famílias que contêm algum destes MLB (a margem ao
+  // vivo dos filhos acabou de chegar).
+  function repintarFaixaDasFamilias(ids) {
+    var alvo = {};
+    ids.forEach(function (id) { alvo[id] = true; });
+    AM.anuncios.forEach(function (f) {
+      if (f.tipo !== "familia") return;
+      var fam = AM.state.familyCache[f.family_id];
+      var toca = fam && (fam.user_products || []).some(function (up) {
+        return (up.itens || []).some(function (item) { return alvo[item.item_id]; });
+      });
+      if (!toca) return;
+      document.querySelectorAll('[data-margem-familia="' + cssEscape(f.family_id) + '"]').forEach(function (cel) {
+        cel.outerHTML = margemFaixaFamiliaHtml(f);
+      });
+    });
   }
 
   // % do faturamento — coluna própria (ver auditoria "Ajuste visual —
@@ -2313,6 +2359,8 @@
       "&itemIds=" + encodeURIComponent(idsUniao.join(",")) +
       "&incluirMetricas=" + (pendentesMetricas.length ? "1" : "0") +
       "&incluirMargem=" + (pendentesMargem.length || pendentesComposicao.length ? "1" : "0") +
+      // Margem da LISTA com o retorno ML da promoção ativa (ver margemAoVivoHtml).
+      "&incluirRebateAtivo=1" +
       "&incluirComposicao=" + (pendentesComposicao.length ? "1" : "0") +
       "&incluirFaturamento=" + (pendentesFaturamento.length ? "1" : "0") +
       "&incluirCurvaAbc=" + (pendentesCurvaAbc.length ? "1" : "0");
@@ -2853,9 +2901,16 @@
       cel.classList.remove("am-metricas7d--carregando");
       cel.innerHTML = metricas7dConteudoHtml(cache ? cache.metricas7d : null);
     });
-    // Margem projetada NÃO repinta mais aqui: a célula nasce pronta a partir
-    // do snapshot (margemCelulaHtml lê direto do `anuncio`, sem estado
-    // "carregando") — nada em /performance decide o valor dela nunca mais.
+    // Margem: a célula nasceu com o snapshot; a margem ao vivo que acabou de
+    // chegar a substitui (margemSobrepostaHtml → margemAoVivoHtml). Campo de
+    // custo em edição não é repintado (perderia o foco) — ele se repinta ao
+    // fechar.
+    ids.forEach(function (id) {
+      var c = AM.state.performanceCache[id];
+      if (!c || !c.temMargem || CUSTOS.editando === id) return;
+      repintarCustoDoItem(id);
+    });
+    repintarFaixaDasFamilias(ids);
     document.querySelectorAll(".am-faturamento[data-faturamento-item]").forEach(function (cel) {
       var id = cel.getAttribute("data-faturamento-item");
       if (!alvo[id]) return;
@@ -3805,7 +3860,33 @@
         lucroMargemHtml(v.profit, classeVivo) +
         infoDotHtml("Margem recalculada agora pelo Motor com o custo novo. A lista volta a usar o snapshot no próximo cálculo.");
     }
-    return null;
+    return margemAoVivoHtml(itemId);
+  }
+
+  // Margem AO VIVO do Motor (GET /performance): preço atual do ML + retorno
+  // ML da promoção ativa. null = ainda não chegou ou não é computável — a
+  // célula fica com o snapshot.
+  function margemAoVivoHtml(itemId) {
+    var c = AM.state.performanceCache[itemId];
+    var m = c && c.temMargem ? c.margem : null;
+    if (!m || m.marginPercent == null) return null;
+    var classe = MARGEM_CLASSE[m.status] || "is-neutral";
+    var tip = "Margem calculada agora pelo Motor, no preço atual do Mercado Livre" +
+      (m.precoAtual != null ? " (" + formatMoeda(m.precoAtual) + ")" : "") +
+      (m.rebate != null
+        ? ", já com " + formatMoeda(m.rebate) + " de retorno ML" +
+          (m.rebatePromocao && m.rebatePromocao.nome ? " da promoção “" + m.rebatePromocao.nome + "”" : "")
+        : "") + ".";
+    var anuncio = encontrarAnuncioNaTela(itemId);
+    if (anuncio && anuncio.margemProjetadaComputable === true && anuncio.margemProjetadaPercent != null &&
+        formatarPercentualCompacto(anuncio.margemProjetadaPercent) !== formatarPercentualCompacto(m.marginPercent)) {
+      var quando = margemCalculadaEmTexto(anuncio.margemProjetadaCalculadaEm);
+      tip += " O último cálculo salvo" + (quando ? " (" + quando + ")" : "") + " dava " +
+        formatarPercentualCompacto(anuncio.margemProjetadaPercent) + " — é ele que a ordenação por margem usa.";
+    }
+    return '<span class="am-margem__valor ' + classe + '">' + formatarPercentualCompacto(m.marginPercent) + "</span>" +
+      lucroMargemHtml(m.profit, classe) +
+      infoDotHtml(tip);
   }
 
   // A simulação não devolve o status do Motor (que depende da margem alvo
@@ -4055,7 +4136,7 @@
     for (var i = 0; i < ids.length; i += PERFORMANCE_LOTE_MAX) {
       (function (lote) {
         var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
-          "&itemIds=" + encodeURIComponent(lote.join(",")) + "&incluirMetricas=0&incluirMargem=1";
+          "&itemIds=" + encodeURIComponent(lote.join(",")) + "&incluirMetricas=0&incluirMargem=1&incluirRebateAtivo=1";
         if (AM.contaMlId) qs += "&clienteContaId=" + encodeURIComponent(AM.contaMlId);
         api("/anuncios-meli/performance?" + qs).then(function (r) {
           if (epoca !== CUSTOS.epoca) return;

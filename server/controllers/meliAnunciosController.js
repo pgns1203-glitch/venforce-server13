@@ -37,6 +37,7 @@ const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/acti
 const motorMargemService = require("../services/motorMargem/motorMargemService");
 const cliente360ProdutosEngine = require("../services/cliente360/cliente360ProdutosEngine");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
+const { reclassificarStatus } = require("../services/motorMargem/margemAtualRebate");
 const { mlFetch } = require("../utils/mlClient");
 const { assertClienteNaCarteira } = require("../services/squads/authorizationService");
 const tituloEngine = require("../services/meliAnuncios/seo/tituloEngine");
@@ -1314,7 +1315,10 @@ function montarUnidadesVendidas(itemIds, obterVendasDoItem) {
 // aqui. `extrairValoresBaseParaSimulacao`/`montarComposicaoDoItem`/
 // `calcularMargemComRebate` continuam genéricas (aceitam `origem` como
 // parâmetro) — só o valor que ESTE chamador passa é que ficou fixo.
-function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
+// `rebatesAoVivo` (Map itemId -> {rebate, promocao}, opcional): retorno ML da
+// promoção ATIVA lido agora para a LISTA (ver carregarRebatesAoVivo). O
+// `rebateAlvo` explícito do modal continua tendo prioridade para o item dele.
+function montarMapaMargem(itens, incluirComposicao, rebateAlvo, rebatesAoVivo = null) {
   const margem = {};
   const composicao = {};
   for (const item of itens || []) {
@@ -1322,7 +1326,28 @@ function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
     const origem = "projected";
     const itemId = item.identity.itemId;
 
-    const comRebate = calcularMargemComRebate(item, origem, exibida, rebateAlvo);
+    const aoVivo = rebatesAoVivo ? rebatesAoVivo.get(String(itemId)) : null;
+    const alvo = rebateAlvo && String(rebateAlvo.itemId) === String(itemId)
+      ? rebateAlvo
+      : (aoVivo && aoVivo.rebate != null ? { itemId: String(itemId), valor: aoVivo.rebate } : null);
+    const comRebate = calcularMargemComRebate(item, origem, exibida, alvo);
+    // O rebate muda a margem; o status financeiro (Prejuízo/Margem baixa/
+    // Saudável) é reclassificado com a MESMA regra da Central
+    // (margemAtualRebate.reclassificarStatus). null = continua o do Motor.
+    const novoStatus = comRebate
+      ? reclassificarStatus(
+        {
+          status: item.quality.status,
+          confidenceLevel: item.quality.confidence,
+          missing: (exibida && exibida.missing) || [],
+          quality: {
+            hasConflict: item.quality.hasConflict === true,
+            targetMargin: item.margin.target ? item.margin.target.marginTarget : null,
+          },
+        },
+        { margin: comRebate.margin, rebate: alvo.valor }
+      )
+      : null;
 
     margem[itemId] = {
       origem,
@@ -1335,9 +1360,13 @@ function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
       // seção "Composição da margem" do modal precisa dele para a linha
       // final "= Margem" em moeda.
       profit: comRebate ? comRebate.profit : (exibida ? exibida.profit : null),
-      status: item.quality.status,
-      statusLabel: item.quality.statusLabel,
-      statusReasons: item.quality.statusReasons,
+      status: novoStatus ? novoStatus.status : item.quality.status,
+      statusLabel: novoStatus ? novoStatus.label : item.quality.statusLabel,
+      statusReasons: novoStatus ? novoStatus.reasons : item.quality.statusReasons,
+      // Retorno ML já somado em margin/profit acima (null = nenhum). A lista
+      // usa para dizer no tooltip de onde veio a diferença para o snapshot.
+      rebate: comRebate ? alvo.valor : null,
+      rebatePromocao: comRebate && aoVivo && alvo !== rebateAlvo ? aoVivo.promocao : null,
       // Preço OBTIDO pelo Motor ao vivo (sale_price no momento desta chamada,
       // mesmo `item.pricing.current` que a composição já usa como `venda`) —
       // independe de origem realizada/projetada, é sempre "o que o anúncio
@@ -1371,10 +1400,76 @@ function montarMapaMargem(itens, incluirComposicao, rebateAlvo) {
     // o front reaproveita o mesmo statusLabel/statusReasons acima, nunca
     // uma composição parcial.
     if (incluirComposicao && exibida && exibida.computable) {
-      composicao[itemId] = montarComposicaoDoItem(item, origem, comRebate ? rebateAlvo.valor : null);
+      composicao[itemId] = montarComposicaoDoItem(item, origem, comRebate ? alvo.valor : null);
     }
   }
   return { margem, composicao };
+}
+
+// Retorno ML ao vivo para a LISTA (`incluirRebateAtivo=1`): só para os
+// itens que o Motor acabou de ver em promoção (`pricing.promo`) — sem
+// promoção não há rebate, e nenhuma chamada é gasta. O Promo Snapshot não
+// serve aqui: é por conta e não tem dado nenhum enquanto o job dele não roda.
+//
+// Custo, para a página não ficar pesada:
+//   - UMA leitura por item (seller-promotions): o sale_price que decide a
+//     promoção ATIVA é o que o Motor JÁ leu neste mesmo pedido
+//     (item.diagnostico.promotionIdAtivo), nunca relido;
+//   - cache em memória por (conta, item, promoção que forma o preço): o
+//     subsídio de uma oferta não muda enquanto ela dura, então recarregar a
+//     página, trocar de página e voltar ou expandir de novo não gasta nada.
+//     Promoção trocada = id trocado = chave nova = leitura nova. TTL só para
+//     limitar memória e pegar ajuste raro de percentual no meio da oferta.
+// Falha de um item = sem rebate para ele (margem do Motor como antes),
+// nunca derruba o lote, nunca entra no cache.
+const REBATE_AO_VIVO_CONCORRENCIA = 4;
+const REBATE_CACHE_TTL_MS = 30 * 60 * 1000;
+const REBATE_CACHE_MAX = 5000;
+const rebateCache = new Map(); // chave -> { valor: {rebate, promocao}, expiraEm }
+
+function lerRebateCache(chave, agora) {
+  const e = rebateCache.get(chave);
+  if (!e) return undefined;
+  if (e.expiraEm <= agora) { rebateCache.delete(chave); return undefined; }
+  return e.valor;
+}
+
+function gravarRebateCache(chave, valor, agora) {
+  if (rebateCache.size >= REBATE_CACHE_MAX) rebateCache.delete(rebateCache.keys().next().value); // mais antiga
+  rebateCache.set(chave, { valor, expiraEm: agora + REBATE_CACHE_TTL_MS });
+}
+
+async function carregarRebatesAoVivo({ clienteId, mlUserId, itens, ignorarItemId = null, agora = Date.now() }) {
+  const alvos = (itens || []).filter((item) =>
+    item && item.identity && String(item.identity.itemId) !== String(ignorarItemId) &&
+    valorEvidencia(item.pricing && item.pricing.promo) != null
+  );
+  const porItem = new Map();
+  await motorMargemService.mapWithConcurrency(alvos, REBATE_AO_VIVO_CONCORRENCIA, async (item) => {
+    const itemId = String(item.identity.itemId);
+    const promotionId = item.diagnostico ? item.diagnostico.promotionIdAtivo : undefined;
+    // undefined = o preço do Motor não veio do sale_price: sem saber a
+    // promoção, a função relê o sale_price e o resultado não vai ao cache.
+    const conhecida = promotionId !== undefined;
+    const chave = conhecida ? `${clienteId}|${mlUserId || ""}|${itemId}|${promotionId || ""}` : null;
+    let r = chave ? lerRebateCache(chave, agora) : undefined;
+    if (r === undefined) {
+      try {
+        const lido = await promocoesService.obterRebatePromocaoAtiva({
+          clienteId, itemId, mlUserId,
+          saleInfo: conhecida ? { promotionId, amount: valorEvidencia(item.pricing && item.pricing.current) } : null,
+        });
+        if (!lido || !lido.ok) return;
+        r = { rebate: lido.rebate, promocao: lido.promocao };
+        if (chave) gravarRebateCache(chave, r, agora);
+      } catch (err) {
+        console.warn(`[anuncios-meli] performance: rebate ao vivo de ${itemId} indisponível:`, err && err.message);
+        return;
+      }
+    }
+    if (r.rebate != null) porItem.set(itemId, r);
+  });
+  return porItem;
 }
 
 async function performance(req, res) {
@@ -1403,6 +1498,9 @@ async function performance(req, res) {
     const incluirFaturamento = flagOptIn(req.query && req.query.incluirFaturamento);
     const incluirUnidades = flagOptIn(req.query && req.query.incluirUnidades);
     const incluirCurvaAbc = flagOptIn(req.query && req.query.incluirCurvaAbc);
+    // Opt-in da LISTA: soma na margem o retorno ML da promoção ativa de cada
+    // item (ver carregarRebatesAoVivo). Só tem efeito junto de incluirMargem.
+    const incluirRebateAtivo = flagOptIn(req.query && req.query.incluirRebateAtivo);
     // Famílias a agregar (ordenação com família agregada) — o front manda só
     // o family_id, nunca os MLBs filhos: o backend resolve (ver
     // meliFamiliaService.resolverItensDeFamilias).
@@ -1529,7 +1627,15 @@ async function performance(req, res) {
     } else if (margemResultado.status === "fulfilled") {
       const { porMlb } = margemResultado.value;
       if (incluirMargem) {
-        const resultado = montarMapaMargem(margemResultado.value.itens, incluirComposicao, rebateAlvo);
+        const rebatesAoVivo = incluirRebateAtivo
+          ? await carregarRebatesAoVivo({
+            clienteId: cliente.id,
+            mlUserId: contexto.mlUserId,
+            itens: margemResultado.value.itens,
+            ignorarItemId: rebateAlvo ? rebateAlvo.itemId : null,
+          })
+          : null;
+        const resultado = montarMapaMargem(margemResultado.value.itens, incluirComposicao, rebateAlvo, rebatesAoVivo);
         margem = resultado.margem;
         composicao = resultado.composicao;
         if (porFamiliaItens.size) margemPorFamilia = montarMargemPorFamilia(porFamiliaItens, margem);
@@ -3831,6 +3937,8 @@ async function previaPlanilhaCustos(req, res) {
 }
 
 module.exports = {
+  // Só para testes: isola o cache de rebate entre cenários.
+  _limparRebateCache: () => rebateCache.clear(),
   lerCustos,
   salvarCustosLote,
   baixarPlanilhaCustos,

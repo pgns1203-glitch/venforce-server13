@@ -410,6 +410,10 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
       logisticType: observado.logisticType,
       statusAnuncio: observado.status,
       faltantesMeliApi: observado.faltantes,
+      // Promoção que forma o preço agora (sale_price.metadata.promotion_id),
+      // da MESMA leitura que deu o preço — Anúncios ML usa para achar o
+      // rebate sem reler o sale_price. undefined = preço não veio do sale_price.
+      promotionIdAtivo: observado.promotionIdAtivo,
       conciliacao: { ...conciliacao },
       realizado: realizado || null,
       reembolso: reembolsoInfo || null,

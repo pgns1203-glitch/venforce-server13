@@ -73,11 +73,16 @@ async function resolverPrecosItem({ clienteId, itemId, precoListaFallback = null
     const regularAmount = numOuNull(resp.data?.regular_amount);
     const temPromocao = regularAmount !== null && regularAmount > amount;
 
+    // Promoção que o ML usa AGORA para formar o preço (metadata.promotion_id
+    // — id da oferta, ex. OFFER-MLB…). Aditivo: só quem precisa casar com
+    // /seller-promotions (rebate da lista de Anúncios) lê; null = sem promoção.
+    const promotionId = resp.data?.metadata?.promotion_id;
     return {
       precoCheio: temPromocao ? regularAmount : amount,
       precoPromocional: temPromocao ? amount : null,
       precoEfetivo: amount,
       fonte: "sale_price",
+      promotionIdAtivo: promotionId != null ? String(promotionId) : null,
     };
   } catch (_) {
     // /sale_price indisponível para o item (erro de rede, 4xx/5xx ou payload

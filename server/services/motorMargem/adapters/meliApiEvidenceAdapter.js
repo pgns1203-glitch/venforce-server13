@@ -296,6 +296,7 @@ async function aplicarEvidenciasProjetadas(
     precoEfetivo: cotacao.precoEfetivo,
     precoCheio: cotacao.precoOriginal,
     precoPromocional: cotacao.precoPromocional,
+    promotionIdAtivo: cotacao.promotionIdAtivo,
     commission: cotacao.comissaoValor,
     commissionRate: cotacao.comissaoPercentual,
     freight: cotacao.fretePrevisto,

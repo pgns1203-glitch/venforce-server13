@@ -10,7 +10,8 @@
 //
 // Estabilidade de coluna vem de `table-layout: fixed` (no CSS) + `<colgroup>`
 // com a largura declarada por coluna. Sem isso, a mesma coluna "Produto" tem
-// largura diferente em cada seção.
+// largura diferente em cada seção. A tabela em si é o VFTable da Fundação;
+// aqui fica só o formato de coluna desta tela e as classes c360-*.
 //
 // Formato de coluna:
 //   {
@@ -25,11 +26,16 @@
 //     headerTitle,              // title= do cabeçalho, para abreviações
 //   }
 
-const ALINHAMENTO = { right: "c360-td--num", left: "" };
+import { VFTable } from "../ui/VFTable/index.js";
 
-function classes(...valores) {
-  return valores.filter(Boolean).join(" ");
-}
+// Classes da Cliente 360 sobre o VFTable (Fundação V2): mesma marcação e
+// comportamento, visual desta tela.
+const CLASSES_C360 = {
+  wrap: "vf-table-wrap c360-tabela",
+  scroll: "c360-tabela--scroll",
+  num: "c360-td--num",
+  empty: "c360-td--vazio",
+};
 
 export default function DataTable({
   columns,
@@ -41,66 +47,30 @@ export default function DataTable({
   compact = true,
   emptyLabel = "Nada para exibir.",
 }) {
-  const temLinhas = Array.isArray(rows) && rows.length > 0;
-
   return (
-    <div className={classes("vf-table-wrap", "c360-tabela", scroll && "c360-tabela--scroll")}>
-      <table className={classes("vf-table", compact && "vf-table--compact")}>
-        {caption && <caption className="vf-visually-hidden">{caption}</caption>}
-
-        {/* Larguras declaradas: com table-layout fixed, é isto que trava a coluna. */}
-        <colgroup>
-          {columns.map((coluna) => (
-            <col key={coluna.key} style={coluna.width ? { width: coluna.width } : undefined} />
-          ))}
-        </colgroup>
-
-        <thead>
-          <tr>
-            {columns.map((coluna) => (
-              <th
-                key={coluna.key}
-                scope="col"
-                title={coluna.headerTitle}
-                className={ALINHAMENTO[coluna.align] ?? ""}
-              >
-                {coluna.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-
-        <tbody>
-          {!temLinhas && (
-            <tr>
-              <td className="c360-td--vazio" colSpan={columns.length}>{emptyLabel}</td>
-            </tr>
-          )}
-
-          {temLinhas && rows.map((linha, indice) => (
-            <tr
-              key={getRowKey ? getRowKey(linha, indice) : indice}
-              className={rowClassName ? rowClassName(linha) : undefined}
-            >
-              {columns.map((coluna) => {
-                const conteudo = coluna.render ? coluna.render(linha, indice) : linha[coluna.key];
-                const className = classes(
-                  ALINHAMENTO[coluna.align] ?? "",
-                  coluna.variant === "produto" && "c360-td--produto",
-                  coluna.cellClassName ? coluna.cellClassName(linha) : null
-                );
-
-                return coluna.isRowHeader ? (
-                  <th key={coluna.key} scope="row" className={className}>{conteudo}</th>
-                ) : (
-                  <td key={coluna.key} className={className}>{conteudo}</td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <VFTable
+      columns={columns.map((coluna) => ({
+        key: coluna.key,
+        header: coluna.header,
+        width: coluna.width,
+        align: coluna.align,
+        headerTitle: coluna.headerTitle,
+        rowHeader: coluna.isRowHeader,
+        render: coluna.render,
+        cellClassName: (linha) =>
+          [coluna.variant === "produto" ? "c360-td--produto" : "", coluna.cellClassName ? coluna.cellClassName(linha) : ""]
+            .filter(Boolean)
+            .join(" "),
+      }))}
+      rows={rows}
+      getRowKey={getRowKey}
+      rowClassName={rowClassName}
+      caption={caption}
+      scroll={scroll}
+      compact={compact}
+      emptyLabel={emptyLabel}
+      classNames={CLASSES_C360}
+    />
   );
 }
 

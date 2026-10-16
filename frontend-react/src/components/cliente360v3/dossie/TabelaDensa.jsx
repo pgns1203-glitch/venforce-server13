@@ -10,14 +10,32 @@
 // Acrescentar tudo isso lá mudaria o componente que a Cliente 360 V2 usa em
 // produção. Aqui a V2 não é tocada.
 //
+// Desde a Etapa 3 da UI, a marcação e o comportamento (ordenação com
+// aria-sort, linha clicável, linha marcada, vazio) são do VFTable; aqui fica
+// o vocabulário do Dossiê e as classes c360d-tabela*.
+//
 // Acessibilidade da linha clicável: o `onClick` fica na `<tr>` (mouse), mas
 // quem carrega o NOME acessível e o foco de teclado é um `<button>` real
 // dentro da primeira célula — leitor de tela anuncia "Produto X, botão", não
 // uma linha inteira virada em widget.
 
 import { ehAusente } from "../../../utils/numbers.js";
+import { VFTable } from "../../ui/VFTable/index.js";
 
-const ARIA_SORT = { asc: "ascending", desc: "descending" };
+// Visual denso do Dossiê sobre o comportamento do VFTable (Fundação V2).
+const CLASSES_DOSSIE = {
+  wrap: "c360d-tabela",
+  scroll: "c360d-tabela--rolavel",
+  table: "c360d-tabela__grade",
+  compact: "",
+  num: "is-num",
+  sortButton: "c360d-tabela__ordenar",
+  sortArrow: "c360d-tabela__seta",
+  sortedHeader: "is-ordenada",
+  clickableRow: "is-clicavel",
+  selectedRow: "is-selecionada",
+  empty: "c360d-tabela__vazio",
+};
 
 export default function TabelaDensa({
   colunas,
@@ -32,96 +50,32 @@ export default function TabelaDensa({
   vazio = "Nada para exibir.",
   rolavel = false,
 }) {
-  const temLinhas = Array.isArray(linhas) && linhas.length > 0;
-
   return (
-    <div className={`c360d-tabela${rolavel ? " c360d-tabela--rolavel" : ""}`}>
-      <table className="c360d-tabela__grade">
-        {legenda && <caption className="vf-visually-hidden">{legenda}</caption>}
-        <colgroup>
-          {colunas.map((c) => (
-            <col key={c.key} style={c.width ? { width: c.width } : undefined} />
-          ))}
-        </colgroup>
-
-        <thead>
-          <tr>
-            {colunas.map((coluna) => {
-              // `!!coluna.ordenarPor` primeiro: sem ele, uma coluna sem
-              // ordenação (`ordenarPor` undefined) casa com `ordenacao` nulo
-              // (undefined === undefined) e todas as colunas se dizem ativas.
-              const ativa = !!coluna.ordenarPor && ordenacao?.campo === coluna.ordenarPor;
-              const podeOrdenar = !!coluna.ordenarPor && !!onOrdenar;
-              return (
-                <th
-                  key={coluna.key}
-                  scope="col"
-                  title={coluna.titulo}
-                  aria-sort={ativa ? ARIA_SORT[ordenacao.dir] : podeOrdenar ? "none" : undefined}
-                  className={[
-                    coluna.align === "right" ? "is-num" : "",
-                    ativa ? "is-ordenada" : "",
-                  ].filter(Boolean).join(" ")}
-                >
-                  {podeOrdenar ? (
-                    <button
-                      type="button"
-                      className="c360d-tabela__ordenar"
-                      onClick={() => onOrdenar(coluna.ordenarPor)}
-                    >
-                      {coluna.header}
-                      <span className="c360d-tabela__seta" aria-hidden="true">
-                        {ativa ? (ordenacao.dir === "asc" ? "↑" : "↓") : "↕"}
-                      </span>
-                    </button>
-                  ) : (
-                    coluna.header
-                  )}
-                </th>
-              );
-            })}
-          </tr>
-        </thead>
-
-        <tbody>
-          {!temLinhas && (
-            <tr>
-              <td className="c360d-tabela__vazio" colSpan={colunas.length}>{vazio}</td>
-            </tr>
-          )}
-
-          {temLinhas && linhas.map((linha, i) => {
-            const id = chave ? chave(linha, i) : i;
-            const marcada = selecionada != null && selecionada === id;
-            return (
-              <tr
-                key={id}
-                className={[
-                  onSelecionar ? "is-clicavel" : "",
-                  marcada ? "is-selecionada" : "",
-                  classeLinha ? classeLinha(linha) : "",
-                ].filter(Boolean).join(" ")}
-                onClick={onSelecionar ? () => onSelecionar(linha) : undefined}
-              >
-                {colunas.map((coluna) => {
-                  const conteudo = coluna.render ? coluna.render(linha, i) : linha[coluna.key];
-                  const classe = [
-                    coluna.align === "right" ? "is-num" : "",
-                    coluna.cellClassName ? coluna.cellClassName(linha) : "",
-                  ].filter(Boolean).join(" ");
-
-                  return coluna.cabecalhoDeLinha ? (
-                    <th key={coluna.key} scope="row" className={classe}>{conteudo}</th>
-                  ) : (
-                    <td key={coluna.key} className={classe}>{conteudo}</td>
-                  );
-                })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <VFTable
+      columns={colunas.map((coluna) => ({
+        key: coluna.key,
+        header: coluna.header,
+        width: coluna.width,
+        align: coluna.align,
+        headerTitle: coluna.titulo,
+        rowHeader: coluna.cabecalhoDeLinha,
+        render: coluna.render,
+        cellClassName: coluna.cellClassName,
+        sortKey: coluna.ordenarPor,
+      }))}
+      rows={linhas}
+      getRowKey={chave}
+      caption={legenda}
+      onRowClick={onSelecionar}
+      selectedKey={selecionada}
+      sort={ordenacao ? { key: ordenacao.campo, dir: ordenacao.dir } : null}
+      onSort={onOrdenar}
+      rowClassName={classeLinha}
+      emptyLabel={vazio}
+      scroll={rolavel}
+      compact={false}
+      classNames={CLASSES_DOSSIE}
+    />
   );
 }
 

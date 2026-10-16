@@ -1536,6 +1536,9 @@ h4 {
 /* Estados de linha — hovers explícitos, sem hack de filter */
 .vf-table tr.row--warning td { background: var(--vf-warning-bg); }
 .vf-table tr.row--danger td { background: var(--vf-danger-bg); }
+/* Linha que abre detalhe ao clicar (VFTable onRowClick) */
+.vf-table tr.is-clickable { cursor: pointer; }
+
 .vf-table tr.row--selected td { background: var(--vf-primary-soft); }
 
 .vf-table tr.row--warning:hover td { background: var(--vf-warning-bg-hover); }

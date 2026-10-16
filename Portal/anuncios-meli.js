@@ -1867,17 +1867,21 @@
     return '<button type="button" class="am-metricas7d-trigger" aria-label="Comparar métricas com os 7 dias anteriores" aria-expanded="false" aria-controls="am-metricas-popup" data-metricas-info="' + escapeAttr(JSON.stringify(m)) + '">' +
       campos.map(function (campo, i) {
         return '<span class="am-metricas7d__linha"><span class="am-metricas7d__icone" aria-hidden="true">' + svgIcone(paths[i], 14, 1.6) + '</span><span aria-label="' + nomes[i] + '">' +
-          (m[campo] == null ? '' : campo === "conversao" ? formatarPercentualCompacto(m[campo]) : formatarInteiroOuTraco(m[campo])) + '</span>' + variacaoMetricaHtml(m[campo], m.anterior && m.anterior[campo], campo === "conversao") + '</span>';
+          (m[campo] == null ? '' : campo === "conversao" ? formatarPercentualCompacto(m[campo]) : formatarInteiroOuTraco(m[campo])) + '</span>' + variacaoMetricaHtml(m[campo], m.anterior && m.anterior[campo], campo === "conversao", true) + '</span>';
       }).join("") + '</button>';
   }
 
-  function variacaoMetricaHtml(atual, anterior, pontos) {
+  function variacaoMetricaHtml(atual, anterior, pontos, apenasSeta) {
     if (atual == null || anterior == null) return '';
     if (!pontos && anterior === 0 && atual !== 0) return '';
     var delta = pontos ? atual - anterior : (anterior === 0 ? 0 : (atual - anterior) / anterior * 100);
     delta = Math.round(delta * 10) / 10;
-    return '<span class="am-metricas-delta ' + (delta > 0 ? 'is-success' : delta < 0 ? 'is-danger' : 'is-neutral') + '">' +
-      Math.abs(delta).toFixed(1).replace('.', ',') + (pontos ? ' pp' : '%') + '</span>';
+    if (apenasSeta && delta === 0) return '';
+    var descricao = (delta > 0 ? 'Aumento de ' : delta < 0 ? 'Queda de ' : 'Sem alteração: ') +
+      Math.abs(delta).toFixed(1).replace('.', ',') + (pontos ? ' pp' : '%');
+    var seta = delta > 0 ? '▲' : delta < 0 ? '▼' : '';
+    return '<span class="am-metricas-delta ' + (delta > 0 ? 'is-success' : delta < 0 ? 'is-danger' : 'is-neutral') + '" aria-label="' + descricao + '">' +
+      (apenasSeta ? seta : (seta ? seta + ' ' : '') + Math.abs(delta).toFixed(1).replace('.', ',') + (pontos ? ' pp' : '%')) + '</span>';
   }
 
   function bindComparativoMetricas() {

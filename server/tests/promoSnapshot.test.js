@@ -1811,6 +1811,103 @@ cenario("fonte única — isolamento: 2 contas ML do MESMO cliente têm fonte, r
   assert.ok(b2.aba.oportunidades.every((o) => o.itemId.startsWith("MLB2")));
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// PROMO_SNAPSHOT_CLIENTES=* e scripts/promoSnapshotRunOnce.js (Render Cron)
+// ─────────────────────────────────────────────────────────────────────────────
+
+const runOnceScript = require("../scripts/promoSnapshotRunOnce");
+
+const CONTAS_ORQ = [
+  { id: 7, cliente_id: 3, cliente_slug: "loja-a", marketplace: "meli", ativo: true, external_account_id: "555" },
+  { id: 9, cliente_id: 4, cliente_slug: "loja-b", marketplace: "meli", ativo: true, external_account_id: "777" },
+];
+const GRANTS_ORQ = [
+  { cliente_id: 3, ml_user_id: "555", access_token: "a", refresh_token: "r", token_status: "valid" },
+  { cliente_id: 4, ml_user_id: "777", access_token: "a", refresh_token: "r", token_status: "valid" },
+];
+
+function depsRunOnce(amb, extra = {}) {
+  return {
+    db: amb.base.db, logger: amb.logger, env: amb.env, repo: amb.repo, now: amb.base.now, runService: amb.runService,
+    ensureTables: async () => {},
+    processor: (run, ctx) => processPromoSnapshotRun(run, { ...amb.procDeps, signal: ctx.signal }),
+    ...extra,
+  };
+}
+
+cenario("allowlist `*`: todos os clientes entram (mesmo misturado a slugs); sem slug também; vazio continua = nenhum", async () => {
+  const lig = { PROMO_SNAPSHOT_WORKER_ENABLED: "true" };
+  assert.deepStrictEqual(resolvePromoSnapshotConfig({ ...lig, PROMO_SNAPSHOT_CLIENTES: " * " }).clientesPiloto, ["*"]);
+  for (const lista of ["*", "red_fish,*"]) {
+    const cfg = resolvePromoSnapshotConfig({ ...lig, PROMO_SNAPSHOT_CLIENTES: lista });
+    assert.deepStrictEqual(avaliarPiloto(cfg, "qualquer-loja"), { noPiloto: true, motivo: null }, lista);
+    assert.deepStrictEqual(avaliarPiloto(cfg, null), { noPiloto: true, motivo: null }, `${lista} sem slug`);
+  }
+  assert.strictEqual(avaliarPiloto(resolvePromoSnapshotConfig({ PROMO_SNAPSHOT_CLIENTES: "*" }), "x").motivo, "WORKER_DESABILITADO");
+
+  const amb = ambiente({ contasCliente: CONTAS_ORQ, grants: GRANTS_ORQ, env: { PROMO_SNAPSHOT_CLIENTES: "*", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "10" } });
+  const r = await orquestrarTick({ ...amb.base });
+  assert.deepStrictEqual(r.enfileirados.map((e) => e.clienteContaId).sort(), [7, 9]);
+});
+
+cenario("run-once: desligado ou allowlist vazia → exit 0 sem tocar no banco", async () => {
+  const proibido = { query: async () => { throw new Error("não deveria consultar"); } };
+  for (const env of [{ PROMO_SNAPSHOT_CLIENTES: "*" }, { PROMO_SNAPSHOT_WORKER_ENABLED: "true", PROMO_SNAPSHOT_CLIENTES: "" }]) {
+    const r = await runOnceScript.executarPassada([], {
+      env, db: proibido, logger: F.loggerMemoria(),
+      ensureTables: async () => { throw new Error("não deveria migrar"); },
+    });
+    assert.strictEqual(r.codigo, 0);
+    assert.ok(["WORKER_DESABILITADO", "PILOTO_VAZIO"].includes(r.motivo));
+  }
+});
+
+cenario("run-once: enfileira a allowlist e processa a fila (só GET); 2ª passada não duplica (snapshot fresco)", async () => {
+  const amb = ambiente({ contasCliente: CONTAS_ORQ, grants: GRANTS_ORQ, env: { PROMO_SNAPSHOT_CLIENTES: "*", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "10" } });
+  const r = await runOnceScript.executarPassada([], depsRunOnce(amb));
+  assert.strictEqual(r.codigo, 0);
+  assert.deepStrictEqual(r.enfileirados.map((e) => e.clienteContaId).sort(), [7, 9]);
+  assert.strictEqual(r.runs.length, 2);
+  assert.ok(r.runs.every((x) => x.resultado === "completed"));
+  assert.ok(amb.conta(7) && amb.conta(9), "as duas contas ganharam snapshot");
+  assert.ok(amb.ml.chamadas.every((c) => c.method === "GET"));
+
+  const r2 = await runOnceScript.executarPassada([], depsRunOnce(amb));
+  assert.deepStrictEqual([r2.codigo, r2.enfileirados.length, r2.runs.length], [0, 0, 0]);
+  assert.strictEqual(amb.repo._st.runs.length, 2, "nenhum run novo");
+});
+
+cenario("run-once: --max-runs limita o processamento; o resto fica na fila para a próxima passada", async () => {
+  const amb = ambiente({ contasCliente: CONTAS_ORQ, grants: GRANTS_ORQ, env: { PROMO_SNAPSHOT_CLIENTES: "loja-a,loja-b", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "10" } });
+  const r = await runOnceScript.executarPassada(["--max-runs=1"], depsRunOnce(amb));
+  assert.deepStrictEqual([r.codigo, r.enfileirados.length, r.runs.length], [0, 2, 1]);
+  assert.strictEqual(amb.repo._st.runs.filter((x) => x.status === "queued").length, 1);
+  assert.throws(() => runOnceScript.parseArgs(["--max-runs=0"]), /--max-runs/);
+  assert.throws(() => runOnceScript.parseArgs(["--tudo"]), /desconhecido/);
+});
+
+cenario("run-once: respeita allowlist e locks — run na fila de cliente fora da lista falha sem tocar no ML; run stale é reconciliado; conta com run ativo não ganha outro", async () => {
+  const amb = ambiente({ contasCliente: CONTAS_ORQ, grants: GRANTS_ORQ, env: { PROMO_SNAPSHOT_CLIENTES: "loja-b", PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK: "10" } });
+  // Run de loja-a enfileirado antes de a allowlist mudar.
+  await amb.enfileirar(7);
+  // Run "running" de outra instância que morreu há 1 h (conta 8).
+  await amb.enfileirar(8);
+  const preso = amb.repo._st.runs.find((x) => x.cliente_conta_id === 8);
+  Object.assign(preso, { status: "running", started_at: new Date(amb.relogio.agora() - 3600000).toISOString(), heartbeat_at: new Date(amb.relogio.agora() - 3600000).toISOString() });
+  const chamadasAntes = amb.ml.chamadas.length;
+
+  const r = await runOnceScript.executarPassada([], depsRunOnce(amb));
+  assert.strictEqual(r.reconciliados, 1);
+  assert.strictEqual(preso.status, "failed");
+  assert.deepStrictEqual(r.enfileirados.map((e) => e.clienteContaId), [9], "só loja-b; loja-a já tinha run na fila e está fora");
+  const runA = amb.repo._st.runs.find((x) => x.cliente_conta_id === 7);
+  assert.strictEqual(runA.status, "failed");
+  assert.strictEqual(runA.error_code, "PROMO_SNAPSHOT_FORA_DO_PILOTO");
+  assert.ok(!amb.ml.chamadas.slice(chamadasAntes).some((c) => String(c.mlUserId) === "555" || String(c.path || "").includes("555")), "nenhuma chamada ao seller de loja-a");
+  assert.strictEqual(amb.repo._st.runs.find((x) => x.cliente_conta_id === 9).status !== "queued", true);
+  assert.strictEqual(r.codigo, 1, "run não concluído → exit 1 (o cron sinaliza)");
+});
+
 async function main() {
   let ok = 0;
   for (const c of casos) {

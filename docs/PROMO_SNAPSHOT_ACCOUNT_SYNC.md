@@ -212,7 +212,8 @@ Não há cron novo. O `promoSnapshotRuntime` sobe no boot (`server/index.js`) s�
 - **Worker:** o genérico `marginSnapshotWorker` com o processor e o run service do Promo Snapshot,
   com polling leve do banco.
 - **Piloto (allowlist):** `PROMO_SNAPSHOT_CLIENTES` (slugs de cliente separados por vírgula, sem
-  distinção de caixa; vazio = nenhum). Ligar o worker sem a lista **não sincroniza conta nenhuma**.
+  distinção de caixa; vazio = nenhum; `*` = todos os clientes, mesmo misturado a slugs — o resto da
+  elegibilidade continua valendo). Ligar o worker sem a lista **não sincroniza conta nenhuma**.
   A regra é uma só (`avaliarPiloto`) e vale nos três pontos que enfileiram: o orquestrador (e
   `listarContasElegiveis`, no SQL), o auto-trigger ao abrir a Central e o `POST /promocoes/sync`.
   Conta fora da lista → estado `fora_do_piloto` (motivo `FORA_DO_PILOTO`, `PILOTO_VAZIO` ou
@@ -228,6 +229,14 @@ Não há cron novo. O `promoSnapshotRuntime` sobe no boot (`server/index.js`) s�
 
   Conta inativa, revogada ou sem grant nunca entra.
 - **Gatilhos:** abrir, filtrar ou paginar a Central chama o auto-trigger da conta.
+- **Passada avulsa (Render Cron Job, opcional):** `node scripts/promoSnapshotRunOnce.js [--max-runs=N]`
+  (a partir de `server/`). Faz UMA passada sem timer: reconcilia runs stale, roda o orquestrador
+  (mesma allowlist e mesmo índice único de run ativo) e processa até N runs da fila, um por vez
+  (padrão = `PROMO_SNAPSHOT_ORCHESTRATOR_MAX_PER_TICK`), com o mesmo claim `FOR UPDATE SKIP LOCKED`
+  do worker — pode rodar junto com o worker do serviço web. Run da fila de cliente que saiu da
+  allowlist é encerrado como `PROMO_SNAPSHOT_FORA_DO_PILOTO`, sem chamar o ML. Só age com
+  `PROMO_SNAPSHOT_WORKER_ENABLED=true`; desligado ou allowlist vazia = exit 0 sem tocar no banco.
+  Exit 1 = erro estrutural ou algum run processado que não concluiu. Usa `DATABASE_URL`.
 
 **Estado atual:** a flag vem desligada. Sem ela, nenhum timer existe e a Central continua lendo o
 último snapshot, ou o diagnóstico legado. Ligar a flag é decisão operacional (env do Render).
@@ -273,7 +282,7 @@ ganhou `page`, `total` e `hasNext`.
 | Env | Default | Efeito |
 |---|---|---|
 | `PROMO_SNAPSHOT_WORKER_ENABLED` | `false` | liga worker + orquestrador + auto-enqueue |
-| `PROMO_SNAPSHOT_CLIENTES` | vazio (= nenhum) | allowlist de clientes (slugs, vírgula) que podem ser sincronizados |
+| `PROMO_SNAPSHOT_CLIENTES` | vazio (= nenhum) | allowlist de clientes (slugs, vírgula) que podem ser sincronizados; `*` = todos |
 | `PROMO_SNAPSHOT_FRESH_MINUTES` | 720 | frescor do snapshot (nome reaproveitado da tela antiga) |
 | `PROMO_SNAPSHOT_WORKER_CONCURRENCY` | 1 (≤3) | runs simultâneos por processo |
 | `PROMO_SNAPSHOT_WORKER_POLL_MS` | 15000 | polling de runs de outra instância |
@@ -348,7 +357,7 @@ Todos carregam `cliente_id`, `cliente_conta_id`, `seller_id` e `run_id`; os de c
 
 ## 14. Testes e validação
 
-- `server/tests/promoSnapshot.test.js`: 67 cenários + a prova final de zero
+- `server/tests/promoSnapshot.test.js`: 87 cenários (inclui `*` e o `promoSnapshotRunOnce.js`) + a prova final de zero
   `POST/PUT/PATCH/DELETE` sobre todas as chamadas. Inclui os cenários das auditorias
   independentes: seller reconectado (antes e no meio do run), parcial com herança (e herança
   expirada), as anomalias de paginação do catálogo (inclusive página não vazia sem `paging` e sem
@@ -356,7 +365,7 @@ Todos carregam `cliente_id`, `cliente_conta_id`, `seller_id` e `run_id`; os de c
   17 min e Retry-After de 18 min com outra instância reconciliando; request individual presa até
   o timeout; heartbeat perdido parando o processo), invariante timeout × stale na config,
   Oportunidades paginadas no banco e replay de lote.
-- `server/scripts/promoSnapshotSqlCheck.js`: SQL real no PGlite (14 checks, incluindo o pipeline
+- `server/scripts/promoSnapshotSqlCheck.js`: SQL real no PGlite (16 checks, `*` incluído, incluindo o pipeline
   worker → processor → repositório, seller reconectado, herança, replay de lote e a consulta das
   Oportunidades conferida página a página contra a régua JS em 5.000 anúncios).
 - `server/scripts/promoSnapshotBenchmark.js`: 1 conta, 5.000 anúncios.

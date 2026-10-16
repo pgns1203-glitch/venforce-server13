@@ -9,7 +9,7 @@
 // continua lendo o último snapshot (ou o diagnóstico legado).
 //
 // Piloto: PROMO_SNAPSHOT_CLIENTES=slug-a,slug-b (allowlist de CLIENTES; vazio
-// = nenhum). Ligar o worker sem a lista não sincroniza conta nenhuma: só os
+// = nenhum; `*` = todos os clientes elegíveis, mesmo misturado a slugs). Ligar o worker sem a lista não sincroniza conta nenhuma: só os
 // clientes listados são enfileirados — pelo orquestrador, pelo auto-trigger ao
 // abrir a Central e pelo POST /promocoes/sync (ver avaliarPiloto).
 
@@ -36,6 +36,10 @@ function listaDeSlugs(raw) {
   }
   return [...vistos];
 }
+
+// `*` na lista libera todos os clientes (as demais regras de elegibilidade —
+// conta ativa, grant utilizável, frescor — continuam valendo).
+const TODOS_OS_CLIENTES = "*";
 
 function flagLigada(raw, padrao = false) {
   if (raw === undefined || raw === null || String(raw).trim() === "") return padrao;
@@ -114,13 +118,14 @@ function resolvePromoSnapshotConfig(env = process.env) {
 /**
  * A conta (pelo slug do cliente) pode ser sincronizada automaticamente?
  * `motivo` quando não: WORKER_DESABILITADO | PILOTO_VAZIO | FORA_DO_PILOTO.
- * Slug ausente nunca entra. É a ÚNICA regra de allowlist: orquestrador,
+ * Slug ausente nunca entra — exceto com `*` (todos os clientes). É a ÚNICA regra de allowlist: orquestrador,
  * auto-trigger, POST /sync e o estado exibido às telas usam esta função.
  */
 function avaliarPiloto(config, clienteSlug) {
   if (!config.workerEnabled) return { noPiloto: false, motivo: "WORKER_DESABILITADO" };
   const lista = config.clientesPiloto || [];
   if (!lista.length) return { noPiloto: false, motivo: "PILOTO_VAZIO" };
+  if (lista.includes(TODOS_OS_CLIENTES)) return { noPiloto: true, motivo: null };
   const slug = String(clienteSlug || "").trim().toLowerCase();
   if (slug && lista.includes(slug)) return { noPiloto: true, motivo: null };
   return { noPiloto: false, motivo: "FORA_DO_PILOTO" };
@@ -129,7 +134,7 @@ function avaliarPiloto(config, clienteSlug) {
 function resolverBruto(env) {
   return {
     workerEnabled: flagLigada(env.PROMO_SNAPSHOT_WORKER_ENABLED),
-    // Allowlist de clientes (slugs) do piloto; vazio = nenhum.
+    // Allowlist de clientes (slugs) do piloto; vazio = nenhum; ["*"] = todos.
     clientesPiloto: listaDeSlugs(env.PROMO_SNAPSHOT_CLIENTES),
 
     // Freshness — REUTILIZA PROMO_SNAPSHOT_FRESH_MINUTES da tela antiga
@@ -198,6 +203,7 @@ function resolverBruto(env) {
 module.exports = {
   resolvePromoSnapshotConfig,
   avaliarPiloto,
+  TODOS_OS_CLIENTES,
   validarInvariantesHeartbeat,
   piorIntervaloSemHeartbeatMs,
   PromoSnapshotConfigError,

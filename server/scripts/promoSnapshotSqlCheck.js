@@ -528,6 +528,11 @@ check("allowlist do piloto (SQL real): só clientes da lista; lista vazia = nenh
   assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: ["outra"] }, db), []);
   assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: [] }, db), []);
   assert.deepStrictEqual(await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30 }, db), [], "sem lista nunca lista tudo");
+  // `*` = todos os clientes; a elegibilidade continua (a conta 9, de grant revogado, segue fora).
+  const curinga = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: ["*"] }, db);
+  assert.deepStrictEqual(curinga.map((e) => e.clienteContaId), [7, 8]);
+  const misto = await repo.listarContasElegiveis({ limit: 10, failedRetryMinutes: 30, clientesPiloto: ["outra", "*"] }, db);
+  assert.deepStrictEqual(misto.map((e) => e.clienteContaId), [7, 8], "`*` misturado a slugs também libera todos");
 });
 
 check("pipeline completo com SQL real: worker + processor + repositório; 2 contas; ML falso só GET; Central lê o snapshot", async ({ db, pg }) => {

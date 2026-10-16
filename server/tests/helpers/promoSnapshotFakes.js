@@ -330,8 +330,9 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       reg("listarContasElegiveis");
       const agora = relogio.agora();
       const ponteiro = (c) => st.contas.get(chaveConta(c.id, "meli", c.external_account_id));
-      // Allowlist (espelha `LOWER(cl.slug) = ANY($4)` do SQL): lista vazia = nenhuma conta.
-      const noPiloto = (c) => !Array.isArray(clientesPiloto) || clientesPiloto.includes(String(c.cliente_slug || "").toLowerCase());
+      // Allowlist (espelha `'*' = ANY($4) OR LOWER(cl.slug) = ANY($4)` do SQL): lista vazia = nenhuma conta.
+      const noPiloto = (c) => !Array.isArray(clientesPiloto) || clientesPiloto.includes("*") ||
+        clientesPiloto.includes(String(c.cliente_slug || "").toLowerCase());
       return contasCliente.filter((c) => c.marketplace === "meli" && c.ativo !== false && c.cliente_ativo !== false && c.external_account_id)
         .filter(noPiloto)
         .filter((c) => grants.some((g) => g.cliente_id === c.cliente_id && String(g.ml_user_id) === String(c.external_account_id) &&

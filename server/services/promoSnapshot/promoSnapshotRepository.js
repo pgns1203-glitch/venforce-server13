@@ -886,7 +886,8 @@ async function listarOportunidadesElegiveis({ clienteId, clienteContaId, sellerI
  */
 async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto }, db = pool) {
   await ensureTables(db);
-  // Allowlist do piloto (slugs em minúsculas): lista vazia = nenhuma conta.
+  // Allowlist do piloto (slugs em minúsculas): lista vazia = nenhuma conta;
+  // `*` na lista = todos os clientes (o resto da elegibilidade continua).
   const slugs = Array.isArray(clientesPiloto) ? clientesPiloto.map((x) => String(x).trim().toLowerCase()).filter(Boolean) : [];
   if (!slugs.length) return [];
   const r = await db.query(
@@ -898,7 +899,7 @@ async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto
          ON s.cliente_conta_id = c.id AND s.marketplace = 'meli' AND s.seller_id = c.external_account_id::text
       WHERE c.marketplace = 'meli' AND c.ativo = true AND COALESCE(cl.ativo, true) = true
         AND c.external_account_id IS NOT NULL AND c.external_account_id <> ''
-        AND LOWER(cl.slug) = ANY($4::text[])
+        AND ('*' = ANY($4::text[]) OR LOWER(cl.slug) = ANY($4::text[]))
         AND EXISTS (
           SELECT 1 FROM ml_tokens t
            WHERE t.cliente_id = c.cliente_id AND t.ml_user_id::text = c.external_account_id::text

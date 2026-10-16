@@ -13,6 +13,9 @@
 //               → fingerprint ao vivo == fingerprint do preview?
 //               → escritor existente com gancho antes do envio:
 //                   [promoção] mesma promoção, mesma ação, mesmo preço atual
+//                              (modo preco: aplicarPromocao com deal_price;
+//                               modo aceite: participarPromocaoAceite, no
+//                               preço SUGERIDO pelo ML — nunca um digitado)
 //                   [preço]    preço efetivo lido logo antes == preço visto
 //                   fencing: renova o lease pelo token + marca o envio
 //                   envio com prazo local DENTRO do lease (deadlineAt)
@@ -27,6 +30,7 @@
 // /anuncios não muda.
 
 const crypto = require("crypto");
+const { modoEscritaPromocao } = require("../../meliAnuncios/promocaoTiposSuportados");
 const avaliacao = require("./precificacaoAvaliacao");
 const { escritaHabilitada, promocaoEscritaStatus, resolvePricingConfig } = require("./precificacaoConfig");
 const fingerprintLib = require("./precificacaoFingerprint");
@@ -48,6 +52,10 @@ const CODIGOS_RECUSA_SERVICO = new Set([
   "PROMOCAO_MUDOU",
   "PROMOCAO_INTENCAO_MUDOU",
   "ML_TIMEOUT_LEITURA",
+  // participarPromocaoAceite (modo aceite): recusas da releitura, nada enviado.
+  "PROMOCAO_JA_PARTICIPA",
+  "OFFER_ID_AUSENTE",
+  "TIPO_SEM_ACEITE",
 ]);
 
 // Não enviados por falta de prazo/posse: `falhou` (comprovadamente sem escrita).
@@ -60,6 +68,8 @@ function defaults(deps = {}) {
     repo: deps.repo || require("./precificacaoRepository"),
     atualizarPreco: deps.atualizarPreco || require("../../meliAnuncios/meliPrecoService").atualizarPreco,
     aplicarPromocao: deps.aplicarPromocao || require("../../meliAnuncios/meliPromocoesEscritaService").aplicarPromocao,
+    participarPromocaoAceite:
+      deps.participarPromocaoAceite || require("../../meliAnuncios/meliPromocoesEscritaService").participarPromocaoAceite,
     atualizarCamposConfirmados:
       deps.atualizarCamposConfirmados || require("../../meliAnuncios/meliAnunciosService").atualizarCamposConfirmados,
     registrarLog: deps.registrarLog || require("../../activityLogService").registrarLog,
@@ -151,6 +161,13 @@ function tipoValido(tipo) {
 
 function round2(v) {
   return Math.round((Number(v) + Number.EPSILON) * 100) / 100;
+}
+
+// Modo de escrita da promoção de uma aplicação: "preco" (DEAL/SELLER_CAMPAIGN) | "aceite" (o ML define o preço) | null.
+function modoDaPromocao(row) {
+  if (!row || row.tipoAcao !== "PROMOTION") return null;
+  const modo = modoEscritaPromocao(row.promotionType);
+  return modo ? modo.toLowerCase() : null;
 }
 
 async function promocaoAoVivo(base, promotionId, d) {
@@ -328,6 +345,7 @@ function aplicacaoPublica(row) {
     promotionType: row.promotionType,
     promotionNome: row.promotionNome,
     promotionAcao: row.promotionAcao,
+    promotionModo: modoDaPromocao(row),
     status: row.status,
     execucao: execucaoDe(row),
     precoVisto: row.precoVisto,
@@ -485,6 +503,10 @@ async function aplicar(params = {}, deps = {}) {
     throw erroHttp(409, "PREVIEW_JA_UTILIZADO", "Este preview já foi usado ou expirou. Gere um novo preview.");
   }
 
+  const modoPromocao = modoDaPromocao(claim);
+  // Veredito/LC da reavaliação ao vivo (preenchido logo abaixo): vai para a auditoria.
+  let vereditoAuditoria = null;
+
   const logBase = {
     userId: user.id ?? null,
     userEmail: user.email || null,
@@ -505,6 +527,7 @@ async function aplicar(params = {}, deps = {}) {
         tipo: claim.tipoAcao,
         promotionId: claim.promotionId,
         promotionAcao: claim.promotionAcao,
+        promotionModo: modoPromocao,
         status,
         precoVisto: claim.precoVisto,
         precoSolicitado: claim.precoSolicitado,
@@ -515,6 +538,7 @@ async function aplicar(params = {}, deps = {}) {
         margemDepois: row ? row.margemDepois : null,
         lucroAntes: claim.lucroAntes ?? null,
         lucroDepois: row ? row.lucroDepois ?? null : null,
+        veredito: vereditoAuditoria,
         atencaoCodigo: (row && row.atencaoCodigo) || extra.atencaoCodigo || null,
         erroCodigo: extra.erroCodigo || null,
       },
@@ -581,12 +605,28 @@ async function aplicar(params = {}, deps = {}) {
 
   const { base, resultado, promo: promoPreview } = reavaliacao;
   const calculo = { atual: resultado.atual, proposta: resultado.proposta, insumos: resultado.insumos, promocao: resultado.promocao };
+  vereditoAuditoria = (resultado.promocao && resultado.promocao.veredito) || null;
 
   // Heartbeat: a reavaliação terminou; ainda somos donos?
   const vivo = await d.repo.renovarLease({ id: claim.id, claimToken, leaseSeconds: config.leaseSegundos }, deps.db);
   if (!vivo) {
     const r = await finalizar("falhou", { erroCodigo: "FENCING_PERDIDO", erroMensagem: "O lease desta aplicação venceu antes da escrita. Nada foi enviado ao Mercado Livre.", gates: resultado.gates, calculo });
     return respostaFalha(r, "FENCING_PERDIDO");
+  }
+
+  // ACEITE: o preço é o SUGERIDO pelo ML. Se a sugestão ao vivo não é mais a do preview,
+  // a intenção confirmada não existe mais — aborta e pede novo preview (nunca participa "no novo preço").
+  if (modoPromocao === "aceite" && promoPreview) {
+    const sugeridoAgora = promoPreview.precoFinal === null || promoPreview.precoFinal === undefined ? null : round2(promoPreview.precoFinal);
+    if (sugeridoAgora === null || !mesmoPreco(sugeridoAgora, claim.precoSolicitado)) {
+      const r = await finalizar("recusado", {
+        erroCodigo: "PRECO_SUGERIDO_MUDOU",
+        erroMensagem: "O preço sugerido pelo Mercado Livre mudou desde o preview. Gere um novo preview e revise os números antes de confirmar.",
+        gates: resultado.gates,
+        calculo: { ...calculo, precoSugeridoAgora: sugeridoAgora },
+      });
+      return respostaFalha(r, "PRECO_SUGERIDO_MUDOU", { novoPreviewNecessario: true, precoSugeridoAgora: sugeridoAgora });
+    }
   }
 
   if (resultado.bloqueado) {
@@ -655,7 +695,18 @@ async function aplicar(params = {}, deps = {}) {
 
   let escrita;
   try {
-    escrita = claim.tipoAcao === "PROMOTION"
+    escrita = modoPromocao === "aceite"
+      // ACEITE: o ML define o preço — participa sem enviar preço (o sugerido foi conferido no fingerprint).
+      ? await d.participarPromocaoAceite({
+          clienteId: base.cliente.id,
+          itemId: claim.itemId,
+          mlUserId: base.conta.mlUserId,
+          promotionId: claim.promotionId,
+          tipo: claim.promotionType,
+          timeoutMs: config.mlTimeoutMs,
+          antesDeEscrever,
+        })
+      : claim.tipoAcao === "PROMOTION"
       ? await d.aplicarPromocao({
           clienteId: base.cliente.id,
           itemId: claim.itemId,
@@ -715,7 +766,7 @@ async function aplicar(params = {}, deps = {}) {
       erroCodigo: claim.tipoAcao === "PROMOTION" ? "PROMOCAO_CONFIRMACAO_FALHOU" : "PRECO_CONFIRMACAO_FALHOU",
       erroMensagem: "O Mercado Livre respondeu sem o preço aplicado. A alteração pode ter ocorrido — confira o anúncio.",
       mlStatus: 200,
-      respostaMl: { status: 200, codigo: "SEM_PRECO_NA_RESPOSTA", metodo: escrita.metodo || null },
+      respostaMl: { status: 200, codigo: "SEM_PRECO_NA_RESPOSTA", metodo: escrita.metodo || (modoPromocao === "aceite" ? "POST" : null) },
       gates: resultado.gates,
       calculo,
     });
@@ -734,7 +785,12 @@ async function aplicar(params = {}, deps = {}) {
     financeiro: divergente ? { margemDepois: null, lucroDepois: null } : { margemDepois: resultado.proposta.margem, lucroDepois: resultado.proposta.lucro },
     atencaoCodigo: divergente ? "PRECO_CONFIRMADO_DIVERGENTE" : null,
     mlStatus: 200,
-    respostaMl: { status: 200, metodo: escrita.metodo || (claim.tipoAcao === "PRICE" ? "PUT" : null), preco: precoConfirmado },
+    respostaMl: {
+      status: 200,
+      metodo: escrita.metodo || (claim.tipoAcao === "PRICE" ? "PUT" : modoPromocao === "aceite" ? "POST" : null),
+      preco: precoConfirmado,
+      ...(modoPromocao ? { modo: modoPromocao } : {}),
+    },
     gates: resultado.gates,
     calculo,
     snapshotStatus: snapshotLigado ? "pendente" : "nao_aplicavel",

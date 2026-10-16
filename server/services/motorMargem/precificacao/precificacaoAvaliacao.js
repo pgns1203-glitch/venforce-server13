@@ -16,6 +16,8 @@
 
 // Núcleo puro (calcularCenario/DEFAULT_TARGET_MARGIN): carregado no topo — sem I/O.
 const core = require("../core");
+// Fonte única dos tipos de promoção em que o VenForce escreve (a mesma de /anuncios). Pura.
+const tiposSuportados = require("../../meliAnuncios/promocaoTiposSuportados");
 
 const TOLERANCIA_PRECO = 0.005; // meio centavo: preços comparados em 2 casas
 
@@ -98,6 +100,7 @@ function defaults(deps = {}) {
     listarPromocoesDoItem:
       deps.listarPromocoesDoItem || require("../../meliAnuncios/meliPromocoesService").listarPromocoesDoItem,
     tiposComEscrita: deps.tiposComEscrita || require("../../meliAnuncios/meliPromocoesEscritaService").TIPOS_COM_ESCRITA,
+    tiposAceite: deps.tiposAceite || tiposSuportados.TIPOS_ESCRITA_ACEITE,
     computeMargin: deps.computeMargin || require("../core/marginEngine").computeMargin,
   };
 }
@@ -254,26 +257,39 @@ async function recotar(base, preco, deps = {}) {
   return { comissao, comissaoFonte, frete, freteFonte };
 }
 
-/** Situação de escrita de uma promoção normalizada (espelha o serviço de escrita). */
-function escritaDaPromocao(promo, tiposComEscrita) {
-  if (!promo) return { suportada: false, acao: null, motivo: "Promoção não encontrada." };
-  if (!tiposComEscrita.has(promo.tipo)) {
+/**
+ * Situação de escrita de uma promoção normalizada (espelha os serviços de escrita).
+ * Dois modos:
+ *   preco   DEAL/SELLER_CAMPAIGN — o vendedor escolhe o preço: PARTICIPAR (candidate) ou ALTERAR (a ATIVA);
+ *   aceite  SMART, PRICE_MATCHING… — o ML define o preço: só PARTICIPAR (candidate), no preço sugerido.
+ * Tipos fora dos dois conjuntos (PRICE_DISCOUNT, DOD, LIGHTNING, VOLUME…) ficam só em simulação, com o motivo.
+ */
+function escritaDaPromocao(promo, tiposComEscrita, tiposAceite = tiposSuportados.TIPOS_ESCRITA_ACEITE) {
+  if (!promo) return { suportada: false, acao: null, modo: null, motivo: "Promoção não encontrada." };
+  const preco = tiposComEscrita.has(promo.tipo);
+  const aceite = !preco && Boolean(tiposAceite) && tiposAceite.has(promo.tipo);
+  if (!preco && !aceite) {
     return {
       suportada: false,
       acao: null,
-      motivo: "Somente simulação: este tipo de promoção não tem participação/alteração automática suportada.",
+      modo: null,
+      motivo: `Somente simulação: ${tiposSuportados.motivoTipoSemEscrita(promo.tipo)} — participe pelo painel do Mercado Livre.`,
     };
   }
+  const modo = preco ? "preco" : "aceite";
   if (STATUS_PROMO_ALTERAVEL.has(promo.status) && promo.statusExibicao === "ATIVA") {
-    return { suportada: true, acao: "ALTERAR", motivo: null };
+    return preco
+      ? { suportada: true, acao: "ALTERAR", modo, motivo: null }
+      : { suportada: false, acao: null, modo, motivo: "O Mercado Livre define o preço desta promoção — não há preço a alterar por aqui." };
   }
-  if (promo.status === "candidate") return { suportada: true, acao: "PARTICIPAR", motivo: null };
+  if (promo.status === "candidate") return { suportada: true, acao: "PARTICIPAR", modo, motivo: null };
   if (promo.status === "pending") {
-    return { suportada: false, acao: null, motivo: "Promoção programada: ainda não começou no Mercado Livre — só simulação." };
+    return { suportada: false, acao: null, modo, motivo: "Promoção programada: ainda não começou no Mercado Livre — só simulação." };
   }
   return {
     suportada: false,
     acao: null,
+    modo,
     motivo: "Esta promoção existe, mas não é a que define o preço atual do anúncio — só simulação.",
   };
 }
@@ -448,19 +464,36 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
       gates.push(gate("promocao_disponivel", "PROMOCAO", "block", "Promoção não está mais disponível", "Ela sumiu da releitura ao vivo do Mercado Livre. Atualize as promoções."));
     } else {
       gates.push(gate("promocao_disponivel", "PROMOCAO", "ok", "Promoção ainda disponível", `${promocao.nome || promocao.tipoLabel || promocao.tipo} · ${promocao.statusExibicao}`));
-      const escrita = escritaDaPromocao(promocao, d.tiposComEscrita);
+      const escrita = escritaDaPromocao(promocao, d.tiposComEscrita, d.tiposAceite);
+      const aceite = escrita.modo === "aceite";
       gates.push(
         escrita.suportada
-          ? gate("promocao_escrita", "PROMOCAO", "ok", escrita.acao === "ALTERAR" ? "Alteração suportada" : "Participação suportada", promocao.tipoLabel || promocao.tipo)
+          ? gate("promocao_escrita", "PROMOCAO", "ok",
+            escrita.acao === "ALTERAR" ? "Alteração suportada" : aceite ? "Participação suportada (preço definido pelo Mercado Livre)" : "Participação suportada",
+            promocao.tipoLabel || promocao.tipo)
           : gate("promocao_escrita", "PROMOCAO", "block", "Somente simulação", escrita.motivo)
       );
-      if (novoPreco === null) {
+      // ACEITE: o vendedor só aceita — o preço é o SUGERIDO pelo ML, nunca um digitado.
+      const precoSugerido = aceite ? num(promocao.precoFinal) : null;
+      if (aceite && escrita.acao === "PARTICIPAR" && tiposSuportados.aceiteExigeOffer(promocao.tipo) && !promocao.refId) {
+        gates.push(gate("promocao_oferta", "PROMOCAO", "block", "Oferta do Mercado Livre não informada",
+          "O Mercado Livre não devolveu o identificador da oferta desta promoção — participe pelo painel do Mercado Livre."));
+      }
+      if (aceite && precoSugerido === null) {
+        gates.push(gate("promocao_preco", "PROMOCAO", "block", "Sem preço sugerido pelo Mercado Livre",
+          "Nesta promoção o preço é definido pelo Mercado Livre e ele não informou o preço sugerido — não dá para calcular a margem."));
+      } else if (aceite && novoPreco !== null && !mesmoPreco(novoPreco, round2(precoSugerido))) {
+        gates.push(gate("promocao_preco", "PROMOCAO", "block", "Preço definido pelo Mercado Livre (não editável)",
+          `Nesta promoção o preço é o sugerido pelo Mercado Livre: ${brl(precoSugerido)}.`));
+      } else if (novoPreco === null) {
         gates.push(gate("promocao_preco", "PROMOCAO", "block", "Promoção sem preço sugerido", "Informe o preço promocional para simular."));
       } else if (promocao.precoOriginal !== null && promocao.precoOriginal !== undefined && novoPreco >= Number(promocao.precoOriginal)) {
         gates.push(gate("promocao_preco", "PROMOCAO", "block", "Preço promocional precisa ser menor que o original", `Original ${brl(promocao.precoOriginal)}.`));
       } else if (escrita.acao === "ALTERAR" && mesmoPreco(novoPreco, m.precoAtual)) {
         // Alterar a oferta ativa para o MESMO preço seria um PUT inócuo.
         gates.push(gate("promocao_preco", "PROMOCAO", "block", "Novo preço da oferta igual ao atual", "Informe um preço diferente para alterar a oferta."));
+      } else if (aceite) {
+        gates.push(gate("promocao_preco", "PROMOCAO", "ok", "Preço sugerido pelo Mercado Livre", `${brl(precoSugerido)} — o Mercado Livre confirma o preço final ao participar.`));
       } else {
         gates.push(gate("promocao_preco", "PROMOCAO", "ok", "Preço promocional válido", "O Mercado Livre ainda valida a faixa permitida ao confirmar."));
       }
@@ -469,8 +502,9 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
       // dois: banca null + `sem_preco_cheio` (não cai no preço atual).
       // Participar só com veredito do núcleo ≠ não entrar/bloqueado (alterar uma oferta já ativa segue só
       // pelos gates acima: o núcleo marca a promoção ativa como `bloqueado`, que não é o caso aqui).
+      let veredito = null;
       if (escrita.acao === "PARTICIPAR" && novoPreco !== null) {
-        const veredito = core.calcularCenario({
+        veredito = core.calcularCenario({
           atual: { preco: m.precoAtual, custo: m.custo, aliquota: m.imposto, taxa_fixa: m.taxaFixa, comissao: m.comissao, frete: m.frete, rebate: 0 },
           cenario: { tipo: "promo", preco: novoPreco, rebate, status_promocao: promocao.status, status_exibicao: promocao.statusExibicao },
           cotacao: { comissao: recote.comissao, frete: recote.frete, frete_aplicavel: recote.freteFonte !== "nao_aplicavel" },
@@ -504,7 +538,23 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
         bancaAviso,
         meliPercentage: num(promocao.meliPercentage),
         sellerPercentage: num(promocao.sellerPercentage),
+        refId: promocao.refId || null,
+        precoSugerido: aceite ? precoSugerido : null,
         escrita,
+        // Veredito do núcleo (o mesmo do /simular) com LC antes/depois — só quando há participação a decidir.
+        veredito: veredito
+          ? {
+            veredito: veredito.veredito,
+            motivo: veredito.motivo || null,
+            motivos: veredito.motivos || [],
+            lcAntes: veredito.atual ? veredito.atual.lc : null,
+            lcDepois: veredito.cenario ? veredito.cenario.lc : null,
+            deltaLc: veredito.delta_lc ?? null,
+            margemAntes: veredito.atual ? veredito.atual.margem_ratio : null,
+            margemDepois: veredito.cenario ? veredito.cenario.margem_ratio : null,
+            empateVolume: veredito.empate_volume ?? null,
+          }
+          : null,
       };
     }
   }

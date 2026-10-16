@@ -35,32 +35,13 @@ const ROTULO_TIPO = {
   SELLER_COUPON_CAMPAIGN: "Cupom do vendedor",
 };
 
-// Como o VenForce pode escrever em cada TIPO de promoção (ver
-// meliPromocoesEscritaService e a auditoria de documentacao_api_meli/*):
-//   PRECO  — DEAL/SELLER_CAMPAIGN: o vendedor escolhe o preço (deal_price) ao
-//            participar (POST) e ao alterar (PUT);
-//   ACEITE — o Mercado Livre define o preço: o vendedor só participa (POST
-//            sem preço, às vezes com offer_id) ou deixa de participar
-//            (DELETE com offer_id) — campanha-com-co-participacao.md,
-//            campanhas-smart-price-matching.md, desconto-pre-acordado-por-item.md;
-//   null   — fora do escopo (PRICE_DISCOUNT, DOD, LIGHTNING, VOLUME, cupons…):
-//            só simulação nesta tela, a inscrição é feita no painel do ML.
-const TIPOS_ESCRITA_PRECO = new Set(["DEAL", "SELLER_CAMPAIGN"]);
-const TIPOS_ESCRITA_ACEITE = new Set([
-  "MARKETPLACE_CAMPAIGN",
-  "SMART",
-  "PRICE_MATCHING",
-  "PRICE_MATCHING_MELI_ALL",
-  "PRE_NEGOTIATED",
-  "UNHEALTHY_STOCK",
-]);
-
-function modoEscritaPromocao(tipo) {
-  const t = String(tipo || "").toUpperCase().trim();
-  if (TIPOS_ESCRITA_PRECO.has(t)) return "PRECO";
-  if (TIPOS_ESCRITA_ACEITE.has(t)) return "ACEITE";
-  return null;
-}
+// Como o VenForce pode escrever em cada TIPO de promoção (PRECO · ACEITE · null):
+// fonte única em promocaoTiposSuportados.js — a Central de Margem usa a mesma.
+const {
+  TIPOS_ESCRITA_PRECO,
+  TIPOS_ESCRITA_ACEITE,
+  modoEscritaPromocao,
+} = require("./promocaoTiposSuportados");
 
 function rotuloTipoPromocao(tipo) {
   const t = String(tipo || "").toUpperCase().trim();

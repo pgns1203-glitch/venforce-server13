@@ -10,7 +10,9 @@
 //   - atualizarPreco: precoEsperado (compare-and-set do lado do Portal) e
 //     antesDeEscrever (fencing) rodam DEPOIS da última leitura e ANTES do PUT;
 //   - aplicarPromocao: antesDeEscrever recebe a promoção relida e a ação
-//     decidida (PARTICIPAR/ALTERAR) e pode barrar o POST/PUT.
+//     decidida (PARTICIPAR/ALTERAR) e pode barrar o POST/PUT;
+//   - participarPromocaoAceite (modo ACEITE da Central): timeoutMs/deadlineAt
+//     opt-in na releitura e no POST — sem eles, o fluxo de /anuncios intacto.
 // Nada toca rede nem banco: fetch global, token e ML são stubs.
 
 process.env.DATABASE_URL = "postgres://127.0.0.1:1/ml-timeout-test-nunca-conecta";
@@ -83,7 +85,7 @@ Module._load = function (request, parent, isMain) {
   return originalLoad.call(this, request, parent, isMain);
 };
 const { atualizarPreco } = require("../services/meliAnuncios/meliPrecoService");
-const { aplicarPromocao } = require("../services/meliAnuncios/meliPromocoesEscritaService");
+const { aplicarPromocao, participarPromocaoAceite } = require("../services/meliAnuncios/meliPromocoesEscritaService");
 Module._load = originalLoad;
 
 function handlerItem({ precoEfetivo = 110.48, regular = null, putPreco = null, putPendurado = false } = {}) {
@@ -261,6 +263,79 @@ async function run() {
     promosAoVivo = new Promise(() => {});
     const r = await aplicarPromocao({ clienteId: 1, itemId: "MLB1", mlUserId: "555", promotionId: "P1", precoNovo: 129.9, timeoutMs: 40 });
     promosAoVivo = lento;
+    assert.strictEqual(r.codigo, "ML_TIMEOUT_LEITURA");
+    assert.strictEqual(r.enviado, false);
+    assert.strictEqual(mlChamadas.length, 0);
+  });
+
+  console.log("meliPromocoesEscritaService — participarPromocaoAceite (modo aceite da Central)");
+
+  const smart = (o = {}) => ({ id: "S1", tipo: "SMART", status: "candidate", statusExibicao: "ELEGÍVEL", refId: "CANDIDATE-MLB1-9", precoFinal: 139.9, ...o });
+  const handlerAceite = ({ pendurado = false } = {}) => (c) => {
+    if (c.path.startsWith("/seller-promotions") && c.metodo === "POST") {
+      if (pendurado) {
+        const e = new Error("sem resposta");
+        e.name = "MlTimeoutError";
+        e.code = "ML_TIMEOUT";
+        e.enviado = true;
+        throw e;
+      }
+      return { ok: true, status: 201, data: { offer_id: "OFFER-MLB1-9", price: 139.9 } };
+    }
+    return { ok: true, status: 200, data: {} };
+  };
+
+  await check("aceite: POST sem preço, com offer_id, timeoutMs e o deadlineAt do gancho", async () => {
+    mlChamadas = [];
+    mlHandler = handlerAceite();
+    promosAoVivo = [smart()];
+    let visto = null;
+    const r = await participarPromocaoAceite({
+      clienteId: 1, itemId: "MLB1", mlUserId: "555", promotionId: "S1", tipo: "SMART", timeoutMs: 900,
+      antesDeEscrever: async (ctx) => { visto = ctx; return { ok: true, deadlineAt: 555 }; },
+    });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.precoConfirmado, 139.9);
+    assert.strictEqual(visto.acao, "PARTICIPAR");
+    assert.strictEqual(visto.promo.refId, "CANDIDATE-MLB1-9");
+    const post = mlChamadas.find((c) => c.path.startsWith("/seller-promotions"));
+    assert.deepStrictEqual(post.body, { promotion_id: "S1", promotion_type: "SMART", offer_id: "CANDIDATE-MLB1-9" });
+    assert.strictEqual(post.timeoutMs, 900);
+    assert.strictEqual(post.deadlineAt, 555);
+  });
+
+  await check("aceite sem timeoutMs nem deadlineAt (fluxo de /anuncios): POST sem limite, igual a antes", async () => {
+    mlChamadas = [];
+    mlHandler = handlerAceite();
+    promosAoVivo = [smart()];
+    const r = await participarPromocaoAceite({ clienteId: 1, itemId: "MLB1", mlUserId: "555", promotionId: "S1", tipo: "SMART", antesDeEscrever: async () => ({ ok: true }) });
+    assert.strictEqual(r.ok, true);
+    const post = mlChamadas.find((c) => c.path.startsWith("/seller-promotions"));
+    assert.strictEqual(post.timeoutMs, null);
+    assert.strictEqual(post.deadlineAt, null);
+  });
+
+  await check("aceite sem limite: timeout do ML continua sendo exceção (comportamento de /anuncios intacto)", async () => {
+    mlHandler = handlerAceite({ pendurado: true });
+    promosAoVivo = [smart()];
+    await assert.rejects(() => participarPromocaoAceite({ clienteId: 1, itemId: "MLB1", mlUserId: "555", promotionId: "S1", tipo: "SMART" }), /sem resposta/);
+  });
+
+  await check("aceite com timeoutMs: POST sem resposta → ML_TIMEOUT incerto:true (resultado desconhecido)", async () => {
+    mlHandler = handlerAceite({ pendurado: true });
+    promosAoVivo = [smart()];
+    const r = await participarPromocaoAceite({ clienteId: 1, itemId: "MLB1", mlUserId: "555", promotionId: "S1", tipo: "SMART", timeoutMs: 900 });
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.codigo, "ML_TIMEOUT");
+    assert.strictEqual(r.incerto, true);
+    assert.strictEqual(r.enviado, true);
+  });
+
+  await check("aceite com timeoutMs: releitura pendurada → ML_TIMEOUT_LEITURA, nada enviado", async () => {
+    mlChamadas = [];
+    promosAoVivo = new Promise(() => {});
+    const r = await participarPromocaoAceite({ clienteId: 1, itemId: "MLB1", mlUserId: "555", promotionId: "S1", tipo: "SMART", timeoutMs: 40 });
+    promosAoVivo = [];
     assert.strictEqual(r.codigo, "ML_TIMEOUT_LEITURA");
     assert.strictEqual(r.enviado, false);
     assert.strictEqual(mlChamadas.length, 0);

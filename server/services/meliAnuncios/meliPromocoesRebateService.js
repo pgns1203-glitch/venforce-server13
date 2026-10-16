@@ -39,7 +39,8 @@
 const pool = require("../../config/database");
 const core = require("../motorMargem/core");
 const { criarCotadorEmP, mapComLimite } = require("../motorMargem/margemCotacaoEmP");
-const { TIPOS_ESCRITA_ACEITE, rotuloTipoPromocao } = require("./meliPromocoesService");
+const { rotuloTipoPromocao } = require("./meliPromocoesService");
+const { TIPOS_ESCRITA_ACEITE } = require("./promocaoTiposSuportados");
 
 // ─── Configuração ────────────────────────────────────────────────────────────
 // Concorrência BAIXA com o ML: cada item já faz algumas chamadas (promoções do

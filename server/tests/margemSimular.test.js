@@ -216,11 +216,13 @@ cenario("cada promoção sai com o GRUPO (ativa · participa · pode · ml) e a 
   const r = await rodar(mundo({ promocoes }), pedido([{ tipo: "todas_promos" }]));
   const por = Object.fromEntries(r.cenarios.map((c) => [c.promocao.id, c.promocao]));
   assert.deepStrictEqual(Object.fromEntries(Object.entries(por).map(([id, p]) => [id, p.grupo])), {
-    "P-ATIVA": "ativa", "P-NAOAPL": "participa", "P-PROG": "participa", "P-DEAL": "pode", "P-SELLER": "pode", "P-SMART": "ml", "P-LGH": "ml",
+    "P-ATIVA": "ativa", "P-NAOAPL": "participa", "P-PROG": "participa", "P-DEAL": "pode", "P-SELLER": "pode", "P-SMART": "pode", "P-LGH": "ml",
   });
-  assert.deepStrictEqual(por["P-DEAL"].escrita, { suportada: true, acao: "PARTICIPAR", motivo: null });
-  assert.strictEqual(por["P-SMART"].escrita.suportada, false, "SMART: o ML define o preço — a Central só simula");
-  assert.ok(/Somente simulação/.test(por["P-SMART"].escrita.motivo));
+  assert.deepStrictEqual(por["P-DEAL"].escrita, { suportada: true, acao: "PARTICIPAR", modo: "preco", motivo: null });
+  // SMART: o ML define o preço — a Central participa no modo ACEITE (preço sugerido, não editável).
+  assert.deepStrictEqual(por["P-SMART"].escrita, { suportada: true, acao: "PARTICIPAR", modo: "aceite", motivo: null });
+  assert.strictEqual(por["P-LGH"].escrita.suportada, false, "LIGHTNING: só pelo painel do ML");
+  assert.ok(/Somente simulação: a oferta relâmpago/.test(por["P-LGH"].escrita.motivo));
   assert.strictEqual(por["P-ATIVA"].escrita.acao, "ALTERAR");
   assert.strictEqual(por["P-PROG"].escrita.suportada, false);
   assert.strictEqual(r.item.ml_promos_url, "https://www.mercadolivre.com.br/anuncios/lista/promos?page=1&search=100");

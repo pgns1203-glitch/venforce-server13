@@ -15,10 +15,11 @@
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/promocoes-retorno-v2.css">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-promocoes-retorno">
+<body class="vf-page vf-page-promocoes-retorno" data-vf-scope="global" data-vf-module="promocoes-ml">
 
-  <div class="vf-main-with-sidebar">
+  <div>
     <main class="vf-content" aria-label="Promoções ML">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
@@ -248,7 +249,10 @@
     </footer>
   </aside>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="promocoes-retorno.js"></script>
 </body>
 </html>

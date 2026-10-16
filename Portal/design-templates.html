@@ -13,9 +13,10 @@
   <link rel="stylesheet" href="css/pages/design-templates-v2.css">
   <link rel="stylesheet" href="css/pages/design-library-v2.css">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-dashboard vf-page-design-templates">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-dashboard vf-page-design-templates" data-vf-scope="global">
+  <div>
     <main class="vf-content">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide dt-page-container">
@@ -204,7 +205,10 @@
 
   <div class="vf-toast-stack" id="dt-toast-stack" aria-live="polite" aria-atomic="true"></div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <!--
     Fabric.js — versão fixada e verificada por SRI (nada de "latest").
     Build UMD oficial do pacote npm fabric@6.9.1 (dist/index.min.js), servido

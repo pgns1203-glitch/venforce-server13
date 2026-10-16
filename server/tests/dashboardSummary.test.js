@@ -39,7 +39,6 @@ const root = path.join(__dirname, "..", "..");
 const html = fs.readFileSync(path.join(root, "Portal", "dashboard.html"), "utf8");
 const js = fs.readFileSync(path.join(root, "Portal", "dashboard.js"), "utf8");
 const css = fs.readFileSync(path.join(root, "Portal", "css", "pages", "dashboard-v2.css"), "utf8");
-const layout = fs.readFileSync(path.join(root, "Portal", "layout.js"), "utf8");
 const clientesJs = fs.readFileSync(path.join(root, "Portal", "clientes.js"), "utf8");
 const mlController = fs.readFileSync(path.join(root, "server", "controllers", "mlController.js"), "utf8");
 const index = fs.readFileSync(path.join(root, "server", "index.js"), "utf8");
@@ -54,8 +53,6 @@ ok("frontend faz uma única família de GET", js.includes("/dashboard/summary") 
 ok("frontend não contém clientes demo", !/(Barnato|Norte Tools|CEAS Modas)/i.test(js + html));
 ok("marketplace permanece desabilitado até cobertura uniforme", html.includes('id="dash-marketplace" disabled'));
 ok("Copiar link ML exige três condições", js.includes("client.has_ml === true && client.ml_grant_connected === false && readiness.can_copy_ml_link === true"));
-const footerTemplate = layout.match(/footer\.innerHTML\s*=\s*`([\s\S]*?)`;\s*const footerAvatar/)?.[1] || "";
-ok("footer compartilhado não interpola nome/email em innerHTML", !!footerTemplate && !/user\.(nome|email)/.test(footerTemplate));
 ok("listagem ML não seleciona tokens completos", !/SELECT[\s\S]{0,500}t\.access_token\s*,\s*t\.refresh_token/.test(mlController));
 ok("listagem de clientes não seleciona api_key", !/SELECT id, nome, slug, api_key, ativo, created_at FROM clientes/.test(index));
 ok("tela de clientes não grava segredo no DOM", !clientesJs.includes("data-apikey"));

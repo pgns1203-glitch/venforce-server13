@@ -12,9 +12,10 @@
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/criar-anuncios-meli-v2.css">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-cam">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-cam" data-vf-scope="global" data-vf-module="criar-anuncios-meli">
+  <div>
     <main class="vf-content" id="cam-root" aria-label="Criação de Anúncios Mercado Livre">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
@@ -134,7 +135,10 @@
     </main>
   </div>
   <div class="vf-toast-stack" id="cam-toast-stack" aria-live="polite" aria-atomic="true"></div>
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="components/DynamicAttributesForm.js"></script>
   <script src="components/MercadoLivreApiError.js"></script>
   <script src="components/ProductImagesForm.js"></script>

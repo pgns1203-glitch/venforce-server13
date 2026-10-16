@@ -654,8 +654,15 @@
 
       case "clear-local":
         if (!cliente) return;
-        if (!window.confirm("Limpar apenas o cache local deste navegador?\n\nO histórico do servidor NÃO é afetado.")) return;
-        cliente.clearLocal().then(function () {
+        vfConfirmar({
+          title: "Limpar o cache local deste navegador?",
+          message: "O histórico do servidor NÃO é afetado.",
+          confirmLabel: "Limpar cache local",
+        }).then(function (sim) {
+          if (!sim) return null;
+          return cliente.clearLocal();
+        }).then(function (limpou) {
+          if (limpou === null) return;
           S.carregarLocal();
           toast("Cache local limpo. O histórico do servidor permanece intacto.");
         });
@@ -958,3 +965,21 @@
     if (desinscreverColetor) desinscreverColetor();
   });
 })();
+
+
+// ── Confirmação e aviso da Fundação (Portal/vf-ui.js) ──────────────────────
+// Modal e toast da V2 no lugar de confirm()/alert() do navegador. Sem o
+// vf-ui.js (página antiga em cache, sandbox de teste) cai no nativo, com o
+// mesmo texto.
+function vfConfirmar(opcoes) {
+  if (window.VF && typeof window.VF.confirm === "function") return window.VF.confirm(opcoes);
+  return Promise.resolve(window.confirm([opcoes.title, opcoes.message].filter(Boolean).join("\n\n")));
+}
+
+function vfAvisar(titulo, descricao, tom) {
+  if (window.VF && typeof window.VF.toast === "function") {
+    window.VF.toast({ title: titulo, description: descricao, tone: tom || "danger" });
+    return;
+  }
+  window.alert(descricao ? titulo + "\n\n" + descricao : titulo);
+}

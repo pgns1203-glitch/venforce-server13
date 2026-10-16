@@ -377,11 +377,14 @@ function normalizeCliente360Response(data) {
 async function sincronizarResumoMes() {
   const slug = S.cliente?.slug;
   if (!slug) return;
-  if (!isAdmin360()) { alert('Apenas administradores podem sincronizar.'); return; }
-  const aviso = `Essa sincronização vai consolidar ${S.periodo.label || 'o período selecionado'} ` +
-    'e pode demorar e consumir chamadas da API do Mercado Livre.\n\n' +
-    'Em clientes grandes, pode levar até 30 segundos ou mais.\n\nDeseja continuar?';
-  if (!confirm(aviso)) return;
+  if (!isAdmin360()) { vfAvisar('Apenas administradores podem sincronizar.', null, 'warning'); return; }
+  const sincronizar = await vfConfirmar({
+    title: `Sincronizar ${S.periodo.label || 'o período selecionado'}?`,
+    message: 'A consolidação pode demorar e consome chamadas da API do Mercado Livre.\n\n' +
+      'Em clientes grandes, pode levar 30 segundos ou mais.',
+    confirmLabel: 'Sincronizar',
+  });
+  if (!sincronizar) return;
 
   const btn = document.getElementById('c360-sync-btn');
   if (btn) { btn.classList.add('loading'); btn.disabled = true; }
@@ -391,8 +394,8 @@ async function sincronizarResumoMes() {
     { competencia: S.periodo.competencia });
   if (btn) { btn.classList.remove('loading'); btn.disabled = false; }
 
-  if (res.status === 409) { alert('Já existe uma sincronização em andamento para este cliente.'); return; }
-  if (!res.ok) { alert('Falha na sincronização. Tente novamente.'); return; }
+  if (res.status === 409) { vfAvisar('Já existe uma sincronização em andamento para este cliente.', null, 'warning'); return; }
+  if (!res.ok) { vfAvisar('Falha na sincronização', 'Tente novamente.'); return; }
 
   await loadCliente360();   // recarrega o snapshot recém-gravado
 }
@@ -1527,7 +1530,12 @@ async function acaoSellerCusto(submissaoId, acao, tabEl, clienteSlug) {
     if (r === null) return;
     motivo = r.trim() || undefined;
   } else {
-    if (!confirm('Aprovar e aplicar este custo na base oficial?')) return;
+    const aprovar = await vfConfirmar({
+      title: 'Aprovar este custo?',
+      message: 'Ele é aplicado na base oficial do cliente.',
+      confirmLabel: 'Aprovar e aplicar',
+    });
+    if (!aprovar) return;
   }
 
   const res = await fetch(API_BASE + `/seller/custos-submissoes/${submissaoId}`, {
@@ -1538,7 +1546,7 @@ async function acaoSellerCusto(submissaoId, acao, tabEl, clienteSlug) {
   const json = await res.json().catch(() => null);
 
   if (!res.ok || !json?.ok) {
-    alert(json?.erro || 'Erro ao processar ação.');
+    vfAvisar('Erro ao processar ação', json?.erro || 'Tente novamente.');
     return;
   }
 
@@ -1943,7 +1951,7 @@ function simularMargemAlvo() {
   const v = prompt('Simular margem alvo (%) — apenas visual, não salva:', String(Math.round(atual)));
   if (v === null) return;
   const n = Number(String(v).replace(',', '.'));
-  if (!Number.isFinite(n) || n < 0 || n > 100) { alert('Informe uma margem entre 0 e 100.'); return; }
+  if (!Number.isFinite(n) || n < 0 || n > 100) { vfAvisar('Informe uma margem entre 0 e 100.', null, 'warning'); return; }
   S.diagSimAlvo = n;
   renderTab360('diagnostico');
 }
@@ -2415,7 +2423,13 @@ function renderComparativoFechs(elx, fechA, fechB, dataA, dataB) {
     </div>${rows.join('')}`;
 }
 async function removerFechamento(id) {
-  if (!confirm('Remover este fechamento? Essa ação não pode ser desfeita.')) return;
+  const remover = await vfConfirmar({
+    title: 'Remover este fechamento?',
+    message: 'Essa ação não pode ser desfeita.',
+    confirmLabel: 'Remover fechamento',
+    tone: 'danger',
+  });
+  if (!remover) return;
   const ok = await apiDelete('/entregas-cliente/' + id);
   if (ok) {
     S.entregas = S.entregas.filter(e => e.id !== id);
@@ -2424,7 +2438,7 @@ async function removerFechamento(id) {
     S.resumoMes = consolidarResumoMes();
     renderCockpit(); updateTabCounts();
     renderTab360('fechamentos');
-  } else { alert('Não foi possível remover. Tente novamente.'); }
+  } else { vfAvisar('Não foi possível remover o fechamento', 'Tente novamente.'); }
 }
 
 /* ── ABA: HISTÓRICO ──────────────────────────────────────── */
@@ -2533,3 +2547,21 @@ function setText(id, val) { const el = document.getElementById(id); if (el) el.t
 
 /* ── BOOT ────────────────────────────────────────────────── */
 document.addEventListener('DOMContentLoaded', init360);
+
+
+// ── Confirmação e aviso da Fundação (Portal/vf-ui.js) ──────────────────────
+// Modal e toast da V2 no lugar de confirm()/alert() do navegador. Sem o
+// vf-ui.js (página antiga em cache, sandbox de teste) cai no nativo, com o
+// mesmo texto.
+function vfConfirmar(opcoes) {
+  if (window.VF && typeof window.VF.confirm === "function") return window.VF.confirm(opcoes);
+  return Promise.resolve(window.confirm([opcoes.title, opcoes.message].filter(Boolean).join("\n\n")));
+}
+
+function vfAvisar(titulo, descricao, tom) {
+  if (window.VF && typeof window.VF.toast === "function") {
+    window.VF.toast({ title: titulo, description: descricao, tone: tom || "danger" });
+    return;
+  }
+  window.alert(descricao ? titulo + "\n\n" + descricao : titulo);
+}

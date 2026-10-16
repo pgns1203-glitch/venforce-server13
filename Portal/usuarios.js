@@ -271,11 +271,15 @@ function renderSecao(grupo, lista, vinculoMap, bodyId, countId) {
     const u   = lista.find(x => String(x.id) === String(uid));
     const grupoAtual = grupoDeRole(u?.role);
 
-    sel.addEventListener("change", () => {
+    sel.addEventListener("change", async () => {
       const novoGrupo = sel.value;
       if (novoGrupo === grupoAtual) return;
-      const msg = `Alterar role de ${u?.email || uid} para "${novoGrupo}"?`;
-      if (!confirm(msg)) {
+      const alterar = await vfConfirmar({
+        title: `Alterar role para "${novoGrupo}"?`,
+        message: `Usuário: ${u?.email || uid}`,
+        confirmLabel: "Alterar role",
+      });
+      if (!alterar) {
         sel.value = grupoAtual; // reverte
         return;
       }
@@ -462,3 +466,21 @@ document.addEventListener("keydown", e => {
 
 /* ── BOOT ────────────────────────────────────────────────── */
 if (TOKEN) loadUsuarios();
+
+
+// ── Confirmação e aviso da Fundação (Portal/vf-ui.js) ──────────────────────
+// Modal e toast da V2 no lugar de confirm()/alert() do navegador. Sem o
+// vf-ui.js (página antiga em cache, sandbox de teste) cai no nativo, com o
+// mesmo texto.
+function vfConfirmar(opcoes) {
+  if (window.VF && typeof window.VF.confirm === "function") return window.VF.confirm(opcoes);
+  return Promise.resolve(window.confirm([opcoes.title, opcoes.message].filter(Boolean).join("\n\n")));
+}
+
+function vfAvisar(titulo, descricao, tom) {
+  if (window.VF && typeof window.VF.toast === "function") {
+    window.VF.toast({ title: titulo, description: descricao, tone: tom || "danger" });
+    return;
+  }
+  window.alert(descricao ? titulo + "\n\n" + descricao : titulo);
+}

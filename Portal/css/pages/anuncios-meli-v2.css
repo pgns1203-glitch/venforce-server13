@@ -1122,6 +1122,18 @@
 }
 .am-metricas7d__icone { display: inline-flex; flex: 0 0 14px; }
 .am-metricas-delta { margin-left: auto; font-size: 10px; font-weight: 400; white-space: nowrap; }
+/* Na lista, a comparação acompanha o valor como sobrescrito, sem ocupar
+   a borda direita da célula. O popup mantém sua tipografia de tabela. */
+.am-metricas7d-trigger .am-metricas-delta {
+  margin-left: 1px;
+  align-self: flex-start;
+  position: relative;
+  top: -3px;
+  font-size: 9px;
+  line-height: 12px;
+  font-weight: 400;
+  flex: 0 0 auto;
+}
 .am-metricas-delta.is-success { color: var(--vf-success, #0f7a52); }
 .am-metricas-delta.is-danger { color: var(--vf-danger, #c62828); }
 .am-metricas-delta.is-neutral { color: var(--vf-text-secondary); }

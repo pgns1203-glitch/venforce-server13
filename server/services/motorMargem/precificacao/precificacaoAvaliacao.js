@@ -472,7 +472,7 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
       if (escrita.acao === "PARTICIPAR" && novoPreco !== null) {
         const veredito = core.calcularCenario({
           atual: { preco: m.precoAtual, custo: m.custo, aliquota: m.imposto, taxa_fixa: m.taxaFixa, comissao: m.comissao, frete: m.frete, rebate: 0 },
-          cenario: { tipo: "promo", preco: novoPreco, rebate, status_promocao: promocao.status },
+          cenario: { tipo: "promo", preco: novoPreco, rebate, status_promocao: promocao.status, status_exibicao: promocao.statusExibicao },
           cotacao: { comissao: recote.comissao, frete: recote.frete, frete_aplicavel: recote.freteFonte !== "nao_aplicavel" },
           meta: { margem_alvo: m.metaMargem !== null && m.metaMargem !== undefined ? m.metaMargem : core.DEFAULT_TARGET_MARGIN, margem_minima: 0 },
         });

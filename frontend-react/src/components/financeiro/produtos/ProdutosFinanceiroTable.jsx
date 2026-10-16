@@ -7,6 +7,7 @@
 
 import { useMemo, useState } from "react";
 import { contarPorFiltro, filtrarLinhas } from "../../../utils/financeiro/produtos.js";
+import { VFTable } from "../../ui/VFTable/index.js";
 import { formatarValor } from "../shared/ValorFinanceiro.jsx";
 import { ProdutoFinanceiroStatus } from "./ProdutoFinanceiroStatus.jsx";
 import { ProdutosFinanceiroFilters } from "./ProdutosFinanceiroFilters.jsx";
@@ -68,42 +69,31 @@ export function ProdutosFinanceiroTable({ linhas }) {
         onBusca={(b) => { setBusca(b); setPagina(0); }}
         contagem={contagem}
       />
-      <div className="vf-table-wrap vf-table-scroll">
-        <table className="vf-table vf-table--compact" aria-label="Produtos do fechamento">
-          <thead>
-            <tr>
-              {colunas.map((c) => (
-                <th key={c.id} className={c.texto ? undefined : "is-numeric"}>{c.rotulo}</th>
-              ))}
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visiveis.length === 0 ? (
-              <tr>
-                <td colSpan={colunas.length + 1} className="vf-table__empty">Nenhum produto neste filtro.</td>
-              </tr>
-            ) : (
-              visiveis.map((l, i) => (
-                <tr key={`${paginaAtual}-${i}`} data-status={l.statusPrincipal}>
-                  {colunas.map((c) => (
-                    <td key={c.id} className={`${c.texto ? "" : "is-numeric"}${c.mono ? " vf-mono" : ""}`.trim() || undefined}>
-                      {c.id === "titulo" ? (
-                        <span className="vf-fin-clamp" title={l.titulo || undefined}>{l.titulo || "—"}</span>
-                      ) : c.texto ? (
-                        l[c.id] || "—"
-                      ) : (
-                        formatarValor(l[c.id], c.tipo)
-                      )}
-                    </td>
-                  ))}
-                  <td><ProdutoFinanceiroStatus linha={l} /></td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
-      </div>
+      <VFTable
+        scroll
+        caption="Produtos do fechamento"
+        classNames={{ num: "is-numeric" }}
+        rows={visiveis}
+        getRowKey={(_, i) => `${paginaAtual}-${i}`}
+        emptyLabel="Nenhum produto neste filtro."
+        columns={[
+          ...colunas.map((c) => ({
+            key: c.id,
+            header: c.rotulo,
+            align: c.texto ? "left" : "right",
+            cellClassName: () => (c.mono ? "vf-mono" : null),
+            render: (l) =>
+              c.id === "titulo" ? (
+                <span className="vf-fin-clamp" title={l.titulo || undefined}>{l.titulo || "—"}</span>
+              ) : c.texto ? (
+                l[c.id] || "—"
+              ) : (
+                formatarValor(l[c.id], c.tipo)
+              ),
+          })),
+          { key: "status", header: "Status", render: (l) => <ProdutoFinanceiroStatus linha={l} /> },
+        ]}
+      />
       <div className="vf-pagination">
         <span className="vf-pagination__info">
           {filtradas.length.toLocaleString("pt-BR")} de {linhas.length.toLocaleString("pt-BR")} linhas

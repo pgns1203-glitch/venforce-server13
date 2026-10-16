@@ -2122,6 +2122,13 @@ h4 {
 .vf-modal--sm { max-width: var(--vf-modal-sm); }
 .vf-modal--lg { max-width: var(--vf-modal-lg); }
 
+/* Texto de uma confirmação (VF.confirm): quebras de linha da mensagem valem */
+.vf-modal__message {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--vf-text);
+}
+
 /* Header/body/footer compartilhados entre modal e drawer */
 .vf-modal__header,
 .vf-drawer__header {
@@ -2142,13 +2149,6 @@ h4 {
   font-family: var(--vf-font-display);
   font-size: var(--vf-fs-md);
   font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text);
-}
-
-/* Texto de uma confirmação (VF.confirm): quebras de linha da mensagem valem */
-.vf-modal__message {
-  margin: 0;
-  white-space: pre-line;
   color: var(--vf-text);
 }
 

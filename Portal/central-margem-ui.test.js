@@ -677,7 +677,9 @@ async function run() {
       assert.deepStrictEqual(state, { tab: "evidence", variable: "freight", item: "MLB-SUSPECT" });
       await sleep(150);
       const body = (await drawerText()).toLowerCase();
-      assert.ok(body.includes("evidências de frete"), body);
+      // O detalhe da linha clicada abre na variável certa (Frete).
+      assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('[data-cm-ev-detalhe=freight]'))"), true, "detalhe do Frete aberto");
+      assert.ok(body.includes("frete fontes desta variável"), body);
       assert.ok(body.includes("selecionada"), body);
       assert.ok(body.includes("conflito"), body);
       await cdp.evaluate("document.getElementById('cm-drawer-close').click()");
@@ -755,10 +757,12 @@ async function run() {
       await cdp.evaluate("document.querySelector('[data-tab=evidence]').click()");
       body = await lower();
       assert.ok(body.includes("evidências por variável"), body);
-      for (const t of ["fonte selecionada", "alternativa", "diferença", "confiança"]) assert.ok(body.includes(t), body);
-      assert.ok(body.includes("observedat") && body.includes("effectiveat"), body);
-      assert.ok(body.includes("não informado"), "effectiveAt inexistente deve aparecer como Não informado");
-      assert.ok(body.includes("escolha do motor"), body);
+      for (const t of ["fonte", "alternativa", "diferença", "confiança", "observado"]) assert.ok(body.includes(t), body);
+      // Os cards grandes de fonte (observedAt/effectiveAt/Momento/Qualidade em blocos) viraram o DETALHE da linha:
+      // pares rótulo/valor, uma linha por fonte, sem repetir o jargão técnico.
+      assert.ok(!body.includes("observedat") && !body.includes("effectiveat"), body);
+      for (const t of ["fontes desta variável", "escolha do motor", "conflito", "por que esta fonte"]) assert.ok(body.includes(t), body);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.cm-evidence-card').length"), 0, "sem cards de fonte");
 
       await cdp.evaluate("document.querySelector('[data-tab=history]').click()");
       body = await lower();

@@ -328,6 +328,35 @@ function calcularEfeitos(valoresAtual, valoresNovo, deltaLc) {
   return brutos.sort((x, y) => Math.abs(y.valor) - Math.abs(x.valor));
 }
 
+// ── Frase do veredito ────────────────────────────────────────────────────────
+// Uma frase pronta para a tela ("Perde R$ 6,76 por unidade. Para empatar…"),
+// montada com os números JÁ calculados acima — nenhuma conta nova, só texto.
+// O front exibe como veio; `bloqueado` não tem frase (o motivo já explica).
+const BRL = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const brl = (v) => `${v < 0 ? "−" : ""}R$ ${BRL.format(Math.abs(v))}`;
+const pct1 = (v) => `${new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(v * 100)}%`;
+const pct0 = (v) => `${Math.round(v * 100)}%`;
+
+function fraseDoVeredito({ veredito, motivo, deltaLc, empateVolume, lcNovo, margemNova, margemAlvo, margemMinima }) {
+  if (veredito === VEREDITOS.ATIVA) return "É a promoção que forma o preço de hoje.";
+  if (veredito === VEREDITOS.ENTRAR) {
+    return deltaLc > 0 ? `Ganha ${brl(deltaLc)} por unidade em relação a hoje.` : "Mantém o lucro por unidade de hoje, com a margem na meta.";
+  }
+  if (veredito === VEREDITOS.ENTRAR_SE_GIRAR) {
+    if (motivo === "lc_por_unidade_cai") {
+      const empate = empateVolume !== null && empateVolume > 0 ? ` Para empatar o lucro de hoje, precisa vender ${pct0(empateVolume)} a mais.` : "";
+      return `Perde ${brl(Math.abs(deltaLc))} por unidade.${empate}`;
+    }
+    return `${deltaLc > 0 ? `Ganha ${brl(deltaLc)} por unidade, mas a` : "A"} margem fica em ${pct1(margemNova)}, abaixo da meta de ${pct1(margemAlvo)}.`;
+  }
+  if (veredito === VEREDITOS.NAO_ENTRAR) {
+    return motivo === "lc_nao_positivo"
+      ? `O lucro por unidade fica em ${brl(lcNovo)}: não cobre os custos.`
+      : `A margem fica em ${pct1(margemNova)}, abaixo do mínimo de ${pct1(margemMinima)}.`;
+  }
+  return null;
+}
+
 function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, flags = {} } = {}) {
   const motivos = [];
   const bloquear = (m) => { if (!motivos.includes(m)) motivos.push(m); };
@@ -490,11 +519,15 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
     ml_banca: mlBanca,
     seller_banca: sellerBanca,
     delta_preco_atual: deltaPrecoAtual,
+    // P' contra o preço de HOJE: em R$ (P' − P, a coluna "Diferença") e em fração (+ sobe / − desce, o "−13,6%" sob o preço final).
+    delta_preco: precoAtual !== null && precoNovoValido ? round2(precoNovo - precoAtual) : null,
+    variacao_preco_ratio: precoAtual !== null && precoAtual > 0 && precoNovoValido ? round6(precoNovo / precoAtual - 1) : null,
     banca_motivo: bancaMotivo,
     banca_aviso: bancaAviso,
     delta_lc: deltaLc,
     delta_margem_ratio: deltaMargem,
     empate_volume: empateVolume,
+    frase: fraseDoVeredito({ veredito, motivo: motivoVeredito, deltaLc, empateVolume, lcNovo, margemNova, margemAlvo, margemMinima }),
     efeitos,
     // "Como a conta foi feita": só a alíquota (fração), que não existe em
     // nenhum outro campo (o `imposto` só sai em R$) — o resto da narrativa
@@ -555,11 +588,14 @@ function resultadoBloqueado(motivo, { flags = {}, meta = {} } = {}) {
     ml_banca: null,
     seller_banca: null,
     delta_preco_atual: null,
+    delta_preco: null,
+    variacao_preco_ratio: null,
     banca_motivo: null,
     banca_aviso: null,
     delta_lc: null,
     delta_margem_ratio: null,
     empate_volume: null,
+    frase: null,
     efeitos: [],
     explicacao: { aliquota: null },
     meta: { margem_alvo: num(meta.margem_alvo), margem_minima: num(meta.margem_minima) },

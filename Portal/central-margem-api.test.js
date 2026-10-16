@@ -834,7 +834,9 @@ async function run() {
     });
     const cmp = item.comparison;
     assert.strictEqual(cmp.status, "COMPARABLE");
-    assert.strictEqual(cmp.drift.marginPp, -4.68);
+    // Um nome só, o do núcleo: é o que o painel Projetado×Realizado e o chip "Δ margem" da worklist leem.
+    assert.strictEqual(cmp.drift.marginPercentagePoints, -4.68);
+    assert.strictEqual(cmp.drift.marginPp, undefined, "o apelido antigo sumiu — nada lê marginPp");
     assert.strictEqual(cmp.drift.freight, 3.3);
     assert.strictEqual(cmp.drift.fixedFee, null);
     assert.strictEqual(cmp.realized.fixedFee, null, "sem histórico continua null");

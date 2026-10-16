@@ -25,6 +25,9 @@ const path = require("path");
 
 const PORTAL_DIR = __dirname;
 const SHOT_DIR = process.env.CM_SHOT_DIR || path.join(os.tmpdir(), "central-margem-visual");
+// 1440×900 por padrão; CM_W/CM_H para capturar em outra largura (ex.: 1920×1080).
+const VIEW_W = Number(process.env.CM_W) || 1440;
+const VIEW_H = Number(process.env.CM_H) || 900;
 
 function startStaticServer() {
   const server = http.createServer((request, response) => {
@@ -133,6 +136,104 @@ function mockDaRedFish() {
   return mock;
 }
 
+// ── Caso real: MLB5537622816 (Red Fish), o alvo do mockup da Bancada ─────────
+// Os números da Bancada NÃO são fixture escrita à mão: saem do núcleo de verdade
+// (core.calcularCenario) com os insumos do caso — preço 55,19, imposto 11%,
+// comissão 6,35, frete 8,15, custo 22,42, retorno ML 2,24 (LC 14,44 · 26,16%) e
+// as cotações nos preços dos cenários. A tela só os exibe.
+const core = require(path.join(PORTAL_DIR, "..", "server", "services", "motorMargem", "core"));
+const CASO_REAL = {
+  mlb: "MLB5537622816",
+  titulo: "Camisa Camiseta Blusa Pesca Proteção Solar Uv50 Aparecida",
+  atual: { preco: 55.19, custo: 22.42, aliquota: 0.11, taxa_fixa: 0, comissao: 6.35, frete: 8.15, rebate: 2.24 },
+  meta: { margem_alvo: 0.1, margem_minima: 0 },
+  lidoEm: "2026-10-16T17:12:00Z",
+  // id · nome · tipo · grupo do servidor · status exibido · período · preço sugerido · retorno ML · cotação em P'
+  promos: [
+    { id: "P-IMPULSIONE", nome: "Impulsione suas vendas", tipo: "SMART", grupo: "ativa", status: "ATIVA", inicio: "2026-08-23T12:00:00Z", fim: "2027-02-19T12:00:00Z", preco: 55.19, rebate: 2.24, cotacao: {} },
+    { id: "P-1111", nome: "11.11 da Black", tipo: "DEAL", grupo: "pode", status: "ELEGÍVEL", inicio: "2026-10-19T12:00:00Z", fim: "2026-11-12T12:00:00Z", preco: 47.67, rebate: 0, cotacao: { comissao: 5.48, frete: 6.85 }, escrita: { suportada: true, acao: "PARTICIPAR", motivo: null } },
+    { id: "P-VENDEX", nome: "Vendex – Outubro", tipo: "SELLER_CAMPAIGN", grupo: "participa", status: "NÃO APLICADA", inicio: "2026-09-30T12:00:00Z", fim: "2026-10-31T12:00:00Z", preco: 56.9, rebate: 0, cotacao: { comissao: 6.54, frete: 8.15 } },
+    { id: "P-PESCAOFF", nome: "PESCAOFF", tipo: "MARKETPLACE_CAMPAIGN", grupo: "ml", status: "ELEGÍVEL", inicio: "2026-10-01T12:00:00Z", fim: "2026-10-31T12:00:00Z", preco: null, rebate: 0, cotacao: {} },
+    { id: "P-CUPOM", nome: "Cupom para carrinho", tipo: "SELLER_COUPON_CAMPAIGN", grupo: "ml", status: "ELEGÍVEL", inicio: "2026-10-05T12:00:00Z", fim: "2026-10-31T12:00:00Z", preco: null, rebate: 0, cotacao: {} },
+    { id: "P-RELAMPAGO", nome: "Oferta relâmpago", tipo: "LIGHTNING", grupo: "ml", status: "ELEGÍVEL", inicio: null, fim: null, preco: 67.92, rebate: 0, cotacao: { comissao: 7.81, frete: 8.15 } },
+  ],
+  // Preço digitado: a cotação real em 59,90 (mesma faixa de frete).
+  manual: { 59.9: { comissao: 6.89, frete: 8.15 } },
+};
+
+function evidenciaCasoReal(promo) {
+  const e = { comissao: { fonte: "ml_listing_prices", consultado_em: CASO_REAL.lidoEm }, frete: { fonte: "ml_shipping_options_free", consultado_em: CASO_REAL.lidoEm, aplicavel: true } };
+  e.preco = promo ? { fonte: "promo_snapshot", observado_em: CASO_REAL.lidoEm } : { fonte: "informado", consultado_em: null };
+  return e;
+}
+
+/** Respostas do /simular do caso real, calculadas pelo núcleo (o mesmo do servidor). */
+function fixtureCasoReal() {
+  const { atual, meta } = CASO_REAL;
+  const cenarios = CASO_REAL.promos.map((pr) => ({
+    tipo: "promo",
+    entrada: { tipo: "promo", promotion_id: pr.id },
+    promocao: {
+      id: pr.id, chave: pr.id + "::" + pr.tipo, nome: pr.nome, tipo: pr.tipo, status_exibicao: pr.status, grupo: pr.grupo, inicio: pr.inicio, fim: pr.fim, preco_final: pr.preco,
+      escrita: pr.escrita || { suportada: false, acao: null, motivo: "A inscrição desta promoção é feita no painel do Mercado Livre." },
+    },
+    ...core.calcularCenario({ atual, cenario: { tipo: "promo", preco: pr.preco, rebate: pr.rebate, status_exibicao: pr.status }, cotacao: pr.cotacao, meta }),
+    evidencia: evidenciaCasoReal(true),
+  }));
+  const manual = {};
+  for (const [preco, cotacao] of Object.entries(CASO_REAL.manual)) {
+    manual[Number(preco).toFixed(2)] = {
+      tipo: "preco", entrada: { tipo: "preco", preco: Number(preco) },
+      ...core.calcularCenario({ atual, cenario: { tipo: "preco", preco: Number(preco) }, cotacao, meta }),
+      evidencia: evidenciaCasoReal(false),
+    };
+  }
+  const boot = {
+    ok: true, mlb: CASO_REAL.mlb,
+    item: { mlb: CASO_REAL.mlb, ml_promos_url: "https://www.mercadolivre.com.br/anuncios/lista/promos?page=1&search=5537622816" },
+    atual: { ...core.calcularAtual({ atual }).atual, bloqueios: [], rebate_motivo: null },
+    meta,
+    promocoes: { disponivel: true, motivo: null, snapshot_em: CASO_REAL.lidoEm, parcial: false },
+    fontePromocoes: { estado: "ok", ultimoBom: { geradoEm: CASO_REAL.lidoEm, parcial: false, itensHerdados: 0 }, legado: null, rotulo: null, progresso: null },
+    cotacoes: { consultas: 4, precos_distintos: 4, limite_excedido: 0, maximo_por_requisicao: 40 },
+    cenarios,
+  };
+  const bloqueado = { tipo: "preco", ...core.resultadoBloqueado("comissao_indisponivel", { meta }), evidencia: null };
+  return `window.__casoReal = (function () {
+    var BOOT = ${JSON.stringify(boot)};
+    var MANUAL = ${JSON.stringify(manual)};
+    var BLOQUEADO = ${JSON.stringify(bloqueado)};
+    return function (params) {
+      var c0 = (params.cenarios || [])[0] || {};
+      var base = JSON.parse(JSON.stringify(BOOT));
+      if (c0.tipo === "todas_promos") return base;
+      if (c0.tipo === "preco") { base.cenarios = [MANUAL[Number(c0.preco).toFixed(2)] || Object.assign({}, BLOQUEADO, { entrada: c0 })]; return base; }
+      base.cenarios = BOOT.cenarios.filter(function (c) { return c0.tipo === "promo" && c.promocao.id === c0.promotion_id; });
+      return base;
+    };
+  })();`;
+}
+
+/** O mock da Red Fish com UM anúncio: o do caso real (preço, custos, vendas e retorno do header). */
+function mockCasoReal(mockRedFish) {
+  let mock = mockRedFish;
+  const trocar = (de, para, rotulo) => {
+    const antes = mock;
+    mock = mock.split(de).join(para);
+    assert.notStrictEqual(mock, antes, `ajuste do mock do caso real não casou: ${rotulo}`);
+  };
+  trocar(`var ITENS = ${REDFISH_ITENS};`, `var ITENS = [{ id: "${CASO_REAL.mlb}", titulo: "${CASO_REAL.titulo}", preco: 55.19, margem: 0.2616, status: "HEALTHY" }];`, "ITENS");
+  trocar('cost: field(ev("VENFORCE_BASE", 50, "DECLARED")), taxRate: field(ev("VENFORCE_BASE", 0.1, "DECLARED"))', 'cost: field(ev("VENFORCE_BASE", 22.42, "DECLARED")), taxRate: field(ev("VENFORCE_BASE", 0.11, "DECLARED"))', "custo/imposto");
+  trocar('commission: field(ev("MELI_API", 13.26)), commissionRate: field(ev("MELI_API", 0.12)), freight: field(ev("MELI_API", 20))', 'commission: field(ev("MELI_API", 6.35)), commissionRate: field(ev("MELI_API", 0.115)), freight: field(ev("MELI_API", 8.15))', "comissão/frete");
+  trocar("projected: { margin: it.margem, profit: Math.round(it.margem * it.preco * 100) / 100, estimated: false }", "projected: { margin: it.margem, profit: 14.44, estimated: false, rebate: 2.24 }", "projetado + retorno ML");
+  trocar("realized: { margin: 0.2083, profit: 23, pending: false }", "realized: { margin: 0.2073, profit: 11.44, pending: false }", "realizado");
+  trocar("sales: { hasOrders: true, unidades: 21, pedidos: 20, receita: 2333, precoMedio: 111.1 }", "sales: { hasOrders: true, unidades: 46, pedidos: 44, receita: 2540.45, precoMedio: 55.23 }", "vendas 30d");
+  trocar("      simular: function (params, signal) {\n",
+    "      simular: function (params, signal) {\n        if (window.__casoReal && params.mlb === \"" + CASO_REAL.mlb + "\") { window.__pc.calls.simular.push(JSON.parse(JSON.stringify(params))); return Promise.resolve(window.__casoReal(params)); }\n",
+    "simular do caso real");
+  return mock;
+}
+
 async function run() {
   fs.mkdirSync(SHOT_DIR, { recursive: true });
   const mock = mockDaRedFish();
@@ -189,12 +290,12 @@ async function run() {
       await respond("Fetch.failRequest", { requestId: params.requestId, errorReason: "ConnectionRefused" });
     };
 
-    await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: `
+    const roteiroRedFish = await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: `
       localStorage.setItem("vf-token", "ui-test-token");
       localStorage.setItem("vf-user", JSON.stringify({ nome: "Teste UI", role: "admin" }));
       ${mock}
     ` });
-    await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
+    await cdp.send("Emulation.setDeviceMetricsOverride", { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1, mobile: false });
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/central-margem.html?cliente=red_fish` });
 
     const arquivos = [];
@@ -261,50 +362,149 @@ async function run() {
       await cdp.evaluate("document.querySelector('[data-view=operational]').click()");
     });
 
-    await check("Bancada (promoção): Atual × Cenário em cascata, seller × ML banca, ΔLC, empate de volume e botão único", async () => {
+    await check("Bancada (promoção): resposta + frase do backend, Hoje × Cenário, efeitos e botão primário no rodapé fixo", async () => {
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
       await waitFor(cdp, "document.querySelector('[data-cm-cenarios]')", "a Bancada não carregou");
       await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-promo-info=\"P-DEAL\"]') && document.getElementById('cm-bancada-review')", "a promoção não foi selecionada");
       const resultado = await texto("#cm-banc-resultado");
-      for (const t of ["Entrar se girar", "LC/UN", "MARGEM", "Precisa vender"]) assert.ok(resultado.includes(t), `falta ${t}: ${resultado}`);
-      // Retorno ML fica dentro de "Ver conta completa" (fechado por padrão) — abre e confere.
+      for (const t of ["Só se vender mais", "Perde R$ 3,05 por unidade", "Hoje", "Cenário", "Diferença", "LC por unidade", "De onde sai a diferença no lucro", "Total no LC por unidade"]) assert.ok(resultado.includes(t), `falta ${t}: ${resultado}`);
+      // Retorno ML e quem banca ficam dentro de "Ver conta completa" (fechado por padrão) — abre e confere.
       await cdp.evaluate("document.querySelector('[data-cm-conta-completa]').setAttribute('open', '')");
       const comContaAberta = await texto("#cm-banc-resultado");
-      assert.ok(comContaAberta.includes("Retorno ML"), comContaAberta);
+      for (const t of ["Retorno ML", "Desconto total", "Precisa vender"]) assert.ok(comContaAberta.includes(t), `falta ${t}: ${comContaAberta}`);
       await cdp.evaluate("document.querySelector('[data-cm-conta-completa]').removeAttribute('open')");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Participar desta promoção");
+      assert.strictEqual(await cdp.evaluate("Boolean(document.getElementById('cm-bancada-review').closest('.vf-drawer__footer'))"), true, "botão no rodapé fixo do drawer");
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
       await shot("04-bancada-promocao");
     });
 
-    await check("Bancada (preço manual): o cenário digitado é cotado pelo backend e comparado com o atual", async () => {
-      await cdp.evaluate("document.querySelector('[data-cenario=\"preco\"]').click()");
+    await check("Bancada (preço manual): o cenário digitado é cotado pelo backend e a linha 'Seu preço' fica selecionada", async () => {
       await cdp.evaluate("(function(){var i=document.getElementById('cm-new-price');i.value='114,90';i.dispatchEvent(new Event('input',{bubbles:true}));})()");
-      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('114,90') !== -1 && document.getElementById('cm-bancada-review').disabled === false", "o cenário de preço não apareceu");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('114,90') !== -1 && document.getElementById('cm-bancada-review') && document.getElementById('cm-bancada-review').disabled === false", "o cenário de preço não apareceu");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cenario=\"preco\"]').getAttribute('aria-checked')"), "true", "digitar seleciona 'Seu preço'");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Revisar novo preço");
       await shot("05-bancada-preco-manual");
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
-    await check("Bancada (ativa agora): promoção que já forma o preço de hoje — Δ 0, sem botão de escrita e com o link do Mercado Livre", async () => {
+    await check("Bancada (ativa agora): promoção que já forma o preço de hoje — 'Em vigor', Δ 0 e botão 'Já em vigor' desabilitado", async () => {
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
       await waitFor(cdp, "document.querySelector('[data-cm-cenarios]')", "a Bancada não carregou");
       await cdp.evaluate("document.querySelector('[data-cenario=\"P-ATIVA\"]').click()");
+      await waitFor(cdp, "document.getElementById('cm-bancada-vigor')", "o botão 'Já em vigor' não apareceu");
       const resultado = await texto("#cm-banc-resultado");
-      assert.ok(resultado.includes("Ativa agora"), resultado);
-      assert.ok(!resultado.includes("bloqueado"), resultado);
+      assert.ok(resultado.includes("Em vigor") && resultado.includes("É a promoção que forma o preço de hoje."), resultado);
+      assert.ok(!/bloqueado/i.test(resultado), resultado);
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review')"), null, "sem botão de escrita");
-      assert.ok((await texto("#cm-bancada-ml")).includes("Abrir no Mercado Livre"));
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-vigor').disabled"), true);
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
       await shot("06-bancada-ativa");
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
-    await check("Bancada de anúncio em prejuízo: chip 'Subir p/ R$ X' com o preço-alvo cotado", async () => {
+    await check("Bancada de anúncio em prejuízo: botão 'Subir p/ R$ X' com o preço-alvo cotado", async () => {
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1003\"]').click()");
       await waitFor(cdp, "document.querySelector('[data-cm-chip=\"alvo\"]')", "o preço-alvo cotado não apareceu");
       assert.ok(/Subir p\/ R\$\s95,59/.test(await texto("[data-cm-chip=\"alvo\"]")));
       await shot("08-bancada-prejuizo");
+      await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
+    });
+
+    // ── Fase 2: o caso real do mockup (MLB5537622816), números do núcleo de verdade ──
+    await cdp.send("Page.removeScriptToEvaluateOnNewDocument", { identifier: roteiroRedFish.identifier });
+    await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: `
+      localStorage.setItem("vf-token", "ui-test-token");
+      localStorage.setItem("vf-user", JSON.stringify({ nome: "Teste UI", role: "admin" }));
+      ${mockCasoReal(mock)}
+      ${fixtureCasoReal()}
+    ` });
+    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/central-margem.html?cliente=red_fish` });
+    await waitFor(cdp, "window.VFCentralMargemUi && window.VF && window.VF.context && (window.VFCentralMargemUi.getState().awaitingAccount || (window.VF.context.getState() === 'READY' && window.VFCentralMargemUi.getState().contaId === 10))", "caso real: Shell não resolveu a conta");
+    for (let i = 0; i < 60; i += 1) {
+      await cdp.evaluate("window.VF.context.setConta(10)");
+      if (await cdp.evaluate("window.VFCentralMargemUi.getState().contaId === 10")) break;
+      await sleep(100);
+    }
+    await waitFor(cdp, `document.querySelector('#cm-table-host tbody tr[data-item-id="${CASO_REAL.mlb}"]')`, "caso real: a linha do MLB5537622816 não apareceu");
+    const resultadoReal = () => cdp.evaluate("document.getElementById('cm-banc-resultado').innerText").then((t) => t.replace(/ /g, " "));
+    const celulasComTraco = () => cdp.evaluate("Array.prototype.filter.call(document.querySelectorAll('#cm-drawer td, #cm-drawer th, #cm-drawer .cm-cen > span, #cm-drawer .cm-dsum__value'), function (c) { return c.textContent.trim() === '—'; }).length");
+
+    await check("caso real · 11.11 da Black: 'Só se vender mais', frase do backend (−6,76 · 88%), −13,6% contra hoje; cabeçalho único, 0 '—', números à direita", async () => {
+      await cdp.evaluate(`document.querySelector('tr[data-item-id="${CASO_REAL.mlb}"]').click()`);
+      await waitFor(cdp, "document.getElementById('cm-drawer').classList.contains('is-open') && document.querySelector('[data-cm-cenarios]') && document.querySelector('[data-cenario=\"P-1111\"]')", "caso real: a Bancada não carregou");
+      await sleep(300);
+      // Topo: os 4 números do caso (LC/un e retorno ML junto da margem projetada; receita sob as vendas)
+      const topo = (await cdp.evaluate("document.getElementById('cm-drawer-summary').textContent")).replace(/\s+/g, " ");
+      for (const t of ["Preço atual", "R$ 55,19", "26,16%", "LC R$ 14,44 / un · inclui retorno ML R$ 2,24", "20,73%", "46 un.", "receita R$ 2.540,45"]) assert.ok(topo.includes(t), `topo sem ${t}: ${topo}`);
+      const manualAntes = await cdp.evaluate("window.__marcaManual = document.getElementById('cm-banc-manual'); window.__pc.calls.simular.length");
+      await cdp.evaluate("document.querySelector('[data-cenario=\"P-1111\"]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-promo-info=\"P-1111\"]')", "o 11.11 não foi selecionado");
+      const res = await resultadoReal();
+      for (const t of ["Pode participar pelo VenForce", "11.11 da Black", "Deal · 19/10 a 12/11", "Só se vender mais", "Perde R$ 6,76 por unidade. Para empatar o lucro de hoje, precisa vender 88% a mais.", "55,19", "47,67", "14,44", "7,68", "−6,76", "26,2%", "16,1%"]) assert.ok(res.includes(t), `falta ${t}: ${res}`);
+      const linha = (await cdp.evaluate("document.querySelector('[data-cenario=\"P-1111\"]').innerText")).replace(/\s+/g, " ");
+      for (const t of ["11.11 da Black", "47,67", "−13,6%", "−6,76", "Só se vender mais"]) assert.ok(linha.includes(t), `linha sem ${t}: ${linha}`);
+      // Clicar numa linha atualiza a esquerda SEM recarregar o drawer e sem nova chamada ao servidor.
+      assert.strictEqual(await cdp.evaluate("window.__marcaManual === document.getElementById('cm-banc-manual')"), true, "o drawer não foi recarregado");
+      assert.strictEqual(await cdp.evaluate("window.__pc.calls.simular.length"), manualAntes, "trocar de linha não chama o /simular");
+      // Cabeçalho de colunas UMA vez; grupos na ordem do mockup; linhas sem simulação desabilitadas, sem "—".
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('#cm-drawer .cm-banc__cols').length"), 1);
+      const grupos = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('.cm-banc__grupo-titulo'), function (g) { return g.textContent; }).join(' | ')");
+      assert.strictEqual(grupos, "Seu preço | Ativa agora | Pode participar pelo VenForce | Você já participa | Só pelo Mercado Livre");
+      for (const [id, txt] of [["P-VENDEX", "Não reduz o preço"], ["P-PESCAOFF", "Sem preço sugerido"], ["P-CUPOM", "Sem preço sugerido"], ["P-RELAMPAGO", "Não reduz o preço"]]) {
+        assert.strictEqual(await cdp.evaluate(`document.querySelector('[data-cenario="${id}"]').disabled`), true, `${id} desabilitada`);
+        assert.ok((await cdp.evaluate(`document.querySelector('[data-cenario="${id}"] .cm-cen__res').textContent`)).includes(txt), `${id}: ${txt}`);
+      }
+      assert.strictEqual(await celulasComTraco(), 0, "nenhuma coluna com '—'");
+      // Números tabulares e alinhados à direita (mesma coluna sempre).
+      const alinhamentos = await cdp.evaluate("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('.cm-banc__cmp td.num, .cm-efeitos td.num, .cm-cen__vs'), function (c) { var s = getComputedStyle(c); return s.textAlign + '/' + s.fontVariantNumeric; }).filter(function (v, i, a) { return a.indexOf(v) === i; }))");
+      assert.deepStrictEqual(JSON.parse(alinhamentos), ["right/tabular-nums"], alinhamentos);
+      const bordasPreco = await cdp.evaluate("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('.cm-cen__preco'), function (c) { return Math.round(c.getBoundingClientRect().right); }).filter(function (v, i, a) { return a.indexOf(v) === i; }))");
+      assert.strictEqual(JSON.parse(bordasPreco).length, 1, `preço final na mesma coluna: ${bordasPreco}`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Participar desta promoção");
+      assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
+      await shot("20-caso-real-1111");
+    });
+
+    await check("caso real · Seu preço 59,90: 'Vale entrar', 'Ganha R$ 1,41…', +8,5% e +0,3 pp; a linha fica selecionada", async () => {
+      await cdp.evaluate("(function(){var i=document.getElementById('cm-new-price');i.focus();i.value='59,90';i.dispatchEvent(new Event('input',{bubbles:true}));})()");
+      await waitFor(cdp, "document.getElementById('cm-banc-resultado').textContent.indexOf('Ganha R$') !== -1", "o preço digitado não foi simulado");
+      const res = await resultadoReal();
+      for (const t of ["Seu preço", "Preço digitado", "sai da promoção ativa", "Vale entrar", "Ganha R$ 1,41 por unidade em relação a hoje.", "59,90", "+4,71", "15,85", "+1,41", "26,5%", "+0,3 pp"]) assert.ok(res.includes(t), `falta ${t}: ${res}`);
+      const linha = (await cdp.evaluate("document.querySelector('[data-cenario=\"preco\"]').innerText")).replace(/\s+/g, " ");
+      for (const t of ["Preço digitado", "59,90", "+8,5%", "+1,41", "Vale entrar"]) assert.ok(linha.includes(t), `linha sem ${t}: ${linha}`);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-cenario=\"preco\"]').getAttribute('aria-checked')"), "true");
+      assert.strictEqual(await cdp.evaluate("document.activeElement && document.activeElement.id"), "cm-new-price", "o foco continua no campo");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Revisar novo preço");
+      assert.strictEqual(await celulasComTraco(), 0, "nenhuma coluna com '—'");
+      await cdp.evaluate("document.activeElement.blur(); document.getElementById('cm-drawer-body').scrollTop = 0");
+      await shot("21-caso-real-seu-preco");
+    });
+
+    await check("caso real · ativa selecionada: 'Em vigor', 0,00 e 'Já em vigor' desabilitado", async () => {
+      await cdp.evaluate("document.querySelector('[data-cenario=\"P-IMPULSIONE\"]').click()");
+      await waitFor(cdp, "document.getElementById('cm-bancada-vigor')", "o botão 'Já em vigor' não apareceu");
+      const res = await resultadoReal();
+      for (const t of ["Ativa agora", "Impulsione suas vendas", "Smart · 23/08 a 19/02", "Em vigor", "É a promoção que forma o preço de hoje."]) assert.ok(res.includes(t), `falta ${t}: ${res}`);
+      const linha = (await cdp.evaluate("document.querySelector('[data-cenario=\"P-IMPULSIONE\"]').innerText")).replace(/\s+/g, " ");
+      for (const t of ["55,19", "0,00", "Em vigor"]) assert.ok(linha.includes(t), `linha sem ${t}: ${linha}`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-vigor').disabled"), true);
+      assert.strictEqual(await celulasComTraco(), 0, "nenhuma coluna com '—'");
+      await shot("22-caso-real-ativa");
+    });
+
+    await check("caso real · Evidências com a linha Frete selecionada: tabela-padrão, detalhe compacto em pares, 0 '—', sem botão da Bancada no rodapé", async () => {
+      await cdp.evaluate("document.querySelector('[data-tab=evidence]').click()");
+      await waitFor(cdp, "document.querySelector('[data-evidence-var=freight]')", "Evidências não abriu");
+      await cdp.evaluate("document.querySelector('[data-evidence-var=freight]').click()");
+      await waitFor(cdp, "document.querySelector('[data-cm-ev-detalhe=freight]')", "o detalhe do Frete não apareceu");
+      const detalhe = (await texto("[data-cm-ev-detalhe=freight]")).replace(/\s+/g, " ");
+      for (const t of ["Frete", "R$ 8,15", "selecionada", "Escolha do Motor", "Conflito", "Por que esta fonte"]) assert.ok(detalhe.includes(t), `detalhe sem ${t}: ${detalhe}`);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.cm-evidence-card').length"), 0, "os cards grandes de fonte saíram");
+      assert.strictEqual(await celulasComTraco(), 0, "nenhuma coluna com '—'");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-banc-botao').innerHTML"), "", "fora de Precificar não há botão da Bancada");
+      await shot("23-caso-real-evidencias");
     });
 
     console.log(`# ${checks} testes visuais concluídos`);

@@ -2145,6 +2145,13 @@ h4 {
   color: var(--vf-text);
 }
 
+/* Texto de uma confirmação (VF.confirm): quebras de linha da mensagem valem */
+.vf-modal__message {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--vf-text);
+}
+
 .vf-modal__body,
 .vf-drawer__body {
   flex: 1 1 auto;

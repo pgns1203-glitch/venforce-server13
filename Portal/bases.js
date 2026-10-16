@@ -878,7 +878,11 @@ async function deleteBase(slug, btn) {
 // POST /bases/:slug/desabilitar, que já existia mas não estava exposto na
 // tela. Substitui o hard delete como caminho padrão (achado P0/decisão 7).
 async function desativarBase(slug, nome, btn) {
-  const confirmou = confirm(`Desativar a base "${nome || slug}"? Ela deixa de aparecer como ativa; custos e histórico são preservados.`);
+  const confirmou = await vfConfirmar({
+    title: `Desativar a base "${nome || slug}"?`,
+    message: "Ela deixa de aparecer como ativa. Custos e histórico são preservados.",
+    confirmLabel: "Desativar base",
+  });
   if (!confirmou) return;
   const textoOriginal = btn ? btn.textContent : "";
   if (btn) { btn.disabled = true; btn.textContent = "Desativando…"; }
@@ -1103,7 +1107,11 @@ async function salvarVinculoBase() {
 async function removerVinculoBase(baseId, btn) {
   const base = getBasePorId(baseId);
   if (!base || !base.vinculo) return;
-  const confirmou = confirm(`Remover o vínculo oficial da base "${base.nome || base.slug}"?`);
+  const confirmou = await vfConfirmar({
+    title: `Remover o vínculo oficial da base "${base.nome || base.slug}"?`,
+    confirmLabel: "Remover vínculo",
+    tone: "danger",
+  });
   if (!confirmou) return;
 
   const textoOriginal = btn ? btn.textContent : "";
@@ -2950,14 +2958,14 @@ async function asstBaixarBase(slug, nome, btn) {
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok || !data.ok) {
-      alert("Erro ao buscar base: " + (data.erro || `HTTP ${res.status}`));
+      vfAvisar("Erro ao buscar base", data.erro || `HTTP ${res.status}`);
       return;
     }
 
     const dados = data.dados || {};
     const entradas = Object.entries(dados);
     if (!entradas.length) {
-      alert(`A base "${nome}" não possui itens cadastrados para baixar.`);
+      vfAvisar(`A base "${nome}" não tem itens para baixar`, "Cadastre custos nela antes de exportar.", "warning");
       return;
     }
 
@@ -2994,7 +3002,7 @@ async function asstBaixarBase(slug, nome, btn) {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   } catch (err) {
-    alert("Erro ao baixar base: " + (err.message || "tente novamente."));
+    vfAvisar("Erro ao baixar base", err.message || "Tente novamente.");
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = textoOriginal; }
   }
@@ -3094,9 +3102,11 @@ async function asstImportarBaseLimpa() {
     return;
   }
 
-  const confirmou = confirm(
-    `Importar "${nome}" com ${linhasImportaveis.length} linha(s) normalizada(s)?\n\nSe já existir uma base com este nome, a importação será recusada — nada é substituído.`
-  );
+  const confirmou = await vfConfirmar({
+    title: `Importar "${nome}"?`,
+    message: `${linhasImportaveis.length} linha(s) normalizada(s).\n\nSe já existir uma base com este nome, a importação será recusada — nada é substituído.`,
+    confirmLabel: "Importar base",
+  });
   if (!confirmou) return;
 
   asstSetImportLoading(true);
@@ -3153,3 +3163,21 @@ async function asstImportarBaseLimpa() {
   const btn = document.getElementById("asst-btn-preview");
   if (btn) btn.addEventListener("click", () => asstEnviarPreview());
 })();
+
+
+// ── Confirmação e aviso da Fundação (Portal/vf-ui.js) ──────────────────────
+// Modal e toast da V2 no lugar de confirm()/alert() do navegador. Sem o
+// vf-ui.js (página antiga em cache, sandbox de teste) cai no nativo, com o
+// mesmo texto.
+function vfConfirmar(opcoes) {
+  if (window.VF && typeof window.VF.confirm === "function") return window.VF.confirm(opcoes);
+  return Promise.resolve(window.confirm([opcoes.title, opcoes.message].filter(Boolean).join("\n\n")));
+}
+
+function vfAvisar(titulo, descricao, tom) {
+  if (window.VF && typeof window.VF.toast === "function") {
+    window.VF.toast({ title: titulo, description: descricao, tone: tom || "danger" });
+    return;
+  }
+  window.alert(descricao ? titulo + "\n\n" + descricao : titulo);
+}

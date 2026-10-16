@@ -185,15 +185,25 @@ function normalizarPromocao(promo, index, promotionIdAtivo = null) {
   // pode virar ATIVA. Sem esse dado, ou sem bater com nenhuma started/
   // active, NENHUMA fica ATIVA — nunca por eliminação/heurística de preço.
   // `status` (bruto, vindo do ML) nunca muda: isto é só um campo de exibição.
+  //
+  // `pending` apontada pelo sale_price também é ATIVA: a Oferta relâmpago
+  // (SMART_LIGHTNING) continua `pending` na listagem durante a própria janela
+  // em que forma o preço. Caso real (Red Fish, MLB7337265348, 15/10/2026):
+  // sale_price amount 112,81 com promotion_id = ref_id da relâmpago `pending`
+  // — sem isto ela aparecia PROGRAMADA e o rebate dela (R$ 7,45) sumia do
+  // "Hoje". Para `pending` só vale o casamento pelo ref_id (OFFER-<item>-<n>,
+  // exclusivo da oferta): o id da CAMPANHA se repete numa janela futura
+  // `pending` da mesma campanha que está `started` — casar por ele marcaria
+  // as duas como ATIVA. O fallback por preço (aplicarFallbackPrecoAtivo)
+  // continua restrito a started/active.
+  const casaRef = promotionIdAtivo != null && refIdPromo != null && String(refIdPromo) === String(promotionIdAtivo);
+  const aplicada =
+    casaRef || (promotionIdAtivo != null && idPromo != null && String(idPromo) === String(promotionIdAtivo));
   let statusExibicao;
   if (status === "started" || status === "active") {
-    const aplicada =
-      promotionIdAtivo != null &&
-      ((idPromo != null && String(idPromo) === String(promotionIdAtivo)) ||
-        (refIdPromo != null && String(refIdPromo) === String(promotionIdAtivo)));
     statusExibicao = aplicada ? "ATIVA" : "NÃO APLICADA";
   } else if (status === "pending") {
-    statusExibicao = "PROGRAMADA";
+    statusExibicao = casaRef ? "ATIVA" : "PROGRAMADA";
   } else if (status === "candidate") {
     statusExibicao = "ELEGÍVEL";
   } else {
@@ -473,7 +483,39 @@ async function listarPromocoesDoItemDetalhado({ clienteId, itemId, mlUserId }) {
   return { ok: true, status: resp.status ?? 200, retryAfter: null, promocoes: deduplicarPromocoes(normalizadas) };
 }
 
+// Retorno ML (subsídio por unidade) da promoção que forma o preço AGORA — a
+// mesma ATIVA que o modal usa no "Hoje", decidida pelas mesmas regras
+// (normalizarPromocao + aplicarFallbackPrecoAtivo). Versão enxuta para a
+// LISTA: só as duas leituras que decidem a ATIVA, sem o enriquecimento de
+// vigência (uma chamada a mais por campanha sem data). `ok:false` = não deu
+// para saber; nunca vira rebate 0 inventado.
+//
+// `saleInfo` ({promotionId, amount}, opcional): o sale_price que o chamador
+// JÁ leu (o Motor de Margem lê no mesmo pedido) — evita relê-lo, e a
+// leitura cai para UMA chamada (seller-promotions).
+async function obterRebatePromocaoAtiva({ clienteId, itemId, mlUserId, saleInfo: saleInfoPronto = null }) {
+  const [resp, saleInfo] = await Promise.all([
+    mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(itemId)}?app_version=v2`, { mlUserId }),
+    saleInfoPronto || obterPromotionIdAtivo({ clienteId, itemId, mlUserId }),
+  ]);
+  if (!resp || !resp.ok) return { ok: false, rebate: null, promocao: null };
+
+  const lista = (Array.isArray(resp.data) ? resp.data : (resp.data && resp.data.results) || [])
+    .filter((p) => p && typeof p === "object");
+  const normalizadas = ordenarPorPrioridade(lista).map((p, i) => normalizarPromocao(p, i, saleInfo && saleInfo.promotionId));
+  aplicarFallbackPrecoAtivo(normalizadas, saleInfo && saleInfo.amount);
+
+  const ativa = normalizadas.find((p) => p.statusExibicao === "ATIVA") || null;
+  if (!ativa) return { ok: true, rebate: null, promocao: null };
+  return {
+    ok: true,
+    rebate: ativa.subsidioMl != null && ativa.subsidioMl > 0 ? ativa.subsidioMl : null,
+    promocao: { id: ativa.id, nome: ativa.nome, tipoLabel: ativa.tipoLabel },
+  };
+}
+
 module.exports = {
+  obterRebatePromocaoAtiva,
   ROTULO_TIPO,
   listarPromocoesDoItem,
   listarPromocoesDoItemDetalhado,

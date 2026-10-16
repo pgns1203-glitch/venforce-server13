@@ -403,6 +403,69 @@ async function run() {
   }
   ok("statusExibicao: pending vira PROGRAMADA e candidate vira ELEGÍVEL, sempre — não dependem de promotion_id");
 
+  // 17b. Oferta relâmpago formando o preço AINDA `pending` na listagem —
+  //      payload real (Red Fish, MLB7337265348, 15/10/2026): sale_price
+  //      amount 112,81 com promotion_id = ref_id da SMART_LIGHTNING pending.
+  //      Casamento pelo ref_id (exclusivo da oferta) → ATIVA, com o rebate.
+  {
+    const relampago = promocoesService.normalizarPromocao(
+      {
+        id: "P-MLB18055120", type: "SMART_LIGHTNING", ref_id: "OFFER-MLB7337265348-14075355025",
+        status: "pending", price: 112.81, meli_percentage: 5, seller_percentage: 19.3, original_price: 149,
+      },
+      0,
+      "OFFER-MLB7337265348-14075355025"
+    );
+    assert.strictEqual(relampago.statusExibicao, "ATIVA");
+    assert.strictEqual(relampago.subsidioMl, 7.45);
+    const outraOferta = promocoesService.normalizarPromocao(
+      { id: "P-1", type: "SMART_LIGHTNING", ref_id: "OFFER-MLB7337265348-1", status: "pending", price: 110 },
+      0,
+      "OFFER-MLB7337265348-14075355025"
+    );
+    assert.strictEqual(outraOferta.statusExibicao, "PROGRAMADA");
+  }
+  ok("statusExibicao: pending apontada pelo sale_price via ref_id (relâmpago no ar) vira ATIVA; outra oferta pending segue PROGRAMADA");
+
+  // 17c. obterRebatePromocaoAtiva (margem da LISTA): mesma ATIVA do modal,
+  //      só as duas leituras que a decidem (sem vigência), read-only.
+  {
+    mlChamadas = [];
+    mlHandler = ({ path }) => {
+      if (path.includes("/sale_price")) {
+        return { ok: true, status: 200, data: { amount: 112.81, regular_amount: 149, metadata: { promotion_id: "OFFER-MLB7337265348-14075355025" } } };
+      }
+      return {
+        ok: true, status: 200, data: [
+          { id: "C-MLB5771741", type: "SELLER_CAMPAIGN", status: "started", price: 119.9, original_price: 149, name: "Vendex - Outubro" },
+          { id: "P-MLB17937078", type: "SMART", ref_id: "OFFER-MLB7337265348-14028184124", status: "started", price: 116.3, meli_percentage: 3.1, seller_percentage: 18.8, original_price: 149, name: "Impulsione suas vendas" },
+          { id: "P-MLB18055120", type: "SMART_LIGHTNING", ref_id: "OFFER-MLB7337265348-14075355025", status: "pending", price: 112.81, meli_percentage: 5, seller_percentage: 19.3, original_price: 149, name: "OFERTAS RELÂMPAGOS IMPERDÍVEIS" },
+        ],
+      };
+    };
+    const r = await promocoesService.obterRebatePromocaoAtiva({ clienteId: 1, itemId: "MLB7337265348", mlUserId: "111" });
+    assert.strictEqual(r.ok, true);
+    assert.strictEqual(r.rebate, 7.45);
+    assert.strictEqual(r.promocao.nome, "OFERTAS RELÂMPAGOS IMPERDÍVEIS");
+    assert.strictEqual(mlChamadas.length, 2, "só seller-promotions + sale_price — nenhuma leitura de vigência");
+    assert.ok(mlChamadas.every((c) => c.metodo === "GET"));
+
+    // sale_price já lido pelo Motor (saleInfo): UMA chamada, mesmo resultado.
+    mlChamadas = [];
+    const comSale = await promocoesService.obterRebatePromocaoAtiva({
+      clienteId: 1, itemId: "MLB7337265348", mlUserId: "111",
+      saleInfo: { promotionId: "OFFER-MLB7337265348-14075355025", amount: 112.81 },
+    });
+    assert.strictEqual(comSale.rebate, 7.45);
+    assert.deepStrictEqual(mlChamadas.map((c) => c.path.split("?")[0]), ["/seller-promotions/items/MLB7337265348"]);
+
+    mlHandler = () => ({ ok: false, status: 429, data: null });
+    const falha = await promocoesService.obterRebatePromocaoAtiva({ clienteId: 1, itemId: "MLB7337265348", mlUserId: "111" });
+    assert.deepStrictEqual(falha, { ok: false, rebate: null, promocao: null });
+    mlHandler = null;
+  }
+  ok("obterRebatePromocaoAtiva: rebate da ATIVA (relâmpago pending) com 2 GETs; falha do ML vira ok:false, nunca rebate 0");
+
   // 18. Fluxo completo via controller: /seller-promotions/items e /sale_price
   //     rodam em paralelo; só a promoção apontada por metadata.promotion_id
   //     vira ATIVA, a outra started vira NÃO APLICADA.

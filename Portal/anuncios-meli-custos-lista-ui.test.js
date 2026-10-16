@@ -268,6 +268,10 @@ const SERVIDOR = {
   lotes: [],
   simulacoes: [],
   margemLidas: [],
+  // Retorno ML da promoção ativa que o backend soma quando o front pede
+  // incluirRebateAtivo=1 (margem da lista = Motor ao vivo + rebate).
+  rebates: { "MLB-A1": { valor: 7.45, nome: "OFERTAS RELÂMPAGOS" } },
+  pedidosSemRebate: 0,
   planilhasBaixadas: [],
   previas: [],
   soFamilias: false, // página só com famílias (nenhum MLB solto)
@@ -382,11 +386,16 @@ function wireInterception(cdp, excecoes) {
         if (qs.get("incluirMetricas") !== "0") metricas7d[id] = METRICAS_FIXTURE[id] || { views: 10, vendas: 1, conversao: 10 };
         if (qs.get("incluirMargem") !== "0") {
           if (qs.get("incluirMetricas") === "0") SERVIDOR.margemLidas.push(id);
+          if (qs.get("incluirRebateAtivo") !== "1") SERVIDOR.pedidosSemRebate += 1;
           const custo = SERVIDOR.custos[id];
+          const reb = qs.get("incluirRebateAtivo") === "1" && custo != null ? SERVIDOR.rebates[id] : null;
           // Margem "ao vivo" depende do custo atual: muda quando o custo muda.
           margem[id] = custo == null
             ? { origem: "projected", margin: null, marginPercent: null, status: "UNVALIDATED", statusLabel: "Não validado", statusReasons: [] }
-            : { origem: "projected", margin: 0.4 - custo / 200, marginPercent: 40 - custo / 2, status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
+            : { origem: "projected", margin: 0.4 - custo / 200, marginPercent: 40 - custo / 2 + (reb ? reb.valor : 0),
+                profit: 40 - custo / 2 + (reb ? reb.valor : 0), precoAtual: 100,
+                rebate: reb ? reb.valor : null, rebatePromocao: reb ? { nome: reb.nome } : null,
+                status: "HEALTHY", statusLabel: "Saudável", statusReasons: [] };
         }
       });
       return respond({ ok: true, metricas7d, margem, margemIndisponivel: null, faturamento: null, unidadesVendidas: null, curvaAbc: null, margemPorFamilia: null });
@@ -537,6 +546,19 @@ async function run() {
       assert.strictEqual(await cdp.evaluate(`${q(".am-listagem")}.classList.contains("is-modo-custos")`), true);
     });
     await foto(cdp, "03-modo-massa");
+    await check("M1b — margem AO VIVO (preço atual + retorno ML) substitui o snapshot no filho e na faixa da família", async () => {
+      const cel = '.am-margem[data-margem-item="MLB-A1"]';
+      // snapshot do filho era −5,0% (LOSS); Motor ao vivo: 15% + R$ 7,45 de rebate
+      await waitFor(cdp, `/22,[45]%/.test(${texto(cel)})`, "margem ao vivo não substituiu o snapshot");
+      const tip = await cdp.evaluate(`(${q(cel + " .vf-info__tip")} || {}).textContent || ""`);
+      assert.match(tip, /retorno ML da promoção “OFERTAS RELÂMPAGOS”/);
+      assert.match(tip, /dava -5,0%/, "tooltip precisa dizer o valor do último cálculo salvo");
+      // faixa: A1 22,4% … A4 29,0% (A2/A3 sem custo não entram)
+      const faixa = await cdp.evaluate(texto('[data-margem-familia="FAM-1"]'));
+      assert.match(faixa, /22,[45]%/);
+      assert.match(faixa, /29,0%/);
+      assert.strictEqual(SERVIDOR.pedidosSemRebate, 0, "toda leitura de margem da lista pede incluirRebateAtivo=1");
+    });
     await check("M2 — valor inválido não deixa salvar; valor válido vira prévia do Motor (simular-margem)", async () => {
       await digitar(cdp, '[data-custo-massa="MLB-SEMVAR"]', "abc");
       await waitFor(cdp, `${q(".am-custos-savebar")}.classList.contains("is-on") === false || /Corrija/.test(${texto(".am-custos-savebar")}) || true`);

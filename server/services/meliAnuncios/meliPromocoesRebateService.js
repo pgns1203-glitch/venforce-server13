@@ -224,12 +224,10 @@ function localizarReferencia(promocoes, referencia) {
  * base é a referência — o comportamento anterior.
  */
 function localizarPromoAtual(promocoes, referenciaPromo) {
+  // ATIVA basta: o normalizador só a concede quando o ML aponta a promoção
+  // pelo sale_price — inclusive uma relâmpago ainda `pending` na listagem.
   const ativa = (promocoes || []).find(
-    (p) =>
-      p &&
-      p.statusExibicao === "ATIVA" &&
-      STATUS_ATIVOS.has(String(p.status || "").toLowerCase()) &&
-      num(p.precoFinal) > 0
+    (p) => p && p.statusExibicao === "ATIVA" && num(p.precoFinal) > 0
   );
   return ativa || referenciaPromo || null;
 }

@@ -38,6 +38,8 @@ let chamadasMetricas = [];
 let chamadasMargem = [];
 let chamadasVendasSo = [];
 let chamadasFamilia = [];
+let rebateHandler = null;   // ({clienteId, itemId, mlUserId}) => {ok, rebate, promocao} ou throw
+let chamadasRebate = [];
 
 const originalLoad = Module._load;
 Module._load = function loadWithStubs(request, parent, isMain) {
@@ -65,8 +67,20 @@ Module._load = function loadWithStubs(request, parent, isMain) {
       },
     };
   }
+  if (request === "../services/meliAnuncios/meliPromocoesService") {
+    return {
+      async obterRebatePromocaoAtiva(args) {
+        chamadasRebate.push(args);
+        if (!rebateHandler) return { ok: true, rebate: null, promocao: null };
+        return rebateHandler(args);
+      },
+    };
+  }
   if (request === "../services/motorMargem/motorMargemService") {
     return {
+      async mapWithConcurrency(items, _limit, fn) {
+        return Promise.all(items.map((it, i) => fn(it, i)));
+      },
       async montarItens(args) {
         chamadasMargem.push(args);
         if (!margemHandler) return { itens: [] };
@@ -189,6 +203,9 @@ function reset() {
   margemHandler = null;
   vendasSoHandler = null;
   familiaHandler = null;
+  rebateHandler = null;
+  chamadasRebate = [];
+  ctrl._limparRebateCache();
 }
 
 // `composicao`, quando informado, monta o shape REAL de pricing/costs/
@@ -707,6 +724,120 @@ async function run() {
     assert.strictEqual(res.corpo.margem["MLB-REB2"].profit, 35, "sem subsidioMl, profit continua o valor real do Motor — comportamento anterior preservado");
     assert.strictEqual(res.corpo.composicao["MLB-REB2"].rebate, null, "sem promoção ativa, a linha Taxa de rebate não aparece (rebate: null)");
     ok("sem subsidioMl: comportamento idêntico ao anterior, rebate: null na composição");
+  });
+
+  // 18b. incluirRebateAtivo=1 (margem da LISTA): o retorno ML da promoção
+  //      ATIVA é lido ao vivo só para os itens que o Motor viu em promoção
+  //      (pricing.promo) e somado na margem pela mesma computeMargin. Caso
+  //      real Red Fish: relâmpago `pending` formando o preço a 112,81.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    const comPromo = itemDeMargem({
+      itemId: "MLB-PROMO", projectedMargin: 0.35, projectedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
+      composicao: { vendaProjetada: 100, custoProjetado: 40, impostoProjetado: 0.05, comissaoProjetada: 12, freteProjetado: 8 },
+    });
+    comPromo.pricing.promo = evid(100);
+    const semPromo = itemDeMargem({
+      itemId: "MLB-CHEIO", projectedMargin: 0.35, projectedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
+      composicao: { vendaProjetada: 100, custoProjetado: 40, impostoProjetado: 0.05, comissaoProjetada: 12, freteProjetado: 8 },
+    });
+    margemHandler = () => ({ itens: [comPromo, semPromo] });
+    rebateHandler = () => ({ ok: true, rebate: 7.45, promocao: { id: "P-MLB18055120", nome: "OFERTAS RELÂMPAGOS", tipoLabel: "Oferta relâmpago" } });
+
+    const res = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-PROMO,MLB-CHEIO", incluirRebateAtivo: "1" },
+    }, res);
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.deepStrictEqual(chamadasRebate.map((c) => c.itemId), ["MLB-PROMO"], "só item em promoção gasta leitura de rebate");
+    assert.strictEqual(chamadasRebate[0].mlUserId, "111", "conta ML resolvida chega à leitura");
+    const m = res.corpo.margem["MLB-PROMO"];
+    assert.strictEqual(m.profit, 42.45, "profit soma o rebate (35 + 7,45)");
+    assert.strictEqual(m.marginPercent, 42.45);
+    assert.strictEqual(m.rebate, 7.45);
+    assert.strictEqual(m.rebatePromocao.nome, "OFERTAS RELÂMPAGOS");
+    assert.strictEqual(res.corpo.margem["MLB-CHEIO"].profit, 35, "sem promoção, margem do Motor intacta");
+    assert.strictEqual(res.corpo.margem["MLB-CHEIO"].rebate, null);
+    ok("incluirRebateAtivo: rebate da promoção ativa somado só nos itens em promoção, com a promoção exposta");
+
+    // Falha da leitura do rebate: margem do Motor como antes, nunca 500.
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({ itens: [comPromo] });
+    rebateHandler = () => { throw new Error("429"); };
+    const res2 = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-PROMO", incluirRebateAtivo: "1" } }, res2);
+    assert.strictEqual(res2.corpo.ok, true);
+    assert.strictEqual(res2.corpo.margem["MLB-PROMO"].profit, 35);
+    assert.strictEqual(res2.corpo.margem["MLB-PROMO"].rebate, null);
+
+    // Sem a flag: zero leitura de rebate (modal e chamadas antigas iguais).
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({ itens: [comPromo] });
+    const res3 = fakeRes();
+    await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-PROMO" } }, res3);
+    assert.strictEqual(chamadasRebate.length, 0);
+    assert.strictEqual(res3.corpo.margem["MLB-PROMO"].profit, 35);
+
+    // subsidioMl explícito do modal vence: o item dele não é relido.
+    reset();
+    metricasHandler = () => ({});
+    margemHandler = () => ({ itens: [comPromo] });
+    rebateHandler = () => ({ ok: true, rebate: 7.45, promocao: null });
+    const res4 = fakeRes();
+    await ctrl.performance({
+      query: { clienteSlug: "cliente-a", itemIds: "MLB-PROMO", incluirRebateAtivo: "1", subsidioMlItemId: "MLB-PROMO", subsidioMl: "1.35" },
+    }, res4);
+    assert.strictEqual(chamadasRebate.length, 0, "item com subsidioMl do modal não gasta leitura");
+    assert.strictEqual(res4.corpo.margem["MLB-PROMO"].profit, 36.35);
+    ok("incluirRebateAtivo: falha vira margem do Motor, sem a flag nada muda, subsidioMl do modal tem prioridade");
+  });
+
+  // 18c. Peso da lista: o sale_price que o Motor JÁ leu decide a promoção
+  //      (saleInfo, sem reler) e o rebate fica em cache por (item, oferta) —
+  //      recarregar a página não gasta leitura; trocar a oferta gasta.
+  await withMockDb(UMA_CONTA, async () => {
+    reset();
+    metricasHandler = () => ({});
+    const item = itemDeMargem({
+      itemId: "MLB-REL", projectedMargin: 0.35, projectedProfit: 35, status: "HEALTHY", statusLabel: "Saudável",
+      composicao: { vendaProjetada: 100, custoProjetado: 40, impostoProjetado: 0.05, comissaoProjetada: 12, freteProjetado: 8 },
+    });
+    item.pricing.promo = evid(100);
+    item.diagnostico = { promotionIdAtivo: "OFFER-MLB-REL-1" };
+    margemHandler = () => ({ itens: [item] });
+    rebateHandler = () => ({ ok: true, rebate: 7.45, promocao: { nome: "Relâmpago" } });
+    const pedir = async () => {
+      const res = fakeRes();
+      await ctrl.performance({ query: { clienteSlug: "cliente-a", itemIds: "MLB-REL", incluirRebateAtivo: "1" } }, res);
+      return res.corpo.margem["MLB-REL"];
+    };
+
+    assert.strictEqual((await pedir()).profit, 42.45);
+    assert.deepStrictEqual(chamadasRebate[0].saleInfo, { promotionId: "OFFER-MLB-REL-1", amount: 100 }, "sale_price do Motor reaproveitado");
+    assert.strictEqual((await pedir()).profit, 42.45, "do cache, mesmo valor");
+    assert.strictEqual(chamadasRebate.length, 1, "2º carregamento da mesma oferta não lê o ML");
+
+    item.diagnostico = { promotionIdAtivo: "OFFER-MLB-REL-2" };
+    rebateHandler = () => ({ ok: true, rebate: 4.62, promocao: { nome: "Impulsione" } });
+    assert.strictEqual((await pedir()).profit, 39.62, "oferta trocada = leitura nova");
+    assert.strictEqual(chamadasRebate.length, 2);
+
+    item.diagnostico = { promotionIdAtivo: undefined }; // preço fora do sale_price
+    await pedir();
+    await pedir();
+    assert.strictEqual(chamadasRebate.length, 4, "sem saber a promoção, nada vai ao cache");
+    assert.strictEqual(chamadasRebate[3].saleInfo, null);
+
+    item.diagnostico = { promotionIdAtivo: "OFFER-MLB-REL-3" };
+    rebateHandler = () => ({ ok: false, rebate: null, promocao: null });
+    await pedir();
+    rebateHandler = () => ({ ok: true, rebate: 1, promocao: null });
+    assert.strictEqual((await pedir()).profit, 36, "falha não fica em cache");
+    ok("rebate da lista: 1 leitura por oferta (sale_price do Motor reaproveitado) e cache por (item, oferta)");
   });
 
   // 19. subsidioMl negativo: 400, sem gastar chamada nenhuma (mesma postura

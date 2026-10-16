@@ -6,6 +6,10 @@
 // que está salvando. Duplicidade (409) mora aqui porque é uma decisão sobre
 // salvar.
 
+import { VFBanner } from "../../ui/VFBanner/index.js";
+import { VFButton } from "../../ui/VFButton/index.js";
+import { VFStatus } from "../../ui/VFStatus/index.js";
+
 export function AcoesFechamento({ f, periodoLabel, legado }) {
   const salvando = f.estado === "salvando";
   const salvo = f.estado === "salvo";
@@ -15,56 +19,56 @@ export function AcoesFechamento({ f, periodoLabel, legado }) {
     <div className="vf-stack">
       {/* ── Duplicidade (409) ─────────────────────────────────────────── */}
       {f.duplicidade && (
-        <div className={`vf-banner ${f.duplicidade.publicado ? "is-danger" : "is-warning"}`} role="alert">
-          <div className="vf-banner__content">
-            <p className="vf-banner__title">
-              {f.duplicidade.publicado
-                ? `${periodoLabel} já tem um fechamento PUBLICADO para esta operação`
-                : `${periodoLabel} já tem um fechamento salvo para esta operação`}
-            </p>
-            <p className="vf-banner__description">
-              {f.duplicidade.publicado
-                ? "Substituir grava um novo fechamento desta competência. O link que já está com o cliente continua abrindo o fechamento antigo; o novo ganha um link próprio quando for publicado."
-                : "Substituir atualiza a entrega existente com o que acabou de ser processado."}
-            </p>
-            <div className="vf-cluster">
-              <button type="button" className="vf-btn vf-btn--danger vf-btn--sm" disabled={salvando} onClick={f.substituir}>
+        <VFBanner
+          tone={f.duplicidade.publicado ? "danger" : "warning"}
+          role="alert"
+          title={
+            f.duplicidade.publicado
+              ? `${periodoLabel} já tem um fechamento PUBLICADO para esta operação`
+              : `${periodoLabel} já tem um fechamento salvo para esta operação`
+          }
+          actions={
+            <>
+              <VFButton variant="danger" size="sm" disabled={salvando} onClick={f.substituir}>
                 {salvando ? "Substituindo…" : "Substituir"}
-              </button>
-              <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={f.resetar}>
+              </VFButton>
+              <VFButton variant="ghost" size="sm" onClick={f.resetar}>
                 Cancelar
-              </button>
-            </div>
-          </div>
-        </div>
+              </VFButton>
+            </>
+          }
+        >
+          {f.duplicidade.publicado
+            ? "Substituir grava um novo fechamento desta competência. O link que já está com o cliente continua abrindo o fechamento antigo; o novo ganha um link próprio quando for publicado."
+            : "Substituir atualiza a entrega existente com o que acabou de ser processado."}
+        </VFBanner>
       )}
 
       {salvo ? (
         <div className="vf-cluster">
-          <span className="vf-status is-success" role="status">
+          <VFStatus tone="success" role="status" className="vf-motion-enter">
             Entrega salva. Edite a apresentação e publique em “Entrega para o cliente”, logo abaixo.
-          </span>
-          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={f.resetar}>
+          </VFStatus>
+          <VFButton variant="ghost" size="sm" onClick={f.resetar}>
             Processar outro
-          </button>
+          </VFButton>
         </div>
       ) : !f.duplicidade ? (
         <div className="vf-cluster vf-fin-acoes">
-          <button
-            type="button"
-            className="vf-btn vf-btn--primary"
+          <VFButton
+            variant="primary"
             disabled={salvando || reprocessando || (f.divergente && !f.confirmouDivergencia)}
             aria-busy={salvando ? "true" : undefined}
             onClick={() => f.salvar()}
           >
             {salvando ? "Salvando…" : "Salvar entrega"}
-          </button>
-          <button type="button" className="vf-btn vf-btn--secondary vf-btn--sm" disabled={salvando || reprocessando} onClick={f.reprocessar}>
+          </VFButton>
+          <VFButton size="sm" disabled={salvando || reprocessando} onClick={f.reprocessar}>
             {reprocessando ? "Reprocessando…" : "Reprocessar fechamento"}
-          </button>
-          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" disabled={salvando} onClick={f.voltarAoFormulario}>
+          </VFButton>
+          <VFButton variant="ghost" size="sm" disabled={salvando} onClick={f.voltarAoFormulario}>
             Editar arquivos e ajustes
-          </button>
+          </VFButton>
         </div>
       ) : null}
 

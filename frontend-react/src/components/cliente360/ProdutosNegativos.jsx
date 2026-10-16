@@ -10,7 +10,7 @@ import { formatarMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { formatarPercentual } from "../../utils/percentage.js";
 import DataTable, { CelulaProduto } from "./DataTable.jsx";
-import EmptyState from "./EmptyState.jsx";
+import { VFEmpty } from "../ui/VFEstados/index.js";
 
 const COLUNAS = [
   {
@@ -57,11 +57,9 @@ export default function ProdutosNegativos({ itens = [] }) {
       </div>
 
       {itens.length === 0 ? (
-        <EmptyState
-          compacto
-          titulo="Nenhum produto no vermelho"
-          descricao="Todos os itens do período cobrem os custos que variam com a venda."
-        />
+        <VFEmpty compact title="Nenhum produto no vermelho">
+          Todos os itens do período cobrem os custos que variam com a venda.
+        </VFEmpty>
       ) : (
         <DataTable
           caption="Produtos com margem de contribuição negativa"

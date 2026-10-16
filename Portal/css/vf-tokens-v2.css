@@ -352,3 +352,37 @@ body {
     scroll-behavior: auto !important;
   }
 }
+
+/* ============================================================
+ * 18. TRANSIÇÃO ENTRE PÁGINAS (View Transitions entre documentos)
+ * O Portal são dezenas de páginas HTML: sem isto, toda navegação
+ * pisca a tela inteira. Com isto, a barra lateral e a barra de
+ * contexto ficam paradas e só o conteúdo faz fade cruzado.
+ * Precisa estar nas DUAS páginas (origem e destino) — por isso
+ * mora aqui, no arquivo que quase toda página carrega.
+ * Chrome 126+; nos outros navegadores a navegação segue normal.
+ * Com movimento reduzido, nem liga.
+ * ============================================================ */
+
+@media (prefers-reduced-motion: no-preference) {
+  @view-transition {
+    navigation: auto;
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: var(--vf-duration);
+  animation-timing-function: var(--vf-ease);
+}
+
+/* Shell V3 e sidebar legada (layout.js) com o mesmo nome: indo de
+   uma geração para a outra, a barra se ajusta em vez de piscar. */
+.vf-shell__sidebar,
+.vf-sidebar {
+  view-transition-name: vf-sidebar;
+}
+
+.vf-shell__contextbar {
+  view-transition-name: vf-contextbar;
+}

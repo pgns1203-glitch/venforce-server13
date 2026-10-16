@@ -16,6 +16,7 @@
 // competência se trata.
 
 import { useEffect, useState } from "react";
+import { VFButton, useFeedbackOk } from "../ui/VFButton/index.js";
 import { rotularCompetencia } from "../../utils/dates.js";
 
 export function linkPublico(token) {
@@ -24,19 +25,13 @@ export function linkPublico(token) {
 
 export function EntregaAcoes({ entrega, ocupada, bloqueada, erro, onPublicar, onDespublicar }) {
   const [confirmando, setConfirmando] = useState(null); // "publicar" | "despublicar" | null
-  const [copiado, setCopiado] = useState(false);
+  const [copiado, confirmarCopia] = useFeedbackOk(1600);
 
   // Trocou a entrega debaixo do componente (recarga autoritativa, troca de
   // período): nenhuma confirmação pendente sobrevive a isso.
   useEffect(() => {
     setConfirmando(null);
   }, [entrega?.id, entrega?.publicado]);
-
-  useEffect(() => {
-    if (!copiado) return undefined;
-    const t = setTimeout(() => setCopiado(false), 1600);
-    return () => clearTimeout(t);
-  }, [copiado]);
 
   if (!entrega) return null;
 
@@ -46,7 +41,7 @@ export function EntregaAcoes({ entrega, ocupada, bloqueada, erro, onPublicar, on
   async function copiar() {
     try {
       await navigator.clipboard.writeText(linkPublico(entrega.token_publico));
-      setCopiado(true);
+      confirmarCopia();
     } catch {
       /* clipboard indisponível (contexto não seguro) — sem quebrar a tela */
     }
@@ -61,9 +56,9 @@ export function EntregaAcoes({ entrega, ocupada, bloqueada, erro, onPublicar, on
             ? `Publicar ${competencia}? Gera um link público sem senha.`
             : `Despublicar ${competencia}? O link atual deixa de abrir.`}
         </span>
-        <button
-          type="button"
-          className={`vf-btn vf-btn--sm ${publicar ? "vf-btn--primary" : "vf-btn--danger"}`}
+        <VFButton
+          variant={publicar ? "primary" : "danger"}
+          size="sm"
           disabled={ocupada}
           onClick={() => {
             setConfirmando(null);
@@ -71,10 +66,10 @@ export function EntregaAcoes({ entrega, ocupada, bloqueada, erro, onPublicar, on
           }}
         >
           {ocupada ? "Enviando…" : publicar ? "Publicar" : "Despublicar"}
-        </button>
-        <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => setConfirmando(null)}>
+        </VFButton>
+        <VFButton variant="ghost" size="sm" onClick={() => setConfirmando(null)}>
           Cancelar
-        </button>
+        </VFButton>
       </div>
     );
   }
@@ -83,24 +78,24 @@ export function EntregaAcoes({ entrega, ocupada, bloqueada, erro, onPublicar, on
     <div className="vf-cluster vf-table__actions">
       {publicado && entrega.token_publico && (
         <>
-          <a className="vf-btn vf-btn--ghost vf-btn--sm" href={linkPublico(entrega.token_publico)} target="_blank" rel="noreferrer">
+          <VFButton variant="ghost" size="sm" href={linkPublico(entrega.token_publico)} target="_blank" rel="noreferrer">
             Abrir
-          </a>
-          <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={copiar}>
-            {copiado ? "Copiado!" : "Copiar link"}
-          </button>
+          </VFButton>
+          <VFButton variant="ghost" size="sm" feedback={copiado} feedbackLabel="Link copiado" onClick={copiar}>
+            Copiar link
+          </VFButton>
         </>
       )}
-      <button
-        type="button"
-        className={`vf-btn vf-btn--sm ${publicado ? "vf-btn--ghost" : "vf-btn--primary"}`}
+      <VFButton
+        variant={publicado ? "ghost" : "primary"}
+        size="sm"
         disabled={ocupada || bloqueada}
         aria-busy={ocupada ? "true" : undefined}
         title={bloqueada ? "Outra ação está em andamento." : undefined}
         onClick={() => setConfirmando(publicado ? "despublicar" : "publicar")}
       >
         {ocupada ? "Enviando…" : publicado ? "Despublicar" : "Publicar"}
-      </button>
+      </VFButton>
       {erro && (
         <span className="vf-status is-danger" role="alert">
           {erro}

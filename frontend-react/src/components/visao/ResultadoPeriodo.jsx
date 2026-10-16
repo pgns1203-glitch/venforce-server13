@@ -8,25 +8,19 @@
 // (Faturamento / Lucro de contribuição / Margem de contribuição) + régua
 // secundária (Ticket / Pedidos válidos / Cancelados / Confiança do
 // fechamento). Sem barra financeira, sem custos/despesas, sem gráfico.
+//
+// Os números são VFNumber: mudando com a tela aberta, deslizam do valor antigo
+// para o novo e acendem — continua sem nenhuma classe .vf-kpi.
 
-import { formatarMoeda } from "../../utils/currency.js";
-import { formatarPercentual, pontosParaFracao } from "../../utils/percentage.js";
+import { pontosParaFracao } from "../../utils/percentage.js";
 import { formatarNumero, AUSENTE } from "../../utils/numbers.js";
 import { CONFIANCA_FECHAMENTO } from "../../utils/visaoLabels.js";
+import { VFNumber } from "../ui/VFNumber/index.js";
 
 // Valor monetário com o símbolo "R$" em corpo menor (igual ao canvas), sem
 // perder a regra de ausência ("—", nunca "R$ 0,00").
 function Cifra({ valor }) {
-  const txt = formatarMoeda(valor);
-  if (txt === AUSENTE) return AUSENTE;
-  const m = txt.match(/^(−?R\$)\s(.+)$/);
-  if (!m) return txt;
-  return (
-    <>
-      <span className="vf-visao-figure__cur">{m[1]}</span>
-      {m[2]}
-    </>
-  );
+  return <VFNumber value={valor} format="brl" goodDirection="up" currencyClassName="vf-visao-figure__cur" />;
 }
 
 export function ResultadoPeriodo({ dados }) {
@@ -60,7 +54,7 @@ export function ResultadoPeriodo({ dados }) {
         <div className="vf-visao-figure">
           <span className="vf-visao-figure__label">Margem de contribuição</span>
           <span className="vf-visao-figure__value vf-visao-figure__value--lg">
-            {formatarPercentual(pontosParaFracao(dados.margemContribuicaoPercentual))}
+            <VFNumber value={pontosParaFracao(dados.margemContribuicaoPercentual)} format="pct" goodDirection="up" />
           </span>
         </div>
       </div>
@@ -77,14 +71,14 @@ export function ResultadoPeriodo({ dados }) {
         <div className="vf-visao-figure">
           <span className="vf-visao-figure__label">Pedidos válidos</span>
           <span className="vf-visao-figure__value">
-            {formatarNumero(dados.pedidosValidos)}
+            <VFNumber value={dados.pedidosValidos} goodDirection="up" />
             <span className="vf-visao-figure__sub"> / {formatarNumero(dados.pedidosTotal)}</span>
           </span>
         </div>
         <div className="vf-visao-figure">
           <span className="vf-visao-figure__label">Cancelados</span>
           <span className={`vf-visao-figure__value${dados.cancelados > 0 ? " vf-visao-num--warning" : ""}`}>
-            {formatarNumero(dados.cancelados)}
+            <VFNumber value={dados.cancelados} goodDirection="down" />
           </span>
         </div>
         <div className="vf-visao-figure">

@@ -7,7 +7,7 @@
 import { formatarMoeda, formatarVariacaoMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import DataTable, { CelulaProduto } from "./DataTable.jsx";
-import EmptyState from "./EmptyState.jsx";
+import { VFEmpty } from "../ui/VFEstados/index.js";
 
 const MOTIVO_LABEL = {
   volume: "volume", preco: "preço", comissao: "comissão", frete: "frete",
@@ -63,7 +63,7 @@ export default function ProdutosImpacto({ titulo, descricao, itens = [], vazioTi
       </div>
 
       {itens.length === 0 ? (
-        <EmptyState compacto titulo={vazioTitulo} descricao={vazioDescricao} />
+        <VFEmpty compact title={vazioTitulo}>{vazioDescricao}</VFEmpty>
       ) : (
         <DataTable
           caption={`${titulo} — contribuição por produto`}

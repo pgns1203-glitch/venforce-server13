@@ -28,9 +28,8 @@ import OportunidadesRecuperacao from "../components/cliente360/OportunidadesRecu
 import SimuladorResultado from "../components/cliente360/SimuladorResultado.jsx";
 import ConfiancaDados from "../components/cliente360/ConfiancaDados.jsx";
 import PlacarConsultor from "../components/cliente360/PlacarConsultor.jsx";
-import LoadingState from "../components/cliente360/LoadingState.jsx";
 import ErrorState from "../components/cliente360/ErrorState.jsx";
-import EmptyState from "../components/cliente360/EmptyState.jsx";
+import { VFEmpty, VFLoading } from "../components/ui/VFEstados/index.js";
 
 const NIVEL_CONFIANCA = {
   confiavel: { classe: "is-success", label: "Dados confiáveis" },
@@ -65,13 +64,12 @@ export default function Cliente360Page() {
 
         {erro && <ErrorState erro={erro} onTentarNovamente={recarregar} />}
 
-        {!erro && carregando && !dados && <LoadingState />}
+        {!erro && carregando && !dados && <VFLoading label="Carregando fechamento…" />}
 
         {!erro && !carregando && !filtros.slug && (
-          <EmptyState
-            titulo="Escolha um cliente"
-            descricao="Selecione um cliente no filtro acima para carregar o fechamento."
-          />
+          <VFEmpty title="Escolha um cliente">
+            Selecione um cliente no filtro acima para carregar o fechamento.
+          </VFEmpty>
         )}
 
         {!erro && dados && (

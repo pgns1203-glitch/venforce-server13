@@ -6,6 +6,14 @@
 // existem em Portal/css/vf-components-v2.css. Quando o padrão visual ainda
 // não existe na Fundação (ex.: VFMonthYearSelector), o componente traz seu
 // próprio CSS, sempre construído só com var(--vf-*).
+//
+// Movimento: regras em docs/specs/2026-10-16-ui-etapa1-componentes-plano.md §1.
 
-export { VFButton } from "./VFButton/index.js";
+export { VFBanner } from "./VFBanner/index.js";
+export { VFButton, useFeedbackOk } from "./VFButton/index.js";
+export { VFEmpty, VFError, VFLoading, VFSkeleton } from "./VFEstados/index.js";
+export { VFKpi } from "./VFKpi/index.js";
+export { VFField, VFInput, VFSelect, VFTextarea } from "./VFField/index.js";
 export { VFMonthYearSelector } from "./VFMonthYearSelector/index.js";
+export { VFNumber } from "./VFNumber/index.js";
+export { VFStatus, VFTag, VFBadge } from "./VFStatus/index.js";

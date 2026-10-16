@@ -1,5 +1,8 @@
 // Erro com mensagem específica por código. Nunca usa "0" para representar falha:
-// diz o que aconteceu e o que dá para fazer.
+// diz o que aconteceu e o que dá para fazer. Aqui mora só o TEXTO de cada
+// código; a forma é do VFError (Fundação V2).
+
+import { VFError } from "../ui/VFEstados/index.js";
 
 const MENSAGENS = {
   nao_autenticado: {
@@ -33,17 +36,13 @@ export default function ErrorState({ erro, onTentarNovamente }) {
   const mostrarDetalhe = erro?.mensagem && erro.mensagem !== base.texto;
 
   return (
-    <div className="vf-empty c360-erro" role="alert">
-      <h3 className="vf-empty__title">{base.titulo}</h3>
-      <p className="vf-empty__description">{base.texto}</p>
-      {mostrarDetalhe && <p className="c360-erro__detalhe">{erro.mensagem}</p>}
-      {base.acao && onTentarNovamente && (
-        <div className="vf-empty__actions">
-          <button type="button" className="vf-btn vf-btn--secondary" onClick={onTentarNovamente}>
-            {base.acao}
-          </button>
-        </div>
-      )}
-    </div>
+    <VFError
+      title={base.titulo}
+      detail={mostrarDetalhe ? erro.mensagem : null}
+      onRetry={base.acao ? onTentarNovamente : undefined}
+      retryLabel={base.acao || undefined}
+    >
+      {base.texto}
+    </VFError>
   );
 }

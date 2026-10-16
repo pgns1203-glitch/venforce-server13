@@ -5,7 +5,7 @@ import { formatarMoeda } from "../../utils/currency.js";
 import { formatarNumero } from "../../utils/numbers.js";
 import { formatarPercentual } from "../../utils/percentage.js";
 import DataTable, { CelulaProduto } from "./DataTable.jsx";
-import EmptyState from "./EmptyState.jsx";
+import { VFEmpty } from "../ui/VFEstados/index.js";
 
 const COLUNAS = [
   {
@@ -50,11 +50,9 @@ export default function ProdutosAbaixoMeta({ itens = [], margemAlvo }) {
       </div>
 
       {itens.length === 0 ? (
-        <EmptyState
-          compacto
-          titulo="Nenhum produto abaixo da margem-alvo"
-          descricao="Todos os itens com margem positiva já atingem o alvo configurado."
-        />
+        <VFEmpty compact title="Nenhum produto abaixo da margem-alvo">
+          Todos os itens com margem positiva já atingem o alvo configurado.
+        </VFEmpty>
       ) : (
         <DataTable
           caption="Produtos com margem positiva abaixo do alvo"

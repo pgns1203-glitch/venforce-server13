@@ -758,36 +758,7 @@
   color: var(--vf-text-secondary);
 }
 
-/* ── Estados ─────────────────────────────────────────────────────────── */
-
-.c360-loading {
-  display: grid;
-  gap: var(--vf-sp-3);
-  padding: var(--vf-sp-6);
-  background: var(--vf-surface);
-  border: 1px solid var(--vf-border);
-}
-
-.c360-loading__head {
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-3);
-  font-size: var(--vf-fs-sm);
-  color: var(--vf-text-secondary);
-}
-
-.c360-loading__grid {
-  display: grid;
-  gap: var(--vf-sp-3);
-}
-
-.c360-erro__detalhe {
-  font-family: var(--vf-font-mono);
-  font-size: var(--vf-fs-2xs);
-  color: var(--vf-text-muted);
-}
-
-.c360-vazio--compacto { padding: var(--vf-sp-6) var(--vf-sp-5); }
+/* Estados (vazio/erro/carregando) vêm de components/ui/VFEstados. */
 
 /* ── Responsivo ──────────────────────────────────────────────────────── */
 

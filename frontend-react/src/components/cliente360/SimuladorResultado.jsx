@@ -15,7 +15,7 @@ import { formatarNumero } from "../../utils/numbers.js";
 import { formatarPercentual } from "../../utils/percentage.js";
 import { useCliente360Simulation } from "../../hooks/useCliente360Simulation.js";
 import DataTable, { CelulaProduto } from "./DataTable.jsx";
-import EmptyState from "./EmptyState.jsx";
+import { VFEmpty } from "../ui/VFEstados/index.js";
 
 const ROTULO_DELTA = {
   deltaPrecoPct: "Variação de preço",
@@ -226,11 +226,9 @@ export default function SimuladorResultado({ simulacao, slug, competencia, marke
       </div>
 
       {produtos.length === 0 ? (
-        <EmptyState
-          compacto
-          titulo="Nenhum produto para simular"
-          descricao="Ajuste a busca ou sincronize o fechamento desta competência."
-        />
+        <VFEmpty compact title="Nenhum produto para simular">
+          Ajuste a busca ou sincronize o fechamento desta competência.
+        </VFEmpty>
       ) : (
         <DataTable
           caption="Produtos do período para simulação"

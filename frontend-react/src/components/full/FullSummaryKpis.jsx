@@ -1,4 +1,4 @@
-import { formatarNumero } from "../../utils/numbers.js";
+import { VFKpi } from "../ui/VFKpi/index.js";
 
 // Terceira coluna = tom do card, espelhando o mesmo agrupamento de
 // severidade usado no badge de status da tabela (ver STATUS_TONE em
@@ -24,11 +24,8 @@ export default function FullSummaryKpis({ summary }) {
 
   return (
     <div className="vf-kpi-grid" role="list" aria-label="Resumo dos inventários Full">
-      {LABELS.map(([chave, label, tom]) => (
-        <div className={`vf-kpi${tom ? ` vf-kpi--${tom}` : ""}`} role="listitem" key={chave}>
-          <span className="vf-kpi__label">{label}</span>
-          <span className="vf-kpi__value">{formatarNumero(summary[chave] ?? 0)}</span>
-        </div>
+      {LABELS.map(([chave, label, tom], i) => (
+        <VFKpi key={chave} role="listitem" label={label} value={summary[chave] ?? 0} tone={tom} enterIndex={i} />
       ))}
     </div>
   );

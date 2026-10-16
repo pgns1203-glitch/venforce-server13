@@ -7,6 +7,7 @@
 // (índices sobre o faturamento) ficam numa faixa menor logo abaixo.
 import { kpisPrincipais } from "../../../utils/financeiro/resumoFechamento.js";
 import { formatarValor, tomDoValor } from "../shared/ValorFinanceiro.jsx";
+import { VFNumber } from "../../ui/VFNumber/index.js";
 
 const PRIMARIOS = ["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal", "mcCalculada", "finalMarginCalculated"];
 // Só os números de RESULTADO ganham cor pelo sinal; receita é neutra.
@@ -36,7 +37,13 @@ export function ResumoKpis({ summary }) {
               title={k.descricao || undefined}
             >
               <span className="vf-fin-kpi__rotulo">{k.rotulo}</span>
-              <span className="vf-fin-kpi__valor">{formatarValor(k.valor, k.tipo)}</span>
+              <span className="vf-fin-kpi__valor">
+                <VFNumber
+                  value={k.valor}
+                  format={(v) => formatarValor(v, k.tipo)}
+                  goodDirection={COM_TOM.has(k.chave) ? "up" : undefined}
+                />
+              </span>
               {APOIO[k.chave] && <span className="vf-fin-kpi__apoio">{APOIO[k.chave]}</span>}
             </div>
           );
@@ -47,7 +54,9 @@ export function ResumoKpis({ summary }) {
           {secundarios.map((k) => (
             <div key={k.chave} className="vf-fin-kpi-sec" data-kpi={k.chave} title={k.descricao || undefined}>
               <dt className="vf-fin-kpi__rotulo">{k.rotulo}</dt>
-              <dd className="vf-fin-kpi__valor vf-fin-kpi__valor--sec">{formatarValor(k.valor, k.tipo)}</dd>
+              <dd className="vf-fin-kpi__valor vf-fin-kpi__valor--sec">
+                <VFNumber value={k.valor} format={(v) => formatarValor(v, k.tipo)} />
+              </dd>
             </div>
           ))}
         </dl>

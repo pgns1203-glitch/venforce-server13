@@ -13,7 +13,7 @@ import { formatarMoeda } from "../../utils/currency.js";
 import { rotularCompetencia } from "../../utils/dates.js";
 import { obterPlacar } from "../../services/cliente360Api.js";
 import DataTable from "./DataTable.jsx";
-import EmptyState from "./EmptyState.jsx";
+import { VFEmpty } from "../ui/VFEstados/index.js";
 
 const FATOR_LABEL = {
   custo: "Correção de custo", frete: "Renegociação de frete", preco: "Reprecificação",
@@ -92,11 +92,9 @@ export default function PlacarConsultor({ slug, marketplace }) {
       )}
 
       {!placar && !erro && (
-        <EmptyState
-          compacto
-          titulo="Placar não apurado"
-          descricao="A apuração percorre a ponte de várias competências. Clique em “Apurar placar” quando precisar do número."
-        />
+        <VFEmpty compact title="Placar não apurado">
+          A apuração percorre a ponte de várias competências. Clique em “Apurar placar” quando precisar do número.
+        </VFEmpty>
       )}
 
       {placar && (
@@ -114,11 +112,9 @@ export default function PlacarConsultor({ slug, marketplace }) {
           </div>
 
           {placar.acoes.length === 0 ? (
-            <EmptyState
-              compacto
-              titulo="Nenhuma ação operacional registrada"
-              descricao="Registre correções de custo, frete, preço, comissão, imposto, mix ou base para o placar medir o efeito no mês seguinte."
-            />
+            <VFEmpty compact title="Nenhuma ação operacional registrada">
+              Registre correções de custo, frete, preço, comissão, imposto, mix ou base para o placar medir o efeito no mês seguinte.
+            </VFEmpty>
           ) : (
             <DataTable
               caption="Ações creditadas no placar"

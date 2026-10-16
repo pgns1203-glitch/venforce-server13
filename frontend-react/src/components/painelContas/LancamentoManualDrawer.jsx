@@ -21,6 +21,7 @@
 // removido) é lida sob demanda do servidor. Nada aqui é inferido no cliente.
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { VFField, VFInput, VFSelect, VFTextarea } from "../ui/VFField/index.js";
 import { formatarMoeda } from "../../utils/currency.js";
 import { formatarPercentual } from "../../utils/percentage.js";
 import { rotularCompetencia, rotularCompetenciaCurta, formatarData, formatarDataHora } from "../../utils/dates.js";
@@ -308,57 +309,48 @@ export function LancamentoManualDrawer({
               <p className="vf-ph-drawer__nota">Todas as contas deste cliente já têm dado automático nesta competência.</p>
             ) : (
               <>
-                <div className="vf-field">
-                  <label className="vf-field__label" htmlFor={`${idTitulo}-conta`}>Conta/operação</label>
-                  <select
-                    id={`${idTitulo}-conta`}
-                    aria-describedby={conta?.status?.motivo ? `${idTitulo}-conta-dica` : undefined}
-                    className="vf-select vf-select--sm"
+                <VFField label="Conta/operação" hint={conta?.status?.motivo}>
+                  <VFSelect
+                    size="sm"
                     value={contaId ?? ""}
                     onChange={(e) => trocarConta(Number(e.target.value))}
-                  >
-                    {contas.map((c) => <option key={c.id} value={c.id}>{c.rotulo}</option>)}
-                  </select>
-                  {conta?.status?.motivo && <span className="vf-field__hint" id={`${idTitulo}-conta-dica`}>{conta.status.motivo}</span>}
-                </div>
+                    options={contas.map((c) => ({ value: c.id, label: c.rotulo }))}
+                  />
+                </VFField>
 
                 <div className="vf-ph-drawer__grid">
                   {CAMPOS.map((c, i) => (
-                    <div className="vf-field" key={c.chave}>
-                      <label className="vf-field__label" htmlFor={`${idTitulo}-${c.chave}`}>{c.rotulo}</label>
-                      <input
-                        id={`${idTitulo}-${c.chave}`}
-                        aria-describedby={c.dica ? `${idTitulo}-${c.chave}-dica` : undefined}
+                    <VFField key={c.chave} label={c.rotulo} hint={c.dica} error={Number.isNaN(lerNumeroBR(campos[c.chave]))}>
+                      <VFInput
                         ref={i === 0 ? primeiroCampoRef : undefined}
-                        className="vf-input vf-input--sm"
+                        size="sm"
                         inputMode="decimal"
                         autoComplete="off"
                         value={campos[c.chave]}
                         onChange={(e) => setCampos((prev) => ({ ...prev, [c.chave]: e.target.value }))}
-                        aria-invalid={Number.isNaN(lerNumeroBR(campos[c.chave])) || undefined}
                       />
-                      {c.dica && <span className="vf-field__hint" id={`${idTitulo}-${c.chave}-dica`}>{c.dica}</span>}
-                    </div>
+                    </VFField>
                   ))}
                 </div>
 
-                <div className="vf-field">
-                  <label className="vf-field__label" htmlFor={`${idTitulo}-data`}>Dados até</label>
-                  <input
-                    id={`${idTitulo}-data`}
+                <VFField
+                  label="Dados até"
+                  hint="Último dia coberto pelos números (opcional). Em branco = não informado."
+                  error={
+                    dataRefInvalida &&
+                    `"Dados até" precisa estar em ${rotularCompetencia(competencia)} e não pode ser depois de hoje.`
+                  }
+                >
+                  <VFInput
                     type="date"
-                    className="vf-input vf-input--sm vf-ph-drawer__data"
+                    size="sm"
+                    className="vf-ph-drawer__data"
                     min={limites.min}
                     max={limites.max}
                     value={campos.dataReferencia}
                     onChange={(e) => setCampos((prev) => ({ ...prev, dataReferencia: e.target.value }))}
-                    aria-describedby={`${idTitulo}-data-dica`}
-                    aria-invalid={dataRefInvalida || undefined}
                   />
-                  <span className="vf-field__hint" id={`${idTitulo}-data-dica`}>
-                    Último dia coberto pelos números (opcional). Em branco = não informado.
-                  </span>
-                </div>
+                </VFField>
 
                 <p className="vf-ph-drawer__previa" aria-live="polite">
                   {mcDerivada !== null && <span>MC calculada: {formatarPercentual(mcDerivada)}</span>}
@@ -367,25 +359,18 @@ export function LancamentoManualDrawer({
                   {tacos !== null && <span>TACoS {formatarPercentual(tacos)}</span>}
                 </p>
 
-                <div className="vf-field">
-                  <label className="vf-field__label" htmlFor={`${idTitulo}-obs`}>Observação</label>
-                  <textarea
-                    id={`${idTitulo}-obs`}
-                    className="vf-input vf-ph-drawer__obs"
+                <VFField label="Observação">
+                  <VFTextarea
+                    className="vf-ph-drawer__obs"
                     rows={2}
                     maxLength={500}
                     value={campos.observacao}
                     onChange={(e) => setCampos((prev) => ({ ...prev, observacao: e.target.value }))}
                     placeholder="De onde veio o número (planilha do cliente, painel do marketplace…)"
                   />
-                </div>
+                </VFField>
 
                 {invalido && <p className="vf-field__error">Use só números (ex.: 1.234,56).</p>}
-                {dataRefInvalida && (
-                  <p className="vf-field__error" role="alert">
-                    "Dados até" precisa estar em {rotularCompetencia(competencia)} e não pode ser depois de hoje.
-                  </p>
-                )}
                 {inconsistente && (
                   <p className="vf-field__error" role="alert">
                     FAT, LC e MC não batem: MC deve ser LC ÷ FAT. Informe só dois deles para o terceiro ser calculado.

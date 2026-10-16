@@ -7,13 +7,17 @@
 // não existe na Fundação (ex.: VFMonthYearSelector), o componente traz seu
 // próprio CSS, sempre construído só com var(--vf-*).
 //
+// Comportamento difícil (diálogo, abas, dica) vem do Radix, sem estilo dele.
 // Movimento: regras em docs/specs/2026-10-16-ui-etapa1-componentes-plano.md §1.
 
 export { VFBanner } from "./VFBanner/index.js";
 export { VFButton, useFeedbackOk } from "./VFButton/index.js";
+export { VFDrawer, VFDrawerClose } from "./VFDrawer/index.js";
 export { VFEmpty, VFError, VFLoading, VFSkeleton } from "./VFEstados/index.js";
 export { VFKpi } from "./VFKpi/index.js";
 export { VFField, VFInput, VFSelect, VFTextarea } from "./VFField/index.js";
 export { VFMonthYearSelector } from "./VFMonthYearSelector/index.js";
 export { VFNumber } from "./VFNumber/index.js";
 export { VFStatus, VFTag, VFBadge } from "./VFStatus/index.js";
+export { VFTabs } from "./VFTabs/index.js";
+export { VFTooltip } from "./VFTooltip/index.js";

@@ -2363,6 +2363,14 @@ h4 {
   z-index: var(--vf-z-tooltip);
 }
 
+/* Flutuante (VFTooltip): sombra de popover e quebra de linha preservada;
+   entra com o mesmo fade curto do .vf-motion-enter. */
+.vf-tooltip--float {
+  white-space: pre-line;
+  box-shadow: var(--vf-shadow-popover);
+  animation: vf-enter var(--vf-duration-fast) var(--vf-ease) both;
+}
+
 /* ============================================================
  * 14. UPLOAD DE ARQUIVO (importação de planilhas)
  * ============================================================ */

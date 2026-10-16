@@ -328,7 +328,13 @@ const estado = `(() => {
     semScroll: document.body.classList.contains("vf-no-scroll"),
     classe: st ? st.className : null,
     titulo: st ? st.querySelector(".am-sync-status__titulo").textContent : null,
-    detalhe: st && st.querySelector(".am-sync-status__detalhe") ? st.querySelector(".am-sync-status__detalhe").textContent : null,
+    texto: st ? st.textContent : null,
+    etapas: st ? Array.from(st.querySelectorAll(".am-sync-etapa")).map((e) => (e.className.match(/is-([a-z]+)/) || [])[1]) : [],
+    d1: st ? st.querySelector('[data-etapa="1"] .am-sync-etapa__detalhe').textContent : null,
+    d2: st ? st.querySelector('[data-etapa="2"] .am-sync-etapa__detalhe').textContent : null,
+    contador: st && st.querySelector(".am-sync-contador") ? st.querySelector(".am-sync-contador").textContent : null,
+    resultado: st && st.querySelector(".am-sync-status__resultado") ? st.querySelector(".am-sync-status__resultado").textContent : null,
+    acoesVisiveis: !!(document.querySelector(".am-sync-acoes") && !document.querySelector(".am-sync-acoes").hidden),
     dentroDoCard: !!(st && st.closest(".am-sync-area")),
     completoDisabled: document.getElementById("am-sync-completo").disabled,
     novosDisabled: document.getElementById("am-sync-novos").disabled,
@@ -365,6 +371,7 @@ async function run() {
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 900, deviceScaleFactor: 1, mobile: false });
     await cdp.send("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/anuncios-meli.html?cliente=n97&conta=42` });
     await waitFor(cdp, "document.getElementById('am-sync-completo') && document.querySelector('.am-row--grupo[data-familia=\"FAM-1\"]')", "HUD/lista não renderizou");
+    await shot(cdp, "0-parado");
 
     await check("S1 - clicar em Sincronização completa não abre modal nem trava a tela", async () => {
       await cdp.evaluate("document.getElementById('am-sync-completo').click()");
@@ -374,8 +381,11 @@ async function run() {
       assert.strictEqual(e.semScroll, false, "body travado (vf-no-scroll)");
       assert.ok(e.dentroDoCard, "status fora do card de sincronização");
       assert.ok(/is-andamento/.test(e.classe), e.classe);
-      assert.ok(/Sincronização completa em andamento/.test(e.titulo) && /Etapa 1 de 2/.test(e.titulo), e.titulo);
-      assert.ok(/continuar usando a tela/.test(e.detalhe), e.detalhe);
+      assert.strictEqual(e.titulo, "Sincronização completa");
+      assert.deepStrictEqual(e.etapas, ["ativo", "pendente"], "etapa 1 ativa, etapa 2 na fila");
+      assert.ok(/Consultando o Mercado Livre/.test(e.d1), e.d1);
+      assert.ok(/continuar usando a tela/.test(e.texto), e.texto);
+      assert.strictEqual(e.acoesVisiveis, false, "a lista de ações deveria dar lugar ao painel");
       assert.ok(e.completoDisabled && e.novosDisabled, "botões deveriam ficar desabilitados");
       await shot(cdp, "1-sincronizando");
     });
@@ -391,9 +401,11 @@ async function run() {
       MOCK.run = { runId: 77, status: "running", processedItems: 40, totalItems: 175 };
       const antes = MOCK.familiasGets;
       await soltarSync(cdp, { ok: true, codigo: "OK", modo: "completo", contaId: 42, totalEncontrados: 175, totalProcessados: 175, totalSalvos: 175, limitado: false });
-      await waitFor(cdp, "/40 de 175/.test((document.querySelector('.am-sync-status__detalhe')||{}).textContent||'')", "progresso do recálculo não apareceu");
+      await waitFor(cdp, "/40\\s*de 175/.test((document.querySelector('.am-sync-contador')||{}).textContent||'')", "progresso do recálculo não apareceu");
       const e = await cdp.evaluate(estado);
-      assert.ok(/Etapa 2 de 2/.test(e.titulo) && /recalculando a margem/.test(e.titulo), e.titulo);
+      assert.deepStrictEqual(e.etapas, ["feito", "ativo"], "etapa 1 feita, etapa 2 ativa");
+      assert.ok(/175 na conta · 175 gravados/.test(e.d1), e.d1);
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-sync-fill]').style.width"), "23%", "barra deveria refletir 40/175");
       assert.ok(e.completoDisabled, "botões deveriam seguir desabilitados no recálculo");
       assert.strictEqual(MOCK.refreshPosts, 1, "mesmo POST /snapshot/refresh da Central de Margem");
       assert.ok(MOCK.familiasGets > antes, "lista deveria ser relida após o sync (anúncios novos)");
@@ -405,8 +417,9 @@ async function run() {
       MOCK.run = { runId: 77, status: "completed", processedItems: 175, totalItems: 175, successItems: 175, failedItems: 0 };
       await waitFor(cdp, "/is-ok/.test((document.getElementById('am-sync-status')||{}).className||'')", "não chegou ao estado concluído");
       const e = await cdp.evaluate(estado);
-      assert.ok(/Sincronização concluída/.test(e.titulo), e.titulo);
-      assert.ok(/Margem recalculada às \d\d:\d\d · 175 anúncio/.test(e.detalhe), e.detalhe);
+      assert.deepStrictEqual(e.etapas, ["feito", "feito"]);
+      assert.ok(/175 anúncio\(s\) recalculados/.test(e.d2), e.d2);
+      assert.ok(/Concluído às \d\d:\d\d · levou \d+:\d\d/.test(e.resultado), e.resultado);
       assert.ok(!e.completoDisabled && !e.novosDisabled, "botões deveriam voltar");
       await waitFor(cdp, "true");
       for (let i = 0; i < 50 && MOCK.familiasGets <= antes; i++) await sleep(30);
@@ -417,16 +430,19 @@ async function run() {
     await check("S5 - o aviso de concluído pode ser dispensado", async () => {
       await cdp.evaluate("document.querySelector('[data-sync-fechar]').click()");
       await waitFor(cdp, "!document.getElementById('am-sync-status')", "aviso não foi dispensado");
+      assert.strictEqual((await cdp.evaluate(estado)).acoesVisiveis, true, "a lista de ações deveria voltar");
     });
 
     await check("S6 - falha do sync aparece no card, sem modal, e libera os botões", async () => {
       await cdp.evaluate("document.getElementById('am-sync-novos').click()");
-      await waitFor(cdp, "/Buscando anúncios novos/.test((document.getElementById('am-sync-status')||{}).textContent||'')", "status de novos não apareceu");
+      await waitFor(cdp, "/Atualizar novos/.test((document.querySelector('#am-sync-status .am-sync-status__titulo')||{}).textContent||'')", "status de novos não apareceu");
       await soltarSync(cdp, { ok: false, codigo: "NO_TOKEN", motivo: "Este cliente ainda não tem uma conta do Mercado Livre conectada." });
       await waitFor(cdp, "/is-erro/.test((document.getElementById('am-sync-status')||{}).className||'')", "erro não apareceu");
       const e = await cdp.evaluate(estado);
       assert.strictEqual(e.overlay, false);
-      assert.ok(/Conecte a conta do Mercado Livre/.test(e.detalhe), e.detalhe);
+      assert.deepStrictEqual(e.etapas, ["erro", "pendente"]);
+      assert.ok(/Conecte a conta do Mercado Livre/.test(e.d1), e.d1);
+      assert.ok(/Tentar de novo/.test(e.texto), "erro deveria oferecer tentar de novo");
       assert.ok(!e.completoDisabled && !e.novosDisabled);
       await shot(cdp, "4-erro");
     });

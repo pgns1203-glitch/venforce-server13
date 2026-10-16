@@ -90,8 +90,12 @@
 
 .vf-page-anuncios-meli .am-cliente-contexto {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr);
-  gap: var(--vf-sp-6);
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 420px);
+  padding: 0;
+  overflow: hidden;
+}
+
+.vf-page-anuncios-meli .am-cliente-contexto__info {
   padding: var(--vf-sp-5);
 }
 
@@ -128,28 +132,11 @@
 }
 
 .vf-page-anuncios-meli .am-sync-area {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  justify-content: center;
-  gap: var(--vf-sp-3);
-  padding-left: var(--vf-sp-5);
+  display: grid;
+  align-content: center;
+  padding: var(--vf-sp-2) var(--vf-sp-5);
   border-left: 1px solid var(--vf-border);
-}
-
-.vf-page-anuncios-meli .am-sync-area__description {
-  margin: 0;
-  max-width: 520px;
-  font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
-  text-align: right;
-}
-
-.vf-page-anuncios-meli .am-hud-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--vf-sp-2);
+  background: var(--vf-surface-2);
 }
 
 /* KPI clicável (V3): faixa única segmentada — reaproveita .vf-metric-row/
@@ -3347,95 +3334,349 @@
   pointer-events: none;
 }
 
-/* Andamento da sincronização DENTRO do card (substitui o modal que travava a
-   tela). Etapa 1 = sync, etapa 2 = recálculo da margem; fica até o operador
-   dispensar. */
-.vf-page-anuncios-meli .am-sync-status {
-  display: flex;
-  align-items: flex-start;
+/* Lado direito do card do cliente: parado mostra as duas ações (cada uma com
+   a sua explicação); rodando vira o painel de andamento com a linha do tempo
+   de 2 etapas. A altura do card é a mesma nos dois modos. */
+.vf-page-anuncios-meli .am-sync-acoes {
+  display: grid;
+  align-content: center;
+}
+
+.vf-page-anuncios-meli .am-sync-acao {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
   gap: var(--vf-sp-3);
-  width: 100%;
-  max-width: 520px;
-  padding: var(--vf-sp-3) var(--vf-sp-4);
-  border: 1px solid var(--vf-info-border);
-  border-radius: var(--vf-radius-sm);
-  background: var(--vf-info-bg);
-  color: var(--vf-info-strong);
-  text-align: left;
+  padding: var(--vf-sp-3) 0;
 }
 
-.vf-page-anuncios-meli .am-sync-status.is-ok {
-  border-color: var(--vf-success-border);
-  background: var(--vf-success-bg);
-  color: var(--vf-success-strong);
+.vf-page-anuncios-meli .am-sync-acao + .am-sync-acao {
+  border-top: 1px solid var(--vf-border);
 }
 
-.vf-page-anuncios-meli .am-sync-status.is-aviso {
-  border-color: var(--vf-warning-border);
-  background: var(--vf-warning-bg);
-  color: var(--vf-warning-strong);
-}
-
-.vf-page-anuncios-meli .am-sync-status.is-erro {
-  border-color: var(--vf-danger-border);
-  background: var(--vf-danger-bg);
-  color: var(--vf-danger-strong);
-}
-
-.vf-page-anuncios-meli .am-sync-status__spinner {
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  margin-top: 2px;
-}
-
-.vf-page-anuncios-meli .am-sync-status__icone {
-  flex: 0 0 auto;
-  width: 18px;
+.vf-page-anuncios-meli .am-sync-acao__titulo {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
   font-weight: var(--vf-fw-semibold);
-  text-align: center;
+  color: var(--vf-text);
 }
 
-.vf-page-anuncios-meli .am-sync-status__texto {
-  flex: 1 1 auto;
-  min-width: 0;
+.vf-page-anuncios-meli .am-sync-acao__texto {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-sync-acao .vf-btn {
+  min-width: 96px;
+}
+
+.vf-page-anuncios-meli .am-sync-status {
+  display: grid;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-3) 0;
+  animation: am-sync-entra var(--vf-duration-slow) var(--vf-ease);
+}
+
+@keyframes am-sync-entra {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.vf-page-anuncios-meli .am-sync-status__topo {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
 }
 
 .vf-page-anuncios-meli .am-sync-status__titulo {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: var(--vf-sp-2);
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-anuncios-meli .am-sync-status__relogio {
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-muted);
+}
+
+/* Linha do tempo: marca + corpo; o filete entre as marcas fica verde quando
+   a etapa de cima termina. */
+.vf-page-anuncios-meli .am-sync-etapas {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-page-anuncios-meli .am-sync-etapa {
+  position: relative;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  column-gap: var(--vf-sp-3);
+  padding-bottom: var(--vf-sp-4);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa:last-child {
+  padding-bottom: 0;
+}
+
+.vf-page-anuncios-meli .am-sync-etapa:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 26px;
+  bottom: 2px;
+  left: 10px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--vf-border);
+  transition: background-color var(--vf-duration-slow) var(--vf-ease);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-feito:not(:last-child)::before {
+  background: var(--vf-success);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa__marca {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-surface);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-bold);
+  transition: background-color var(--vf-duration) var(--vf-ease), border-color var(--vf-duration) var(--vf-ease);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa__marca svg {
+  display: none;
+  width: 12px;
+  height: 12px;
+}
+
+.vf-page-anuncios-meli .am-sync-etapa__marca svg path {
+  stroke-dasharray: 16;
+  stroke-dashoffset: 16;
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-ativo .am-sync-etapa__marca {
+  border-color: var(--vf-primary);
+  background: var(--vf-primary);
+  color: var(--vf-text-on-primary);
+}
+
+/* Pulso da etapa em andamento: é o que diz "está rodando" de longe. */
+.vf-page-anuncios-meli .am-sync-etapa.is-ativo .am-sync-etapa__marca::after {
+  content: "";
+  position: absolute;
+  inset: -5px;
+  border: 2px solid rgba(var(--vf-primary-rgb), 0.35);
+  border-radius: var(--vf-radius-pill);
+  animation: am-sync-pulso 1.6s ease-out infinite;
+}
+
+@keyframes am-sync-pulso {
+  from { transform: scale(0.75); opacity: 1; }
+  to { transform: scale(1.35); opacity: 0; }
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-feito .am-sync-etapa__marca {
+  border-color: var(--vf-success);
+  background: var(--vf-success);
+  color: var(--vf-text-on-primary);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-feito .am-sync-etapa__marca b,
+.vf-page-anuncios-meli .am-sync-etapa.is-erro .am-sync-etapa__marca b,
+.vf-page-anuncios-meli .am-sync-etapa.is-aviso .am-sync-etapa__marca b {
+  display: none;
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-feito .am-sync-etapa__marca svg {
+  display: block;
+}
+
+/* O check é desenhado quando a etapa termina. */
+.vf-page-anuncios-meli .am-sync-etapa.is-feito .am-sync-etapa__marca svg path {
+  animation: am-sync-check 0.35s 0.05s var(--vf-ease) forwards;
+}
+
+@keyframes am-sync-check {
+  to { stroke-dashoffset: 0; }
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-erro .am-sync-etapa__marca {
+  border-color: var(--vf-danger);
+  background: var(--vf-danger);
+  color: var(--vf-text-on-primary);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-aviso .am-sync-etapa__marca {
+  border-color: var(--vf-warning);
+  background: var(--vf-warning);
+  color: var(--vf-text-on-primary);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-erro .am-sync-etapa__marca::before,
+.vf-page-anuncios-meli .am-sync-etapa.is-aviso .am-sync-etapa__marca::before {
+  content: "!";
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-pulado .am-sync-etapa__marca {
+  border-style: dashed;
+}
+
+.vf-page-anuncios-meli .am-sync-etapa__corpo {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding-top: 2px;
+}
+
+.vf-page-anuncios-meli .am-sync-etapa__titulo {
   margin: 0;
   font-size: var(--vf-fs-xs);
   font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
 }
 
-.vf-page-anuncios-meli .am-sync-status__etapa {
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-medium);
-  opacity: .8;
+.vf-page-anuncios-meli .am-sync-etapa.is-pendente .am-sync-etapa__titulo,
+.vf-page-anuncios-meli .am-sync-etapa.is-pulado .am-sync-etapa__titulo {
+  color: var(--vf-text-muted);
 }
 
-.vf-page-anuncios-meli .am-sync-status__detalhe {
-  margin: 2px 0 0;
+.vf-page-anuncios-meli .am-sync-etapa__detalhe {
+  margin: 0;
   font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
+  color: var(--vf-text-muted);
 }
 
-.vf-page-anuncios-meli .am-sync-status__fechar {
-  flex: 0 0 auto;
-  border: 0;
-  background: none;
-  padding: 0 2px;
-  font-size: 18px;
+.vf-page-anuncios-meli .am-sync-etapa.is-erro .am-sync-etapa__detalhe {
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-anuncios-meli .am-sync-etapa.is-aviso .am-sync-etapa__detalhe {
+  color: var(--vf-warning-strong);
+}
+
+.vf-page-anuncios-meli .am-sync-contador {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+}
+
+.vf-page-anuncios-meli .am-sync-contador strong {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-2xl);
+  font-weight: var(--vf-fw-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--vf-ls-tighter);
   line-height: 1;
-  color: inherit;
-  cursor: pointer;
-  opacity: .7;
+  color: var(--vf-primary-strong);
 }
 
-.vf-page-anuncios-meli .am-sync-status__fechar:hover { opacity: 1; }
+.vf-page-anuncios-meli .am-sync-contador span {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+/* Trilho: indeterminado na etapa 1 (o ML não diz quanto falta), real na 2. */
+.vf-page-anuncios-meli .am-sync-trilho {
+  position: relative;
+  height: 4px;
+  overflow: hidden;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-bg-2);
+}
+
+.vf-page-anuncios-meli .am-sync-trilho i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--vf-primary);
+  transition: width 0.6s var(--vf-ease);
+}
+
+.vf-page-anuncios-meli .am-sync-trilho i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  animation: am-sync-brilho 1.4s linear infinite;
+}
+
+.vf-page-anuncios-meli .am-sync-trilho.is-indeterminado i {
+  width: 35%;
+  animation: am-sync-indeterminado 1.25s ease-in-out infinite;
+}
+
+@keyframes am-sync-indeterminado {
+  from { left: -35%; }
+  to { left: 100%; }
+}
+
+@keyframes am-sync-brilho {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+
+.vf-page-anuncios-meli .am-sync-status__dica {
+  margin: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-anuncios-meli .am-sync-status__rodape {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+  padding-top: var(--vf-sp-3);
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-anuncios-meli .am-sync-status__resultado {
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-success-strong);
+}
+
+.vf-page-anuncios-meli .am-sync-status.is-aviso .am-sync-status__resultado { color: var(--vf-warning-strong); }
+.vf-page-anuncios-meli .am-sync-status.is-erro .am-sync-status__resultado { color: var(--vf-danger-strong); }
+
+.vf-page-anuncios-meli .am-sync-status__acoes {
+  display: flex;
+  gap: var(--vf-sp-2);
+  margin-left: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-page-anuncios-meli .am-sync-status,
+  .vf-page-anuncios-meli .am-sync-etapa.is-ativo .am-sync-etapa__marca::after,
+  .vf-page-anuncios-meli .am-sync-trilho i::after {
+    animation: none;
+  }
+
+  .vf-page-anuncios-meli .am-sync-etapa.is-feito .am-sync-etapa__marca svg path {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
 
 @media (max-width: 1024px) {
   .vf-page-anuncios-meli .am-cliente-contexto {
@@ -3443,19 +3684,8 @@
   }
 
   .vf-page-anuncios-meli .am-sync-area {
-    align-items: flex-start;
-    padding-top: var(--vf-sp-4);
-    padding-left: 0;
     border-top: 1px solid var(--vf-border);
     border-left: none;
-  }
-
-  .vf-page-anuncios-meli .am-sync-area__description {
-    text-align: left;
-  }
-
-  .vf-page-anuncios-meli .am-hud-actions {
-    justify-content: flex-start;
   }
 }
 
@@ -3505,18 +3735,18 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .vf-page-anuncios-meli .am-cliente-contexto {
+  .vf-page-anuncios-meli .am-cliente-contexto__info {
     padding: var(--vf-sp-3);
+  }
+
+  .vf-page-anuncios-meli .am-sync-area {
+    padding: var(--vf-sp-1) var(--vf-sp-3);
   }
 
   .vf-page-anuncios-meli .am-cliente-contexto__title-row {
     flex-direction: column;
   }
 
-  .vf-page-anuncios-meli .am-hud-actions,
-  .vf-page-anuncios-meli .am-hud-actions .vf-btn {
-    width: 100%;
-  }
 
   .vf-page-anuncios-meli .vf-btn {
     min-height: var(--vf-control-h-lg);

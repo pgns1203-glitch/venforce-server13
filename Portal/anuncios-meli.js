@@ -696,14 +696,7 @@
             '<span class="vf-status ' + conexao.cls + '">' + conexao.txt + "</span></div>" +
           '<div class="am-hud-sub">' + subInfo + "</div>" +
         "</div>" +
-        '<div class="am-sync-area">' +
-          '<p class="am-sync-area__description"><strong>Atualizar novos</strong> busca inclusões recentes. <strong>Sincronização completa</strong> revisa todo o catálogo.</p>' +
-          '<div class="am-hud-actions">' +
-            '<button type="button" class="vf-btn vf-btn--secondary" id="am-sync-novos">Atualizar novos</button>' +
-            '<button type="button" class="vf-btn vf-btn--primary" id="am-sync-completo">Sincronização completa</button>' +
-          "</div>" +
-          syncStatusHtml() +
-        "</div>" +
+        '<div class="am-sync-area">' + syncAcoesHtml() + "</div>" +
       "</div>";
 
     el("am-sync-novos").addEventListener("click", function () { sincronizar("novos"); });
@@ -9917,79 +9910,217 @@
   }
 
   // ===========================================================================
-  // Sincronização — NÃO bloqueia a tela. O andamento fica no próprio card de
-  // sincronização (AM.sync, desenhado por syncStatusHtml dentro do HUD) em
-  // duas etapas explícitas:
+  // Sincronização — NÃO bloqueia a tela. O lado direito do card do cliente
+  // (.am-sync-area) tem dois modos:
+  //   - parado: lista das duas ações, cada uma com a sua explicação;
+  //   - rodando/terminado: painel de andamento (#am-sync-status) com uma linha
+  //     do tempo de 2 etapas, relógio e contador do recálculo.
+  // Etapas:
   //   1. "sincronizando": POST /anuncios-meli/sync (grava os anúncios);
   //   2. "recalculando": EXATAMENTE o "Atualizar leitura" da Central de
   //      Margem — POST .../snapshot/refresh (reaproveita o run que o backend
   //      já enfileirou no sync), polling do run, e a lista é relida quando ele
   //      termina (antes disso a data "calculada em" ainda é a antiga).
-  // Antes era um modal que travava a tela e sumia no OK com a margem ainda
-  // calculando — o operador achava que tinha acabado.
+  // O painel só é redesenhado quando muda de estado (fase/etapas); progresso e
+  // relógio são aplicados no lugar, para a barra e o pulso não reiniciarem a
+  // cada polling. Antes era um modal que travava a tela e sumia no OK com a
+  // margem ainda calculando — o operador achava que tinha acabado.
   // ===========================================================================
   var MARGEM_POLL_MS = Number(window.__VF_AM_MARGEM_POLL_MS__) || 4000;
   var margemRecalculo = { seq: 0, timer: null };
+  var syncRelogio = null;
 
   function syncEmAndamento() {
     return !!(AM.sync && (AM.sync.fase === "sincronizando" || AM.sync.fase === "recalculando"));
   }
 
-  function horaAgora() {
-    var d = new Date();
-    function dois(n) { return (n < 10 ? "0" : "") + n; }
-    return dois(d.getHours()) + ":" + dois(d.getMinutes());
+  function doisDigitos(n) { return (n < 10 ? "0" : "") + n; }
+
+  function horaDe(ms) {
+    var d = new Date(ms);
+    return doisDigitos(d.getHours()) + ":" + doisDigitos(d.getMinutes());
   }
 
-  function syncStatusHtml() {
+  function duracaoTexto(ms) {
+    var s = Math.max(0, Math.floor(ms / 1000));
+    return Math.floor(s / 60) + ":" + doisDigitos(s % 60);
+  }
+
+  var SYNC_CHECK_SVG = '<svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M2.5 6.3 5 8.7l4.6-5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+  // Tudo o que o painel mostra, derivado de AM.sync. `chave` muda só quando
+  // a estrutura muda (fase, estado das etapas, rodapé).
+  function syncVisao() {
     var s = AM.sync;
-    if (!s || !AM.clienteAtual || s.slug !== AM.clienteAtual.slug) return "";
+    if (!s || !AM.clienteAtual || s.slug !== AM.clienteAtual.slug) return null;
+    var run = s.run || null;
+    var total = run && run.totalItems ? run.totalItems : 0;
+    var feitos = run ? Math.min(run.processedItems || 0, total || Infinity) : 0;
+    var e1, e2;
+
+    if (s.fase === "sincronizando") {
+      e1 = { estado: "ativo", detalhe: "Consultando o Mercado Livre…" };
+      e2 = { estado: "pendente", detalhe: "Começa quando a etapa 1 terminar." };
+    } else if (s.fase === "erro") {
+      e1 = { estado: "erro", detalhe: s.motivo };
+      e2 = { estado: "pendente", detalhe: "Não começou." };
+    } else {
+      e1 = { estado: "feito", detalhe: s.resumoSync };
+      if (s.fase === "recalculando") {
+        e2 = { estado: "ativo", detalhe: total ? "Com o preço e o custo atuais de cada anúncio." : "Aguardando o cálculo começar." };
+      } else if (s.margem === "pulada") {
+        e2 = { estado: "pulado", detalhe: "Nenhum anúncio novo, margem mantida." };
+      } else if (s.margem === "ok") {
+        var falhas = (run && run.failedItems) || 0;
+        e2 = {
+          estado: falhas ? "aviso" : "feito",
+          detalhe: ((run && run.successItems) || 0) + " anúncio(s) recalculados" +
+            (falhas ? " · " + falhas + " mantiveram o valor anterior." : "."),
+        };
+      } else {
+        e2 = { estado: "aviso", detalhe: s.aviso };
+      }
+    }
+
     var andamento = s.fase === "sincronizando" || s.fase === "recalculando";
-    var tom = andamento ? "is-andamento" : s.fase === "ok" ? "is-ok" : s.fase === "aviso" ? "is-aviso" : "is-erro";
-    var icone = andamento
-      ? '<span class="vf-spinner am-sync-status__spinner" aria-hidden="true"></span>'
-      : '<span class="am-sync-status__icone" aria-hidden="true">' + (s.fase === "ok" ? "✓" : "!") + "</span>";
-    var etapa = andamento
-      ? '<span class="am-sync-status__etapa">Etapa ' + (s.fase === "sincronizando" ? "1" : "2") + " de 2</span>"
-      : "";
-    return '<div class="am-sync-status ' + tom + '" id="am-sync-status" role="status" aria-live="polite">' +
-      icone +
-      '<div class="am-sync-status__texto">' +
-        '<p class="am-sync-status__titulo">' + escapeHtml(s.titulo) + etapa + "</p>" +
-        (s.detalhe ? '<p class="am-sync-status__detalhe">' + escapeHtml(s.detalhe) + "</p>" : "") +
+    var tom = andamento ? "is-andamento" : s.fase === "erro" ? "is-erro" : (e2.estado === "aviso" ? "is-aviso" : "is-ok");
+    var rodape = "";
+    if (s.fase === "erro") rodape = "Não foi possível sincronizar";
+    else if (!andamento) rodape = (e2.estado === "aviso" ? "Anúncios sincronizados às " : "Concluído às ") + horaDe(s.tFim) + " · levou " + duracaoTexto(s.tFim - s.t0);
+
+    return {
+      andamento: andamento,
+      tom: tom,
+      titulo: s.modo === "completo" ? "Sincronização completa" : "Atualizar novos",
+      e1: e1,
+      e2: e2,
+      feitos: feitos,
+      total: total,
+      pct: total ? Math.round(feitos / total * 100) : 0,
+      relogio: duracaoTexto((s.tFim || Date.now()) - s.t0),
+      rodape: rodape,
+      anuncio: s.fase === "sincronizando" ? "Sincronização em andamento, etapa 1 de 2: anúncios do Mercado Livre."
+        : s.fase === "recalculando" ? "Etapa 2 de 2: recalculando a margem dos anúncios."
+        : s.fase === "erro" ? "Não foi possível sincronizar. " + s.motivo
+        : rodape + ".",
+      chave: [s.fase, s.modo, e1.estado, e2.estado, total ? "n" : "-"].join("|"),
+    };
+  }
+
+  function syncEtapaHtml(n, titulo, etapa, extra) {
+    return '<li class="am-sync-etapa is-' + etapa.estado + '" data-etapa="' + n + '">' +
+      '<span class="am-sync-etapa__marca" aria-hidden="true"><b>' + n + "</b>" + SYNC_CHECK_SVG + "</span>" +
+      '<div class="am-sync-etapa__corpo">' +
+        '<p class="am-sync-etapa__titulo">' + titulo + "</p>" +
+        (extra || "") +
+        '<p class="am-sync-etapa__detalhe" data-sync-bind="d' + n + '">' + escapeHtml(etapa.detalhe || "") + "</p>" +
       "</div>" +
-      (andamento ? "" : '<button type="button" class="am-sync-status__fechar" data-sync-fechar aria-label="Dispensar aviso">×</button>') +
+    "</li>";
+  }
+
+  function syncPainelHtml(v) {
+    var trilho1 = v.e1.estado === "ativo" ? '<div class="am-sync-trilho is-indeterminado"><i></i></div>' : "";
+    var contador = v.e2.estado === "ativo" && v.total
+      ? '<p class="am-sync-contador"><strong data-sync-bind="feitos">' + v.feitos + "</strong><span>de " + v.total + " recalculados</span></p>" +
+        '<div class="am-sync-trilho" role="progressbar" aria-label="Recálculo da margem" aria-valuemin="0" aria-valuemax="' + v.total + '" aria-valuenow="' + v.feitos + '"><i data-sync-fill style="width:' + v.pct + '%"></i></div>'
+      : v.e2.estado === "ativo" ? '<div class="am-sync-trilho is-indeterminado"><i></i></div>' : "";
+    var rodape = v.andamento
+      ? '<p class="am-sync-status__dica">Pode continuar usando a tela enquanto isso.</p>'
+      : '<div class="am-sync-status__rodape">' +
+          '<span class="am-sync-status__resultado">' + escapeHtml(v.rodape) + "</span>" +
+          '<span class="am-sync-status__acoes">' +
+            (v.tom === "is-erro" ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-sync-repetir>Tentar de novo</button>' : "") +
+            '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-sync-fechar>Fechar</button>' +
+          "</span>" +
+        "</div>";
+    return '<div class="am-sync-status ' + v.tom + '" id="am-sync-status" data-sync-chave="' + escapeHtml(v.chave) + '">' +
+      '<p class="vf-visually-hidden" role="status" aria-live="polite">' + escapeHtml(v.anuncio) + "</p>" +
+      '<div class="am-sync-status__topo">' +
+        '<p class="am-sync-status__titulo">' + v.titulo + "</p>" +
+        '<span class="am-sync-status__relogio" data-sync-bind="relogio" aria-hidden="true">' + v.relogio + "</span>" +
+      "</div>" +
+      '<ol class="am-sync-etapas">' +
+        syncEtapaHtml(1, "Anúncios do Mercado Livre", v.e1, trilho1) +
+        syncEtapaHtml(2, "Margem dos anúncios", v.e2, contador) +
+      "</ol>" +
+      rodape +
     "</div>";
   }
 
-  // Atualiza só o status e os botões — sem redesenhar o HUD inteiro.
+  // Lado direito parado: as duas ações, cada uma com a sua explicação.
+  function syncAcoesHtml() {
+    return '<div class="am-sync-acoes">' +
+      '<div class="am-sync-acao">' +
+        '<div><p class="am-sync-acao__titulo">Atualizar novos</p><p class="am-sync-acao__texto">Busca só os anúncios criados desde a última sincronização.</p></div>' +
+        '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="am-sync-novos">Atualizar</button>' +
+      "</div>" +
+      '<div class="am-sync-acao">' +
+        '<div><p class="am-sync-acao__titulo">Sincronização completa</p><p class="am-sync-acao__texto">Revisa todo o catálogo e recalcula a margem.</p></div>' +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-sync-completo">Sincronizar</button>' +
+      "</div>" +
+    "</div>";
+  }
+
+  // Atualiza só o lado direito do card — sem redesenhar o HUD inteiro.
   function renderSyncStatus() {
     var area = document.querySelector(".am-sync-area");
     if (!area) return;
+    var v = syncVisao();
     var atual = el("am-sync-status");
-    var html = syncStatusHtml();
-    if (atual) atual.outerHTML = html || "";
-    else if (html) area.insertAdjacentHTML("beforeend", html);
-    var fechar = area.querySelector("[data-sync-fechar]");
-    if (fechar) fechar.addEventListener("click", function () { setSync(null); });
+    var acoes = area.querySelector(".am-sync-acoes");
+    if (acoes) acoes.hidden = !!v;
+
+    if (!v) {
+      if (atual) atual.parentNode.removeChild(atual);
+    } else if (atual && atual.getAttribute("data-sync-chave") === v.chave) {
+      area.querySelectorAll("[data-sync-bind]").forEach(function (n) {
+        var k = n.getAttribute("data-sync-bind");
+        var valor = k === "d1" ? v.e1.detalhe : k === "d2" ? v.e2.detalhe : v[k];
+        if (valor != null && n.textContent !== String(valor)) n.textContent = valor;
+      });
+      var fill = area.querySelector("[data-sync-fill]");
+      if (fill) {
+        fill.style.width = v.pct + "%";
+        fill.parentNode.setAttribute("aria-valuenow", String(v.feitos));
+      }
+    } else {
+      if (atual) atual.outerHTML = syncPainelHtml(v);
+      else area.insertAdjacentHTML("beforeend", syncPainelHtml(v));
+      var fechar = area.querySelector("[data-sync-fechar]");
+      if (fechar) fechar.addEventListener("click", function () { setSync(null); });
+      var repetir = area.querySelector("[data-sync-repetir]");
+      if (repetir) repetir.addEventListener("click", function () { var m = AM.sync && AM.sync.modo; setSync(null); sincronizar(m || "completo"); });
+    }
+
     var andamento = syncEmAndamento();
     ["am-sync-novos", "am-sync-completo"].forEach(function (id) {
       var b = el(id);
-      if (!b) return;
-      b.disabled = andamento;
-      b.setAttribute("aria-busy", andamento && AM.sync && AM.sync.botao === id ? "true" : "false");
+      if (b) b.disabled = andamento;
     });
+    if (andamento && !syncRelogio) {
+      syncRelogio = setInterval(function () {
+        if (!syncEmAndamento()) { clearInterval(syncRelogio); syncRelogio = null; return; }
+        var r = document.querySelector('#am-sync-status [data-sync-bind="relogio"]');
+        if (r && AM.sync) r.textContent = duracaoTexto(Date.now() - AM.sync.t0);
+      }, 1000);
+    } else if (!andamento && syncRelogio) {
+      clearInterval(syncRelogio); syncRelogio = null;
+    }
   }
 
+  // Mescla na sincronização atual; null limpa.
   function setSync(dados) {
-    AM.sync = dados;
+    if (dados === null) AM.sync = null;
+    else {
+      AM.sync = Object.assign({}, AM.sync || {}, dados);
+      if (!syncEmAndamento() && !AM.sync.tFim) AM.sync.tFim = Date.now();
+    }
     renderSyncStatus();
   }
 
-  function recalcularMargemAposSync(resumoSync) {
-    var botao = AM.sync && AM.sync.botao;
+  function recalcularMargemAposSync() {
     if (!AM.clienteAtual || !AM.contaMlId) {
-      setSync({ slug: AM.clienteAtual && AM.clienteAtual.slug, fase: "ok", botao: botao, titulo: "Sincronização concluída", detalhe: resumoSync });
+      setSync({ fase: "aviso", margem: "falhou", aviso: "Sem conta ML selecionada para recalcular a margem." });
       return;
     }
     margemRecalculo.seq += 1;
@@ -9997,54 +10128,42 @@
     var seq = margemRecalculo.seq;
     var slug = AM.clienteAtual.slug;
     var conta = AM.contaMlId;
-    var base = "/operacao/central-margem/" + encodeURIComponent(slug) + "/snapshot/refresh";
+    var base = "/central-margem/" + encodeURIComponent(slug) + "/snapshot/refresh";
     function mesmaTela() {
-      return seq === margemRecalculo.seq && AM.clienteAtual && AM.clienteAtual.slug === slug && AM.contaMlId === conta;
+      return seq === margemRecalculo.seq && AM.sync && AM.clienteAtual && AM.clienteAtual.slug === slug && AM.contaMlId === conta;
     }
-    function fase(f, titulo, detalhe) {
-      setSync({ slug: slug, fase: f, botao: botao, titulo: titulo, detalhe: detalhe });
-    }
-    function progresso(run) {
-      return run && run.totalItems
-        ? (run.processedItems || 0) + " de " + run.totalItems + " anúncios recalculados."
-        : "Aguardando o cálculo começar.";
-    }
-    fase("recalculando", "Anúncios sincronizados · recalculando a margem", resumoSync);
+    setSync({ fase: "recalculando", run: null });
     api(base, { method: "POST", body: { clienteContaId: conta } }).then(function (r) {
       if (!mesmaTela()) return;
       var d = r.data || {};
       if (!d.ok || !d.runId) {
-        fase("aviso", "Anúncios sincronizados · margem não recalculada",
-          "Não foi possível recalcular a margem agora. Use \"Atualizar leitura\" na Central de Margem.");
+        setSync({ fase: "aviso", margem: "falhou",
+          aviso: "Não foi possível recalcular a margem agora. Use \"Atualizar leitura\" na Central de Margem." });
         return;
       }
       function tick() {
-        margemRecalculo.timer = null;
         if (!mesmaTela()) return;
         api(base + "/" + encodeURIComponent(d.runId) + "?clienteContaId=" + encodeURIComponent(conta)).then(function (s) {
           if (!mesmaTela()) return;
           var run = s.data && s.data.ok ? s.data.run : null;
           // Falha pontual de rede não encerra o acompanhamento.
           if (!run || (run.status !== "completed" && run.status !== "failed")) {
-            if (run) fase("recalculando", "Anúncios sincronizados · recalculando a margem", progresso(run));
+            if (run) setSync({ run: run });
             margemRecalculo.timer = setTimeout(tick, MARGEM_POLL_MS);
             return;
           }
           if (run.status === "completed") {
-            var falhas = run.failedItems || 0;
-            fase(falhas ? "aviso" : "ok", "Sincronização concluída",
-              "Margem recalculada às " + horaAgora() + " · " + (run.successItems || 0) + " anúncio(s)" +
-              (falhas ? " · " + falhas + " mantiveram o valor anterior." : "."));
+            setSync({ fase: run.failedItems ? "aviso" : "ok", margem: "ok", run: run });
             toast("Sincronização concluída e margem recalculada.", "is-success");
           } else {
-            fase("aviso", "Anúncios sincronizados · recálculo da margem falhou",
-              "A margem mostrada é a do cálculo anterior. Tente \"Atualizar leitura\" na Central de Margem.");
+            setSync({ fase: "aviso", margem: "falhou",
+              aviso: "O recálculo falhou; a margem mostrada é a do cálculo anterior. Tente \"Atualizar leitura\" na Central de Margem." });
             toast("O recálculo da margem falhou.", "is-danger");
           }
           carregarResumo(); carregarAnuncios();
         });
       }
-      fase("recalculando", "Anúncios sincronizados · recalculando a margem", progresso(d.run));
+      setSync({ run: d.run || null });
       margemRecalculo.timer = setTimeout(tick, MARGEM_POLL_MS);
     });
   }
@@ -10055,40 +10174,36 @@
     if (!AM.clienteAtual || syncEmAndamento()) return;
     var slug = AM.clienteAtual.slug;
     var conta = AM.contaMlId;
-    var botao = modo === "completo" ? "am-sync-completo" : "am-sync-novos";
-    setSync({
-      slug: slug, fase: "sincronizando", botao: botao,
-      titulo: modo === "completo" ? "Sincronização completa em andamento" : "Buscando anúncios novos",
-      detalhe: "Consultando o Mercado Livre. Pode levar alguns minutos — você pode continuar usando a tela.",
-    });
+    AM.sync = null;
+    setSync({ slug: slug, modo: modo, fase: "sincronizando", t0: Date.now(), tFim: null });
 
     api("/anuncios-meli/sync", {
       method: "POST",
       body: { clienteSlug: slug, modo: modo, clienteContaId: conta || undefined },
     }).then(function (r) {
-      if (!AM.clienteAtual || AM.clienteAtual.slug !== slug || AM.contaMlId !== conta) return;
+      if (!AM.sync || !AM.clienteAtual || AM.clienteAtual.slug !== slug || AM.contaMlId !== conta) return;
       var d = r.data || {};
       if (!d.ok) {
         setSync({
-          slug: slug, fase: "erro", botao: botao,
-          titulo: "Não foi possível sincronizar",
-          detalhe: (d.motivo || "Erro ao consultar o Mercado Livre.") +
+          fase: "erro",
+          motivo: (d.motivo || "Erro ao consultar o Mercado Livre.") +
             (d.codigo === "NO_TOKEN" ? " Conecte a conta do Mercado Livre deste cliente na tela de Clientes." : ""),
         });
         return;
       }
       var resumoSync = d.totalSalvos > 0
-        ? (d.totalEncontrados || 0) + " anúncios na conta · " + d.totalSalvos + " gravados/atualizados." +
-          (d.limitado ? " O limite por sincronização foi atingido; rode novamente para continuar." : "")
+        ? (d.totalEncontrados || 0) + " na conta · " + d.totalSalvos + " gravados ou atualizados." +
+          (d.limitado ? " O limite por sincronização foi atingido; rode de novo para continuar." : "")
         : (d.mensagem || "Nenhum anúncio novo para gravar.");
       // Lista relida já (anúncios novos aparecem); a margem é relida de novo
       // quando o recálculo terminar.
       carregarResumo(); carregarAnuncios();
       if (modo !== "completo" && !(d.totalSalvos > 0)) {
-        setSync({ slug: slug, fase: "ok", botao: botao, titulo: "Tudo em dia", detalhe: resumoSync });
+        setSync({ fase: "ok", margem: "pulada", resumoSync: resumoSync });
         return;
       }
-      recalcularMargemAposSync(resumoSync);
+      setSync({ resumoSync: resumoSync });
+      recalcularMargemAposSync();
     });
   }
 

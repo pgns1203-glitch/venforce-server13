@@ -958,12 +958,8 @@
 .vf-page-anuncios-meli .am-mlb__cond {
   white-space: nowrap;
   line-height: var(--vf-lh-tight);
-  padding: 1px var(--vf-sp-2);
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text-secondary);
-  background: var(--vf-surface-2);
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius-pill, 999px);
 }
 
 /* Números na MESMA orientação das colunas da linha-mãe (.am-row__preco

@@ -287,6 +287,7 @@ function montarCandidata(args) {
     // Mesmo formato do /simular: "de onde saiu a diferença no lucro" e a
     // fonte do frete/comissão na cascata (cotação real só quando houve uma).
     efeitos: calc.efeitos,
+    explicacao: calc.explicacao,
     evidencia: cotacaoReal ? evidenciaDaCotacao(cotacaoReal) : null,
     cotacao: cotacaoReal
       ? {

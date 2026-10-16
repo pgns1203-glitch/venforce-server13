@@ -496,6 +496,10 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
     delta_margem_ratio: deltaMargem,
     empate_volume: empateVolume,
     efeitos,
+    // "Como a conta foi feita": só a alíquota (fração), que não existe em
+    // nenhum outro campo (o `imposto` só sai em R$) — o resto da narrativa
+    // vem de `atual`/`cenario`/`evidencia`, já devolvidos; o front não deriva nada.
+    explicacao: { aliquota: fracaoValida(aliquotaNova) ? round6(aliquotaNova) : null },
     meta: {
       margem_alvo: margemAlvo === null ? null : round6(margemAlvo),
       margem_minima: margemMinima === null ? null : round6(margemMinima),
@@ -557,6 +561,7 @@ function resultadoBloqueado(motivo, { flags = {}, meta = {} } = {}) {
     delta_margem_ratio: null,
     empate_volume: null,
     efeitos: [],
+    explicacao: { aliquota: null },
     meta: { margem_alvo: num(meta.margem_alvo), margem_minima: num(meta.margem_minima) },
     assumido: [],
   };

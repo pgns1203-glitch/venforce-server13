@@ -488,6 +488,8 @@ cenario("efeitos: cada componente decompõe o ΔLC, ordenados pelo tamanho, soma
   assert.strictEqual(r.efeitos[0].chave, "preco");
   // Custo e retorno ML não mudaram: não entram como barra (nada pra mostrar).
   assert.ok(!r.efeitos.some((e) => e.chave === "custo" || e.chave === "rebate"));
+  // "Como a conta foi feita": a alíquota do cenário (fração) — o resto da narrativa já vem em atual/cenario/evidencia.
+  assert.strictEqual(r.explicacao.aliquota, 0.11);
 });
 
 cenario("efeitos: sem ΔLC (bloqueado ou faltando dado), não há barras", () => {

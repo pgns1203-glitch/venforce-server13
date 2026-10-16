@@ -119,16 +119,6 @@
   color: var(--vf-text-muted, #6b7280);
 }
 
-.full-estado {
-  padding: var(--vf-sp-8, 32px);
-  text-align: center;
-  color: var(--vf-text-muted, #6b7280);
-}
-
-.full-estado--erro {
-  color: var(--vf-danger-strong, #8a1c1c);
-}
-
 /* Casca do drawer (overlay, header, corpo, transição) vem de .vf-drawer /
    .vf-drawer-backdrop na Fundação V2 — ver FullInventoryDrawer.jsx. Só o
    conteúdo interno (listas, grade de campos) é local, porque o formato dos

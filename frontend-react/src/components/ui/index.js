@@ -11,6 +11,7 @@
 
 export { VFBanner } from "./VFBanner/index.js";
 export { VFButton, useFeedbackOk } from "./VFButton/index.js";
+export { VFEmpty, VFError, VFLoading, VFSkeleton } from "./VFEstados/index.js";
 export { VFField, VFInput, VFSelect, VFTextarea } from "./VFField/index.js";
 export { VFMonthYearSelector } from "./VFMonthYearSelector/index.js";
 export { VFStatus, VFTag, VFBadge } from "./VFStatus/index.js";

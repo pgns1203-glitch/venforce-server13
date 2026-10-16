@@ -17,9 +17,8 @@ import FullSummaryKpis from "../../components/full/FullSummaryKpis.jsx";
 import FullFilters from "../../components/full/FullFilters.jsx";
 import FullInventoryTable from "../../components/full/FullInventoryTable.jsx";
 import FullInventoryDrawer from "../../components/full/FullInventoryDrawer.jsx";
-import FullLoadingState from "../../components/full/FullLoadingState.jsx";
 import FullErrorState from "../../components/full/FullErrorState.jsx";
-import FullEmptyState from "../../components/full/FullEmptyState.jsx";
+import { VFEmpty, VFLoading } from "../../components/ui/VFEstados/index.js";
 import FullAccountSelector from "../../components/full/FullAccountSelector.jsx";
 
 const FILTROS_PADRAO = { search: "", status: "", somenteComDemanda: false };
@@ -107,7 +106,13 @@ export default function FullGestaoPage() {
 
         {clienteContaId && erro && !dados && <FullErrorState erro={erro} onTentarNovamente={recarregar} />}
 
-        {clienteContaId && !dados && !erro && carregando && <FullLoadingState />}
+        {clienteContaId && !dados && !erro && carregando && (
+          <VFLoading label="Coletando inventários Full da conta…">
+            <span className="vf-field__hint">
+              Isso pode levar alguns segundos na primeira carga (escaneando anúncios, estoque e operações).
+            </span>
+          </VFLoading>
+        )}
 
         {clienteContaId && dados && (
           <>
@@ -134,7 +139,7 @@ export default function FullGestaoPage() {
             <FullFilters filtros={filtros} onAtualizar={atualizarFiltro} />
 
             {dados.inventories.length === 0 ? (
-              <FullEmptyState mensagem="Esta conta não tem inventários Full identificados nesta coleta." />
+              <VFEmpty compact title="Nenhum inventário Full nesta coleta">Esta conta não tem inventários Full identificados nesta coleta.</VFEmpty>
             ) : (
               <FullInventoryTable inventories={inventoriesFiltradas} onDetalhar={setInventoryIdSelecionado} />
             )}

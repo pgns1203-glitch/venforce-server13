@@ -1977,6 +1977,21 @@ h4 {
   margin-top: var(--vf-sp-2);
 }
 
+/* Compacto: estado vazio dentro de um card/seção, não da página inteira */
+.vf-empty--compact {
+  padding: var(--vf-sp-6) var(--vf-sp-5);
+}
+
+/* Detalhe técnico do erro (mensagem crua da API), abaixo da explicação */
+.vf-empty__detail {
+  margin: 0;
+  max-width: 400px;
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+  overflow-wrap: anywhere;
+}
+
 /* Skeleton: pulso de opacidade, sem gradiente */
 .vf-skeleton {
   background: var(--vf-bg-2);

@@ -58,7 +58,7 @@ Convenções (as da pasta): `.jsx` + JSDoc, sem TypeScript, wrapper fino sobre a
 ### 3.4 Estados: `VFEmpty`, `VFLoading`, `VFError`, `VFSkeleton` + `VFAsync` (PR 4)
 - Substituem `cliente360/{Empty,Loading,Error}State.jsx` e `full/Full{Empty,Loading,Error}State.jsx` (6 → 3).
 - **`VFEmpty`:** `icon`, `title`, `children`, `actions`. **`VFError`:** idem + `onRetry` (vira botão "Tentar de novo"). **`VFLoading`:** `label` (texto acessível), `size`. **`VFSkeleton`:** `variant` (`row` | `title` | `circle`), `count`.
-- **`VFAsync`** (o que dá a sensação de fluidez): `state` (`loading` | `empty` | `error` | `ready`), `skeleton`, `empty`, `error`, `children`. Troca skeleton → conteúdo com fade cruzado **sem salto de layout** (o skeleton reserva a altura). Hoje cada tela faz o seu `if (loading) return …`.
+- ~~`VFAsync`~~ — **descartado na implementação:** as páginas decidem cada estado por condições independentes (`erro && !dados`, `carregando && !dados`…), não por um `state` único, e um wrapper só acrescentaria uma camada de DOM. A continuidade carregando → resultado vem de `VFEmpty`/`VFError` entrarem com `.vf-motion-enter`. Os dois arquivos que têm texto de domínio (`cliente360/ErrorState`, `full/FullErrorState`) viraram tradutores código → texto sobre o `VFError`; os outros quatro foram apagados.
 
 ### 3.5 Número e indicador: `VFNumber`, `VFKpi` (PR 5) — o centro do "dinâmico"
 - **`VFNumber`:** `value`, `format` (`brl` | `brl-compacta` | `pct` | `int` | `num`), `casas`, `animate` (padrão `true`), `highlightChange` (padrão `true`), `goodDirection` (`up` | `down` | omitido = neutro).
@@ -91,7 +91,7 @@ Cada PR cria o componente **e migra um consumidor real** como prova; o resto mig
 | 1 | Barrel corrigido, `VFButton`, hooks de movimento, classes `.vf-motion-*` | Botões do `NovoFechamento` (Financeiro) |
 | 2 | `VFField` + controles | `ProdutosFinanceiroFilters` |
 | 3 | `VFBanner`, `VFStatus`, `VFTag`, `VFBadge` | `FaixaBloqueio` (Cliente 360 V3) |
-| 4 | Estados + `VFAsync` | Apaga os 6 duplicados (Cliente 360 + Full) |
+| 4 | Estados (`VFEmpty`, `VFError`, `VFLoading`, `VFSkeleton`) | 4 duplicados apagados, 2 viram tradutores de texto |
 | 5 | `VFNumber` + `VFKpi` | `ResumoKpis` (Financeiro) e um bloco da Visão |
 | 6 | View Transitions no Portal | Todas as páginas com shell |
 

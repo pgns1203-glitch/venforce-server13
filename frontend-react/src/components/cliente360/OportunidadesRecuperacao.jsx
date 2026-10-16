@@ -9,7 +9,7 @@
 // Alertas de qualidade de dado aparecem na lista, mas fora do total (contaNoTotal).
 
 import { formatarMoeda } from "../../utils/currency.js";
-import EmptyState from "./EmptyState.jsx";
+import { VFEmpty } from "../ui/VFEstados/index.js";
 
 const SEVERIDADE_TAG = { critico: "is-danger", atencao: "is-warning", info: "is-info" };
 
@@ -35,11 +35,9 @@ export default function OportunidadesRecuperacao({ oportunidades }) {
       </div>
 
       {lista.length === 0 ? (
-        <EmptyState
-          compacto
-          titulo="Nenhuma oportunidade operacional identificada"
-          descricao="Nenhum custo, frete, preço, comissão ou imposto piorou o suficiente para virar valor recuperável neste período."
-        />
+        <VFEmpty compact title="Nenhuma oportunidade operacional identificada">
+          Nenhum custo, frete, preço, comissão ou imposto piorou o suficiente para virar valor recuperável neste período.
+        </VFEmpty>
       ) : (
         <>
           <ul className="c360-oportunidades">

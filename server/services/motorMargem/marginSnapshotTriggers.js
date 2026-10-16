@@ -110,7 +110,11 @@ async function enfileirarAposSyncAnuncios({ resultado, clienteId, clienteSlug = 
     clienteSlug,
     clienteContaId,
     marketplace: "meli",
-    reason: "anuncios_sync_" + (resultado.modo === "completo" ? "completo" : "novos"),
+    // margin_snapshot_runs_reason_check só aceita central_vendas_sync_completed,
+    // base_changed, manual_refresh e freshness_cron — outro valor é rejeitado
+    // pelo banco (o 1º nome, "anuncios_sync_*", falhava em silêncio em prod).
+    // O clique de sincronizar é um pedido manual do operador.
+    reason: "manual_refresh",
     requestedBy,
     db,
   });

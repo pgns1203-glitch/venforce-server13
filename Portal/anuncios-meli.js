@@ -10128,7 +10128,7 @@
     var seq = margemRecalculo.seq;
     var slug = AM.clienteAtual.slug;
     var conta = AM.contaMlId;
-    var base = "/central-margem/" + encodeURIComponent(slug) + "/snapshot/refresh";
+    var base = "/operacao/central-margem/" + encodeURIComponent(slug) + "/snapshot/refresh";
     function mesmaTela() {
       return seq === margemRecalculo.seq && AM.sync && AM.clienteAtual && AM.clienteAtual.slug === slug && AM.contaMlId === conta;
     }

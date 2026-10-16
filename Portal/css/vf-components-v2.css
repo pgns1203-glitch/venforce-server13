@@ -2145,6 +2145,17 @@ h4 {
   color: var(--vf-text);
 }
 
+/* Título + subtítulo no cabeçalho do drawer (VFDrawer) */
+.vf-drawer__heading {
+  min-width: 0;
+}
+
+.vf-drawer__subtitle {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
 .vf-modal__body,
 .vf-drawer__body {
   flex: 1 1 auto;

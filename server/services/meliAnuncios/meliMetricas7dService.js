@@ -48,11 +48,11 @@ function janela7dias(agora = new Date()) {
 // item pode afirmar "vendeu 0", porque não sabemos. `porItem` ausente de um
 // item (ok:true) significa zero pedidos DAQUELE item no período — fato, não
 // ausência de dado.
-async function buscarVendas7dPorItens({ clienteId, mlUserId, itemIds }) {
+async function buscarVendas7dPorItens({ clienteId, mlUserId, itemIds, periodo }) {
   const alvo = new Set((itemIds || []).map(String));
   if (!alvo.size) return { ok: true, porItem: {} };
 
-  const { dateFrom, dateTo } = janela7dias();
+  const { dateFrom, dateTo } = periodo || janela7dias();
   let orders;
   try {
     orders = await fetchAllOrders(clienteId, mlUserId, dateFrom, dateTo, null);
@@ -74,7 +74,7 @@ async function buscarVendas7dPorItens({ clienteId, mlUserId, itemIds }) {
 
 // { itemId: número | null } — null é "não sabemos" (chamada falhou para
 // ESTE item especificamente); os demais itens do lote não são afetados.
-async function buscarVisitas7dPorItens({ clienteId, mlUserId, itemIds }) {
+async function buscarVisitas7dPorItens({ clienteId, mlUserId, itemIds, periodo }) {
   const ids = Array.from(new Set((itemIds || []).map(String)));
   const porItem = {};
   if (!ids.length) return porItem;
@@ -83,7 +83,8 @@ async function buscarVisitas7dPorItens({ clienteId, mlUserId, itemIds }) {
     try {
       const resp = await mlFetch(
         clienteId,
-        `/items/${encodeURIComponent(itemId)}/visits/time_window?last=${JANELA_DIAS}&unit=day`,
+        `/items/${encodeURIComponent(itemId)}/visits/time_window?last=${JANELA_DIAS}&unit=day` +
+          (periodo ? `&ending=${encodeURIComponent(periodo.dateTo)}` : ""),
         { mlUserId }
       );
       porItem[itemId] =
@@ -112,11 +113,18 @@ function calcularConversao(vendas, views) {
 // Junta os dois lados e calcula a conversão. `itemIds` é a lista EXATA vinda
 // do chamador (o controller decide quem está visível) — esta função nunca
 // decide sozinha o que buscar.
-async function montarMetricas7d({ clienteId, mlUserId, itemIds }) {
+async function montarMetricas7d({ clienteId, mlUserId, itemIds, incluirComparativo = false, agora = new Date(), periodo }) {
   const ids = Array.from(new Set((itemIds || []).map(String)));
-  const [vendas, visitasPorItem] = await Promise.all([
-    buscarVendas7dPorItens({ clienteId, mlUserId, itemIds: ids }),
-    buscarVisitas7dPorItens({ clienteId, mlUserId, itemIds: ids }),
+  const atual = periodo || janela7dias(agora);
+  const fimAnterior = new Date(atual.dateFrom + "T12:00:00Z");
+  fimAnterior.setUTCDate(fimAnterior.getUTCDate() - 1);
+  const anterior = janela7dias(fimAnterior);
+  const [vendas, visitasPorItem, comparativo] = await Promise.all([
+    buscarVendas7dPorItens({ clienteId, mlUserId, itemIds: ids, periodo: atual }),
+    buscarVisitas7dPorItens({ clienteId, mlUserId, itemIds: ids, periodo }),
+    incluirComparativo
+      ? montarMetricas7d({ clienteId, mlUserId, itemIds: ids, periodo: anterior })
+      : Promise.resolve(null),
   ]);
 
   const metricas = {};
@@ -132,6 +140,10 @@ async function montarMetricas7d({ clienteId, mlUserId, itemIds }) {
       vendas: vendasItem,
       conversao: calcularConversao(vendasItem, views),
     };
+    if (incluirComparativo) {
+      metricas[itemId].anterior = comparativo[itemId];
+      metricas[itemId].periodos = { atual, anterior };
+    }
   }
   return metricas;
 }

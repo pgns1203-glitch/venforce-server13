@@ -228,7 +228,7 @@ tokensTbody?.addEventListener("click", async (e) => {
     } catch (err) {
       btn.disabled = false;
       btn.textContent = "Revelar";
-      window.alert(`Não foi possível revelar: ${err.message}`);
+      vfAvisar("Não foi possível revelar", err.message);
     }
     return;
   }
@@ -253,7 +253,7 @@ tokensTbody?.addEventListener("click", async (e) => {
         btn.classList.remove("vf-mlt-copy-done-state");
       }, 1500);
     } catch {
-      window.alert("Não foi possível copiar para a área de transferência.");
+      vfAvisar("Não foi possível copiar para a área de transferência.");
     }
   }
 });
@@ -366,3 +366,21 @@ if (mltFilterQ) mltFilterQ.addEventListener("input", scheduleFilter);
 if (mltFilterStatus) mltFilterStatus.addEventListener("change", applyRowFilters);
 
 if (TOKEN) loadMlTokens();
+
+
+// ── Confirmação e aviso da Fundação (Portal/vf-ui.js) ──────────────────────
+// Modal e toast da V2 no lugar de confirm()/alert() do navegador. Sem o
+// vf-ui.js (página antiga em cache, sandbox de teste) cai no nativo, com o
+// mesmo texto.
+function vfConfirmar(opcoes) {
+  if (window.VF && typeof window.VF.confirm === "function") return window.VF.confirm(opcoes);
+  return Promise.resolve(window.confirm([opcoes.title, opcoes.message].filter(Boolean).join("\n\n")));
+}
+
+function vfAvisar(titulo, descricao, tom) {
+  if (window.VF && typeof window.VF.toast === "function") {
+    window.VF.toast({ title: titulo, description: descricao, tone: tom || "danger" });
+    return;
+  }
+  window.alert(descricao ? titulo + "\n\n" + descricao : titulo);
+}

@@ -2626,11 +2626,19 @@ async function salvarFechamentoFinanceiro() {
        antigo. */
     if (resp.status === 409 && json?.code === "ENTREGA_JA_EXISTE") {
       const jaPublicada = json?.publicado === true;
-      const aviso = jaPublicada
-        ? `A competência ${periodo} já tem um fechamento PUBLICADO para este cliente/operação.\n\n`
-          + "Substituir grava um novo fechamento. O link que já está com o cliente continua abrindo o fechamento antigo; o novo terá link próprio quando for publicado.\n\nSubstituir mesmo assim?"
-        : `A competência ${periodo} já tem um fechamento salvo para este cliente/operação.\n\nSubstituir pelo que acabou de ser processado?`;
-      if (!window.confirm(aviso)) {
+      const substituir = await vfConfirmar(jaPublicada
+        ? {
+            title: `${periodo} já tem um fechamento PUBLICADO`,
+            message: "Substituir grava um novo fechamento para este cliente/operação. O link que já está com o cliente continua abrindo o fechamento antigo; o novo terá link próprio quando for publicado.",
+            confirmLabel: "Substituir mesmo assim",
+            tone: "danger",
+          }
+        : {
+            title: `${periodo} já tem um fechamento salvo`,
+            message: "Substituir pelo que acabou de ser processado para este cliente/operação?",
+            confirmLabel: "Substituir",
+          });
+      if (!substituir) {
         setStatus(`Fechamento de ${periodo} mantido como estava.`, "info");
         return;
       }
@@ -2745,10 +2753,15 @@ function temResultadoNaoSalvo() {
 
 const btnFinLimpar = document.getElementById("btn-fin-limpar");
 if (btnFinLimpar) {
-  btnFinLimpar.addEventListener("click", () => {
-    if (temResultadoNaoSalvo() &&
-        !window.confirm("Há um fechamento processado que ainda não foi salvo. Limpar mesmo assim?")) {
-      return;
+  btnFinLimpar.addEventListener("click", async () => {
+    if (temResultadoNaoSalvo()) {
+      const limpar = await vfConfirmar({
+        title: "Limpar o fechamento processado?",
+        message: "Ele ainda não foi salvo e será descartado.",
+        confirmLabel: "Limpar mesmo assim",
+        tone: "danger",
+      });
+      if (!limpar) return;
     }
 
     const sales = document.getElementById("fin-sales");
@@ -3175,4 +3188,22 @@ async function _gerarLinkComEntrega() {
   } finally {
     setBtnLoading(btn, false, "Gerar link para o cliente");
   }
+}
+
+
+// ── Confirmação e aviso da Fundação (Portal/vf-ui.js) ──────────────────────
+// Modal e toast da V2 no lugar de confirm()/alert() do navegador. Sem o
+// vf-ui.js (página antiga em cache, sandbox de teste) cai no nativo, com o
+// mesmo texto.
+function vfConfirmar(opcoes) {
+  if (window.VF && typeof window.VF.confirm === "function") return window.VF.confirm(opcoes);
+  return Promise.resolve(window.confirm([opcoes.title, opcoes.message].filter(Boolean).join("\n\n")));
+}
+
+function vfAvisar(titulo, descricao, tom) {
+  if (window.VF && typeof window.VF.toast === "function") {
+    window.VF.toast({ title: titulo, description: descricao, tone: tom || "danger" });
+    return;
+  }
+  window.alert(descricao ? titulo + "\n\n" + descricao : titulo);
 }

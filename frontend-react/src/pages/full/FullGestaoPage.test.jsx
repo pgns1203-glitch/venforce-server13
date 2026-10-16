@@ -333,7 +333,10 @@ describe("Central de Gestão Full · estados", () => {
 
     const botoes = screen.getAllByRole("button", { name: /detalhar/i });
     await userEvent.click(botoes[0]); // abre INV-1 (fica pendente)
-    await userEvent.click(botoes[1]); // troca para INV-2 antes do INV-1 responder
+    // O drawer é modal (VFDrawer/Radix): a tabela atrás não recebe clique,
+    // então a troca real é fechar e abrir outro — com o INV-1 ainda pendente.
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(botoes[1]); // abre INV-2 antes do INV-1 responder
 
     await screen.findByText("INV-2");
     resolverPrimeiro?.({ inventoryId: "INV-1", references: [], stock: {}, operationalStatus: "REPOR", sales: { status: "ok" } });

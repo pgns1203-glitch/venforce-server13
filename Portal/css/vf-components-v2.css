@@ -1673,6 +1673,32 @@ h4 {
   cursor: not-allowed;
 }
 
+/* Traço que desliza até a aba ativa (VFTabs). Com ele, a aba ativa não
+   desenha o próprio sublinhado — o traço faz esse papel e se move. */
+.vf-tabs--indicator {
+  position: relative;
+}
+
+.vf-tabs--indicator .vf-tab.is-active {
+  border-bottom-color: transparent;
+}
+
+.vf-tabs__indicator {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--vf-primary);
+  pointer-events: none;
+  transition: transform var(--vf-duration-slow) var(--vf-ease),
+    width var(--vf-duration-slow) var(--vf-ease);
+}
+
+.vf-tabs__indicator.is-instant {
+  transition: none;
+}
+
 /* Segmented control */
 .vf-segmented {
   display: inline-flex;
@@ -2122,6 +2148,13 @@ h4 {
 .vf-modal--sm { max-width: var(--vf-modal-sm); }
 .vf-modal--lg { max-width: var(--vf-modal-lg); }
 
+/* Texto de uma confirmação (VF.confirm): quebras de linha da mensagem valem */
+.vf-modal__message {
+  margin: 0;
+  white-space: pre-line;
+  color: var(--vf-text);
+}
+
 /* Header/body/footer compartilhados entre modal e drawer */
 .vf-modal__header,
 .vf-drawer__header {
@@ -2143,6 +2176,17 @@ h4 {
   font-size: var(--vf-fs-md);
   font-weight: var(--vf-fw-semibold);
   color: var(--vf-text);
+}
+
+/* Título + subtítulo no cabeçalho do drawer (VFDrawer) */
+.vf-drawer__heading {
+  min-width: 0;
+}
+
+.vf-drawer__subtitle {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
 }
 
 .vf-modal__body,
@@ -2324,6 +2368,14 @@ h4 {
   line-height: var(--vf-lh-snug);
   color: var(--vf-surface);
   z-index: var(--vf-z-tooltip);
+}
+
+/* Flutuante (VFTooltip): sombra de popover e quebra de linha preservada;
+   entra com o mesmo fade curto do .vf-motion-enter. */
+.vf-tooltip--float {
+  white-space: pre-line;
+  box-shadow: var(--vf-shadow-popover);
+  animation: vf-enter var(--vf-duration-fast) var(--vf-ease) both;
 }
 
 /* ============================================================

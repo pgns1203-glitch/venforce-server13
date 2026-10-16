@@ -4429,12 +4429,118 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 }
 .am-reb-anuncio__id { font-size: var(--vf-fs-xs); color: var(--vf-text-muted); }
 
-/* Aba Recomendados — tabela compacta */
+/* Análise em andamento — radar + placar ao vivo */
+.am-reb-radar-an {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-6) 0 var(--vf-sp-2);
+  text-align: center;
+}
+
+.am-reb-radar {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 128px;
+  height: 128px;
+  margin-bottom: var(--vf-sp-2);
+  border-radius: 50%;
+  background:
+    radial-gradient(circle, transparent 31%, var(--vf-primary-border) 31.5%, transparent 32.5%),
+    radial-gradient(circle, transparent 63%, var(--vf-primary-border) 63.5%, transparent 64.5%),
+    var(--vf-primary-soft);
+  box-shadow: inset 0 0 0 1px var(--vf-primary-border);
+  overflow: hidden;
+}
+
+.am-reb-radar__varredura {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: conic-gradient(from 0deg, rgba(var(--vf-primary-rgb), 0.32), rgba(var(--vf-primary-rgb), 0) 25%);
+  animation: am-reb-varredura 2.4s linear infinite;
+}
+
+@keyframes am-reb-varredura { to { transform: rotate(360deg); } }
+
+.am-reb-radar__pct {
+  position: relative;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-2xl);
+  font-weight: var(--vf-fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-primary-strong);
+}
+
+.am-reb-radar-an__titulo {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.am-reb-radar-an__txt {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-secondary);
+}
+
+.am-reb-radar-an__barra { width: min(420px, 100%); margin-top: var(--vf-sp-2); }
+
+.am-reb-placar {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--vf-sp-3);
+  width: min(560px, 100%);
+  margin: 0 auto;
+}
+
+.am-reb-placar__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: var(--vf-sp-4) var(--vf-sp-2);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-lg);
+  background: var(--vf-surface);
+  text-align: center;
+}
+
+.am-reb-placar__n {
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-2xl);
+  font-weight: var(--vf-fw-semibold);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text);
+}
+
+.am-reb-placar__rotulo { font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
+
+.am-reb-placar__item.is-ganho { border-color: var(--vf-success-border); background: var(--vf-success-bg); }
+.am-reb-placar__item.is-ganho .am-reb-placar__n { color: var(--vf-success-strong); }
+
+.am-reb-radar-an__nota {
+  margin: var(--vf-sp-2) auto 0;
+  max-width: 560px;
+  font-size: var(--vf-fs-xs);
+  text-align: center;
+  color: var(--vf-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-reb-radar__varredura { animation: none; }
+}
+
+/* Aba Recomendados — uma coluna por medida (preço, margem, lucro, promoção) */
 .am-reb-tab { display: flex; flex-direction: column; min-width: 0; }
 
 .am-reb-tab__linha {
   display: grid;
-  grid-template-columns: 32px minmax(0, 1fr) 170px 240px;
+  grid-template-columns: 32px minmax(0, 1fr) 128px 92px 104px 150px;
   gap: var(--vf-sp-3);
   align-items: center;
   padding: 14px 0;
@@ -4452,27 +4558,22 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
 
 .am-reb-tab input[type="checkbox"] { width: 16px; height: 16px; margin: 0; accent-color: var(--vf-primary); }
 
-.am-reb-celula { display: flex; flex-direction: column; gap: 2px; font-size: 13px; min-width: 0; font-variant-numeric: tabular-nums; }
-.am-reb-celula__forte { font-weight: var(--vf-fw-semibold); }
-.am-reb-celula__fraco { color: var(--vf-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Rebate na diagonal sob o preço — mesmo deslocamento dos ganhos (8px). */
-.am-reb-celula__rebate { margin-left: 8px; font-size: var(--vf-fs-xs); font-weight: var(--vf-fw-semibold); color: var(--vf-success); white-space: nowrap; }
-/* Margem · lucro na promoção com rebate: mesmo peso visual do preço, para
-   comparar direto com a coluna Hoje. */
-/* Margem | lucro em duas colunas (Hoje e Com rebate com a mesma largura de
-   coluna); o ganho de cada medida fica logo abaixo dela, levemente deslocado
-   para a direita (efeito diagonal: valor → ganho). */
-.am-reb-celula__par {
-  display: grid;
-  grid-template-columns: minmax(64px, max-content) max-content;
-  column-gap: var(--vf-sp-6);
-  row-gap: 2px;
+/* Valor com a promoção sugerida em destaque → ganho → "hoje" apagado. */
+.am-reb-medida {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.am-reb-celula__par--fraco { color: var(--vf-text-muted); }
-.am-reb-celula__metricas, .am-reb-celula__ganho { display: contents; }
-.am-reb-celula__metricas > span { font-weight: var(--vf-fw-semibold); color: var(--vf-text); }
-.am-reb-celula__ganho > .am-reb-ganho { margin-left: 8px; font-size: var(--vf-fs-xs); }
+.am-reb-medida__valor { font-size: var(--vf-fs-sm); font-weight: var(--vf-fw-semibold); color: var(--vf-text); }
+.am-reb-medida__ganho { min-height: 1.3em; font-size: var(--vf-fs-xs); }
+.am-reb-medida__hoje { font-size: var(--vf-fs-xs); color: var(--vf-text-muted); overflow: hidden; text-overflow: ellipsis; }
+.am-reb-medida__nome { font-weight: var(--vf-fw-semibold); color: var(--vf-text); overflow: hidden; text-overflow: ellipsis; }
+.am-reb-medida--promo { gap: 4px; }
+.am-reb-medida--vazia { grid-column: 3 / -1; color: var(--vf-text-muted); }
 
 .am-reb-ganho { font-weight: var(--vf-fw-semibold); color: var(--vf-text-muted); white-space: nowrap; }
 .am-reb-ganho.is-pos { color: var(--vf-success); }
@@ -4684,8 +4785,16 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   .am-reb-head, .am-reb-corpo { padding-left: var(--vf-sp-4); padding-right: var(--vf-sp-4); }
   .am-reb-rodape { padding-left: var(--vf-sp-4); padding-right: var(--vf-sp-4); }
   .am-reb-tab__cab { display: none; }
-  .am-reb-tab__linha { grid-template-columns: 24px minmax(0, 1fr); row-gap: var(--vf-sp-2); }
-  .am-reb-tab__linha > .am-reb-celula { grid-column: 2; }
+  .am-reb-tab__linha { grid-template-columns: 24px repeat(3, minmax(0, 1fr)); row-gap: var(--vf-sp-2); }
+  .am-reb-tab__linha > [role="cell"]:nth-child(2),
+  .am-reb-tab__linha > .am-reb-medida--promo,
+  .am-reb-tab__linha > .am-reb-medida--vazia { grid-column: 2 / -1; }
+  .am-reb-placar { gap: var(--vf-sp-2); }
+  .am-reb-tab__linha { column-gap: var(--vf-sp-2); }
+  .am-reb-medida { white-space: normal; overflow-wrap: anywhere; }
+  .am-reb-tab__linha > .am-reb-medida:nth-child(3) { grid-column: 2; }
+  .am-reb-tab__linha > .am-reb-medida:nth-child(4) { grid-column: 3; }
+  .am-reb-tab__linha > .am-reb-medida:nth-child(5) { grid-column: 4; }
   .am-reb-opcoes { grid-template-columns: minmax(0, 1fr); }
   .am-reb-rodape .vf-btn { flex: 1 1 auto; }
 }

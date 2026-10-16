@@ -48,3 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_promocoes_rebate_jobs_cliente
 CREATE UNIQUE INDEX IF NOT EXISTS uq_promocoes_rebate_jobs_cliente_ativo
   ON promocoes_rebate_jobs (cliente_id)
   WHERE status = 'processando';
+
+-- Contagem parcial da análise ({ recomendado, escolha, sem_ganho, descartado }),
+-- gravada a cada anúncio para o placar ao vivo do Portal. Aditiva e idempotente.
+ALTER TABLE promocoes_rebate_jobs ADD COLUMN IF NOT EXISTS progresso_resumo JSONB;

@@ -126,7 +126,7 @@ function jobJson(job) {
   }
   job.polls += 1;
   if (job.polls <= 2) {
-    return Object.assign(base, { fase: "analise", status: "processando", progresso: { total: 7, processados: job.polls }, resultado: null, execucao: null });
+    return Object.assign(base, { fase: "analise", status: "processando", progresso: { total: 7, processados: job.polls, resumo: { recomendado: 1, escolha: 0, sem_ganho: 0, descartado: job.polls - 1 } }, resultado: null, execucao: null });
   }
   return Object.assign(base, { fase: "analise", status: "concluido", progresso: { total: 7, processados: 7 }, resultado: RESULTADO, execucao: null });
 }
@@ -399,6 +399,9 @@ async function run() {
       const corpo = SERVIDOR.analises[SERVIDOR.analises.length - 1];
       assert.deepStrictEqual(corpo, { clienteSlug: "n97", clienteContaId: "42", referencia: { id: "C-VDX10", tipo: "SELLER_CAMPAIGN" } });
       await waitFor(cdp, `/de 7 anúncios/.test(${texto("[data-reb-progresso]")})`, "contador do progresso ausente");
+      assert.strictEqual(await cdp.evaluate(texto('[data-reb-placar="ganho"] .am-reb-placar__n')), "1", "placar ao vivo: anúncios com ganho até agora");
+      assert.match(await cdp.evaluate(texto(".am-reb-placar")), /melhoram margem ou lucro/);
+      await foto(cdp, "rebate-01b-analisando");
     });
     await check("A2 — fechar no meio da análise para o polling", async () => {
       await clicar(cdp, "#am-reb-fechar-an");
@@ -427,21 +430,20 @@ async function run() {
       assert.strictEqual(await cdp.evaluate(contador), "2 participações selecionadas");
       assert.match(await cdp.evaluate(texto(".am-reb-resumo-sel__det")), /2 recomendadas \+ 0 escolhidas · a Vendex - Outubro continua ativa em todos/);
       assert.strictEqual(await cdp.evaluate(texto("#am-reb-participar")), "Participar de 2");
-      assert.match(await cdp.evaluate(texto(".am-reb-tab__cab")), /Hoje/);
-      assert.match(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-hoje-nome]`)), /Vendex - Outubro/, "o hoje mostra o nome da promoção que forma o preço");
+      assert.strictEqual(await cdp.evaluate(texto(".am-reb-tab__cab")), "AnúncioPreçoMargemLucro/unPromoção sugerida", "uma coluna por medida");
+      assert.match(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-hoje-nome]`)), /hoje Vendex - Outubro/, "o hoje mostra o nome da promoção que forma o preço");
       const linha = await cdp.evaluate(texto(REC("MLB-R1")));
-      assert.match(linha, /MLB-R1/); assert.match(linha, /R\$ 99,90/); assert.match(linha, /12,3%/); assert.match(linha, /R\$ 12,29/);
-      assert.match(linha, /Smart Outubro/); assert.match(linha, /R\$ 94,90/); assert.match(linha, /\+R\$ 4,99 de rebate/); assert.ok(!/ ML/.test(linha), "sem '+ R$ x ML'");
-      const xr = JSON.parse(await cdp.evaluate(`JSON.stringify([${q(`${REC("MLB-R1")} .am-reb-celula--nova .am-reb-celula__forte`)}, ${q(`${REC("MLB-R1")} [data-reb-rebate]`)}].map(n => Math.round(n.getBoundingClientRect().left)))`));
-      assert.strictEqual(xr[1] - xr[0], 8, "rebate na diagonal, logo à direita do preço");
-      assert.strictEqual(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-com-rebate]`)), "14,1%R$ 13,38", "margem e lucro na promoção com rebate, lado a lado com o Hoje");
-      assert.match(linha, /\+1,8 p\.p\./); assert.match(linha, /\+R\$ 1,09/);
-      assert.ok(await cdp.evaluate(`!!document.querySelector('${REC("MLB-R1")} [data-reb-ganho] .am-reb-ganho.is-pos')`), "ganho embaixo dos valores com rebate");
-      assert.strictEqual(await cdp.evaluate(texto(`${REC("MLB-R1")} [data-reb-ganho]`)), "+1,8 p.p.+R$ 1,09/un");
-      const xs = await cdp.evaluate(`JSON.stringify(Array.from(document.querySelectorAll('${REC("MLB-R1")} .am-reb-celula--nova .am-reb-celula__par > span > span')).map(n => Math.round(n.getBoundingClientRect().left)))`);
-      const [xMargem, xLucro, xGanhoM, xGanhoL] = JSON.parse(xs);
-      assert.strictEqual(xGanhoM - xMargem, 8, "ganho de margem na diagonal, logo à direita da margem");
-      assert.strictEqual(xGanhoL - xLucro, 8, "ganho de lucro na diagonal, logo à direita do lucro");
+      assert.match(linha, /MLB-R1/); assert.match(linha, /Smart Outubro/); assert.ok(!/ ML/.test(linha), "sem '+ R$ x ML'");
+      const celulas = JSON.parse(await cdp.evaluate(`JSON.stringify(Array.from(document.querySelectorAll('${REC("MLB-R1")} .am-reb-medida')).map(n => Array.from(n.children).map(c => c.textContent)))`));
+      assert.deepStrictEqual(celulas.slice(0, 3), [
+        ["R$ 94,90", "+R$ 4,99 de rebate", "hoje R$ 99,90"],
+        ["14,1%", "+1,8 p.p.", "hoje 12,3%"],
+        ["R$ 13,38", "+R$ 1,09", "hoje R$ 12,29"],
+      ], "valor sugerido → ganho → hoje, na mesma ordem em todas as medidas");
+      assert.ok(await cdp.evaluate(`!!document.querySelector('${REC("MLB-R1")} [data-reb-margem] .am-reb-ganho.is-pos')`), "ganho pintado de verde");
+      const ys = JSON.parse(await cdp.evaluate(`JSON.stringify(Array.from(document.querySelectorAll('${REC("MLB-R1")} .am-reb-medida__valor')).map(n => Math.round(n.getBoundingClientRect().top)))`));
+      assert.ok(ys.every((y) => y === ys[0]), "valores alinhados na mesma linha");
+      await foto(cdp, "rebate-02a-recomendados");
       assert.ok(!/Ganho/.test(await cdp.evaluate(texto(".am-reb-tab__cab"))), "sem coluna Ganho");
     });
     await check("V2 — Escolha: 'Manter como está' por padrão; margem e lucro lado a lado + opção extra", async () => {

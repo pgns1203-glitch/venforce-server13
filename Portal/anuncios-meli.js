@@ -5593,9 +5593,48 @@
     var job = reb.job || {};
     if (reb.erro) return rebBannerHtml("danger", reb.erro);
     var prog = job.progresso || {};
-    return '<p class="am-reb-intro">Procurando promoções com subsídio e preço menor, com margem e lucro cotados ao vivo no Mercado Livre.</p>' +
-      rebProgressoHtml(prog.processados, prog.total, "Progresso da análise") +
-      '<p class="vf-field__hint">Pode levar alguns minutos em contas grandes. Se fechar, a análise continua e você retoma ao reabrir.</p>';
+    var t = rebNum(prog.total) || 0, p = Math.min(rebNum(prog.processados) || 0, t || Infinity);
+    var pct = t > 0 ? Math.round((p / t) * 100) : 0;
+    var res = prog.resumo || {};
+    var comGanho = (rebNum(res.recomendado) || 0) + (rebNum(res.escolha) || 0);
+    // O corpo é recriado a cada consulta: o atraso negativo mantém a varredura
+    // do radar contínua em vez de recomeçar do zero.
+    var atraso = -(Date.now() % 2400);
+    var placar = function (chave, n, rotulo, classe) {
+      return '<div class="am-reb-placar__item' + (classe ? " " + classe : "") + '" data-reb-placar="' + chave + '">' +
+        '<span class="am-reb-placar__n">' + n + "</span>" +
+        '<span class="am-reb-placar__rotulo">' + rotulo + "</span></div>";
+    };
+    var eta = rebEtaTexto(p, t);
+    return '<div class="am-reb-radar-an" data-reb-progresso>' +
+        '<div class="am-reb-radar" aria-hidden="true"><span class="am-reb-radar__varredura" style="animation-delay:' + atraso + 'ms"></span>' +
+          '<span class="am-reb-radar__pct">' + (t > 0 ? pct + "%" : "") + "</span></div>" +
+        '<p class="am-reb-radar-an__titulo">Procurando subsídios melhores</p>' +
+        '<p class="am-reb-radar-an__txt" aria-live="polite">' + (t > 0 ? p + " de " + t + " anúncios" : "Lendo os anúncios da promoção…") +
+          (eta ? " · " + eta : "") + "</p>" +
+        '<div class="vf-progress am-reb-radar-an__barra" role="progressbar" aria-label="Progresso da análise" aria-valuemin="0" aria-valuemax="' + t + '" aria-valuenow="' + p + '">' +
+          '<div class="vf-progress__bar" style="width:' + pct + '%"></div></div>' +
+      "</div>" +
+      '<div class="am-reb-placar" aria-label="Encontrados até agora">' +
+        placar("ganho", comGanho, "melhoram margem ou lucro", "is-ganho") +
+        placar("sem_ganho", rebNum(res.sem_ganho) || 0, "sem ganho") +
+        placar("descartado", rebNum(res.descartado) || 0, "descartados") +
+      "</div>" +
+      '<p class="am-reb-radar-an__nota">Margem e lucro cotados ao vivo no Mercado Livre. Pode fechar: a análise continua e você retoma ao reabrir.</p>';
+  }
+
+  // Tempo restante pelo ritmo observado desde que este modal começou a
+  // acompanhar o job (só depois de alguns anúncios, para não chutar).
+  function rebEtaTexto(p, t) {
+    var reb = REB;
+    var agora = Date.now();
+    if (!reb.eta || reb.eta.jobId !== reb.jobId || p < reb.eta.p) reb.eta = { jobId: reb.jobId, t: agora, p: p };
+    var feitos = p - reb.eta.p, passou = agora - reb.eta.t;
+    if (!t || p >= t || feitos < 3 || passou < 3000) return "";
+    var seg = Math.round(((passou / feitos) * (t - p)) / 1000);
+    if (seg < 60) return "menos de 1 min restante";
+    var min = Math.round(seg / 60);
+    return "~" + min + " min restante" + (min > 1 ? "s" : "");
   }
 
   function rebRodapeAnalisandoHtml() {
@@ -5630,41 +5669,43 @@
     if (!rec.length) return '<p class="am-reb-vazio">Nenhum anúncio em que a mesma promoção melhore margem e lucro.</p>';
     var reb = REB;
     var todos = rec.every(function (it) { return !!reb.escolhas[it.itemId]; });
+    // Uma coluna por medida: valor com a promoção sugerida em destaque, o ganho
+    // logo abaixo e o "hoje" por último, para comparar sem decifrar posição.
+    var medida = function (novo, ganho, hoje, attr) {
+      return '<span role="cell" class="am-reb-medida"' + (attr || "") + ">" +
+        '<span class="am-reb-medida__valor">' + novo + "</span>" +
+        '<span class="am-reb-medida__ganho">' + ganho + "</span>" +
+        '<span class="am-reb-medida__hoje">hoje ' + hoje + "</span></span>";
+    };
     return '<div class="am-reb-tab" role="table" aria-label="Anúncios recomendados" data-reb-grupo-sec="recomendado">' +
       '<div class="am-reb-tab__linha am-reb-tab__cab" role="row">' +
         '<span role="columnheader"><input type="checkbox" id="am-reb-todos" data-reb-todos aria-label="Selecionar todos"' + (todos ? " checked" : "") + "></span>" +
         '<span role="columnheader">Anúncio</span>' +
-        '<span role="columnheader">Hoje</span>' +
-        '<span role="columnheader">Com rebate</span>' +
+        '<span role="columnheader">Preço</span>' +
+        '<span role="columnheader">Margem</span>' +
+        '<span role="columnheader">Lucro/un</span>' +
+        '<span role="columnheader">Promoção sugerida</span>' +
       "</div>" +
       rec.map(function (it, i) {
         var s = it.sugestao || {};
         var c = rebCandidata(it, s.porMargem || s.porLucro) || (it.candidatas || [])[0];
         var marcado = !!(c && reb.escolhas[it.itemId] === c.promotionId);
         var hoje = rebAtual(it);
+        var celulas = c
+          ? medida(formatMoeda(c.preco),
+              rebNum(c.subsidioMl) > 0 ? '<span class="am-reb-ganho is-pos" data-reb-rebate>+' + formatMoeda(c.subsidioMl) + " de rebate</span>" : "",
+              formatMoeda(hoje.preco)) +
+            medida(rebPct(c.margemPercent), rebGanhoHtml(c.ganhoMargemPp, "pp"), rebPct(hoje.margemPercent), " data-reb-margem") +
+            medida(formatMoeda(c.lucro), rebGanhoHtml(c.ganhoLucro, "rs"), formatMoeda(hoje.lucro), " data-reb-lucro") +
+            '<span role="cell" class="am-reb-medida am-reb-medida--promo">' +
+              '<span class="am-reb-medida__nome"' + (c.tipoLabel ? ' title="' + escapeAttr(c.tipoLabel) + '"' : "") + ">" + escapeHtml(c.nome || c.promotionId) + "</span>" +
+              '<span class="am-reb-medida__hoje" data-reb-hoje-nome>hoje ' + escapeHtml(hoje.nome || "") + "</span></span>"
+          : '<span role="cell" class="am-reb-medida am-reb-medida--vazia">—</span>';
         return '<div class="am-reb-tab__linha" role="row" data-reb-item="' + escapeAttr(it.itemId) + '">' +
           '<span role="cell"><input type="checkbox" id="am-reb-chk-' + i + '" data-reb-marcar="' + escapeAttr(it.itemId) + '"' +
             (marcado ? " checked" : "") + (c ? "" : " disabled") + ' aria-label="Participar com ' + escapeAttr(it.titulo || it.itemId) + '"></span>' +
           '<span role="cell">' + rebAnuncioHtml(it) + "</span>" +
-          '<span role="cell" class="am-reb-celula">' +
-            '<span class="am-reb-celula__forte">' + formatMoeda(hoje.preco) +
-              "</span>" +
-            (rebNum(hoje.subsidioMl) > 0 ? '<span class="am-reb-celula__rebate">+' + formatMoeda(hoje.subsidioMl) + " de rebate</span>" : "") +
-            '<span class="am-reb-celula__par am-reb-celula__par--fraco">' +
-              "<span>" + rebPct(hoje.margemPercent) + "</span><span>" + formatMoeda(hoje.lucro) + "</span></span>" +
-            '<span class="am-reb-celula__fraco" data-reb-hoje-nome>' + escapeHtml(hoje.nome || "") + "</span></span>" +
-          '<span role="cell" class="am-reb-celula am-reb-celula--nova">' + (c
-            ? '<span class="am-reb-celula__forte">' + formatMoeda(c.preco) + "</span>" +
-              // Rebate na diagonal, logo abaixo e à direita do preço (como os ganhos).
-              (rebNum(c.subsidioMl) > 0 ? '<span class="am-reb-celula__rebate" data-reb-rebate>+' + formatMoeda(c.subsidioMl) + " de rebate</span>" : "") +
-              // Margem e lucro em duas colunas; o ganho de cada um fica logo
-              // abaixo do próprio valor.
-              '<span class="am-reb-celula__par">' +
-                '<span class="am-reb-celula__metricas" data-reb-com-rebate><span>' + rebPct(c.margemPercent) + "</span><span>" + formatMoeda(c.lucro) + "</span></span>" +
-                '<span class="am-reb-celula__ganho" data-reb-ganho>' + rebGanhoHtml(c.ganhoMargemPp, "pp") + rebGanhoHtml(c.ganhoLucro, "rs", "/un") + "</span>" +
-              "</span>" +
-              '<span class="am-reb-celula__fraco"' + (c.tipoLabel ? ' title="' + escapeAttr(c.tipoLabel) + '"' : "") + ">" + escapeHtml(c.nome || c.promotionId) + "</span>"
-            : "—") + "</span>" +
+          celulas +
           "</div>";
       }).join("") + "</div>";
   }

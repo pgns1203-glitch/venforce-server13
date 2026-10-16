@@ -194,7 +194,8 @@ h4 {
   user-select: none;
   transition: background-color var(--vf-duration) var(--vf-ease),
     border-color var(--vf-duration) var(--vf-ease),
-    color var(--vf-duration) var(--vf-ease);
+    color var(--vf-duration) var(--vf-ease),
+    transform var(--vf-duration-fast) var(--vf-ease);
 }
 
 .vf-btn:hover:not(:disabled):not(.is-disabled):not(.is-loading),
@@ -205,6 +206,7 @@ h4 {
 
 .vf-btn:active:not(:disabled):not(.is-disabled):not(.is-loading) {
   background: var(--vf-bg-2);
+  transform: scale(0.98);
 }
 
 /* Primary */
@@ -331,6 +333,34 @@ h4 {
   border-top-color: transparent;
   border-radius: var(--vf-radius-pill);
   animation: vf-spin 0.7s linear infinite;
+}
+
+/* Concluído: mesmo truque do loading (rótulo transparente, marca absoluta),
+   então a largura não muda. O ✓ é desenhado com borda — sem ícone/fonte.
+   Bloqueia clique enquanto aparece para evitar envio duplo. */
+.vf-btn.is-done {
+  --_check: var(--vf-success);
+  color: transparent;
+  pointer-events: none;
+}
+
+.vf-btn--primary.is-done,
+.vf-btn--danger.is-done {
+  --_check: var(--vf-text-on-primary);
+}
+
+.vf-btn.is-done::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 11px;
+  height: 6px;
+  margin: -5px 0 0 -5px;
+  border-left: 2px solid var(--_check);
+  border-bottom: 2px solid var(--_check);
+  transform: rotate(-45deg);
+  animation: vf-check-in var(--vf-duration-slow) var(--vf-ease) both;
 }
 
 /* Grupo de botões */
@@ -2509,6 +2539,98 @@ h4 {
     opacity: 1;
     transform: translateY(0);
   }
+}
+
+@keyframes vf-check-in {
+  from {
+    opacity: 0;
+    transform: rotate(-45deg) scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(-45deg) scale(1);
+  }
+}
+
+/* --- Movimento de estado ----------------------------------------
+   Regra: só anima MUDANÇA de estado, só transform/opacity (e a altura
+   via grid-template-rows), só com os tokens de duração. O
+   prefers-reduced-motion global (vf-tokens-v2.css §17) zera tudo e o
+   estado final aparece direto — por isso todo keyframe usa `both`.
+   Valem igual em React e vanilla. Plano:
+   docs/specs/2026-10-16-ui-etapa1-componentes-plano.md */
+
+@keyframes vf-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Entrada. Em sequência: style="--vf-motion-delay: 60ms" em cada item. */
+.vf-motion-enter {
+  animation: vf-enter var(--vf-duration-slow) var(--vf-ease) both;
+  animation-delay: var(--vf-motion-delay, 0ms);
+}
+
+/* Abre/fecha altura sem medir em JS: o filho único encolhe até 0 linha.
+   Uso: <div class="vf-motion-collapse is-open"><div>…</div></div> */
+.vf-motion-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--vf-duration-slow) var(--vf-ease),
+    opacity var(--vf-duration-slow) var(--vf-ease);
+}
+
+.vf-motion-collapse.is-open {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.vf-motion-collapse > * {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Destaque de valor que mudou: o fundo acende e apaga. Neutro por padrão —
+   subir nem sempre é bom (custo subindo é ruim); a cor só vem quando quem
+   usa sabe o sentido bom. Para repetir, remonte o elemento (key). */
+@keyframes vf-flash {
+  from {
+    background-color: var(--_flash);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+.vf-motion-flash {
+  --_flash: var(--vf-primary-soft);
+  border-radius: var(--vf-radius-sm);
+  animation: vf-flash 0.9s var(--vf-ease) both;
+}
+
+.vf-motion-flash.is-success { --_flash: var(--vf-success-bg); }
+.vf-motion-flash.is-danger  { --_flash: var(--vf-danger-bg); }
+
+/* Contador que mudou dá um pulo curto. */
+@keyframes vf-bump {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.14);
+  }
+}
+
+.vf-motion-bump {
+  animation: vf-bump var(--vf-duration-slow) var(--vf-ease) both;
 }
 
 /* ============================================================

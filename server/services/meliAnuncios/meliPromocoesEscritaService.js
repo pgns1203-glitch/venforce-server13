@@ -32,9 +32,16 @@
 
 const { mlFetch } = require("../../utils/mlClient");
 const { motivoDoErroMl, codigoDoErroMl } = require("./meliConteudoService");
-const { listarPromocoesDoItem, TIPOS_ESCRITA_ACEITE } = require("./meliPromocoesService");
+const { listarPromocoesDoItem } = require("./meliPromocoesService");
+// Fonte única dos tipos (também lida pela Central de Margem).
+const {
+  TIPOS_ESCRITA_PRECO,
+  TIPOS_ESCRITA_ACEITE,
+  TIPOS_ACEITE_SEM_OFFER_NO_POST,
+} = require("./promocaoTiposSuportados");
 
-const TIPOS_COM_ESCRITA = new Set(["DEAL", "SELLER_CAMPAIGN"]);
+// Preço escolhido pelo vendedor (POST participa / PUT altera): DEAL e SELLER_CAMPAIGN.
+const TIPOS_COM_ESCRITA = TIPOS_ESCRITA_PRECO;
 
 // Status BRUTOS do ML que podem virar PUT (alteração de preço de uma
 // participação em andamento). `pending` é DELIBERADAMENTE excluído daqui:
@@ -248,8 +255,8 @@ async function aplicarPromocao({ clienteId, itemId, mlUserId, promotionId, preco
 //                 Vale também para DEAL/SELLER_CAMPAIGN (preço do vendedor):
 //                 a doc deles (campanhas-tradicionais, campanhas-do-vendedor)
 //                 faz o DELETE só com promotion_type + promotion_id.
+// (TIPOS_ACEITE_SEM_OFFER_NO_POST vem da fonte única promocaoTiposSuportados.)
 // ---------------------------------------------------------------------------
-const TIPOS_ACEITE_SEM_OFFER_NO_POST = new Set(["MARKETPLACE_CAMPAIGN"]);
 
 async function relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo, tiposAceitos = TIPOS_ESCRITA_ACEITE }) {
   const id = String(itemId || "").trim();
@@ -281,12 +288,24 @@ async function relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, t
  * `antesDeEscrever` (OPCIONAL, mesmo espírito do de aplicarPromocao): gancho
  * chamado com a promoção RELIDA e a lista inteira relida do item
  * ({ promo, lista, acao: "PARTICIPAR" }) ANTES do POST; devolve { ok:true }
- * ou uma falha { codigo, motivo }. É onde "Promoções com rebate" revalida, na
- * mesma releitura, que a referência continua ativa e que o preço da candidata
- * continua menor que o dela. Sem o gancho o fluxo é exatamente o de antes.
+ * (opcionalmente com `deadlineAt`) ou uma falha { codigo, motivo }. É onde
+ * "Promoções com rebate" revalida, na mesma releitura, que a referência
+ * continua ativa e que o preço da candidata continua menor que o dela, e onde
+ * a Central de Margem confere o fingerprint do preview e faz o fencing.
+ *
+ * `timeoutMs` (OPCIONAL, camada segura da Central): prazo real da releitura e
+ * do POST, como em aplicarPromocao — timeout na releitura volta como falha
+ * `enviado:false`; no POST, como falha `incerto:true`. Sem `timeoutMs` (e sem
+ * `deadlineAt` do gancho) o fluxo é exatamente o de antes, que /anuncios usa.
  */
-async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo, antesDeEscrever = null }) {
-  const lido = await relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo });
+async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo, antesDeEscrever = null, timeoutMs = null }) {
+  let lido;
+  try {
+    lido = await comPrazo(relerPromocaoAceite({ clienteId, itemId, mlUserId, promotionId, tipo }), timeoutMs);
+  } catch (err) {
+    if (timeoutMs && ehTimeout(err)) return { ...falha("ML_TIMEOUT_LEITURA", "O Mercado Livre não respondeu a tempo antes da escrita. Nada foi enviado."), enviado: false };
+    throw err;
+  }
   if (lido.falha) return lido.falha;
   const { id, promo, lista } = lido;
 
@@ -302,18 +321,42 @@ async function participarPromocaoAceite({ clienteId, itemId, mlUserId, promotion
     corpo.offer_id = promo.refId;
   }
 
+  let deadlineAt = null;
   if (antesDeEscrever) {
-    const liberado = await antesDeEscrever({ promo, lista, acao: "PARTICIPAR" });
+    let liberado;
+    try {
+      liberado = await antesDeEscrever({ promo, lista, acao: "PARTICIPAR" });
+    } catch (err) {
+      if (timeoutMs && ehTimeout(err)) return { ...falha("ML_TIMEOUT_LEITURA", "O Mercado Livre não respondeu a tempo antes da escrita. Nada foi enviado."), enviado: false };
+      throw err;
+    }
     if (!liberado || liberado.ok !== true) {
       return falha((liberado && liberado.codigo) || "ESCRITA_NAO_LIBERADA", (liberado && liberado.motivo) || "A escrita não foi liberada.");
     }
+    deadlineAt = liberado.deadlineAt ?? null;
   }
 
-  const resp = await mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(id)}?app_version=v2`, {
-    method: "POST",
-    body: JSON.stringify(corpo),
-    mlUserId,
-  });
+  const comLimite = Boolean(timeoutMs) || deadlineAt != null;
+  let resp;
+  try {
+    resp = await mlFetch(clienteId, `/seller-promotions/items/${encodeURIComponent(id)}?app_version=v2`, {
+      method: "POST",
+      body: JSON.stringify(corpo),
+      mlUserId,
+      ...(timeoutMs ? { timeoutMs } : {}),
+      ...(deadlineAt != null ? { deadlineAt } : {}),
+    });
+  } catch (err) {
+    if (!comLimite || !ehTimeout(err)) throw err;
+    if (!err.enviado) {
+      return { ...falha(err.code || "ML_DEADLINE_EXCEEDED", "O prazo da escrita esgotou antes do envio. Nada foi enviado ao Mercado Livre."), enviado: false };
+    }
+    return {
+      ...falha("ML_TIMEOUT", "O Mercado Livre não respondeu a tempo. A participação pode ter sido registrada — confira o anúncio antes de tentar de novo."),
+      enviado: true,
+      incerto: true,
+    };
+  }
   if (!resp || !resp.ok) {
     return falha(codigoDoErroMl(resp && resp.data, resp && resp.status), motivoDoErroMl(resp && resp.data, resp && resp.status));
   }

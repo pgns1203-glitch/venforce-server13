@@ -7,20 +7,23 @@
 // "atualizada" em silêncio).
 //
 // Material = tudo que muda o significado ou o resultado financeiro da ação:
-//   identidade   cliente, conta, conta ML, MLB, tipo
+//   identidade   cliente, conta, conta ML, MLB, status do anúncio, tipo
 //   preços       visto, solicitado, atual (e lista/promocional atuais)
 //   insumos      custo, imposto, taxa fixa, comissão e frete ATUAIS, comissão
 //                e frete NO NOVO PREÇO (+ a fonte de cada um), rebate
 //   resultado    LC e margem antes/depois
-//   promoção     id, tipo, status bruto, status de exibição, ação pretendida
-//                (PARTICIPAR/ALTERAR), preço original, preço final, seller %,
-//                meli %, subsídio ML
+//   promoção     id, tipo, modo de escrita (preco/aceite), offer/candidate id,
+//                status bruto, status de exibição, ação pretendida
+//                (PARTICIPAR/ALTERAR), preço original, preço final (no modo
+//                aceite é o preço SUGERIDO pelo ML), seller %, meli %, subsídio ML
 // Números são normalizados (dinheiro 2 casas, taxas/margens 6) para que ruído
 // de ponto flutuante não gere falso "mudou".
 
 const crypto = require("crypto");
+const { modoEscritaPromocao } = require("../../meliAnuncios/promocaoTiposSuportados");
 
-const VERSAO = 1;
+// v2: + status do anúncio, + modo e offer id da promoção (participação de ACEITE).
+const VERSAO = 2;
 
 function dinheiro(v) {
   if (v === null || v === undefined || v === "") return null;
@@ -58,6 +61,7 @@ function montarFingerprint({ base, tipo, precoVisto, precoSolicitado, resultado,
     clienteContaId: texto(base.conta.id),
     mlUserId: texto(base.conta.mlUserId),
     itemId: texto(base.anuncio.itemId),
+    statusAnuncio: texto(base.anuncio.status),
     tipo: texto(tipo),
     precoVisto: dinheiro(precoVisto),
     precoSolicitado: dinheiro(precoSolicitado),
@@ -87,6 +91,8 @@ function fingerprintPromocao(promo, acao) {
   return {
     id: texto(promo.id),
     tipo: texto(promo.tipo),
+    modo: texto(modoEscritaPromocao(promo.tipo)),
+    refId: texto(promo.refId),
     status: texto(promo.status),
     statusExibicao: texto(promo.statusExibicao),
     acao: texto(acao),

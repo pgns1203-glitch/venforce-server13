@@ -529,8 +529,8 @@ cenario("ALTERAR oferta ativa para o MESMO preço é bloqueado (PUT inócuo); pr
   assert.strictEqual(gate(diferente, "promocao_preco").tom, "ok");
 });
 
-cenario("tipo sem escrita (SMART): simula com retorno ML, mas bloqueia 'Somente simulação'", async () => {
-  const c = cenarioPromo({ promocoes: [promo({ id: "SM1", tipo: "SMART", precoFinal: 139.9, subsidioMl: 7.5, meliPercentage: 5, sellerPercentage: 1.67 })] });
+cenario("tipo sem escrita (LIGHTNING): simula com retorno ML, mas bloqueia 'Somente simulação'", async () => {
+  const c = cenarioPromo({ promocoes: [promo({ id: "SM1", tipo: "LIGHTNING", precoFinal: 139.9, subsidioMl: 7.5, meliPercentage: 5, sellerPercentage: 1.67 })] });
   const r = await previewPromo(c, criarRepoMemoria(), "SM1");
   assert.strictEqual(r.promocao.escrita.suportada, false);
   assert.strictEqual(gate(r, "promocao_escrita").titulo, "Somente simulação");
@@ -795,7 +795,7 @@ cenario("promoção: auditoria gravada — quem, quando, promoção, preço e LC
   assert.ok(repo.linhas[0].aplicadoEm || repo.linhas[0].status === "aplicado", "quando: a linha guarda o momento da aplicação");
 });
 
-cenario("lista de promoções do drawer: margem/LC por promoção, escrita suportada só p/ DEAL/SELLER_CAMPAIGN", async () => {
+cenario("lista de promoções do drawer: margem/LC por promoção; escrita de PREÇO (DEAL) e de ACEITE (SMART), nunca dos fora do escopo", async () => {
   const c = cenarioPromo({
     promocoes: [
       promo({ id: "D1" }),
@@ -808,7 +808,10 @@ cenario("lista de promoções do drawer: margem/LC por promoção, escrita supor
   const [d1, sm1, pd] = r.promocoes;
   assert.strictEqual(d1.escrita.acao, "PARTICIPAR");
   assert.ok(d1.margem !== null && d1.lucro !== null);
-  assert.strictEqual(sm1.escrita.suportada, false);
+  assert.strictEqual(d1.escrita.modo, "preco");
+  assert.deepStrictEqual([sm1.escrita.suportada, sm1.escrita.acao, sm1.escrita.modo], [true, "PARTICIPAR", "aceite"]);
+  assert.strictEqual(sm1.precoSugerido, 139.9);
+  assert.strictEqual(pd.escrita.suportada, false);
   assert.strictEqual(pd.margem, null, "sem preço final do ML, nunca inventa margem");
   assert.strictEqual(r.atual.preco, 149.9);
   assert.strictEqual(r.escritaHabilitada, false);

@@ -564,9 +564,10 @@ cenario("promoção SEM promotion_id no snapshot: o id da linha cai na chave do 
   assert.strictEqual(por.MLB2.id, "P-777", "com promotion_id: ele");
   // Grupo e escrita suportada acompanham a promoção (a lista decide "Participar" só pelo que a Central escreve).
   assert.strictEqual(por.MLB2.grupo, "pode");
-  assert.deepStrictEqual(por.MLB2.escrita, { suportada: true, acao: "PARTICIPAR", motivo: null });
-  assert.strictEqual(por.MLB1.grupo, "ml", "SMART: o ML define o preço");
-  assert.strictEqual(por.MLB1.escrita.suportada, false);
+  assert.deepStrictEqual(por.MLB2.escrita, { suportada: true, acao: "PARTICIPAR", modo: "preco", motivo: null });
+  // SMART: o ML define o preço — a Central participa no modo ACEITE (mesma lista de /anuncios).
+  assert.strictEqual(por.MLB1.grupo, "pode", "SMART: aceite pelo VenForce");
+  assert.deepStrictEqual(por.MLB1.escrita, { suportada: true, acao: "PARTICIPAR", modo: "aceite", motivo: null });
 });
 
 cenario("performance: 3 consultas ao banco (cabeçalho, elegíveis, rebates da conta) para a conta inteira, página fatiada no serviço, zero ML", async () => {

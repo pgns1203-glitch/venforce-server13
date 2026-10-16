@@ -54,11 +54,14 @@ function promo(o = {}) {
     meliPercentage: o.meliPercentage === undefined ? 3.47 : o.meliPercentage,
     sellerPercentage: o.sellerPercentage === undefined ? 9.87 : o.sellerPercentage,
     subsidioMl: o.subsidioMl === undefined ? 5.2 : o.subsidioMl,
+    refId: o.refId === undefined ? null : o.refId,
     editavelPrecoFinal: true,
   };
 }
 
 const TIPOS_COM_ESCRITA = new Set(["DEAL", "SELLER_CAMPAIGN"]);
+// Tipos ACEITE (o ML define o preço) — os mesmos da fonte única promocaoTiposSuportados.
+const TIPOS_ACEITE = new Set(["MARKETPLACE_CAMPAIGN", "SMART", "PRICE_MATCHING", "PRICE_MATCHING_MELI_ALL", "PRE_NEGOTIATED", "UNHEALTHY_STOCK"]);
 
 /**
  * Cenário configurável. `estado` é mutável pelo teste entre preview e
@@ -86,7 +89,7 @@ function criarCenario(overrides = {}) {
     ...overrides,
   };
   const chamadas = {
-    mlFetch: [], montarItens: 0, cotacao: [], promocoes: 0, atualizarPreco: [], aplicarPromocao: [],
+    mlFetch: [], montarItens: 0, cotacao: [], promocoes: 0, atualizarPreco: [], aplicarPromocao: [], participarPromocaoAceite: [],
     enviosMl: [], leiturasPreco: 0, logs: [], camposConfirmados: [], snapshot: [], papel: [],
   };
   let tokens = 0;
@@ -192,6 +195,28 @@ function criarCenario(overrides = {}) {
       return estado.respostaPromocao
         ? estado.respostaPromocao(p)
         : { ok: true, metodo, promotionId: p.promotionId, tipo: promoViva.tipo, precoConfirmado: p.precoNovo, precoOriginal: 149.9 };
+    },
+    // Contrato de meliPromocoesEscritaService.participarPromocaoAceite: relê ao vivo (id + tipo),
+    // só candidate de tipo ACEITE, offer_id quando o tipo exige, gancho antes do POST, POST sem preço.
+    participarPromocaoAceite: async (p) => {
+      chamadas.participarPromocaoAceite.push(p);
+      if (estado.antesDaReleituraDoEscritor) await estado.antesDaReleituraDoEscritor(p);
+      const promoViva = (estado.promocoes || []).find((x) => String(x.id) === String(p.promotionId) && (!p.tipo || x.tipo === p.tipo));
+      if (!promoViva) return { ok: false, codigo: "PROMOCAO_NAO_ENCONTRADA", motivo: "sumiu" };
+      if (!TIPOS_ACEITE.has(promoViva.tipo)) return { ok: false, codigo: "TIPO_SEM_ACEITE", motivo: "x" };
+      if (promoViva.status !== "candidate") return { ok: false, codigo: "PROMOCAO_JA_PARTICIPA", motivo: "O anúncio já participa desta promoção. Atualize a tela." };
+      if (promoViva.tipo !== "MARKETPLACE_CAMPAIGN" && !promoViva.refId) return { ok: false, codigo: "OFFER_ID_AUSENTE", motivo: "x" };
+      if (estado.antesDoEnvio) await estado.antesDoEnvio(p);
+      let deadlineAt = null;
+      if (p.antesDeEscrever) {
+        const lib = await p.antesDeEscrever({ promo: promoViva, lista: estado.promocoes, acao: "PARTICIPAR" });
+        if (!lib || lib.ok !== true) return { ok: false, codigo: lib && lib.codigo, motivo: lib && lib.motivo };
+        deadlineAt = lib.deadlineAt ?? null;
+      }
+      chamadas.enviosMl.push({ tipo: "PROMOTION", modo: "aceite", metodo: "POST", preco: null, offerId: promoViva.refId || null, deadlineAt, timeoutMs: p.timeoutMs ?? null });
+      if (estado.aoEnviar) return estado.aoEnviar(p);
+      if (estado.respostaAceite) return estado.respostaAceite(p, promoViva);
+      return { ok: true, acao: "PARTICIPAR", promotionId: promoViva.id, tipo: promoViva.tipo, precoConfirmado: Math.round(promoViva.precoFinal * 100) / 100 };
     },
     atualizarCamposConfirmados: async (...args) => { chamadas.camposConfirmados.push(args); },
     registrarLog: async (l) => { chamadas.logs.push(l); },
@@ -385,4 +410,4 @@ function criarRepoMemoria({ agora = () => Date.now() } = {}) {
   return repo;
 }
 
-module.exports = { motorItem, promo, criarCenario, criarRepoMemoria };
+module.exports = { motorItem, promo, criarCenario, criarRepoMemoria, TIPOS_ACEITE };

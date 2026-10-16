@@ -281,16 +281,17 @@ async function run() {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
-    await check("Bancada (bloqueado): promoção já ativa — o motivo na tela, sem botão de escrita e com o link do Mercado Livre", async () => {
+    await check("Bancada (ativa agora): promoção que já forma o preço de hoje — Δ 0, sem botão de escrita e com o link do Mercado Livre", async () => {
       await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB1001\"]').click()");
       await waitFor(cdp, "document.querySelector('[data-cm-cenarios]')", "a Bancada não carregou");
       await cdp.evaluate("document.querySelector('[data-cenario=\"P-ATIVA\"]').click()");
       const resultado = await texto("#cm-banc-resultado");
-      assert.ok(resultado.includes("bloqueado · promoção já ativa"), resultado);
+      assert.ok(resultado.includes("Ativa agora"), resultado);
+      assert.ok(!resultado.includes("bloqueado"), resultado);
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review')"), null, "sem botão de escrita");
       assert.ok((await texto("#cm-bancada-ml")).includes("Abrir no Mercado Livre"));
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
-      await shot("06-bancada-bloqueado");
+      await shot("06-bancada-ativa");
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 

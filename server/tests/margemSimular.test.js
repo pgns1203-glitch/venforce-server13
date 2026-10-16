@@ -368,15 +368,30 @@ cenario("P' ≥ P: sem_desconto_efetivo, bloqueado e SEM gastar consulta ao ML",
   assert.deepStrictEqual(w.cotacoes, []);
 });
 
-cenario("promoção ativa (started): flag ativa, bloqueado — fora da decisão de entrar", async () => {
+cenario("promoção que FORMA o preço de hoje (statusExibicao ATIVA): não bloqueia — cenário = hoje, Δ 0, sem gastar cotação", async () => {
   const w = mundo({ promocoes: [promoLinha("PA", { status: "started", statusExibicao: "ATIVA", precoFinal: 94.9, subsidioMl: 3.3 })] });
   const r = await rodar(w, pedido([{ tipo: "promo", promotion_id: "PA" }]));
   const c = r.cenarios[0];
   assert.strictEqual(c.flags.ativa, true);
-  assert.strictEqual(c.veredito, "bloqueado");
-  assert.strictEqual(c.motivo, "promocao_ativa");
+  assert.strictEqual(c.veredito, "ativa");
+  assert.strictEqual(c.motivo, null);
+  assert.strictEqual(c.delta_lc, 0);
+  assert.strictEqual(c.cenario.comissao, 13.29, "reusa a comissão de HOJE, não cotiza de novo");
+  assert.strictEqual(c.cenario.frete, 10);
   assert.deepStrictEqual(w.cotacoes, []);
   assert.strictEqual(c.promocao.status, "started");
+});
+
+cenario("promoção inscrita mas NÃO APLICADA (status bruto started, não forma o preço): calcula normal — comissão, frete e LC preenchidos, veredito ≠ bloqueado", async () => {
+  const w = mundo({ promocoes: [promoLinha("PNA", { status: "started", statusExibicao: "NÃO APLICADA" })] });
+  const r = await rodar(w, pedido([{ tipo: "promo", promotion_id: "PNA" }]));
+  const c = r.cenarios[0];
+  assert.strictEqual(c.flags.ativa, false);
+  assert.notStrictEqual(c.veredito, "bloqueado");
+  assert.strictEqual(c.cenario.comissao, 12.57);
+  assert.strictEqual(c.cenario.frete, 10);
+  assert.ok(c.cenario.lc !== null);
+  assert.deepStrictEqual(w.cotacoes, [89.77], "NÃO APLICADA cotiza em P', como qualquer outra promoção elegível");
 });
 
 cenario("promoção sem preço (ML não sugeriu): bloqueado promocao_sem_preco, sem cotar", async () => {

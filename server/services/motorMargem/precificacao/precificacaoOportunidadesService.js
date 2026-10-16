@@ -284,6 +284,10 @@ function montarCandidata(args) {
     atual: calc.atual,
     cenario: calc.cenario,
     meta: calc.meta,
+    // Mesmo formato do /simular: "de onde saiu a diferença no lucro" e a
+    // fonte do frete/comissão na cascata (cotação real só quando houve uma).
+    efeitos: calc.efeitos,
+    evidencia: cotacaoReal ? evidenciaDaCotacao(cotacaoReal) : null,
     cotacao: cotacaoReal
       ? {
         // `ao_vivo` só quando comissão E frete vieram do ML; cotação tentada que falhou diz o porquê.

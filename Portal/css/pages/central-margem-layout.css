@@ -95,6 +95,25 @@
 .cm-drawer .cm-banc__banca-linha, .cm-drawer .cm-banc__empate { margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; }
 .cm-drawer .cm-banc__banca-linha strong { color: var(--vf-text); }
 .cm-drawer .cm-banc__fonte, .cm-drawer .cm-banc__nota { margin: 0; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
+.cm-banc__fonte-componente { display: block; margin-top: 2px; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: 400; text-transform: none; letter-spacing: normal; }
+
+/* "De onde saiu a diferença no lucro" (barras de efeito) e "Como a conta foi feita". */
+.cm-drawer .cm-banc__efeitos, .vf-page-central-margem .cm-promo-detail .cm-banc__efeitos { margin: 0 0 var(--vf-sp-2); }
+.cm-efeito { display: grid; grid-template-columns: 7em 1fr 5.5em; align-items: center; gap: var(--vf-sp-2); margin: 3px 0; font-size: var(--vf-fs-xs); }
+.cm-efeito__rotulo { color: var(--vf-text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cm-efeito__barra { position: relative; height: 8px; border-radius: 4px; background: var(--vf-surface-muted, var(--vf-border)); overflow: hidden; }
+.cm-efeito__preenchido { position: absolute; top: 0; left: 0; height: 100%; border-radius: 4px; }
+.cm-efeito__preenchido.is-up { background: var(--vf-success-strong); }
+.cm-efeito__preenchido.is-down { background: var(--vf-danger-strong); }
+.cm-efeito__valor { text-align: right; font-variant-numeric: tabular-nums; }
+.cm-efeito__valor.is-up { color: var(--vf-success-strong); }
+.cm-efeito__valor.is-down { color: var(--vf-danger-strong); }
+.cm-efeito--total { border-top: 1px solid var(--vf-border); padding-top: 4px; margin-top: 6px; }
+.cm-banc__conta-completa { margin: var(--vf-sp-2) 0; }
+.cm-banc__conta-completa summary { cursor: pointer; color: var(--vf-text-secondary); font-size: var(--vf-fs-xs); font-weight: 600; padding: 2px 0; }
+.cm-banc__conta-feita { margin-top: var(--vf-sp-2); }
+.cm-banc__conta-feita ul { margin: 0; padding-left: 1.1em; }
+.cm-banc__conta-feita li { font-size: var(--vf-fs-2xs); color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; line-height: 1.5; }
 
 /* Hipótese de custo (campos editáveis na coluna Cenário) */
 .cm-drawer .cm-banc__hip { width: 92px; text-align: right; font-variant-numeric: tabular-nums; }

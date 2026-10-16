@@ -353,16 +353,21 @@ function tarefaDePromocao(linha, entrada, opcoes = {}) {
     rebate: subsidio === null ? 0 : subsidio,
     rebate_informado: subsidio !== null,
     status_promocao: linha.status || null,
+    // statusExibicao ATIVA = a promoção FORMA o preço de hoje (grupo "ativa"
+    // dos Anúncios). Raw status started/active também cobre "participa"
+    // (inscrita, NÃO APLICADA) — nunca usar o status bruto pra essa decisão.
+    status_exibicao: linha.statusExibicao || null,
   };
 }
 
-// Promoção que o núcleo já responde sem cotação (já ativa, ou P' ≥ preço atual):
-// não gasta consulta ao ML à toa.
+// Promoção que já forma o preço de hoje (statusExibicao ATIVA): o núcleo
+// responde com a composição de hoje sem cotação nova — ou P' ≥ preço atual,
+// que não baixa o preço. Não gasta consulta ao ML à toa.
 function deveCotar(tarefa, atual) {
   if (tarefa.bloqueio || tarefa.tipo === "insumos" || tarefa.tipo === "preco_alvo") return false;
   if (!(tarefa.preco !== null && tarefa.preco > 0)) return false;
   if (tarefa.tipo !== "promo") return true;
-  if (core.STATUS_PROMOCAO_ATIVA.includes(String(tarefa.status_promocao || "").toLowerCase())) return false;
+  if (String(tarefa.status_exibicao || "").toUpperCase() === "ATIVA") return false;
   const precoAtual = num(atual.preco);
   return !(precoAtual !== null && tarefa.preco >= precoAtual - core.TOLERANCIA_VALOR);
 }
@@ -421,7 +426,7 @@ function calcularTarefa(tarefa, ctx) {
   const cotacao = deveCotar(tarefa, atual) ? cotacoes.get(Number(tarefa.preco).toFixed(2)) || null : null;
   const resultado = core.calcularCenario({
     atual,
-    cenario: { tipo: tarefa.tipo, preco: tarefa.preco, rebate: tarefa.rebate, status_promocao: tarefa.status_promocao, ...precoCheioDoCenario(ctx, tarefa.promocao), ...(tarefa.hipotese || {}) },
+    cenario: { tipo: tarefa.tipo, preco: tarefa.preco, rebate: tarefa.rebate, status_promocao: tarefa.status_promocao, status_exibicao: tarefa.status_exibicao, ...precoCheioDoCenario(ctx, tarefa.promocao), ...(tarefa.hipotese || {}) },
     cotacao: cotacao
       ? cotacaoParaNucleo(cotacao)
       : { comissao: null, frete: null, frete_aplicavel: ctx.freteAplicavel },

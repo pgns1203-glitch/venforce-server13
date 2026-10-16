@@ -14,19 +14,19 @@
   <!-- 2. Fundação Global V2 (tokens → componentes; o CSS da página vem no bundle) -->
   <link rel="stylesheet" href="/css/vf-tokens-v2.css">
   <link rel="stylesheet" href="/css/vf-components-v2.css">
+  <link rel="stylesheet" href="/css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-full-gestao">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-full-gestao" data-vf-scope="global" data-vf-module="central-full">
+  <div>
     <main class="vf-content vf-content-wide">
       <div id="root"></div>
     </main>
   </div>
 
-  <!-- Sidebar/topbar do Portal legado: mesma navegação, mesmo token, mesmo logout.
-       Script clássico: executa antes do bundle (que é module/defer).
-       NENHUM link para esta página foi adicionado a layout.js ainda — build
-       isolado sem link no menu, conforme o plano auditado (PR5). -->
-  <script src="/layout.js"></script>
+  <script type="module" src="/vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script type="module" src="./src/full-main.jsx"></script>
 </body>
 </html>

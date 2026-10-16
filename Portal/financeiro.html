@@ -15,10 +15,11 @@
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/financeiro-v2.css">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-dashboard vf-page-financeiro">
+<body class="vf-page vf-page-dashboard vf-page-financeiro" data-vf-scope="global" data-vf-module="financeiro">
 
-  <div class="vf-main-with-sidebar">
+  <div>
     <main class="vf-content">
       <div class="vf-page-shell">
         <div id="fin-shell" class="vf-page-container vf-page-container--wide">
@@ -615,7 +616,10 @@
 
   <!-- Confirmação e toast da Fundação V2 (VF.confirm / VF.toast) -->
   <script src="vf-ui.js"></script>
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="financeiro.js"></script>
 </body>
 </html>

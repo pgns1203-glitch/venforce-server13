@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Venforce — Cliente Operação</title>
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="venforce-ui-v2.css">
   <link rel="stylesheet" href="cliente-operacao.css">
@@ -25,9 +26,11 @@
       flex-shrink: 0;
     }
   </style>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vfop-body">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vfop-body" data-vf-scope="global" data-vf-module="cliente-operacao">
+  <div>
     <main class="vfop-page" aria-labelledby="vfop-page-title">
       <section class="vfop-client-head">
         <div class="vfop-client-head__main">
@@ -222,7 +225,10 @@
     </main>
   </div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="cliente-operacao.js"></script>
 </body>
 </html>

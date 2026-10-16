@@ -2592,9 +2592,30 @@ h4 {
   opacity: 1;
 }
 
-.vf-motion-collapse > * {
+/* Mesmo efeito, mas na MONTAGEM — para o que aparece já aberto (erro de
+   campo, banner novo). `backwards` (não `both`): terminada a entrada, o
+   valor volta a ser o do CSS, e um .vf-motion-collapse no mesmo elemento
+   ainda consegue fechar por transição. */
+@keyframes vf-reveal {
+  from {
+    grid-template-rows: 0fr;
+    opacity: 0;
+  }
+}
+
+.vf-motion-reveal {
+  display: grid;
+  grid-template-rows: 1fr;
+  animation: vf-reveal var(--vf-duration-slow) var(--vf-ease) backwards;
+}
+
+/* `clip` + margem em vez de `hidden`: o anel de foco de um botão na borda
+   (ex.: fechar do banner) não é cortado. */
+.vf-motion-collapse > *,
+.vf-motion-reveal > * {
   min-height: 0;
-  overflow: hidden;
+  overflow: clip;
+  overflow-clip-margin: var(--vf-sp-1);
 }
 
 /* Destaque de valor que mudou: o fundo acende e apaga. Neutro por padrão —

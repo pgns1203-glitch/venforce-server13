@@ -1902,27 +1902,32 @@
         function fmt(d) { return d.split('-').reverse().join('/'); }
         return fmt(p.dateFrom) + ' a ' + fmt(p.dateTo);
       }
-      popup.innerHTML = '<p class="am-metricas-popup__titulo">Em comparação ao período anterior</p>' +
+      popup.innerHTML = '<p class="am-metricas-popup__titulo">Comparativo · últimos 7 dias</p>' +
         '<p class="am-metricas-popup__periodo">Atual: ' + escapeHtml(datas(m.periodos && m.periodos.atual)) + '<br>Anterior: ' + escapeHtml(datas(m.periodos && m.periodos.anterior)) + '</p>' +
         (m.anterior ? '<table><thead><tr><th>Métrica</th><th>Anterior</th><th>Atual</th><th>Variação</th></tr></thead><tbody>' +
           ['views', 'vendas', 'conversao'].map(function (campo, i) {
             function fmt(v) { return campo === 'conversao' ? formatarPercentualCompacto(v) : formatarInteiroOuTraco(v); }
             return '<tr><th>' + ['Visitas', 'Vendas', 'Conversão'][i] + '</th><td>' + fmt(m.anterior[campo]) + '</td><td>' + fmt(m[campo]) + '</td><td>' + variacaoMetricaHtml(m[campo], m.anterior[campo], campo === 'conversao') + '</td></tr>';
           }).join('') + '</tbody></table>' : '<p>Comparativo indisponível para este anúncio.</p>') +
-        '<p class="am-metricas-popup__nota">Vendas em unidades. Conversão = unidades ÷ visitas. — indica dado indisponível ou variação sem base de cálculo.</p>';
+        '<p class="am-metricas-popup__nota" title="Conversão = unidades vendidas ÷ visitas. — indica dado indisponível ou variação sem base de cálculo.">Vendas em unidades · conversão em %</p>';
       popup.hidden = false;
       botao.setAttribute('aria-expanded', 'true');
       botao.setAttribute('aria-describedby', popup.id);
       var r = botao.getBoundingClientRect();
       var largura = popup.getBoundingClientRect().width;
-      popup.style.left = Math.max(8, Math.min(r.left, window.innerWidth - largura - 8)) + 'px';
       var altura = popup.getBoundingClientRect().height;
-      popup.style.top = Math.max(8, Math.min(window.innerHeight - altura - 8, r.bottom + altura + 8 < window.innerHeight ? r.bottom + 8 : r.top - altura - 8)) + 'px';
+      // Ao lado da célula: mantém a coluna livre para alcançar o próximo anúncio.
+      var esquerda = r.left - largura - 10;
+      var lateral = esquerda >= 8 || r.right + largura + 10 <= window.innerWidth - 8;
+      if (esquerda < 8) esquerda = lateral ? r.right + 10 : r.left;
+      popup.style.left = Math.max(8, Math.min(esquerda, window.innerWidth - largura - 8)) + 'px';
+      var topo = lateral ? r.top : r.top - altura - 8;
+      popup.style.top = Math.max(8, Math.min(window.innerHeight - altura - 8, topo)) + 'px';
     }
     document.addEventListener('mouseover', function (e) {
       var b = e.target.closest('.am-metricas7d-trigger');
       if (b) abrir(b);
-      else if (!popup.contains(e.target)) { clearTimeout(timer); timer = setTimeout(fechar, 150); }
+      else if (!popup.contains(e.target) && document.activeElement !== ativo) { clearTimeout(timer); timer = setTimeout(fechar, 150); }
       else clearTimeout(timer);
     });
     document.addEventListener('focusin', function (e) { var b = e.target.closest('.am-metricas7d-trigger'); if (b) abrir(b); else fechar(); });

@@ -349,8 +349,9 @@ async function run() {
     await cdp.evaluate("document.fonts.ready.then(() => true)");
     await check('Métricas: foco abre comparação real, percentuais e pontos percentuais', async () => {
       await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
+      await cdp.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
       await cdp.send('Page.bringToFront');
-      await cdp.evaluate(`(() => { const b = document.querySelector('[data-metricas-item="MLB-SEMUP"] button'); b.scrollIntoView({ block: 'center' }); b.focus(); })()`);
+      await cdp.evaluate(`(() => { const b = document.querySelector('[data-metricas-item="MLB-SEMUP"] button'); b.scrollIntoView({ block: 'center', behavior: 'instant' }); b.focus(); })()`);
       const resultado = await cdp.evaluate(`(() => {
         const p = document.getElementById('am-metricas-popup');
         return { aberto: !p.hidden, texto: p.textContent, dentro: p.getBoundingClientRect().right <= innerWidth };
@@ -358,6 +359,17 @@ async function run() {
       assert.ok(resultado.aberto && resultado.dentro, JSON.stringify(resultado));
       assert.ok(resultado.texto.includes('4,6%') && resultado.texto.includes('33,3%') && resultado.texto.includes('0,7 pp'), resultado.texto);
       assert.ok(resultado.texto.includes('03/10/2026') && resultado.texto.includes('16/10/2026'));
+      const compacto = await cdp.evaluate(`(() => {
+        const b = document.querySelector('[data-metricas-item="MLB-SEMUP"] button');
+        const p = document.getElementById('am-metricas-popup').getBoundingClientRect();
+        const r = b.getBoundingClientRect();
+        return { width: p.width, height: p.height, lateral: p.right < r.left || p.left > r.right,
+          fonte: parseFloat(getComputedStyle(b.querySelector('.am-metricas-delta')).fontSize),
+          principal: parseFloat(getComputedStyle(b.querySelector('.am-metricas7d__linha')).fontSize),
+          respiro: parseFloat(getComputedStyle(b).paddingRight) };
+      })()`);
+      assert.ok(compacto.width <= 320 && compacto.height < 210 && compacto.lateral, JSON.stringify(compacto));
+      assert.ok(compacto.fonte < compacto.principal && compacto.respiro >= 12);
       await cdp.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
       assert.strictEqual(await cdp.evaluate(`document.getElementById('am-metricas-popup').hidden`), true);
       await cdp.evaluate(`document.querySelector('[data-metricas-item="MLB-SEMUP"] button').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`);

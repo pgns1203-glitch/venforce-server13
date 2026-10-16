@@ -1102,7 +1102,7 @@
   display: grid;
   gap: 5px;
   width: 100%;
-  padding: 4px 0;
+  padding: 4px 12px 4px 0;
   border: 0;
   background: transparent;
   color: var(--vf-text);
@@ -1121,7 +1121,7 @@
   line-height: 18px;
 }
 .am-metricas7d__icone { display: inline-flex; flex: 0 0 14px; }
-.am-metricas-delta { margin-left: auto; font-size: 11px; font-weight: 500; white-space: nowrap; }
+.am-metricas-delta { margin-left: auto; font-size: 10px; font-weight: 400; white-space: nowrap; }
 .am-metricas-delta.is-success { color: var(--vf-success, #0f7a52); }
 .am-metricas-delta.is-danger { color: var(--vf-danger, #c62828); }
 .am-metricas-delta.is-neutral { color: var(--vf-text-secondary); }
@@ -1129,23 +1129,23 @@
   position: fixed;
   z-index: 1000;
   box-sizing: border-box;
-  width: min(430px, calc(100vw - 16px));
+  width: min(320px, calc(100vw - 16px));
   max-height: calc(100vh - 16px);
   overflow: auto;
-  padding: 16px;
+  padding: 10px 12px;
   border: 1px solid var(--vf-border);
   border-radius: 8px;
   background: var(--vf-surface, #fff);
   color: var(--vf-text);
   box-shadow: 0 4px 16px rgb(27 29 40 / 16%);
-  font-size: 13px;
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 .am-metricas-popup[hidden] { display: none; }
-.am-metricas-popup__titulo { margin: 0 0 8px; font-weight: 600; }
-.am-metricas-popup__periodo, .am-metricas-popup__nota { margin: 8px 0; font-size: 12px; color: var(--vf-text-secondary); }
+.am-metricas-popup__titulo { margin: 0 0 5px; font-weight: 600; }
+.am-metricas-popup__periodo, .am-metricas-popup__nota { margin: 4px 0; font-size: 11px; line-height: 1.4; color: var(--vf-text-secondary); }
 .am-metricas-popup table { width: 100%; border-collapse: collapse; }
-.am-metricas-popup th, .am-metricas-popup td { padding: 5px 2px; text-align: right; }
+.am-metricas-popup th, .am-metricas-popup td { padding: 3px 2px; text-align: right; }
 .am-metricas-popup th:first-child { text-align: left; }
 .am-metricas-popup thead { color: var(--vf-text-secondary); font-size: 11px; }
 .am-metricas-popup tbody th { font-weight: 500; }

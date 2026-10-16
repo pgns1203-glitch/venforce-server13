@@ -595,3 +595,30 @@
 .vf-shell__item.is-active { color: var(--vf-primary-strong); }
 .vf-shell__item.is-disabled,
 .vf-shell__item.is-disabled:hover { color: var(--vf-text-disabled); }
+
+/* Preserve the previous document until the next screen can paint.
+   Unsupported browsers keep their normal navigation. */
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(root) {
+  animation: none;
+}
+
+::view-transition-new(root) {
+  animation: vf-navigation-reveal 120ms ease-out both;
+}
+
+@keyframes vf-navigation-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(root),
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation: none;
+  }
+}

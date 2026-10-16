@@ -161,6 +161,11 @@
   }
 
   function toast(msg) {
+    // Com o vf-ui.js, o aviso entra na pilha única da V2.
+    if (window.VF && typeof window.VF.toast === "function") {
+      window.VF.toast({ title: msg, tone: "info", duration: 2600 });
+      return;
+    }
     var n = document.createElement("div");
     var content = document.createElement("div");
     var description = document.createElement("p");

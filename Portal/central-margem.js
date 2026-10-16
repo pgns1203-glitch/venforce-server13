@@ -269,6 +269,11 @@
   }
 
   function toast(message, type) {
+    // Com o vf-ui.js, o aviso entra na pilha única da V2 (erro vira alert).
+    if (root.VF && typeof root.VF.toast === "function") {
+      root.VF.toast({ title: message, tone: String(type || "is-info").replace(/^is-/, "") });
+      return;
+    }
     var node = document.createElement("div");
     node.className = "vf-toast " + (type || "is-info");
     node.setAttribute("role", "status");

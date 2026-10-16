@@ -294,11 +294,13 @@ function wireInterception(cdp) {
       MOCK.syncPendentes.push(() => respond(MOCK.syncResposta));
       return;
     }
-    if (/\/snapshot\/refresh$/.test(pathname)) {
+    // Caminho EXATO da rota (server/index.js monta em /operacao/central-margem):
+    // um sufixo só deixou passar um 404 em produção.
+    if (pathname === "/operacao/central-margem/n97/snapshot/refresh") {
       MOCK.refreshPosts += 1;
       return respond({ ok: true, runId: 77, reaproveitado: true, run: { runId: 77, status: "running", processedItems: 0, totalItems: 175 } }, 202);
     }
-    if (/\/snapshot\/refresh\/77$/.test(pathname)) return respond({ ok: true, run: MOCK.run });
+    if (pathname === "/operacao/central-margem/n97/snapshot/refresh/77") return respond({ ok: true, run: MOCK.run });
     if (pathname === "/anuncios-meli/performance") {
       const qs = new URL(url).searchParams;
       const metricas7d = {}, margem = {};

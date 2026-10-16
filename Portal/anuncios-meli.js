@@ -1893,6 +1893,7 @@
     document.body.appendChild(popup);
     var ativo = null, timer;
     function fechar() {
+      clearTimeout(timer);
       if (ativo) ativo.setAttribute('aria-expanded', 'false');
       ativo = null; popup.hidden = true;
     }
@@ -1906,14 +1907,13 @@
         function fmt(d) { return d.split('-').reverse().join('/'); }
         return fmt(p.dateFrom) + ' a ' + fmt(p.dateTo);
       }
-      popup.innerHTML = '<p class="am-metricas-popup__titulo">Comparativo · últimos 7 dias</p>' +
+      popup.innerHTML = '<p class="am-metricas-popup__titulo">Comparação com a semana anterior</p>' +
         '<p class="am-metricas-popup__periodo">Atual: ' + escapeHtml(datas(m.periodos && m.periodos.atual)) + '<br>Anterior: ' + escapeHtml(datas(m.periodos && m.periodos.anterior)) + '</p>' +
-        (m.anterior ? '<table><thead><tr><th>Métrica</th><th>Anterior</th><th>Atual</th><th>Variação</th></tr></thead><tbody>' +
+        (m.anterior ? '<table><thead><tr><th></th><th>Anterior</th><th>Variação</th></tr></thead><tbody>' +
           ['views', 'vendas', 'conversao'].map(function (campo, i) {
             function fmt(v) { return v == null ? '' : campo === 'conversao' ? formatarPercentualCompacto(v) : formatarInteiroOuTraco(v); }
-            return '<tr><th>' + ['Visitas', 'Vendas', 'Conversão'][i] + '</th><td>' + fmt(m.anterior[campo]) + '</td><td>' + fmt(m[campo]) + '</td><td>' + variacaoMetricaHtml(m[campo], m.anterior[campo], campo === 'conversao') + '</td></tr>';
-          }).join('') + '</tbody></table>' : '<p>Comparativo indisponível para este anúncio.</p>') +
-        '<p class="am-metricas-popup__nota" title="Conversão = unidades vendidas ÷ visitas. Campos vazios indicam dado indisponível ou variação sem base de cálculo.">Vendas em unidades · conversão em %</p>';
+            return '<tr><th title="' + (campo === 'vendas' ? 'Unidades vendidas' : campo === 'conversao' ? 'Unidades vendidas ÷ visitas' : 'Visitas ao anúncio') + '">' + ['Visitas', 'Vendas', 'Conversão'][i] + '</th><td>' + fmt(m.anterior[campo]) + '</td><td>' + variacaoMetricaHtml(m[campo], m.anterior[campo], campo === 'conversao') + '</td></tr>';
+          }).join('') + '</tbody></table>' : '<p>Comparativo indisponível para este anúncio.</p>');
       popup.hidden = false;
       botao.setAttribute('aria-expanded', 'true');
       botao.setAttribute('aria-describedby', popup.id);
@@ -1931,10 +1931,18 @@
     document.addEventListener('mouseover', function (e) {
       var b = e.target.closest('.am-metricas7d-trigger');
       if (b) abrir(b);
-      else if (!popup.contains(e.target) && document.activeElement !== ativo) { clearTimeout(timer); timer = setTimeout(fechar, 150); }
+      else if (!popup.contains(e.target)) { clearTimeout(timer); timer = setTimeout(fechar, 120); }
       else clearTimeout(timer);
     });
+    document.addEventListener('mouseout', function (e) {
+      if (!ativo) return;
+      var proximo = e.relatedTarget;
+      if (!proximo) { fechar(); return; }
+      if (ativo.contains(proximo) || popup.contains(proximo)) { clearTimeout(timer); return; }
+      clearTimeout(timer); timer = setTimeout(fechar, 120);
+    });
     document.addEventListener('focusin', function (e) { var b = e.target.closest('.am-metricas7d-trigger'); if (b) abrir(b); else fechar(); });
+    document.addEventListener('focusout', function (e) { if (ativo && ativo.contains(e.target) && !ativo.contains(e.relatedTarget)) fechar(); });
     document.addEventListener('click', function (e) {
       var b = e.target.closest('.am-metricas7d-trigger');
       if (b) { e.stopPropagation(); abrir(b); }
@@ -1942,9 +1950,10 @@
     }, true);
     document.addEventListener('keydown', function (e) { if (e.key === 'Escape') fechar(); });
     window.addEventListener('resize', fechar);
+    window.addEventListener('blur', fechar);
     window.addEventListener('scroll', function (e) {
-      if (!ativo || popup.contains(e.target)) return;
-      if (!document.contains(ativo)) fechar(); else abrir(ativo);
+      if (!ativo || (e.target instanceof Node && popup.contains(e.target))) return;
+      fechar();
     }, true);
   }
 

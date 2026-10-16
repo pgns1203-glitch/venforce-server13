@@ -380,6 +380,21 @@ async function run() {
         fs.writeFileSync(path.join(process.env.VF_SHOTS, 'anuncios-metricas.png'), Buffer.from(shot.data, 'base64'));
       }
     });
+    await check('Popup fecha ao sair com mouse mesmo após clique, ao perder foco e ao rolar', async () => {
+      await cdp.evaluate(`(() => {
+        const b = document.querySelector('[data-metricas-item="MLB-SEMUP"] button');
+        b.click();
+        b.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+      })()`);
+      await waitFor(cdp, "document.getElementById('am-metricas-popup').hidden", 'Popup preso após saída do mouse');
+      await cdp.evaluate(`(() => {
+        const b = document.querySelector('[data-metricas-item="MLB-SEMUP"] button');
+        b.click(); b.dispatchEvent(new FocusEvent('focusout', { bubbles: true, relatedTarget: document.body }));
+      })()`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-metricas-popup').hidden"), true);
+      await cdp.evaluate(`document.querySelector('[data-metricas-item="MLB-SEMUP"] button').click(); window.dispatchEvent(new Event('scroll'))`);
+      assert.strictEqual(await cdp.evaluate("document.getElementById('am-metricas-popup').hidden"), true);
+    });
     for (const width of [1920, 1440, 1366, 1280, 1024]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
       await cdp.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");

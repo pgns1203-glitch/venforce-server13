@@ -1193,13 +1193,6 @@
 }
 
 /* ── Drawer de lançamento manual ────────────────────────────────────────── */
-.vf-ph-drawer__form {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-}
-
 .vf-ph-drawer__body {
   display: flex;
   flex-direction: column;

@@ -21,6 +21,7 @@
 // removido) é lida sob demanda do servidor. Nada aqui é inferido no cliente.
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { VFDrawer, VFDrawerClose } from "../ui/VFDrawer/index.js";
 import { VFField, VFInput, VFSelect, VFTextarea } from "../ui/VFField/index.js";
 import { formatarMoeda } from "../../utils/currency.js";
 import { formatarPercentual } from "../../utils/percentage.js";
@@ -189,7 +190,7 @@ export function LancamentoManualDrawer({
   cliente, contaInicial, competencia, onSalvar, onRemover, onFechar,
   onCarregarLancamentos, onCarregarHistorico, onIrParaCompetencia, modoManual = false,
 }) {
-  const idTitulo = useId();
+  const idForm = useId();
   const contas = useMemo(() => (cliente?.contas || []).filter((c) => c.podeLancarManual), [cliente]);
   const [contaId, setContaId] = useState(() => (contaInicial && contaInicial.podeLancarManual ? contaInicial.id : contas[0]?.id ?? null));
   const conta = contas.find((c) => c.id === contaId) || null;
@@ -198,18 +199,6 @@ export function LancamentoManualDrawer({
   const [erroServidor, setErroServidor] = useState(null);
   const [confirmarRemocao, setConfirmarRemocao] = useState(false);
   const primeiroCampoRef = useRef(null);
-
-  useEffect(() => {
-    primeiroCampoRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    function aoTeclar(evento) {
-      if (evento.key === "Escape") onFechar();
-    }
-    document.addEventListener("keydown", aoTeclar);
-    return () => document.removeEventListener("keydown", aoTeclar);
-  }, [onFechar]);
 
   function trocarConta(id) {
     const proxima = contas.find((c) => c.id === id) || null;
@@ -289,149 +278,151 @@ export function LancamentoManualDrawer({
     }
   }
 
+  // Casca, foco inicial no 1º campo, ESC, clique fora e devolução do foco vêm
+  // do VFDrawer. O <form> fica no corpo; o botão de salvar, no rodapé, aponta
+  // para ele por `form=` (HTML padrão), então Enter num campo também salva.
   return (
-    <>
-      <div className="vf-drawer-backdrop is-open" onClick={onFechar} aria-hidden="true" />
-      <aside className="vf-drawer is-open vf-ph-drawer" role="dialog" aria-modal="true" aria-labelledby={idTitulo}>
-        <form className="vf-ph-drawer__form" onSubmit={salvar} noValidate>
-          <header className="vf-drawer__header">
-            <h2 className="vf-drawer__title" id={idTitulo}>Lançar dados manuais</h2>
-            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={onFechar} aria-label="Fechar">✕</button>
-          </header>
-
-          <div className="vf-drawer__body vf-ph-drawer__body">
-            <dl className="vf-ph-drawer__escopo">
-              <div><dt>Cliente</dt><dd>{cliente?.nome}</dd></div>
-              <div><dt>Competência</dt><dd>{rotularCompetencia(competencia)}</dd></div>
-            </dl>
-
-            {contas.length === 0 ? (
-              <p className="vf-ph-drawer__nota">Todas as contas deste cliente já têm dado automático nesta competência.</p>
-            ) : (
-              <>
-                <VFField label="Conta/operação" hint={conta?.status?.motivo}>
-                  <VFSelect
-                    size="sm"
-                    value={contaId ?? ""}
-                    onChange={(e) => trocarConta(Number(e.target.value))}
-                    options={contas.map((c) => ({ value: c.id, label: c.rotulo }))}
-                  />
-                </VFField>
-
-                <div className="vf-ph-drawer__grid">
-                  {CAMPOS.map((c, i) => (
-                    <VFField key={c.chave} label={c.rotulo} hint={c.dica} error={Number.isNaN(lerNumeroBR(campos[c.chave]))}>
-                      <VFInput
-                        ref={i === 0 ? primeiroCampoRef : undefined}
-                        size="sm"
-                        inputMode="decimal"
-                        autoComplete="off"
-                        value={campos[c.chave]}
-                        onChange={(e) => setCampos((prev) => ({ ...prev, [c.chave]: e.target.value }))}
-                      />
-                    </VFField>
-                  ))}
-                </div>
-
-                <VFField
-                  label="Dados até"
-                  hint="Último dia coberto pelos números (opcional). Em branco = não informado."
-                  error={
-                    dataRefInvalida &&
-                    `"Dados até" precisa estar em ${rotularCompetencia(competencia)} e não pode ser depois de hoje.`
-                  }
-                >
-                  <VFInput
-                    type="date"
-                    size="sm"
-                    className="vf-ph-drawer__data"
-                    min={limites.min}
-                    max={limites.max}
-                    value={campos.dataReferencia}
-                    onChange={(e) => setCampos((prev) => ({ ...prev, dataReferencia: e.target.value }))}
-                  />
-                </VFField>
-
-                <p className="vf-ph-drawer__previa" aria-live="polite">
-                  {mcDerivada !== null && <span>MC calculada: {formatarPercentual(mcDerivada)}</span>}
-                  {lcDerivado !== null && <span>LC calculado: {formatarMoeda(lcDerivado, { casas: 0 })}</span>}
-                  {acos !== null && <span>ACOS {formatarPercentual(acos)}</span>}
-                  {tacos !== null && <span>TACoS {formatarPercentual(tacos)}</span>}
-                </p>
-
-                <VFField label="Observação">
-                  <VFTextarea
-                    className="vf-ph-drawer__obs"
-                    rows={2}
-                    maxLength={500}
-                    value={campos.observacao}
-                    onChange={(e) => setCampos((prev) => ({ ...prev, observacao: e.target.value }))}
-                    placeholder="De onde veio o número (planilha do cliente, painel do marketplace…)"
-                  />
-                </VFField>
-
-                {invalido && <p className="vf-field__error">Use só números (ex.: 1.234,56).</p>}
-                {inconsistente && (
-                  <p className="vf-field__error" role="alert">
-                    FAT, LC e MC não batem: MC deve ser LC ÷ FAT. Informe só dois deles para o terceiro ser calculado.
-                  </p>
-                )}
-                {erroServidor && <p className="vf-field__error" role="alert">{erroServidor}</p>}
-
-                {ref && ref.fat != null && (
-                  <p className="vf-ph-drawer__nota" data-testid="referencia-api">
-                    Referência da {ref.rotulo || "API"}: FAT {formatarMoeda(ref.fat, { casas: 2 })}
-                    {ref.dadosAte ? ` (dados até ${formatarData(ref.dadosAte)})` : ""}.
-                  </p>
-                )}
-
-                <p className="vf-ph-drawer__nota">
-                  {modoManual ? (
-                    <>
-                      O dado fica marcado como <strong>MANUAL</strong> e <strong>prevalece sobre a API</strong> enquanto o
-                      Painel estiver em modo manual — nenhuma rotina automática o substitui. Cada competência é um registro
-                      próprio: salvar este mês não altera os outros.
-                    </>
-                  ) : (
-                    <>
-                      O dado fica marcado como <strong>MANUAL</strong>. Se a integração publicar esta competência, o automático
-                      passa a ser o exibido e este lançamento continua guardado. Cada competência é um registro próprio:
-                      salvar este mês não altera os outros.
-                    </>
-                  )}
-                </p>
-
-                {temManual && <Registro conta={conta} competencia={competencia} />}
-                {temManual && carregarHistorico && <Trilha key={`${conta.id}:${competencia}`} carregar={carregarHistorico} />}
-                {carregarLancamentos && (
-                  <CompetenciasDaConta
-                    key={conta.id}
-                    carregar={carregarLancamentos}
-                    competencia={competencia}
-                    onAbrir={onIrParaCompetencia ? (comp) => onIrParaCompetencia(cliente.id, conta.id, comp) : null}
-                  />
-                )}
-              </>
-            )}
-          </div>
-
-          <footer className="vf-drawer__footer">
-            {temManual && (
-              <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm vf-ph-drawer__remover" onClick={remover} disabled={enviando}>
-                {confirmarRemocao ? "Confirmar remoção" : "Remover lançamento"}
-              </button>
-            )}
-            <button type="button" className="vf-btn vf-btn--sm" onClick={onFechar}>Cancelar</button>
-            <button
-              type="submit"
-              className="vf-btn vf-btn--primary vf-btn--sm"
-              disabled={!conta || invalido || vazio || inconsistente || dataRefInvalida || enviando}
-            >
-              {enviando ? "Salvando…" : "Salvar lançamento"}
+    <VFDrawer
+      title="Lançar dados manuais"
+      onClose={onFechar}
+      className="vf-ph-drawer"
+      initialFocusRef={primeiroCampoRef}
+      footer={
+        <>
+          {temManual && (
+            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm vf-ph-drawer__remover" onClick={remover} disabled={enviando}>
+              {confirmarRemocao ? "Confirmar remoção" : "Remover lançamento"}
             </button>
-          </footer>
-        </form>
-      </aside>
-    </>
+          )}
+          <VFDrawerClose>
+            <button type="button" className="vf-btn vf-btn--sm">Cancelar</button>
+          </VFDrawerClose>
+          <button
+            type="submit"
+            form={idForm}
+            className="vf-btn vf-btn--primary vf-btn--sm"
+            disabled={!conta || invalido || vazio || inconsistente || dataRefInvalida || enviando}
+          >
+            {enviando ? "Salvando…" : "Salvar lançamento"}
+          </button>
+        </>
+      }
+    >
+      <form id={idForm} className="vf-ph-drawer__body" onSubmit={salvar} noValidate>
+        <dl className="vf-ph-drawer__escopo">
+          <div><dt>Cliente</dt><dd>{cliente?.nome}</dd></div>
+          <div><dt>Competência</dt><dd>{rotularCompetencia(competencia)}</dd></div>
+        </dl>
+
+        {contas.length === 0 ? (
+          <p className="vf-ph-drawer__nota">Todas as contas deste cliente já têm dado automático nesta competência.</p>
+        ) : (
+          <>
+            <VFField label="Conta/operação" hint={conta?.status?.motivo}>
+              <VFSelect
+                size="sm"
+                value={contaId ?? ""}
+                onChange={(e) => trocarConta(Number(e.target.value))}
+                options={contas.map((c) => ({ value: c.id, label: c.rotulo }))}
+              />
+            </VFField>
+
+            <div className="vf-ph-drawer__grid">
+              {CAMPOS.map((c, i) => (
+                <VFField key={c.chave} label={c.rotulo} hint={c.dica} error={Number.isNaN(lerNumeroBR(campos[c.chave]))}>
+                  <VFInput
+                    ref={i === 0 ? primeiroCampoRef : undefined}
+                    size="sm"
+                    inputMode="decimal"
+                    autoComplete="off"
+                    value={campos[c.chave]}
+                    onChange={(e) => setCampos((prev) => ({ ...prev, [c.chave]: e.target.value }))}
+                  />
+                </VFField>
+              ))}
+            </div>
+
+            <VFField
+              label="Dados até"
+              hint="Último dia coberto pelos números (opcional). Em branco = não informado."
+              error={
+                dataRefInvalida &&
+                `"Dados até" precisa estar em ${rotularCompetencia(competencia)} e não pode ser depois de hoje.`
+              }
+            >
+              <VFInput
+                type="date"
+                size="sm"
+                className="vf-ph-drawer__data"
+                min={limites.min}
+                max={limites.max}
+                value={campos.dataReferencia}
+                onChange={(e) => setCampos((prev) => ({ ...prev, dataReferencia: e.target.value }))}
+              />
+            </VFField>
+
+            <p className="vf-ph-drawer__previa" aria-live="polite">
+              {mcDerivada !== null && <span>MC calculada: {formatarPercentual(mcDerivada)}</span>}
+              {lcDerivado !== null && <span>LC calculado: {formatarMoeda(lcDerivado, { casas: 0 })}</span>}
+              {acos !== null && <span>ACOS {formatarPercentual(acos)}</span>}
+              {tacos !== null && <span>TACoS {formatarPercentual(tacos)}</span>}
+            </p>
+
+            <VFField label="Observação">
+              <VFTextarea
+                className="vf-ph-drawer__obs"
+                rows={2}
+                maxLength={500}
+                value={campos.observacao}
+                onChange={(e) => setCampos((prev) => ({ ...prev, observacao: e.target.value }))}
+                placeholder="De onde veio o número (planilha do cliente, painel do marketplace…)"
+              />
+            </VFField>
+
+            {invalido && <p className="vf-field__error">Use só números (ex.: 1.234,56).</p>}
+            {inconsistente && (
+              <p className="vf-field__error" role="alert">
+                FAT, LC e MC não batem: MC deve ser LC ÷ FAT. Informe só dois deles para o terceiro ser calculado.
+              </p>
+            )}
+            {erroServidor && <p className="vf-field__error" role="alert">{erroServidor}</p>}
+
+            {ref && ref.fat != null && (
+              <p className="vf-ph-drawer__nota" data-testid="referencia-api">
+                Referência da {ref.rotulo || "API"}: FAT {formatarMoeda(ref.fat, { casas: 2 })}
+                {ref.dadosAte ? ` (dados até ${formatarData(ref.dadosAte)})` : ""}.
+              </p>
+            )}
+
+            <p className="vf-ph-drawer__nota">
+              {modoManual ? (
+                <>
+                  O dado fica marcado como <strong>MANUAL</strong> e <strong>prevalece sobre a API</strong> enquanto o
+                  Painel estiver em modo manual — nenhuma rotina automática o substitui. Cada competência é um registro
+                  próprio: salvar este mês não altera os outros.
+                </>
+              ) : (
+                <>
+                  O dado fica marcado como <strong>MANUAL</strong>. Se a integração publicar esta competência, o automático
+                  passa a ser o exibido e este lançamento continua guardado. Cada competência é um registro próprio:
+                  salvar este mês não altera os outros.
+                </>
+              )}
+            </p>
+
+            {temManual && <Registro conta={conta} competencia={competencia} />}
+            {temManual && carregarHistorico && <Trilha key={`${conta.id}:${competencia}`} carregar={carregarHistorico} />}
+            {carregarLancamentos && (
+              <CompetenciasDaConta
+                key={conta.id}
+                carregar={carregarLancamentos}
+                competencia={competencia}
+                onAbrir={onIrParaCompetencia ? (comp) => onIrParaCompetencia(cliente.id, conta.id, comp) : null}
+              />
+            )}
+          </>
+        )}
+      </form>
+    </VFDrawer>
   );
 }

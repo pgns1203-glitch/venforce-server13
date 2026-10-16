@@ -33,6 +33,7 @@
 // o oposto do que o lazy loading protege.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { VFTooltip } from "../ui/VFTooltip/index.js";
 import { formatarMoeda } from "../../utils/currency.js";
 import { formatarPercentual, formatarVariacaoPercentual, formatarPontosPercentuais } from "../../utils/percentage.js";
 import { AUSENTE, ehAusente, direcao } from "../../utils/numbers.js";
@@ -148,9 +149,11 @@ function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false
       {delta && <Delta sentido={coluna.sentido} valor={delta.valor} texto={delta.texto} />}
       {manual && coluna.chave === "fat" && !ausente && <span className="vf-ph-valor__origem">manual</span>}
       {!ausente && marcaParcial(coluna, custos) && (
-        <span className="vf-ph-parcial" title={textoCoberturaParcial(custos)} aria-label={textoCoberturaParcial(custos)}>
-          <span aria-hidden="true">◐ {formatarPercentual(custos.cobertura)}</span>
-        </span>
+        <VFTooltip content={textoCoberturaParcial(custos)}>
+          <span className="vf-ph-parcial" tabIndex={0} aria-label={textoCoberturaParcial(custos)}>
+            <span aria-hidden="true">◐ {formatarPercentual(custos.cobertura)}</span>
+          </span>
+        </VFTooltip>
       )}
     </td>
   );
@@ -557,7 +560,9 @@ function LinhaConta({
                 </span>
               )}
               {conta.avisos?.length > 0 && (
-                <span className="vf-ph-aviso" title={conta.avisos.join("\n")} aria-label={conta.avisos.join(". ")}>⚠</span>
+                <VFTooltip content={conta.avisos.join("\n")}>
+                  <span className="vf-ph-aviso" tabIndex={0} aria-label={conta.avisos.join(". ")}>⚠</span>
+                </VFTooltip>
               )}
               <EstadoNaAtualizacao estadoConta={estadoConta} emCurso={atualizacaoEmCurso(atualizacao)} />
               {manualSubstituido && (

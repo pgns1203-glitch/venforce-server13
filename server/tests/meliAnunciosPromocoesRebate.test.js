@@ -93,11 +93,12 @@ function repoMemoria() {
       return seq;
     },
     async obter(id) { return clone(jobs.get(Number(id)) || null); },
-    async atualizarProgresso(id, total, processados) {
+    async atualizarProgresso(id, total, processados, resumoParcial = null) {
       const j = jobs.get(id);
       j.progresso_total = total;
       j.progresso_processados = Math.max(j.progresso_processados, processados);
       j.progressos.push(processados);
+      if (resumoParcial) j.progresso_resumo = clone(resumoParcial);
     },
     async concluirAnalise(id, resultado) {
       const j = jobs.get(id);
@@ -477,7 +478,8 @@ async function run() {
 
     const lido = await svc.lerJob({ jobId: 1, cliente, mlUserId: "111" }, t.deps);
     assert.deepStrictEqual(Object.keys(lido.job).sort(), ["erro", "execucao", "fase", "id", "progresso", "referencia", "resultado", "status"]);
-    assert.deepStrictEqual(lido.job.progresso, { total: 3, processados: 3 });
+    assert.deepStrictEqual(job.progresso_resumo, { recomendado: 1, escolha: 0, sem_ganho: 0, descartado: 2 }, "placar parcial por status");
+    assert.deepStrictEqual(lido.job.progresso, { total: 3, processados: 3, resumo: { recomendado: 1, escolha: 0, sem_ganho: 0, descartado: 2 } });
     assert.strictEqual(lido.job.fase, "analise");
     assert.strictEqual(lido.job.execucao, null);
 

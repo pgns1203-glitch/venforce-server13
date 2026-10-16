@@ -530,14 +530,15 @@ function criarRepositorio(db) {
       const r = await db.query(`SELECT * FROM promocoes_rebate_jobs WHERE id = $1`, [jobId]);
       return r.rows[0] || null;
     },
-    async atualizarProgresso(jobId, total, processados) {
+    async atualizarProgresso(jobId, total, processados, resumoParcial = null) {
       await db.query(
         `UPDATE promocoes_rebate_jobs
             SET progresso_total = $2,
                 progresso_processados = GREATEST(progresso_processados, $3),
+                progresso_resumo = COALESCE($4::jsonb, progresso_resumo),
                 updated_at = NOW()
           WHERE id = $1 AND status = 'processando'`,
-        [jobId, total, processados]
+        [jobId, total, processados, resumoParcial ? JSON.stringify(resumoParcial) : null]
       );
     },
     async concluirAnalise(jobId, resultado) {
@@ -966,6 +967,8 @@ async function executarAnalise(jobId, deps = {}) {
 
     const itens = [];
     let processados = 0;
+    // Contagem parcial por status, para o placar ao vivo do Portal.
+    const parcial = resumir([]);
     for (const lote of chunk(ids, LOTE_CUSTOS)) {
       const precisamCusto = lote.filter((id) => universo.ids.has(id) && anuncios.has(id));
       let custos;
@@ -994,7 +997,8 @@ async function executarAnalise(jobId, deps = {}) {
           };
         }
         processados += 1;
-        await d.repo.atualizarProgresso(jobId, total, processados);
+        if (Object.prototype.hasOwnProperty.call(parcial, r.status)) parcial[r.status] += 1;
+        await d.repo.atualizarProgresso(jobId, total, processados, { ...parcial });
         return r;
       });
       itens.push(...resultados);
@@ -1038,7 +1042,11 @@ function serializarJob(row) {
     status: row.status,
     erro: row.erro || null,
     referencia: { id: ref.id || null, tipo: ref.tipo || null, nome: ref.nome || null },
-    progresso: { total: Number(row.progresso_total) || 0, processados: Number(row.progresso_processados) || 0 },
+    progresso: {
+      total: Number(row.progresso_total) || 0,
+      processados: Number(row.progresso_processados) || 0,
+      resumo: row.progresso_resumo || null,
+    },
     resultado: row.resultado || null,
     execucao: serializarExecucao(row.execucao, row.status),
   };

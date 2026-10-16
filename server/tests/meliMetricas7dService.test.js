@@ -77,6 +77,26 @@ function visitasHandler(mapa) {
 }
 
 async function run() {
+  {
+    mlChamadas = [];
+    mlHandler = combinarHandlers(ordersHandler([{ order_items: [{ item: { id: 'MLB-A' }, quantity: 4 }] }]), visitasHandler({ 'MLB-A': 100 }));
+    const r = await metricas7d.montarMetricas7d({ clienteId: 1, mlUserId: '111', itemIds: ['MLB-A'], incluirComparativo: true, agora: new Date('2026-10-16T12:00:00Z') });
+    assert.deepStrictEqual(r['MLB-A'].anterior, { views: 100, vendas: 4, conversao: 4 });
+    assert.deepStrictEqual(r['MLB-A'].periodos, {
+      atual: { dateFrom: '2026-10-10', dateTo: '2026-10-16' },
+      anterior: { dateFrom: '2026-10-03', dateTo: '2026-10-09' },
+    });
+    assert.strictEqual(mlChamadas.filter(c => c.path.startsWith('/orders/search')).length, 2);
+    assert.strictEqual(mlChamadas.filter(c => c.path.includes('/visits/time_window')).length, 2);
+    assert.ok(mlChamadas.some(c => c.path.includes('ending=2026-10-09')));
+    ok('comparativo opt-in: períodos de 7 dias sem sobreposição e duas consultas por fonte');
+    mlHandler = combinarHandlers(ordersHandler([]), c => c.path.includes('ending=') ? { ok: false } : undefined, visitasHandler({ 'MLB-A': 100 }));
+    const falha = await metricas7d.montarMetricas7d({ clienteId: 1, mlUserId: '111', itemIds: ['MLB-A'], incluirComparativo: true });
+    assert.strictEqual(falha['MLB-A'].views, 100);
+    assert.strictEqual(falha['MLB-A'].anterior.views, null);
+    assert.strictEqual(falha['MLB-A'].anterior.conversao, null);
+    ok('falha das visitas anteriores preserva o atual e não inventa conversão');
+  }
   // 1. Vendas: agrega por item_id, soma quantidade de múltiplos order_items,
   //    ignora item fora do conjunto pedido, e usa 1 SÓ chamada de pedidos.
   {

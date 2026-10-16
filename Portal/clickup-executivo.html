@@ -5,12 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Gestão - ClickUp | Venforce</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="venforce-ui-v2.css" />
   <link rel="stylesheet" href="clickup-executivo.css" />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-clickup">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-clickup" data-vf-scope="global">
+  <div>
     <main class="vf-content">
       <div class="vf-page-head">
         <div class="vf-page-head__main">
@@ -206,7 +209,10 @@
     </main>
   </div>
 
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="clickup-executivo.js"></script>
 </body>
 </html>

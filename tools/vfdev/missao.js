@@ -197,7 +197,7 @@ function gerarMissao(s, cfg = {}) {
   }
   L.push('');
   // 9. restrições
-  const prot = (cfg.protectedFiles || ['style.css', 'layout.js']).map(f => `\`Portal/${f}\``).join(', ');
+  const prot = (cfg.protectedFiles || ['style.css']).map(f => `\`Portal/${f}\``).join(', ');
   L.push('## Restrições', '');
   L.push('- Não tocar no backend (`server/**`) nem em contratos de API (rotas, payloads, nomes de campos).');
   L.push('- Não tocar no shell/moldura do Portal (sidebar, `vf-shell`, navegação global).');

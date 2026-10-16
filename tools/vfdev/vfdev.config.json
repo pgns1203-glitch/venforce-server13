@@ -3,8 +3,7 @@
   "port": 5190,
   "backend": null,
   "protectedFiles": [
-    "style.css",
-    "layout.js"
+    "style.css"
   ],
   "globalFiles": [
     "css/vf-tokens-v2.css",

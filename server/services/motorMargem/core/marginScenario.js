@@ -45,6 +45,9 @@ const VEREDITOS = Object.freeze({
   ENTRAR_SE_GIRAR: "entrar_se_girar",
   NAO_ENTRAR: "nao_entrar",
   BLOQUEADO: "bloqueado",
+  // A promoção JÁ forma o preço de hoje (statusExibicao ATIVA): não é uma
+  // decisão de entrar/não entrar, é a composição de hoje — Δ 0, sem bloqueio.
+  ATIVA: "ativa",
 });
 
 const MOTIVOS = Object.freeze({
@@ -60,7 +63,6 @@ const MOTIVOS = Object.freeze({
   FRETE_INDISPONIVEL: "frete_indisponivel",
   META_INVALIDA: "meta_invalida",
   MARGEM_MINIMA_INVALIDA: "margem_minima_invalida",
-  PROMOCAO_ATIVA: "promocao_ativa",
   SEM_DESCONTO_EFETIVO: "sem_desconto_efetivo",
   PRECO_IGUAL_AO_ATUAL: "preco_igual_ao_atual",
   REBATE_AMBIGUO: "rebate_ambiguo",
@@ -111,7 +113,6 @@ const PRECEDENCIA_MOTIVOS = [
   MOTIVOS.PROMOCAO_AMBIGUA,
   MOTIVOS.PROMOCAO_SEM_PRECO,
   MOTIVOS.SEM_PRECO_VIAVEL,
-  MOTIVOS.PROMOCAO_ATIVA,
   MOTIVOS.SEM_DESCONTO_EFETIVO,
   MOTIVOS.PRECO_IGUAL_AO_ATUAL,
   // Dado que falta, da composição de hoje e do cenário.
@@ -289,17 +290,63 @@ function calcularAtual({ atual = {}, frete_aplicavel = true } = {}) {
  * @param {object} p.meta      { margem_alvo, margem_minima? }  (frações)
  * @param {object} [p.flags]   { rebate_ambiguo?, rebate_atual_indisponivel? }
  */
+// Rótulo de cada componente nas barras "de onde saiu a diferença no lucro".
+const EFEITO_ROTULO = Object.freeze({
+  preco: "Preço", imposto: "Imposto", comissao: "Comissão", frete: "Frete",
+  taxa_fixa: "Taxa fixa", custo: "Custo", rebate: "Retorno ML",
+});
+
+/**
+ * Decompõe ΔLC por componente (mesma fórmula do cabeçalho, só separada em
+ * parcelas): efeito no lucro de cada linha, ordenado pelo tamanho. A soma
+ * SEMPRE fecha com `deltaLc` — o resíduo do arredondamento por componente
+ * (centavos) é absorvido pela maior parcela, nunca espalhado ao acaso.
+ */
+function calcularEfeitos(valoresAtual, valoresNovo, deltaLc) {
+  if (deltaLc === null || deltaLc === undefined) return [];
+  // Sinal de cada componente no LC: some (+) ou subtrai (−) do preço.
+  const SINAL = { preco: 1, imposto: -1, comissao: -1, frete: -1, taxa_fixa: -1, custo: -1, rebate: 1 };
+  const chaves = ["preco", "imposto", "comissao", "frete", "taxa_fixa", "custo", "rebate"];
+  const brutos = [];
+  for (const chave of chaves) {
+    const a = valoresAtual[chave];
+    const n = valoresNovo[chave];
+    if (a === null || a === undefined || n === null || n === undefined) continue;
+    const efeito = SINAL[chave] * (n - a);
+    if (Math.abs(efeito) < TOLERANCIA_VALOR) continue;
+    brutos.push({ chave, rotulo: EFEITO_ROTULO[chave], valor: round2(efeito) });
+  }
+  if (!brutos.length) return [];
+  // Resíduo do arredondamento por componente: a maior parcela absorve a diferença.
+  const somaArredondada = round2(brutos.reduce((s, e) => s + e.valor, 0));
+  const residuo = round2(deltaLc - somaArredondada);
+  if (Math.abs(residuo) >= TOLERANCIA_VALOR) {
+    let maior = brutos[0];
+    for (const e of brutos) if (Math.abs(e.valor) > Math.abs(maior.valor)) maior = e;
+    maior.valor = round2(maior.valor + residuo);
+  }
+  return brutos.sort((x, y) => Math.abs(y.valor) - Math.abs(x.valor));
+}
+
 function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, flags = {} } = {}) {
   const motivos = [];
   const bloquear = (m) => { if (!motivos.includes(m)) motivos.push(m); };
 
   const freteAplicavel = cotacao.frete_aplicavel !== false;
   const lido = lerAtual(atual, freteAplicavel);
-  const { precoAtual, custo, aliquota, taxaFixa, frete: freteAtual } = lido.valores;
+  const { precoAtual, custo, aliquota, taxaFixa, comissao: comissaoAtual, frete: freteAtual } = lido.valores;
 
-  const precoNovo = num(cenario.preco);
-  const rebateNovoBruto = cenario.rebate === undefined || cenario.rebate === null ? 0 : num(cenario.rebate);
   const tipo = cenario.tipo || "preco";
+  // Promoção que JÁ forma o preço de hoje (statusExibicao ATIVA, dita por quem
+  // monta o cenário — NUNCA o status bruto do ML, que também cobre promoções
+  // só inscritas/"NÃO APLICADA"): o cenário É a composição de hoje, não se
+  // recotiza e não se bloqueia por isso.
+  const ativaNoPreco = tipo === "promo" && String(cenario.status_exibicao || "").toUpperCase() === "ATIVA";
+
+  const precoNovo = ativaNoPreco ? precoAtual : num(cenario.preco);
+  const rebateNovoBruto = ativaNoPreco
+    ? (lido.valores.rebate ?? 0)
+    : (cenario.rebate === undefined || cenario.rebate === null ? 0 : num(cenario.rebate));
   // Hipóteses (cenário `insumos`): custo/alíquota/taxa fixa do cenário. Ausentes = os de hoje.
   const custoNovo = cenario.custo === undefined ? custo : num(cenario.custo);
   const aliquotaNova = cenario.aliquota === undefined ? aliquota : num(cenario.aliquota);
@@ -327,9 +374,13 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   if (rebateNovoBruto === null || rebateNovoBruto < 0) bloquearCenario(MOTIVOS.REBATE_INVALIDO);
   const rebateNovo = rebateNovoBruto === null || rebateNovoBruto < 0 ? null : rebateNovoBruto;
 
-  const comissaoNova = num(cotacao.comissao);
-  const freteNovo = freteAplicavel ? num(cotacao.frete) : (num(cotacao.frete) ?? 0);
-  if (cotacao.limite_excedido === true) bloquearCenario(MOTIVOS.LIMITE_DE_COTACOES);
+  // Ativa no preço: os insumos de hoje JÁ são a cotação (é o preço vigente);
+  // não se exige nova cotação em P' nem se bloqueia por ela faltar.
+  const comissaoNova = ativaNoPreco ? comissaoAtual : num(cotacao.comissao);
+  const freteNovo = ativaNoPreco
+    ? freteAtual
+    : (freteAplicavel ? num(cotacao.frete) : (num(cotacao.frete) ?? 0));
+  if (!ativaNoPreco && cotacao.limite_excedido === true) bloquearCenario(MOTIVOS.LIMITE_DE_COTACOES);
   if (comissaoNova === null) bloquearCenario(MOTIVOS.COMISSAO_INDISPONIVEL);
   if (freteNovo === null) bloquearCenario(MOTIVOS.FRETE_INDISPONIVEL);
 
@@ -340,12 +391,11 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   if (flags.rebate_atual_indisponivel === true) bloquear(MOTIVOS.REBATE_ATUAL_INDISPONIVEL);
 
   // ── Flags de elegibilidade do cenário ──────────────────────────────────────
-  const ativa = tipo === "promo" && STATUS_PROMOCAO_ATIVA.includes(String(cenario.status_promocao || "").toLowerCase());
   // Promoção que não baixa o preço não é desconto: só se aplica a promoção
-  // (subir o preço é um cenário legítimo de `preco`).
-  const semDescontoEfetivo = tipo === "promo" && precoAtual !== null && precoNovo !== null && precoNovo >= precoAtual - TOLERANCIA_VALOR;
+  // (subir o preço é um cenário legítimo de `preco`); ativa-no-preço é sempre
+  // "sem desconto" contra o preço atual por definição — não é esse o bloqueio.
+  const semDescontoEfetivo = !ativaNoPreco && tipo === "promo" && precoAtual !== null && precoNovo !== null && precoNovo >= precoAtual - TOLERANCIA_VALOR;
   const precoIgual = tipo === "preco" && iguais(precoAtual, precoNovo);
-  if (ativa) bloquear(MOTIVOS.PROMOCAO_ATIVA);
   if (semDescontoEfetivo) bloquear(MOTIVOS.SEM_DESCONTO_EFETIVO);
   if (precoIgual) bloquear(MOTIVOS.PRECO_IGUAL_AO_ATUAL);
 
@@ -367,6 +417,15 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   const empateVolume = lcAtual !== null && lcNovo !== null && lcNovo > 0 && lcAtual > 0
     ? round6(lcAtual / lcNovo - 1)
     : null;
+
+  // "De onde saiu a diferença no lucro": mesma fórmula do LC, em parcelas.
+  const impostoAtual = precoAtual !== null && aliquota !== null ? precoAtual * aliquota : null;
+  const impostoNovo = precoNovo !== null && fracaoValida(aliquotaNova) ? precoNovo * aliquotaNova : null;
+  const efeitos = calcularEfeitos(
+    { preco: precoAtual, imposto: impostoAtual, comissao: comissaoAtual, frete: freteAtual, taxa_fixa: taxaFixa, custo, rebate: lido.valores.rebate },
+    { preco: precoNovo, imposto: impostoNovo, comissao: comissaoNova, frete: freteNovo, taxa_fixa: taxaFixaNova, custo: custoNovo, rebate: rebateNovo },
+    deltaLc
+  );
 
   // Quem banca (ver o cabeçalho): o desconto é medido contra o PREÇO CHEIO.
   const precoCheio = num(cenario.preco_cheio);
@@ -400,6 +459,8 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
   if (motivos.length) {
     veredito = VEREDITOS.BLOQUEADO;
     motivoVeredito = motivoPrincipal(motivos);
+  } else if (ativaNoPreco) {
+    veredito = VEREDITOS.ATIVA;
   } else if (lcNovo <= 0 || margemNova < margemMinima) {
     veredito = VEREDITOS.NAO_ENTRAR;
     motivoVeredito = lcNovo <= 0 ? "lc_nao_positivo" : "margem_abaixo_do_minimo";
@@ -415,7 +476,7 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
     motivo: motivoVeredito,
     motivos: veredito === VEREDITOS.BLOQUEADO ? motivos.slice() : [],
     flags: {
-      ativa,
+      ativa: ativaNoPreco,
       sem_desconto_efetivo: semDescontoEfetivo,
       mudou_faixa_frete: mudouFaixaFrete,
       rebate_ambiguo: flags.rebate_ambiguo === true,
@@ -434,6 +495,11 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
     delta_lc: deltaLc,
     delta_margem_ratio: deltaMargem,
     empate_volume: empateVolume,
+    efeitos,
+    // "Como a conta foi feita": só a alíquota (fração), que não existe em
+    // nenhum outro campo (o `imposto` só sai em R$) — o resto da narrativa
+    // vem de `atual`/`cenario`/`evidencia`, já devolvidos; o front não deriva nada.
+    explicacao: { aliquota: fracaoValida(aliquotaNova) ? round6(aliquotaNova) : null },
     meta: {
       margem_alvo: margemAlvo === null ? null : round6(margemAlvo),
       margem_minima: margemMinima === null ? null : round6(margemMinima),
@@ -494,6 +560,8 @@ function resultadoBloqueado(motivo, { flags = {}, meta = {} } = {}) {
     delta_lc: null,
     delta_margem_ratio: null,
     empate_volume: null,
+    efeitos: [],
+    explicacao: { aliquota: null },
     meta: { margem_alvo: num(meta.margem_alvo), margem_minima: num(meta.margem_minima) },
     assumido: [],
   };

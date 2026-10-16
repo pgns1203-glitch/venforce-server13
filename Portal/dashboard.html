@@ -12,9 +12,10 @@
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
   <link rel="stylesheet" href="css/pages/dashboard-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
 </head>
-<body class="vf-page vf-page-dashboard" data-vf-density="compact">
-  <div class="vf-main-with-sidebar">
+<body class="vf-page vf-page-dashboard" data-vf-density="compact" data-vf-scope="global">
+  <div>
     <main class="vf-content" id="main-content">
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
@@ -172,7 +173,10 @@
       </div>
     </main>
   </div>
-  <script src="layout.js"></script>
+  <script type="module" src="vf-shell.js"></script>
+  <!-- O JS desta página chama initLayout() (era do layout.js, removido).
+       No-op: a sidebar agora é do Shell V3. -->
+  <script>window.initLayout = window.initLayout || function () {};</script>
   <script src="dashboard.js"></script>
 </body>
 </html>

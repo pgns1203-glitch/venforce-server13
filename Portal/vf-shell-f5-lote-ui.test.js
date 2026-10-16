@@ -1,12 +1,12 @@
 /*
  * F5 — regressão do LOTE de páginas migradas do layout.js para o Shell V3.
  *
- * Nove páginas trocaram de shell numa transformação mecânica idêntica
+ * As páginas trocaram de shell numa transformação mecânica idêntica
  * (link do vf-shell.css · data-vf-scope/data-vf-module no <body> · o
  * wrapper .vf-main-with-sidebar vira neutro · <script src="layout.js">
  * vira <script type="module" src="vf-shell.js"> + o no-op de initLayout).
  * "Mecânica e idêntica" é justamente o que torna um erro fácil de repetir
- * nove vezes — por isso cada página é aberta de verdade, no navegador, e
+ * página a página — por isso cada página é aberta de verdade, no navegador, e
  * medida pelo mesmo conjunto de invariantes:
  *
  *   1. o Shell V3 montou (.vf-shell__sidebar existe);
@@ -70,6 +70,25 @@ const PAGINAS = [
   // Por isso `modulo: null`: não há item de navegação para ficar ativo, e
   // fingir um seria inventar navegação.
   { arquivo: "relatorios.html", modulo: null, marca: "#rh-cliente" },
+  // Último lote: o layout.js foi APAGADO — estas eram as telas que ainda o
+  // carregavam (Central Full abria com a sidebar antiga). Mesma transformação
+  // mecânica, todas em escopo global (cada uma tem seletor próprio). Nas
+  // ilhas React a marca é o #root já renderizado, não só o nó vazio.
+  { arquivo: "full-gestao.html", modulo: "central-full", marca: "#root > *" },
+  { arquivo: "fechamento.html", modulo: "curva-abc", marca: "#fc-wrap" },
+  { arquivo: "cliente-operacao.html", modulo: "cliente-operacao", marca: "#vfop-client-select" },
+  { arquivo: "promocoes-retorno.html", modulo: "promocoes-ml", marca: "#promo-cliente-search" },
+  { arquivo: "financeiro.html", modulo: "financeiro", marca: "#fin-shell" },
+  { arquivo: "ml-tokens.html", modulo: "ml-tokens", marca: "#mlt-sum-total" },
+  { arquivo: "criar-anuncios-meli.html", modulo: "criar-anuncios-meli", marca: "#cam-root" },
+  // Fora da navegação V3 por decisão de produto: continuam no ar, só por URL.
+  { arquivo: "dashboard.html", modulo: null, marca: "#dash-greeting" },
+  { arquivo: "design-templates.html", modulo: null, marca: "#dtl-new-blank" },
+  { arquivo: "clickup-executivo.html", modulo: null, marca: "#btn-clickup-refresh" },
+  { arquivo: "cliente-360-v2.html", modulo: null, marca: "#app" },
+  // Cliente 360 V1 e V2: fora da sidebar (GRUPOS_NAV em vf-shell.js), só a V3 aparece.
+  { arquivo: "cliente-360.html", modulo: null, marca: "#c360-main" },
+  { arquivo: "cliente-360-react.html", modulo: null, marca: "#root > *" },
 ];
 
 const N97 = { id: 87, nome: "N97 Comercial", slug: "n97", ativo: true, temGrant: true, grantStatus: "conectado", temBase: true, setupScore: 100, statusOperacional: "pronto", ultimaSincronizacao: null, pendencias: [] };

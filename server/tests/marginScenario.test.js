@@ -163,14 +163,28 @@ cenario("P' ≥ P em promoção: sem_desconto_efetivo, bloqueado (e o número co
   assert.strictEqual(promo().flags.sem_desconto_efetivo, false);
 });
 
-cenario("promoção já ativa (started/active): flag ativa e bloqueado — não é oportunidade", () => {
+cenario("promoção que FORMA o preço de hoje (statusExibicao ATIVA): não bloqueia — cenário = hoje, Δ 0, veredito `ativa`", () => {
+  const r = promo({ cenario: { tipo: "promo", preco: 89.77, rebate: 3.3, status_promocao: "started", status_exibicao: "ATIVA" } });
+  assert.strictEqual(r.flags.ativa, true);
+  assert.strictEqual(r.veredito, VEREDITOS.ATIVA);
+  assert.strictEqual(r.motivo, null);
+  assert.deepStrictEqual(r.motivos, []);
+  assert.strictEqual(r.delta_lc, 0);
+  assert.strictEqual(r.delta_preco_atual, 0);
+  assert.strictEqual(r.cenario.preco, r.atual.preco, "cenário É a composição de hoje — mesmo preço");
+  assert.strictEqual(r.cenario.lc, r.atual.lc);
+  assert.strictEqual(promo().flags.ativa, false);
+});
+
+cenario("promoção inscrita mas que NÃO forma o preço (status bruto started/active, statusExibicao NÃO APLICADA/ausente): calcula normal, nunca bloqueia por 'já ativa'", () => {
   for (const status of ["started", "active", "ACTIVE"]) {
     const r = promo({ cenario: { tipo: "promo", preco: 89.77, rebate: 3.3, status_promocao: status } });
-    assert.strictEqual(r.flags.ativa, true, status);
-    assert.strictEqual(r.veredito, VEREDITOS.BLOQUEADO);
-    assert.strictEqual(r.motivo, MOTIVOS.PROMOCAO_ATIVA);
+    assert.strictEqual(r.flags.ativa, false, status);
+    assert.notStrictEqual(r.veredito, VEREDITOS.BLOQUEADO, status);
+    assert.strictEqual(r.cenario.comissao, 12.57, status);
+    assert.strictEqual(r.cenario.frete, 10, status);
+    assert.ok(r.cenario.lc !== null, status);
   }
-  assert.strictEqual(promo().flags.ativa, false);
   assert.strictEqual(promo({ cenario: { tipo: "promo", preco: 89.77, rebate: 3.3, status_promocao: "pending" } }).flags.ativa, false);
 });
 
@@ -450,6 +464,42 @@ cenario("calcularComposicao com base e meta: ΔLC, Δ margem e Δ meta em pp vê
   assert.strictEqual(calcularComposicao(alt, { base, meta_margem: 12 }).delta_meta_pp, null);
   assert.strictEqual(calcularComposicao(alt, { base: { preco: 100 } }).delta_lc, null);
   assert.strictEqual(calcularComposicao({ preco: 100 }, { base }).delta_lc, null);
+});
+
+// ─── Efeitos: "de onde saiu a diferença no lucro" (caso 55,19 → 48,21) ───────
+
+cenario("efeitos: cada componente decompõe o ΔLC, ordenados pelo tamanho, soma = ΔLC exatamente", () => {
+  const r = calcularCenario({
+    atual: { preco: 55.19, custo: 22.42, aliquota: 0.11, taxa_fixa: 0, comissao: 5.63, frete: 8.15, rebate: 0 },
+    cenario: { tipo: "preco", preco: 48.21 },
+    cotacao: { comissao: 5.54, frete: 6.85 },
+    meta: META,
+  });
+  assert.strictEqual(r.atual.lc, 12.92);
+  assert.strictEqual(r.cenario.lc, 8.1);
+  assert.strictEqual(r.delta_lc, -4.82);
+  const soma = r.efeitos.reduce((s, e) => s + e.valor, 0);
+  assert.strictEqual(Math.round(soma * 100) / 100, r.delta_lc, "a soma dos efeitos TEM que fechar o ΔLC");
+  // Frete caiu 8,15 → 6,85: efeito +1,30 (ajuda o lucro) — o exemplo da tela.
+  const frete = r.efeitos.find((e) => e.chave === "frete");
+  assert.strictEqual(frete.valor, 1.3);
+  // Ordenado pelo tamanho (maior efeito absoluto primeiro): preço é o maior.
+  for (let i = 1; i < r.efeitos.length; i += 1) assert.ok(Math.abs(r.efeitos[i - 1].valor) >= Math.abs(r.efeitos[i].valor), "fora de ordem");
+  assert.strictEqual(r.efeitos[0].chave, "preco");
+  // Custo e retorno ML não mudaram: não entram como barra (nada pra mostrar).
+  assert.ok(!r.efeitos.some((e) => e.chave === "custo" || e.chave === "rebate"));
+  // "Como a conta foi feita": a alíquota do cenário (fração) — o resto da narrativa já vem em atual/cenario/evidencia.
+  assert.strictEqual(r.explicacao.aliquota, 0.11);
+});
+
+cenario("efeitos: sem ΔLC (bloqueado ou faltando dado), não há barras", () => {
+  const bloqueado = calcularCenario({
+    atual: { preco: 94.9, custo: 21.35, aliquota: 0.06, taxa_fixa: 0, comissao: 13.29, frete: 10, rebate: 0 },
+    cenario: { tipo: "preco", preco: 89.77 },
+    cotacao: { comissao: null, frete: 10 },
+    meta: META,
+  });
+  assert.deepStrictEqual(bloqueado.efeitos, []);
 });
 
 (async () => {

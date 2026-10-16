@@ -1646,6 +1646,8 @@
   font-variant-numeric: tabular-nums;
   text-align: right;
 }
+.cm-drawer .cm-cmp-table td.is-up { color: var(--vf-success-strong); }
+.cm-drawer .cm-cmp-table td.is-down { color: var(--vf-danger-strong); }
 
 .cm-drawer .cm-cmp-total td {
   border-top: 1px solid var(--vf-border);

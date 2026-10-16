@@ -468,6 +468,7 @@
   // Inicialização e bind de eventos fixos
   // ===========================================================================
   function init() {
+    renderBarraCustos();
     AM.token = localStorage.getItem("vf-token");
     if (!AM.token) {
       el("am-clientes-container").innerHTML =
@@ -535,7 +536,8 @@
 
     AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
     AM.contaMlId = ctx.contaId;
-    atualizarBotaoRebate();
+    renderBarraCustos();
+    garantirCustos([]);
     AM.sync = null;
     AM.resumo = null;
     AM.anuncios = [];
@@ -571,6 +573,7 @@
   }
 
   function bindEventosFixos() {
+    bindComparativoMetricas();
     document.addEventListener("vf:context", aplicarContextoDoShell);
     bindCustos(el("am-catalogo-container"));
     bindBarrasCustos();
@@ -1858,13 +1861,87 @@
 
   function metricas7dConteudoHtml(m) {
     if (!m) return '<span class="am-metricas7d__linha am-metricas7d__vazio">—</span>';
-    var conv = m.conversao == null ? "" : " · " + formatarPercentualCompacto(m.conversao);
-    return (
-      '<span class="am-metricas7d__linha" title="Visualizações nos últimos 7 dias">👁 ' +
-        formatarInteiroOuTraco(m.views) + "</span>" +
-      '<span class="am-metricas7d__linha" title="Vendas (e conversão) nos últimos 7 dias">🛒 ' +
-        formatarInteiroOuTraco(m.vendas) + conv + "</span>"
-    );
+    var campos = ["views", "vendas", "conversao"];
+    var nomes = ["Visitas", "Unidades vendidas", "Conversão"];
+    var paths = ['<path d="M2 12s3-6 10-6 10 6 10 6-3 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>', '<path d="M3 3h2l2 12h12l2-8H6M9 20h.01M18 20h.01"/>', '<path d="m3 17 6-6 4 4 8-10M15 5h6v6"/>'];
+    return '<button type="button" class="am-metricas7d-trigger" aria-label="Comparar métricas com os 7 dias anteriores" aria-expanded="false" aria-controls="am-metricas-popup" data-metricas-info="' + escapeAttr(JSON.stringify(m)) + '">' +
+      campos.map(function (campo, i) {
+        return '<span class="am-metricas7d__linha"><span class="am-metricas7d__icone" aria-hidden="true">' + svgIcone(paths[i], 14, 1.6) + '</span><span aria-label="' + nomes[i] + '">' +
+          (campo === "conversao" ? formatarPercentualCompacto(m[campo]) : formatarInteiroOuTraco(m[campo])) + '</span>' + variacaoMetricaHtml(m[campo], m.anterior && m.anterior[campo], campo === "conversao") + '</span>';
+      }).join("") + '</button>';
+  }
+
+  function variacaoMetricaHtml(atual, anterior, pontos) {
+    if (atual == null || anterior == null) return '<span class="am-metricas-delta is-neutral">—</span>';
+    if (!pontos && anterior === 0 && atual !== 0) return '<span class="am-metricas-delta is-neutral" title="Período anterior igual a zero">—</span>';
+    var delta = pontos ? atual - anterior : (anterior === 0 ? 0 : (atual - anterior) / anterior * 100);
+    delta = Math.round(delta * 10) / 10;
+    return '<span class="am-metricas-delta ' + (delta > 0 ? 'is-success' : delta < 0 ? 'is-danger' : 'is-neutral') + '">' +
+      (delta > 0 ? '▲ ' : delta < 0 ? '▼ ' : '') + Math.abs(delta).toFixed(1).replace('.', ',') + (pontos ? ' pp' : '%') + '</span>';
+  }
+
+  function bindComparativoMetricas() {
+    var popup = document.createElement('div');
+    popup.id = 'am-metricas-popup';
+    popup.className = 'am-metricas-popup';
+    popup.setAttribute('role', 'tooltip');
+    popup.hidden = true;
+    document.body.appendChild(popup);
+    var ativo = null, timer;
+    function fechar() {
+      if (ativo) ativo.setAttribute('aria-expanded', 'false');
+      ativo = null; popup.hidden = true;
+    }
+    function abrir(botao) {
+      clearTimeout(timer);
+      if (ativo && ativo !== botao) ativo.setAttribute('aria-expanded', 'false');
+      ativo = botao;
+      var m = JSON.parse(botao.getAttribute('data-metricas-info'));
+      function datas(p) {
+        if (!p) return 'Período indisponível';
+        function fmt(d) { return d.split('-').reverse().join('/'); }
+        return fmt(p.dateFrom) + ' a ' + fmt(p.dateTo);
+      }
+      popup.innerHTML = '<p class="am-metricas-popup__titulo">Comparativo · últimos 7 dias</p>' +
+        '<p class="am-metricas-popup__periodo">Atual: ' + escapeHtml(datas(m.periodos && m.periodos.atual)) + '<br>Anterior: ' + escapeHtml(datas(m.periodos && m.periodos.anterior)) + '</p>' +
+        (m.anterior ? '<table><thead><tr><th>Métrica</th><th>Anterior</th><th>Atual</th><th>Variação</th></tr></thead><tbody>' +
+          ['views', 'vendas', 'conversao'].map(function (campo, i) {
+            function fmt(v) { return campo === 'conversao' ? formatarPercentualCompacto(v) : formatarInteiroOuTraco(v); }
+            return '<tr><th>' + ['Visitas', 'Vendas', 'Conversão'][i] + '</th><td>' + fmt(m.anterior[campo]) + '</td><td>' + fmt(m[campo]) + '</td><td>' + variacaoMetricaHtml(m[campo], m.anterior[campo], campo === 'conversao') + '</td></tr>';
+          }).join('') + '</tbody></table>' : '<p>Comparativo indisponível para este anúncio.</p>') +
+        '<p class="am-metricas-popup__nota" title="Conversão = unidades vendidas ÷ visitas. — indica dado indisponível ou variação sem base de cálculo.">Vendas em unidades · conversão em %</p>';
+      popup.hidden = false;
+      botao.setAttribute('aria-expanded', 'true');
+      botao.setAttribute('aria-describedby', popup.id);
+      var r = botao.getBoundingClientRect();
+      var largura = popup.getBoundingClientRect().width;
+      var altura = popup.getBoundingClientRect().height;
+      // Ao lado da célula: mantém a coluna livre para alcançar o próximo anúncio.
+      var esquerda = r.left - largura - 10;
+      var lateral = esquerda >= 8 || r.right + largura + 10 <= window.innerWidth - 8;
+      if (esquerda < 8) esquerda = lateral ? r.right + 10 : r.left;
+      popup.style.left = Math.max(8, Math.min(esquerda, window.innerWidth - largura - 8)) + 'px';
+      var topo = lateral ? r.top : r.top - altura - 8;
+      popup.style.top = Math.max(8, Math.min(window.innerHeight - altura - 8, topo)) + 'px';
+    }
+    document.addEventListener('mouseover', function (e) {
+      var b = e.target.closest('.am-metricas7d-trigger');
+      if (b) abrir(b);
+      else if (!popup.contains(e.target) && document.activeElement !== ativo) { clearTimeout(timer); timer = setTimeout(fechar, 150); }
+      else clearTimeout(timer);
+    });
+    document.addEventListener('focusin', function (e) { var b = e.target.closest('.am-metricas7d-trigger'); if (b) abrir(b); else fechar(); });
+    document.addEventListener('click', function (e) {
+      var b = e.target.closest('.am-metricas7d-trigger');
+      if (b) { e.stopPropagation(); abrir(b); }
+      else if (!popup.contains(e.target)) fechar();
+    }, true);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape') fechar(); });
+    window.addEventListener('resize', fechar);
+    window.addEventListener('scroll', function (e) {
+      if (!ativo || popup.contains(e.target)) return;
+      if (!document.contains(ativo)) fechar(); else abrir(ativo);
+    }, true);
   }
 
   function metricas7dCelulaHtml(itemId) {
@@ -1917,13 +1994,24 @@
 
     var views = temViews ? somaViews : null;
     var vendas = temVendas ? somaVendas : null;
-    return { views: views, vendas: vendas, conversao: agregarConversao(vendas, views) };
+    var resultado = { views: views, vendas: vendas, conversao: agregarConversao(vendas, views) };
+    var metricas = ids.map(function (id) { return AM.state.performanceCache[id].metricas7d; });
+    if (metricas.every(function (m) { return m && m.anterior && m.periodos && JSON.stringify(m.periodos) === JSON.stringify(metricas[0].periodos); })) {
+      function somar(campo) {
+        return metricas.every(function (m) { return m.anterior[campo] != null; })
+          ? metricas.reduce(function (total, m) { return total + m.anterior[campo]; }, 0) : null;
+      }
+      resultado.anterior = { views: somar('views'), vendas: somar('vendas') };
+      resultado.anterior.conversao = agregarConversao(resultado.anterior.vendas, resultado.anterior.views);
+      resultado.periodos = metricas[0].periodos;
+    }
+    return resultado;
   }
 
   function metricas7dAgregadoCelulaHtml(familyId) {
     var agregado = metricas7dAgregadoDoGrupo(familyId);
     if (agregado) {
-      return '<span class="am-metricas7d" title="Soma dos últimos 7 dias de todas as variações">' +
+      return '<span class="am-metricas7d" aria-label="Soma dos últimos 7 dias de todas as variações">' +
         metricas7dConteudoHtml(agregado) + "</span>";
     }
     // Ainda não: o pré-carregamento em background falhou de verdade (mostra
@@ -2366,6 +2454,7 @@
     var qs = "clienteSlug=" + encodeURIComponent(AM.clienteAtual.slug) +
       "&itemIds=" + encodeURIComponent(idsUniao.join(",")) +
       "&incluirMetricas=" + (pendentesMetricas.length ? "1" : "0") +
+      "&incluirComparativo=1" +
       "&incluirMargem=" + (pendentesMargem.length || pendentesComposicao.length ? "1" : "0") +
       // Margem da LISTA com o retorno ML da promoção ativa (ver margemAoVivoHtml).
       "&incluirRebateAtivo=1" +
@@ -4389,7 +4478,8 @@
     if (!box) return;
     var slot = el("am-custos-acoes-slot");
     if (slot) slot.innerHTML = "";
-    if (!AM.clienteAtual || CUSTOS.base === undefined) { box.innerHTML = ""; return; }
+    var indisponivel = !custoEditavel();
+    box.innerHTML = "";
 
     if (CUSTOS.base === null) {
       box.innerHTML = '<div class="vf-alert is-info am-custos-aviso" role="status">' +
@@ -4403,14 +4493,14 @@
       var semCusto = itensDeCustoNaTela(true).filter(function (id) { return CUSTOS.cache[id] === null; }).length;
       // Na linha da busca quando há o slot; senão, na barra própria.
       var alvo = slot || box;
-      if (slot) box.innerHTML = "";
+      if (slot && CUSTOS.base !== null) box.innerHTML = "";
       // Split (modelo B aprovado): o corpo entra em "Editar custos", a seta
       // abre o menu com "Importar base de custo". O aviso "N sem custo nesta
       // página" vira a segunda linha do botão. Altura inteira da barra, ao
       // lado do Radar de subsídios.
       alvo.innerHTML = '<div class="am-custos-acoes">' +
         '<div class="am-custos-split">' +
-          '<button type="button" class="am-custos-split__main" data-custos-acao="entrar">' +
+          '<button type="button" class="am-custos-split__main" data-custos-acao="entrar"' + (indisponivel ? ' disabled' : '') + '>' +
             '<span class="am-custos-split__ico" aria-hidden="true">' + icLapis(16) + "</span>" +
             '<span class="am-custos-split__txt"><span class="am-custos-split__titulo">Editar custos</span>' +
               (semCusto ? '<span class="am-custos-split__sub am-custos-acoes__aviso" title="Anúncios desta página sem custo na Base">' +
@@ -4418,7 +4508,7 @@
                 : '<span class="am-custos-split__sub">Custo do produto na Base</span>') +
             "</span></button>" +
           '<button type="button" class="am-custos-split__seta" data-custos-acao="menu" aria-label="Mais opções de custo"' +
-            ' aria-haspopup="menu" aria-expanded="' + (CUSTOS.menuAberto ? "true" : "false") + '" aria-controls="am-custos-menu">' +
+            (indisponivel ? ' disabled' : '') + ' aria-haspopup="menu" aria-expanded="' + (CUSTOS.menuAberto ? "true" : "false") + '" aria-controls="am-custos-menu">' +
             '<svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>' +
           "</button>" +
         "</div>" +

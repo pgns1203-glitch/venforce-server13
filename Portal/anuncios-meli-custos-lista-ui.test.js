@@ -325,6 +325,7 @@ function wireInterception(cdp, excecoes) {
     if (pathname === "/anuncios-meli/clientes") return respond({ ok: true, clientes: [{ id: 87, nome: N97.nome, slug: "n97", mlConectado: true, totalAnuncios: 5 }] });
     if (pathname === "/anuncios-meli/resumo") return respond({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, semCusto: 2, full: 2, ultimaSync: new Date().toISOString() } });
     if (pathname === "/anuncios-meli/custos") {
+      if (SERVIDOR.esperaCustos) await SERVIDOR.esperaCustos;
       if (!SERVIDOR.base) return respond({ ok: true, base: null, motivo: "BASE_MELI_NAO_VINCULADA", mensagem: SERVIDOR.mensagemSemBase, custos: {} });
       const custos = {};
       (u.searchParams.get("itemIds") || "").split(",").filter(Boolean).forEach((id) => {
@@ -455,7 +456,21 @@ async function run() {
     await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*" }] });
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: SEMENTE });
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
+    let liberarCustos;
+    SERVIDOR.esperaCustos = new Promise((resolve) => { liberarCustos = resolve; });
     await abrirPagina(cdp, porta);
+    await check("C0 - custos e Radar aparecem antes da resposta da Base", async () => {
+      assert.ok(await cdp.evaluate(`(() => {
+        const custos = document.querySelector('.am-custos-split__main');
+        const radar = document.getElementById('am-reb-abrir');
+        return custos && radar && custos.disabled && !radar.disabled &&
+          custos.getBoundingClientRect().width > 0 && radar.getBoundingClientRect().width > 0;
+      })()`));
+      assert.strictEqual(await cdp.evaluate(`document.querySelector('.am-custos-split__seta').disabled`), true);
+    });
+    liberarCustos();
+    SERVIDOR.esperaCustos = null;
+    await waitFor(cdp, `document.querySelector('.am-custos-split__main:not(:disabled)')`, "Edicao nao habilitou apos ler a Base");
 
     // ── Leitura ────────────────────────────────────────────────────────────
     await check("C1 — MLB sem custo mostra '+ Custo'; com custo mostra o valor da Base", async () => {

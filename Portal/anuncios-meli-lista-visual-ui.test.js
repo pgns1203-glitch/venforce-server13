@@ -122,7 +122,7 @@ const DETALHE_CONTA_42 = {
   },
 };
 const METRICAS_FIXTURE = {
-  "MLB-SEMUP": { views: 259, vendas: 3, conversao: 1.2 },
+  "MLB-SEMUP": { views: 249, vendas: 4, conversao: 1.6, anterior: { views: 261, vendas: 6, conversao: 2.3 }, periodos: { atual: { dateFrom: '2026-10-10', dateTo: '2026-10-16' }, anterior: { dateFrom: '2026-10-03', dateTo: '2026-10-09' } } },
   "MLB-A1": { views: null, vendas: 0, conversao: null },
   "MLB-A2": { views: 100, vendas: 0, conversao: 0 },
 };
@@ -347,6 +347,39 @@ async function run() {
     await cdp.evaluate("document.querySelector('.am-row--grupo[data-familia=\"FAM-1\"] .am-row__acao').click()");
     await waitFor(cdp, "document.querySelectorAll('.am-mlb').length === 4 && document.querySelector('.am-mlb .am-margem__valor') && document.querySelector('.am-mlb .am-metricas7d__linha')", "FAM-1 ou performance nao renderizou");
     await cdp.evaluate("document.fonts.ready.then(() => true)");
+    await check('Métricas: foco abre comparação real, percentuais e pontos percentuais', async () => {
+      await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1600, height: 900, deviceScaleFactor: 1, mobile: false });
+      await cdp.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+      await cdp.send('Page.bringToFront');
+      await cdp.evaluate(`(() => { const b = document.querySelector('[data-metricas-item="MLB-SEMUP"] button'); b.scrollIntoView({ block: 'center', behavior: 'instant' }); b.focus(); })()`);
+      const resultado = await cdp.evaluate(`(() => {
+        const p = document.getElementById('am-metricas-popup');
+        return { aberto: !p.hidden, texto: p.textContent, dentro: p.getBoundingClientRect().right <= innerWidth };
+      })()`);
+      assert.ok(resultado.aberto && resultado.dentro, JSON.stringify(resultado));
+      assert.ok(resultado.texto.includes('4,6%') && resultado.texto.includes('33,3%') && resultado.texto.includes('0,7 pp'), resultado.texto);
+      assert.ok(resultado.texto.includes('03/10/2026') && resultado.texto.includes('16/10/2026'));
+      const compacto = await cdp.evaluate(`(() => {
+        const b = document.querySelector('[data-metricas-item="MLB-SEMUP"] button');
+        const p = document.getElementById('am-metricas-popup').getBoundingClientRect();
+        const r = b.getBoundingClientRect();
+        return { width: p.width, height: p.height, lateral: p.right < r.left || p.left > r.right,
+          fonte: parseFloat(getComputedStyle(b.querySelector('.am-metricas-delta')).fontSize),
+          principal: parseFloat(getComputedStyle(b.querySelector('.am-metricas7d__linha')).fontSize),
+          respiro: parseFloat(getComputedStyle(b).paddingRight) };
+      })()`);
+      assert.ok(compacto.width <= 320 && compacto.height < 210 && compacto.lateral, JSON.stringify(compacto));
+      assert.ok(compacto.fonte < compacto.principal && compacto.respiro >= 12);
+      await cdp.evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+      assert.strictEqual(await cdp.evaluate(`document.getElementById('am-metricas-popup').hidden`), true);
+      await cdp.evaluate(`document.querySelector('[data-metricas-item="MLB-SEMUP"] button').dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))`);
+      assert.strictEqual(await cdp.evaluate(`document.getElementById('am-metricas-popup').hidden`), false);
+      if (process.env.VF_SHOTS) {
+        await cdp.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+        const shot = await cdp.send('Page.captureScreenshot', { format: 'png' });
+        fs.writeFileSync(path.join(process.env.VF_SHOTS, 'anuncios-metricas.png'), Buffer.from(shot.data, 'base64'));
+      }
+    });
     for (const width of [1920, 1440, 1366, 1280, 1024]) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width, height: 900, deviceScaleFactor: 1, mobile: false });
       await cdp.evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))");

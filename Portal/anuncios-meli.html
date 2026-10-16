@@ -17,7 +17,7 @@
   <link rel="stylesheet" href="style.css" />
   <link rel="stylesheet" href="css/vf-tokens-v2.css" />
   <link rel="stylesheet" href="css/vf-components-v2.css" />
-  <link rel="stylesheet" href="css/pages/anuncios-meli-v2.css?v=20261016-4" />
+  <link rel="stylesheet" href="css/pages/anuncios-meli-v2.css?v=20261016-6" />
   <link rel="stylesheet" href="css/vf-shell.css">
 </head>
 <body class="vf-page vf-page-anuncios-meli" data-vf-scope="account" data-vf-module="anuncios">
@@ -102,7 +102,23 @@
                        + menu "Importar base de custo", na mesma linha da busca e
                        antes do Radar. O aviso sem Base e a faixa do modo ficam em
                        #am-custos-barra. -->
-                  <div id="am-custos-acoes-slot" class="am-custos-acoes-slot"></div>
+                  <div id="am-custos-acoes-slot" class="am-custos-acoes-slot">
+                    <!-- Visível mesmo antes de baixar/executar o JS; a Base habilita a edição. -->
+                    <div class="am-custos-acoes">
+                      <div class="am-custos-split">
+                        <button type="button" class="am-custos-split__main" data-custos-acao="entrar" disabled>
+                          <span class="am-custos-split__ico" aria-hidden="true">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></svg>
+                          </span>
+                          <span class="am-custos-split__txt"><span class="am-custos-split__titulo">Editar custos</span><span class="am-custos-split__sub">Custo do produto na Base</span></span>
+                        </button>
+                        <button type="button" class="am-custos-split__seta" data-custos-acao="menu" aria-label="Mais opções de custo" disabled aria-haspopup="menu" aria-expanded="false" aria-controls="am-custos-menu">
+                          <svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                        </button>
+                      </div>
+                      <div class="am-custos-menu vf-menu" id="am-custos-menu" role="menu" hidden></div>
+                    </div>
+                  </div>
                   <!-- Radar de subsídios (Promoções com rebate): só com cliente+conta
                        e fora do modo "Editar custos". Ocupa a altura inteira da
                        barra. Ver anuncios-meli.js, "PROMOÇÕES COM REBATE". -->
@@ -146,6 +162,6 @@
   <div class="vf-toast-stack" id="am-toast-stack" role="status" aria-live="polite" aria-atomic="false"></div>
 
   <script type="module" src="vf-shell.js"></script>
-  <script src="anuncios-meli.js?v=20261016-5"></script>
+  <script src="anuncios-meli.js?v=20261016-8"></script>
 </body>
 </html>

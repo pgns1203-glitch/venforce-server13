@@ -1630,7 +1630,7 @@ async function performance(req, res) {
 
     const [metricasResultado, vendasSoResultado, margemResultado] = await Promise.allSettled([
       incluirMetricas
-        ? metricas7dService.montarMetricas7d({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds: itemIdsCompletos })
+        ? metricas7dService.montarMetricas7d({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds: itemIdsCompletos, incluirComparativo: req.query.incluirComparativo === "1" })
         : Promise.resolve(null),
       precisaVendasSo
         ? metricas7dService.buscarVendas7dPorItens({ clienteId: cliente.id, mlUserId: contexto.mlUserId, itemIds: itemIdsCompletos })

@@ -1856,6 +1856,7 @@
     entrar_se_girar: { label: "Entrar se girar", tone: "is-warning" },
     nao_entrar: { label: "Não entrar", tone: "is-danger" },
     bloqueado: { label: "Bloqueado", tone: "is-neutral" },
+    ativa: { label: "Ativa agora", tone: "is-info" },
   };
 
   // Motivos do núcleo em português (só exibição; código desconhecido aparece como veio).
@@ -1871,7 +1872,6 @@
     comissao_indisponivel: "tarifa do Mercado Livre indisponível",
     frete_indisponivel: "frete do Mercado Livre indisponível",
     limite_de_cotacoes_excedido: "limite de cotações atingido",
-    promocao_ativa: "promoção já ativa",
     sem_desconto_efetivo: "não baixa o preço",
     promocao_sem_preco: "promoção sem preço sugerido",
     rebate_ambiguo: "mais de uma promoção com retorno em andamento",
@@ -2229,8 +2229,14 @@
 
   // Detalhe expansível: a mesma cascata Hoje × Promo do drawer + quem banca e volume de empate.
   function promoDetalheConteudoHtml(op) {
+    var exibicaoLeitura = { resultado: op, hipotese: false, somenteLeitura: true };
+    var contaCompleta = '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Ver conta completa</summary>' +
+      cascataHtml(op.atual, exibicaoLeitura) + comoAContaFoiFeitaHtml(op, op.atual) + "</details>";
+    // `op` (oportunidades) usa `veredito_motivo`; vereditoBancadaHtml espera `motivo` (/simular) — normaliza na borda.
+    var opComMotivo = Object.assign({}, op, { motivo: op.veredito_motivo });
+    // Mesma ordem da Bancada: veredito → 3 números → efeitos → Ver conta completa.
     return '<div class="cm-promo-detail__grid">' +
-      '<div class="cm-promo-detail__esq"><h4 class="cm-banc__sub">Hoje × Promoção</h4>' + cascataHtml(op.atual, { resultado: op, hipotese: false, somenteLeitura: true }) + "</div>" +
+      '<div class="cm-promo-detail__esq"><h4 class="cm-banc__sub">Hoje × Promoção</h4>' + vereditoBancadaHtml(opComMotivo) + tresNumerosHtml(op.atual, op) + efeitosHtml(op) + contaCompleta + "</div>" +
       '<div class="cm-promo-detail__dir">' + bancaRodapeHtml(op) + empateHtml(op) + promoFlagsHtml(op) + origemLinhaHtml(op) + "</div></div>";
   }
 
@@ -2629,7 +2635,7 @@
     var mostrarProjetado = state.preset === "realized";
     var alvo = mostrarProjetado ? cmp.projected : cmp.realized;
     var rotulo = mostrarProjetado ? "proj." : "real.";
-    var drift = cmp.drift && cmp.drift.marginPp;
+    var drift = cmp.drift && cmp.drift.marginPercentagePoints;
     var tone = drift === null || drift === undefined ? "" : drift < 0 ? " is-negative" : drift > 0 ? " is-positive" : "";
     return '<span class="cm-cmp-line' + tone + '" data-cm-cmp="' + escapeHtml(cmp.status) + '" title="Margem projetada × realizada no período (Δ = realizado − projetado).">' +
       "<span>" + escapeHtml(rotulo + " " + (alvo.margin === null ? "—" : formatPercent(alvo.margin))) + "</span>" +
@@ -3430,11 +3436,11 @@
 
   var BANCADA_LINHAS = [
     { chave: "preco", rotulo: "Preço de venda", sinal: "" },
-    { chave: "imposto", rotulo: "Imposto", sinal: "−" },
-    { chave: "comissao", rotulo: "Comissão", sinal: "−" },
-    { chave: "frete", rotulo: "Frete", sinal: "−" },
-    { chave: "taxa_fixa", rotulo: "Taxa fixa", sinal: "−" },
-    { chave: "custo", rotulo: "Custo", sinal: "−" },
+    { chave: "imposto", rotulo: "Imposto", sinal: "−", custo: true },
+    { chave: "comissao", rotulo: "Comissão", sinal: "−", custo: true },
+    { chave: "frete", rotulo: "Frete", sinal: "−", custo: true },
+    { chave: "taxa_fixa", rotulo: "Taxa fixa", sinal: "−", custo: true },
+    { chave: "custo", rotulo: "Custo", sinal: "−", custo: true },
     { chave: "rebate", rotulo: "Retorno ML", sinal: "+" },
   ];
 
@@ -3710,21 +3716,48 @@
       (digitado ? '<span class="cm-banc__hip-tag" data-cm-hipotese>hipótese</span>' : "");
   }
 
+  // Δ de UM componente da cascata: seta pela direção real do valor, cor pelo
+  // IMPACTO no lucro — linha de custo (imposto/comissão/frete/taxa/custo) que
+  // desce é verde (lucro melhora), que sobe é vermelha; preço/retorno ML/LC
+  // seguem o sentido oposto (subir é bom).
+  function deltaComponenteHtml(a, c, isCusto) {
+    if (a === null || a === undefined || c === null || c === undefined) return '<td class="num">—</td>';
+    var diff = Math.round((c - a) * 100) / 100;
+    if (Math.abs(diff) < 0.005) return '<td class="num">—</td>';
+    var subiu = diff > 0;
+    var bom = isCusto ? !subiu : subiu;
+    return '<td class="num ' + (bom ? "is-up" : "is-down") + '">' + (subiu ? "↑ " : "↓ ") + escapeHtml(money(Math.abs(diff))) + "</td>";
+  }
+
+  // "cotado em R$ P' · dd/mm hh:mm" (cotação real no preço do cenário) ou
+  // "igual ao atual (mesma faixa)" quando a cotação confirma a mesma faixa.
+  function freteFonteTexto(r) {
+    var ev = r && r.evidencia && r.evidencia.frete;
+    if (!ev || ev.fonte !== "ml_shipping_options_free" || !ev.aplicavel) return null;
+    if (r.flags && r.flags.mudou_faixa_frete === false) return "igual ao atual (mesma faixa)";
+    var preco = r.cenario && r.cenario.preco;
+    var quando = ev.consultado_em ? formatShortDateTime(ev.consultado_em) : null;
+    return "cotado em " + (money(preco) || "R$ —") + (quando && quando !== "—" ? " · " + quando : "");
+  }
+
   function cascataHtml(atual, exibicao) {
     if (!atual) return '<p class="cm-empty-note" data-cm-bancada="sem-atual">A composição de hoje não está disponível (sem leitura de margem deste anúncio).</p>';
     var r = exibicao.resultado || {};
     var cen = r.cenario || {};
     var mudouFrete = r.flags && r.flags.mudou_faixa_frete === true;
+    var freteFonte = freteFonteTexto(r);
     var linhas = BANCADA_LINHAS.map(function (l) {
       var a = atual[l.chave];
       var c = cen[l.chave];
       // Retorno ML só aparece quando existe em algum dos lados (o resto da cascata é sempre mostrado).
       if (l.chave === "rebate" && !a && !c) return "";
       var mudou = c !== null && c !== undefined && a !== null && a !== undefined && a !== c;
-      var celula = (l.chave === "custo" || l.chave === "taxa_fixa") && !exibicao.somenteLeitura ? hipCelulaHtml(l.chave, c, exibicao) : escapeHtml(money(c));
+      // Custo é hipótese em DESTAQUE (campo próprio, sempre visível, fora da cascata) — só taxa fixa fica editável aqui.
+      var celula = l.chave === "taxa_fixa" && !exibicao.somenteLeitura ? hipCelulaHtml(l.chave, c, exibicao) : escapeHtml(money(c));
       var aviso = l.chave === "frete" && mudouFrete ? ' <span class="cm-banc__faixa" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
-      return '<tr data-cm-linha="' + l.chave + '"' + (mudou ? ' class="is-mudou"' : "") + '><th scope="row">' + (l.sinal ? '<span class="cm-banc__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) + aviso + "</th>" +
-        '<td class="num">' + escapeHtml(money(a)) + '</td><td class="num">' + celula + "</td><td></td></tr>";
+      var fonteLinha = l.chave === "frete" && freteFonte ? '<div class="cm-banc__fonte-componente" data-cm-frete-fonte>' + escapeHtml(freteFonte) + "</div>" : "";
+      return '<tr data-cm-linha="' + l.chave + '"' + (mudou ? ' class="is-mudou"' : "") + '><th scope="row">' + (l.sinal ? '<span class="cm-banc__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) + aviso + fonteLinha + "</th>" +
+        '<td class="num">' + escapeHtml(money(a)) + '</td><td class="num">' + celula + "</td>" + deltaComponenteHtml(a, c, l.custo === true) + "</tr>";
     }).join("");
     var deltaLc = r.delta_lc;
     var tom = deltaLc === null || deltaLc === undefined ? "" : deltaLc > 0 ? " is-up" : deltaLc < 0 ? " is-down" : "";
@@ -3732,7 +3765,7 @@
       '<tr class="cm-banc__total" data-cm-linha="lc"><th scope="row"><span class="cm-banc__sinal" aria-hidden="true">=</span> LC/un</th><td class="num">' + escapeHtml(money(atual.lc)) + '</td><td class="num"><strong>' + escapeHtml(money(cen.lc)) +
       '</strong></td><td class="num' + tom + '">' + escapeHtml(deltaLc === null || deltaLc === undefined ? "—" : formatMoney(deltaLc, true)) + "</td></tr>" +
       '<tr class="cm-banc__total" data-cm-linha="margem"><th scope="row">Margem</th><td class="num">' + escapeHtml(formatPercent(atual.margem_ratio) || "—") + '</td><td class="num"><strong>' + escapeHtml(formatPercent(cen.margem_ratio) || "—") +
-      '</strong></td><td class="num">' + escapeHtml(r.delta_margem_ratio === null || r.delta_margem_ratio === undefined ? "—" : formatPercent(r.delta_margem_ratio, true)) + "</td></tr></tbody></table>";
+      '</strong></td><td class="num">' + escapeHtml(r.delta_margem_ratio === null || r.delta_margem_ratio === undefined ? "—" : ppTexto(r.delta_margem_ratio)) + "</td></tr></tbody></table>";
   }
 
   // Quem banca o desconto — sempre sobre o PREÇO CHEIO (números do núcleo; a tela só os mostra).
@@ -3781,6 +3814,79 @@
     return partes.length ? '<p class="cm-banc__fonte">' + escapeHtml(partes.join(" · ")) + ".</p>" : "";
   }
 
+  // "De onde saiu a diferença no lucro": uma barra por componente que mudou
+  // (vem pronto do backend em r.efeitos, já ordenado pelo tamanho e fechando o ΔLC).
+  function efeitosHtml(r) {
+    if (!r || !Array.isArray(r.efeitos) || !r.efeitos.length) return "";
+    var maior = r.efeitos.reduce(function (m, e) { return Math.max(m, Math.abs(e.valor)); }, 0) || 1;
+    var mudouFrete = r.flags && r.flags.mudou_faixa_frete === true;
+    var barras = r.efeitos.map(function (e) {
+      var bom = e.valor > 0;
+      var largura = Math.round((Math.abs(e.valor) / maior) * 100);
+      var aviso = e.chave === "frete" && mudouFrete ? ' <span class="cm-banc__faixa" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
+      return '<div class="cm-efeito" data-cm-efeito="' + escapeHtml(e.chave) + '">' +
+        '<span class="cm-efeito__rotulo">' + escapeHtml(e.rotulo) + aviso + "</span>" +
+        '<span class="cm-efeito__barra" aria-hidden="true"><span class="cm-efeito__preenchido ' + (bom ? "is-up" : "is-down") + '" style="width:' + largura + '%"></span></span>' +
+        '<span class="cm-efeito__valor ' + (bom ? "is-up" : "is-down") + '">' + escapeHtml(formatMoney(e.valor, true) || "—") + "</span></div>";
+    }).join("");
+    return '<div class="cm-banc__efeitos" data-cm-efeitos><h4 class="cm-banc__sub">De onde saiu a diferença no lucro</h4>' + barras +
+      '<div class="cm-efeito cm-efeito--total"><span class="cm-efeito__rotulo">ΔLC</span><span class="cm-efeito__barra" aria-hidden="true"></span>' +
+      '<span class="cm-efeito__valor ' + (r.delta_lc > 0 ? "is-up" : r.delta_lc < 0 ? "is-down" : "") + '"><strong>' + escapeHtml(formatMoney(r.delta_lc, true) || "—") + "</strong></span></div></div>";
+  }
+
+  // "Como a conta foi feita": a MESMA fórmula do cabeçalho, narrada com os
+  // números já devolvidos pelo backend — nada é recalculado aqui.
+  function comoAContaFoiFeitaHtml(r, atual) {
+    if (!r || !r.cenario || r.cenario.lc === null || r.cenario.lc === undefined || !atual) return "";
+    var c = r.cenario;
+    var a = atual;
+    var ev = r.evidencia || {};
+    var aliquota = r.explicacao && r.explicacao.aliquota;
+    var taxaPct = aliquota !== null && aliquota !== undefined ? formatPercent(aliquota) : null;
+    var freteTexto = freteFonteTexto(r);
+    var freteLinha = "Frete = " + (freteTexto || "no preço de " + money(c.preco)) +
+      (a.frete !== null && a.frete !== c.frete ? " (antes " + money(a.frete) + " em " + money(a.preco) + ")" : "") + " = " + money(c.frete);
+    var linhas = [
+      taxaPct ? "Imposto = " + money(c.preco) + " × " + taxaPct + " = " + money(c.imposto) : null,
+      ev.comissao && ev.comissao.fonte === "ml_listing_prices" ? "Comissão = cotação ML em " + money(c.preco) + " = " + money(c.comissao) : "Comissão = " + money(c.comissao),
+      freteLinha,
+      c.rebate !== null && c.rebate !== undefined ? "Retorno ML = subsídio da promoção = " + money(c.rebate) : null,
+      "LC = " + money(c.preco) + " − " + money(c.imposto) + " − " + money(c.comissao) + " − " + money(c.frete) + " − " + money(c.taxa_fixa) + " − " + money(c.custo) + " + " + money(c.rebate) + " = " + money(c.lc),
+      "Margem = " + money(c.lc) + " ÷ " + money(c.preco) + " = " + (formatPercent(c.margem_ratio) || "—"),
+      r.empate_volume !== null && r.empate_volume !== undefined && a.lc !== null ? "Empate = " + money(a.lc) + " ÷ " + money(c.lc) + " − 1 = " + formatPercent(r.empate_volume, true) + " de vendas" : null,
+    ].filter(Boolean);
+    return '<div class="cm-banc__conta-feita" data-cm-conta-feita><h4 class="cm-banc__sub">Como a conta foi feita</h4><ul>' +
+      linhas.map(function (l) { return "<li>" + escapeHtml(l) + "</li>"; }).join("") + "</ul></div>";
+  }
+
+  // 3 números grandes: Preço, LC/un, Margem — antes → depois, Δ colorido embaixo (margem em pp).
+  function numeroGrandeHtml(rotulo, antes, depois, deltaTexto, deltaValor) {
+    var tom = deltaValor === null || deltaValor === undefined || deltaValor === 0 ? "" : deltaValor > 0 ? "is-up" : "is-down";
+    return '<div class="cm-banc__numero" data-cm-numero="' + escapeHtml(rotulo) + '"><span class="cm-banc__numero-rotulo">' + escapeHtml(rotulo) + "</span>" +
+      '<span class="cm-banc__numero-valor"><span class="cm-banc__numero-antes">' + escapeHtml(antes || "—") + "</span> → <strong>" + escapeHtml(depois || "—") + "</strong></span>" +
+      (deltaTexto ? '<span class="cm-banc__numero-delta ' + tom + '">' + escapeHtml(deltaTexto) + "</span>" : "") + "</div>";
+  }
+
+  function tresNumerosHtml(atual, r) {
+    if (!atual || !r || !r.cenario) return "";
+    var cen = r.cenario;
+    var deltaPreco = r.delta_preco_atual === null || r.delta_preco_atual === undefined ? null : round2ish(-r.delta_preco_atual);
+    return '<div class="cm-banc__numeros" data-cm-numeros-grandes>' +
+      numeroGrandeHtml("Preço", money(atual.preco), money(cen.preco), deltaPreco === null ? null : formatMoney(deltaPreco, true), deltaPreco) +
+      numeroGrandeHtml("LC/un", money(atual.lc), money(cen.lc), r.delta_lc === null || r.delta_lc === undefined ? null : formatMoney(r.delta_lc, true), r.delta_lc) +
+      numeroGrandeHtml("Margem", formatPercent(atual.margem_ratio) || "—", formatPercent(cen.margem_ratio) || "—", r.delta_margem_ratio === null || r.delta_margem_ratio === undefined ? null : ppTexto(r.delta_margem_ratio), r.delta_margem_ratio) +
+      "</div>";
+  }
+
+  function round2ish(v) { return Math.round(v * 100) / 100; }
+
+  // Custo em destaque: a hipótese PRINCIPAL, sempre visível (taxa fixa — secundária — fica dentro de "Ver conta completa").
+  function hipoteseCustoHtml(ex) {
+    if (!ex || ex.somenteLeitura) return "";
+    var cen = (ex.resultado && ex.resultado.cenario) || {};
+    return '<div class="cm-banc__hip-destaque" data-cm-hip-destaque><span class="cm-banc__hip-destaque-rotulo">Custo (hipótese)</span>' + hipCelulaHtml("custo", cen.custo, ex) + "</div>";
+  }
+
   function vereditoBancadaHtml(r) {
     if (!r) return "";
     var ui = VEREDITO_UI[r.veredito] || VEREDITO_UI.bloqueado;
@@ -3824,7 +3930,10 @@
       hipAviso = '<p class="cm-field-error" role="alert">' + escapeHtml(h.localError) + "</p>";
     }
     var r = ex.resultado;
-    return bancadaCenarioTituloHtml(ex) + hipAviso + vereditoBancadaHtml(r) + cascataHtml(atual, ex) + bancaRodapeHtml(r) + empateHtml(r) + evidenciaBancadaHtml(r);
+    var contaCompleta = '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Ver conta completa</summary>' +
+      cascataHtml(atual, ex) + comoAContaFoiFeitaHtml(r, atual) + "</details>";
+    // Ordem: veredito → 3 números → hipótese de custo (sempre visível) → efeitos → Ver conta completa (cascata editável de taxa fixa + como a conta foi feita) → rodapé.
+    return bancadaCenarioTituloHtml(ex) + hipAviso + vereditoBancadaHtml(r) + tresNumerosHtml(atual, r) + hipoteseCustoHtml(ex) + efeitosHtml(r) + contaCompleta + bancaRodapeHtml(r) + empateHtml(r) + evidenciaBancadaHtml(r);
   }
 
   // --- Coluna da direita: cenários agrupados -------------------------------------
@@ -4698,11 +4807,11 @@
 
   var COMPARISON_ROWS = [
     { key: "price", label: "Preço (médio vendido no realizado)", format: "money" },
-    { key: "commission", label: "Comissão / un.", format: "money" },
-    { key: "freight", label: "Frete / un.", format: "money" },
-    { key: "cost", label: "Custo / un.", format: "money" },
-    { key: "taxRate", label: "Imposto", format: "percent" },
-    { key: "fixedFee", label: "Taxa fixa / un.", format: "money" },
+    { key: "commission", label: "Comissão / un.", format: "money", custo: true },
+    { key: "freight", label: "Frete / un.", format: "money", custo: true },
+    { key: "cost", label: "Custo / un.", format: "money", custo: true },
+    { key: "taxRate", label: "Imposto", format: "percent", custo: true },
+    { key: "fixedFee", label: "Taxa fixa / un.", format: "money", custo: true },
   ];
 
   function cmpValue(format, value) {
@@ -4710,11 +4819,20 @@
     return format === "percent" ? formatPercent(value) : formatMoney(value);
   }
 
-  function cmpDrift(format, row, drift) {
+  // Impacto no lucro: linha de CUSTO (comissão/frete/custo/imposto/taxa) é
+  // projetado − realizado (custo que caiu ajuda o lucro); preço/lucro/margem
+  // seguem realizado − projetado. Verde se > 0, vermelho se < 0.
+  function cmpImpactoClasse(v) {
+    if (v === null || v === undefined) return "";
+    return v > 0 ? " is-up" : v < 0 ? " is-down" : "";
+  }
+
+  // Valor numérico do impacto (pro sinal/cor) — null quando o desvio não existe.
+  function cmpImpactoValor(format, row, drift) {
     if (!drift) return null;
-    if (format === "percent") return drift.taxRatePp === null || drift.taxRatePp === undefined ? null : formatPp(drift.taxRatePp);
-    var v = drift[row.key];
-    return v === null || v === undefined ? null : formatMoney(v, true);
+    var v = format === "percent" ? drift.taxRatePp : drift[row.key];
+    if (v === null || v === undefined) return null;
+    return row.custo ? -v : v;
   }
 
   /** Painel Projetado × Realizado — exibe o bloco do Motor, sem recalcular. */
@@ -4738,15 +4856,19 @@
       var proj = cmpValue(row.format, cmp.projected[row.key]);
       var real = cmpValue(row.format, cmp.realized[row.key]);
       var semHistorico = row.key === "fixedFee" && cmp.notComparable.some(function (n) { return n.field === "fixedFee"; });
+      var impactoVal = cmpImpactoValor(row.format, row, drift);
+      var impacto = impactoVal === null ? null : (row.format === "percent" ? formatPp(impactoVal) : formatMoney(impactoVal, true));
       return "<tr><td>" + escapeHtml(row.label) + '</td><td class="num">' + (proj === null ? unavailable("—") : escapeHtml(proj)) +
         '</td><td class="num">' + (real === null ? unavailable(semHistorico ? "sem histórico" : "—", semHistorico ? "A Central de Vendas não guarda taxa fixa histórica: o realizado não a desconta." : null) : escapeHtml(real)) +
-        '</td><td class="num">' + escapeHtml(cmpDrift(row.format, row, drift) || "—") + "</td></tr>";
+        '</td><td class="num' + cmpImpactoClasse(impactoVal) + '">' + escapeHtml(impacto || "—") + "</td></tr>";
     }).join("");
+    var impactoLucro = drift.profit === null || drift.profit === undefined ? null : drift.profit;
+    var impactoMargem = drift.marginPercentagePoints === null || drift.marginPercentagePoints === undefined ? null : drift.marginPercentagePoints;
     var margemRow = '<tr class="cm-cmp-total"><td>Lucro / un.</td><td class="num">' + escapeHtml(formatMoney(cmp.projected.profit) || "—") +
-      '</td><td class="num">' + escapeHtml(formatMoney(cmp.realized.profit) || "—") + '</td><td class="num">' + escapeHtml(formatMoney(drift.profit, true) || "—") + "</td></tr>" +
+      '</td><td class="num">' + escapeHtml(formatMoney(cmp.realized.profit) || "—") + '</td><td class="num' + cmpImpactoClasse(impactoLucro) + '">' + escapeHtml(formatMoney(impactoLucro, true) || "—") + "</td></tr>" +
       '<tr class="cm-cmp-total"><td>Margem</td><td class="num">' + escapeHtml(cmp.projected.margin === null ? "—" : formatPercent(cmp.projected.margin)) +
       '</td><td class="num">' + escapeHtml(cmp.realized.margin === null ? "—" : formatPercent(cmp.realized.margin)) +
-      '</td><td class="num"><strong>' + escapeHtml(formatPp(drift.marginPp) || "—") + "</strong></td></tr>";
+      '</td><td class="num' + cmpImpactoClasse(impactoMargem) + '"><strong>' + escapeHtml(formatPp(impactoMargem) || "—") + "</strong></td></tr>";
     var sales = item.sales || {};
     var parcial = partialCoverage(cmp.realized.coverage);
     var fatos = [
@@ -4768,7 +4890,7 @@
         " × recalculado pelo Motor " + escapeHtml(formatMoney(sales.recalculatedResult) || "—") + " (a Central de Vendas não desconta taxa fixa).</li>");
     }
     return panel("Projetado × Realizado", periodo,
-      '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-cmp-table" data-cm-cmp-panel="' + escapeHtml(cmp.status) + '"><thead><tr><th>Componente</th><th class="num">Projetado</th><th class="num">Realizado</th><th class="num">Desvio</th></tr></thead><tbody>' +
+      '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-cmp-table" data-cm-cmp-panel="' + escapeHtml(cmp.status) + '"><thead><tr><th>Componente</th><th class="num">Projetado</th><th class="num">Realizado</th><th class="num">Impacto no lucro</th></tr></thead><tbody>' +
       linhas + margemRow + "</tbody></table></div>" +
       '<ul class="cm-cmp-facts">' + fatos.join("") + "</ul>");
   }

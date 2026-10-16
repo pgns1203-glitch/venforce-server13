@@ -1613,7 +1613,7 @@
       celulaEstoqueVariacaoLegadoHtml(v, itemId) +
       '<span class="am-mlb__num">' + (v.vendidos != null ? v.vendidos : "—") + "</span>" +
       '<span class="am-faturamento am-faturamento--indisponivel" title="O faturamento é calculado só por anúncio (MLB) — não existe um percentual por variação">—</span>' +
-      '<span class="am-metricas7d am-metricas7d--indisponivel" title="Métricas últ. 7 dias são só por anúncio (MLB) — o Mercado Livre não as reporta por variação">—</span>' +
+      '<span class="am-metricas7d am-metricas7d--indisponivel" title="Métricas últ. 7 dias são só por anúncio (MLB) — o Mercado Livre não as reporta por variação"></span>' +
       '<span class="am-margem am-margem--indisponivel" title="Margem é só por anúncio (MLB) — o Mercado Livre não reporta custo por variação">—</span>' +
       '<span class="am-mlb__score">—</span>' +
       '<span class="am-mlb__acao"></span>' +
@@ -1860,24 +1860,24 @@
   }
 
   function metricas7dConteudoHtml(m) {
-    if (!m) return '<span class="am-metricas7d__linha am-metricas7d__vazio">—</span>';
+    if (!m) return '';
     var campos = ["views", "vendas", "conversao"];
     var nomes = ["Visitas", "Unidades vendidas", "Conversão"];
     var paths = ['<path d="M2 12s3-6 10-6 10 6 10 6-3 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/>', '<path d="M3 3h2l2 12h12l2-8H6M9 20h.01M18 20h.01"/>', '<path d="m3 17 6-6 4 4 8-10M15 5h6v6"/>'];
     return '<button type="button" class="am-metricas7d-trigger" aria-label="Comparar métricas com os 7 dias anteriores" aria-expanded="false" aria-controls="am-metricas-popup" data-metricas-info="' + escapeAttr(JSON.stringify(m)) + '">' +
       campos.map(function (campo, i) {
         return '<span class="am-metricas7d__linha"><span class="am-metricas7d__icone" aria-hidden="true">' + svgIcone(paths[i], 14, 1.6) + '</span><span aria-label="' + nomes[i] + '">' +
-          (campo === "conversao" ? formatarPercentualCompacto(m[campo]) : formatarInteiroOuTraco(m[campo])) + '</span>' + variacaoMetricaHtml(m[campo], m.anterior && m.anterior[campo], campo === "conversao") + '</span>';
+          (m[campo] == null ? '' : campo === "conversao" ? formatarPercentualCompacto(m[campo]) : formatarInteiroOuTraco(m[campo])) + '</span>' + variacaoMetricaHtml(m[campo], m.anterior && m.anterior[campo], campo === "conversao") + '</span>';
       }).join("") + '</button>';
   }
 
   function variacaoMetricaHtml(atual, anterior, pontos) {
-    if (atual == null || anterior == null) return '<span class="am-metricas-delta is-neutral">—</span>';
-    if (!pontos && anterior === 0 && atual !== 0) return '<span class="am-metricas-delta is-neutral" title="Período anterior igual a zero">—</span>';
+    if (atual == null || anterior == null) return '';
+    if (!pontos && anterior === 0 && atual !== 0) return '';
     var delta = pontos ? atual - anterior : (anterior === 0 ? 0 : (atual - anterior) / anterior * 100);
     delta = Math.round(delta * 10) / 10;
     return '<span class="am-metricas-delta ' + (delta > 0 ? 'is-success' : delta < 0 ? 'is-danger' : 'is-neutral') + '">' +
-      (delta > 0 ? '▲ ' : delta < 0 ? '▼ ' : '') + Math.abs(delta).toFixed(1).replace('.', ',') + (pontos ? ' pp' : '%') + '</span>';
+      Math.abs(delta).toFixed(1).replace('.', ',') + (pontos ? ' pp' : '%') + '</span>';
   }
 
   function bindComparativoMetricas() {
@@ -1906,10 +1906,10 @@
         '<p class="am-metricas-popup__periodo">Atual: ' + escapeHtml(datas(m.periodos && m.periodos.atual)) + '<br>Anterior: ' + escapeHtml(datas(m.periodos && m.periodos.anterior)) + '</p>' +
         (m.anterior ? '<table><thead><tr><th>Métrica</th><th>Anterior</th><th>Atual</th><th>Variação</th></tr></thead><tbody>' +
           ['views', 'vendas', 'conversao'].map(function (campo, i) {
-            function fmt(v) { return campo === 'conversao' ? formatarPercentualCompacto(v) : formatarInteiroOuTraco(v); }
+            function fmt(v) { return v == null ? '' : campo === 'conversao' ? formatarPercentualCompacto(v) : formatarInteiroOuTraco(v); }
             return '<tr><th>' + ['Visitas', 'Vendas', 'Conversão'][i] + '</th><td>' + fmt(m.anterior[campo]) + '</td><td>' + fmt(m[campo]) + '</td><td>' + variacaoMetricaHtml(m[campo], m.anterior[campo], campo === 'conversao') + '</td></tr>';
           }).join('') + '</tbody></table>' : '<p>Comparativo indisponível para este anúncio.</p>') +
-        '<p class="am-metricas-popup__nota" title="Conversão = unidades vendidas ÷ visitas. — indica dado indisponível ou variação sem base de cálculo.">Vendas em unidades · conversão em %</p>';
+        '<p class="am-metricas-popup__nota" title="Conversão = unidades vendidas ÷ visitas. Campos vazios indicam dado indisponível ou variação sem base de cálculo.">Vendas em unidades · conversão em %</p>';
       popup.hidden = false;
       botao.setAttribute('aria-expanded', 'true');
       botao.setAttribute('aria-describedby', popup.id);
@@ -2019,7 +2019,7 @@
     // está em voo (mostra "carregando…", nunca um "—" definitivo — a soma
     // chega sozinha quando a resposta voltar).
     if (AM.state.familyFetchFalhou[familyId]) {
-      return '<span class="am-metricas7d am-metricas7d--indisponivel" title="Não foi possível calcular a soma agora">—</span>';
+      return '<span class="am-metricas7d am-metricas7d--indisponivel" title="Não foi possível calcular a soma agora"></span>';
     }
     return '<span class="am-metricas7d am-metricas7d--carregando" title="Calculando a soma dos últimos 7 dias…">' +
       '<span class="am-metricas7d__linha am-metricas7d__vazio">carregando…</span>' +

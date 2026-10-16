@@ -235,7 +235,7 @@ check("oportunidades: SQL real + índice idx_promo_diag_conta_concluido usado pe
     CREATE TABLE margin_projection_snapshots (id BIGSERIAL PRIMARY KEY, cliente_conta_id BIGINT, marketplace TEXT, item_id TEXT, titulo TEXT, image_url TEXT,
       price NUMERIC(14,2), cost NUMERIC(14,2), tax_rate NUMERIC(10,4), fixed_fee NUMERIC(14,2), commission_rate NUMERIC(10,4), freight NUMERIC(14,2),
       margin NUMERIC(10,4), commission NUMERIC(14,2), profit NUMERIC(14,2), calculated_at TIMESTAMPTZ,
-      status TEXT, quality_json JSONB DEFAULT '{}'::jsonb, catalog_missing_since TIMESTAMPTZ);
+      status TEXT, quality_json JSONB DEFAULT '{}'::jsonb, catalog_missing_since TIMESTAMPTZ, list_price NUMERIC(14,2));
     CREATE TABLE meli_anuncios (cliente_id INTEGER NOT NULL, item_id TEXT NOT NULL, logistic_type TEXT, UNIQUE (cliente_id, item_id));
     -- Volume: 300 clientes × 4 contas × ~50 diagnósticos, 3 status.
     INSERT INTO promocoes_diagnosticos (cliente_id, cliente_slug, base_slug, seller_id, status, created_at)

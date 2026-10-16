@@ -30,7 +30,8 @@ async function esperaErro(fn) {
 }
 const tick = async (n = 6) => { for (let i = 0; i < n; i += 1) await new Promise((r) => setImmediate(r)); };
 
-const ESCRITA_ON = { MARGIN_PRICING_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", MARGIN_PRICING_SNAPSHOT_DELAY_MS: "0" };
+// Preço e promoção têm rollouts próprios; as duas escritas ficam LIGADAS para a loja-a (os testes de rollout trocam o env).
+const ESCRITA_ON = { MARGIN_PRICING_WRITE_CLIENTES: "loja-a", MARGIN_PROMO_WRITE_ENABLED: "true", MARGIN_PROMO_WRITE_CLIENTES: "loja-a", MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", MARGIN_PRICING_SNAPSHOT_DELAY_MS: "0" };
 const CFG = resolvePricingConfig(ESCRITA_ON);
 const USER_A = { id: 9, nome: "Pedro", email: "p@x" };
 const USER_B = { id: 10, nome: "Ana", email: "a@x" };

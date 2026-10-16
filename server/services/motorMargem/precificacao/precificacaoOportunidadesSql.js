@@ -18,7 +18,8 @@
 // multiplica linhas: um anúncio por cliente + MLB).
 //
 // `fonteSql` é um SELECT que expõe: item_id, chave, preco_promo, retorno,
-// promo_status (texto; nulo/vazio = aceito) — demais colunas passam adiante
+// promo_status (texto; nulo/vazio = aceito) e, quando a fonte as tem,
+// promo_preco_original (preço cheio da própria promoção) — demais colunas passam adiante
 // como estão — e usa os parâmetros $1..$n de `paramsFonte`.
 
 function sqlOportunidadesElegiveis({ fonteSql, paramsFonte = [], clienteContaId, clienteId }) {
@@ -28,6 +29,7 @@ function sqlOportunidadesElegiveis({ fonteSql, paramsFonte = [], clienteContaId,
     SELECT pr.*, s.titulo AS snap_titulo, s.image_url, s.price, s.cost, s.tax_rate, s.fixed_fee,
            s.commission_rate, s.freight, s.margin, s.commission AS snap_commission, s.profit AS snap_profit,
            s.quality_json->>'targetMargin' AS snap_target_margin, s.calculated_at AS snap_calculated_at,
+           s.list_price AS snap_list_price,
            a.logistic_type AS anuncio_logistic_type
       FROM promos pr
       JOIN margin_projection_snapshots s

@@ -60,6 +60,7 @@ function fakeDb({ head = [{ id: 11, created_at: new Date().toISOString(), parcia
           .map((r) => ({
             item_id: r.item_id, chave: String(r._id).padStart(6, "0"), preco_promo: r.preco_promocao, retorno: r.retorno_ml,
             fonte_titulo: r.titulo, promo_nome: r.campanha, promo_id: r.campanha_id, promo_tipo: r.tipo_promocao, promo_status: r._status || null,
+            promo_preco_original: r.preco_original === undefined ? null : r.preco_original,
           }));
         const snapPorItem = new Map(snaps.map((x) => [x.item_id, x]));
         const anuncioPorItem = new Map(anuncios.map((x) => [x.item_id, x]));
@@ -87,6 +88,35 @@ function deps(db, vendas = new Map()) {
     },
   };
 }
+
+cenario("quem banca: cheio do item (list_price) → desconto sobre o cheio; sem ele, original_price da promoção; sem nenhum, null + sem_preco_cheio", async () => {
+  const itens = [
+    diagRow("MLB11", { preco: 90, retorno: 4.5 }),
+    diagRow("MLB12", { preco: 90, retorno: 4.5 }),
+    { ...diagRow("MLB13", { preco: 90, retorno: 4.5 }), preco_original: null },
+  ];
+  const snaps = [
+    { ...snapRow("MLB11", { price: 100 }), list_price: 120 },
+    snapRow("MLB12", { price: 100 }),
+    snapRow("MLB13", { price: 100 }),
+  ];
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos" }, deps(fakeDb({ itens, snaps })));
+  const por = Object.fromEntries(r.oportunidades.map((o) => [o.itemId, o]));
+  assert.strictEqual(por.MLB11.preco_cheio, 120);
+  assert.strictEqual(por.MLB11.preco_cheio_fonte, "margin_snapshot");
+  assert.strictEqual(por.MLB11.desconto_total, 30);
+  assert.strictEqual(por.MLB11.seller_banca, 25.5);
+  assert.strictEqual(por.MLB11.delta_preco_atual, 10, "a queda contra o preço atual fica à parte");
+  assert.strictEqual(por.MLB12.preco_cheio, 100, "diagRow: original_price 100");
+  assert.strictEqual(por.MLB12.preco_cheio_fonte, "promo_snapshot");
+  assert.strictEqual(por.MLB12.seller_banca, 5.5);
+  assert.strictEqual(por.MLB13.seller_banca, null);
+  assert.strictEqual(por.MLB13.banca_motivo, "sem_preco_cheio");
+  assert.strictEqual(por.MLB13.ml_banca, 4.5);
+  for (const o of r.oportunidades) {
+    if (o.seller_banca !== null && o.seller_banca < 0) assert.ok(o.banca_aviso, `${o.itemId}: seller banca negativa sem aviso`);
+  }
+});
 
 cenario("sem diagnóstico concluído (ou tabela inexistente): indisponível, com a explicação da dependência bulk", async () => {
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, deps(fakeDb({ head: [] })));
@@ -292,6 +322,7 @@ cenario("?cotacao=viva: só a PÁGINA é cotada ao vivo; faixa de frete real; co
   assert.deepStrictEqual(vivo.chamadas, [], "sem ?cotacao=viva a lista não consulta o ML");
   assert.strictEqual(estimada.cotacao.modo, "estimada");
   assert.ok(estimada.oportunidades.every((o) => o.estimado === true && o.cotacao.ao_vivo === false && o.flags.mudou_faixa_frete === null));
+  assert.ok(estimada.oportunidades.every((o) => o.numeros.origem === "estimativa" && o.numeros.motivo === "comissao_e_frete_do_snapshot"));
 
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos", limit: 3, cotacao: "viva" }, d);
   assert.strictEqual(r.cotacao.modo, "viva");
@@ -307,8 +338,14 @@ cenario("?cotacao=viva: só a PÁGINA é cotada ao vivo; faixa de frete real; co
       assert.strictEqual(o.cenario.lc, null);
       assert.strictEqual(o.cotacao.evidencia.comissao.motivo, "ml_indisponivel");
       assert.strictEqual(o.estimado, false, "falha de cotação não volta para a estimativa");
+      assert.strictEqual(o.cotacao.ao_vivo, false, "cotação que falhou NUNCA é rotulada ao vivo");
+      assert.strictEqual(o.cotacao.falhou, true);
+      assert.deepStrictEqual(o.numeros, { origem: "bloqueado", motivo: "cotacao_indisponivel" });
     } else {
-      assert.strictEqual(o.estimado, false);
+      // Lista do DIAGNÓSTICO LEGADO: comissão e frete são reais, mas P' e o retorno ML não são os que o /simular lê.
+      assert.strictEqual(o.estimado, true, "lista legada: a linha é estimativa mesmo com a cotação ao vivo");
+      assert.deepStrictEqual(o.numeros, { origem: "estimativa", motivo: "lista_do_diagnostico_legado" });
+      assert.strictEqual(o.lista.fonte, "diagnostico_legado");
       assert.strictEqual(o.cotacao.ao_vivo, true);
       assert.strictEqual(o.cenario.comissao, 10.8);
       assert.strictEqual(o.flags.mudou_faixa_frete, id === "MLB1", `${id}: o frete caiu de 15 para 0 só no MLB1`);
@@ -319,6 +356,87 @@ cenario("?cotacao=viva: só a PÁGINA é cotada ao vivo; faixa de frete real; co
   assert.ok(vivo.chamadas.every((c) => c.mlUserId === "555" && c.sellerId === "555" && c.precoEfetivo === 90 && c.listingTypeId === "gold_special"), "token e seller da conta");
   // a ordem da página é refeita pelo mesmo critério: bloqueado por último
   assert.strictEqual(r.oportunidades[r.oportunidades.length - 1].itemId, "MLB2");
+});
+
+// ── Origem dos números linha a linha: o que é "cotação ao vivo" de verdade ──────
+
+// Mundo do /simular com os MESMOS dados da linha do Promo Snapshot abaixo (preço 100, custo 40,
+// imposto 10%, comissão 12%, frete 15, preço cheio 120; promoção a 90 com retorno ML de 4,50).
+function simularEquivalente(deps = {}) {
+  const service = require("../services/motorMargem/margemSimularService");
+  const conta = { id: 7, cliente_id: 3, marketplace: "meli", nome: "Conta A", ativo: true, external_account_id: "555" };
+  const linhaBase = {
+    itemId: "MLB1", sku: null, titulo: "Produto MLB1", marketplace: "meli", baseId: 3, price: 100, listPrice: 120, cost: 40, taxRate: 0.1,
+    fixedFee: 0, commission: 12, commissionRate: 0.12, freight: 15, status: "HEALTHY", assumed: [], missing: [], refreshStatus: "fresh",
+    calculatedAt: "2026-10-13T06:00:00.000Z", observedAt: "2026-10-13T06:00:00.000Z", runId: 7, quality: {}, catalogMissingSince: null,
+  };
+  const promocao = {
+    itemId: "MLB1", promocaoChave: "k1", promotionId: "P-1", refId: null, tipo: "DEAL", tipoConhecido: true, nome: "Promo 1", status: "candidate",
+    statusExibicao: "ELEGÍVEL", inicio: null, fim: null, precoOriginal: 120, precoFinal: 90, precoFinalFonte: "ml", sellerPercentage: 20, meliPercentage: 3.75,
+    subsidioMl: 4.5, elegivel: true, observedAt: "2026-10-14T03:00:00.000Z", herdada: false,
+  };
+  const w = {
+    db: {}, now: () => new Date("2026-10-14T12:00:00.000Z"), logger: { error() {}, warn() {}, info() {} },
+    assertContaNaCarteira: async () => ({ contaId: 7, clienteId: 3, clienteSlug: "loja-a" }),
+    obterConta: async () => conta,
+    snapshotRepo: { getProjectionSnapshot: async () => ({ ...linhaBase }) },
+    obterAnuncio: async () => ({ item_id: "MLB1", ml_user_id: "555", listing_type_id: "gold_special", category_id: "MLB1", logistic_type: "xd_drop_off" }),
+    promoService: { estadoSincronizacao: async () => ({ hasSnapshot: true, snapshotRunId: 9, snapshotAt: "2026-10-14T03:00:00.000Z", partial: false }) },
+    promoRepo: { listarLinhasSnapshot: async () => ({ total: 1, linhas: [promocao] }) },
+    carregarRebates: async () => ({ porItem: new Map(), indisponivel: null }),
+    buscarComissaoEFrete: async (args) => ({ comissaoValor: Math.round(args.precoEfetivo * 0.12 * 100) / 100, comissaoPercentual: 0.12, fretePrevisto: 15 }),
+    mlFetch: async () => ({ ok: true, status: 200, data: {} }),
+    ...deps,
+  };
+  return () => service.simular({ user: { id: 1 }, body: { cliente_conta_id: 7, mlb: "MLB1", cenarios: [{ tipo: "promo", promotion_id: "P-1" }] } }, w);
+}
+
+function depsSnapshot(d) {
+  const promos = [{ item_id: "MLB1", chave: "k1", preco_promo: 90, retorno: 4.5, promo_status: "candidate", promo_id: "P-1", promo_tipo: "DEAL", promo_status_exibicao: "ELEGÍVEL", promo_preco_original: 120 }];
+  const snapPorItem = new Map([["MLB1", { ...snapRow("MLB1", { price: 100 }), list_price: 120 }]]);
+  d.promo = {
+    estadoComAutoTrigger: async () => ({ estado: { state: "ready", hasSnapshot: true, snapshotRunId: 9, snapshotAt: new Date().toISOString(), total: 1, workerEnabled: true }, gatilho: { acao: "nenhuma" } }),
+    syncPublico: (e) => ({ ...e }),
+    listarElegiveis: async () => elegiveisReferencia({ promos, snapPorItem }),
+  };
+  return d;
+}
+
+cenario("fonte PROMO SNAPSHOT + cotação ao vivo completa: a linha É o /simular (mesmos números, mesmo veredito); sem cotação, é estimativa", async () => {
+  const vivo = cotacaoViva();
+  const d = depsSnapshot({ ...deps(fakeDb()), ...vivo });
+  const estimada = (await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos" }, d)).oportunidades[0];
+  assert.deepStrictEqual(estimada.numeros, { origem: "estimativa", motivo: "comissao_e_frete_do_snapshot" });
+  assert.strictEqual(estimada.estimado, true);
+  assert.strictEqual(estimada.lista.fonte, "promo_snapshot");
+
+  const linha = (await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos", cotacao: "viva" }, d)).oportunidades[0];
+  assert.deepStrictEqual(linha.numeros, { origem: "simular", motivo: null });
+  assert.strictEqual(linha.estimado, false);
+  assert.strictEqual(linha.cotacao.ao_vivo, true);
+
+  const simulado = await simularEquivalente()();
+  const sim = simulado.cenarios[0];
+  for (const campo of ["veredito", "motivo", "delta_lc", "delta_margem_ratio", "empate_volume", "preco_cheio", "desconto_total", "desconto_ratio", "ml_banca", "seller_banca", "delta_preco_atual"]) {
+    assert.deepStrictEqual(linha[campo === "motivo" ? "veredito_motivo" : campo], sim[campo], `campo ${campo}: a linha ao vivo difere do /simular`);
+  }
+  assert.deepStrictEqual(linha.cenario, sim.cenario, "mesma composição do cenário (comissão e frete cotados em P')");
+  for (const campo of ["preco", "imposto", "comissao", "frete", "taxa_fixa", "custo", "rebate", "lc", "margem_ratio"]) {
+    assert.strictEqual(linha.atual[campo], simulado.atual[campo], `Hoje.${campo}: a linha difere do /simular`);
+  }
+  assert.strictEqual(linha.flags.mudou_faixa_frete, sim.flags.mudou_faixa_frete);
+});
+
+cenario("cotação ao vivo INCOMPLETA (só a comissão veio): `ao_vivo` false, linha bloqueada com o porquê — nunca 'ao vivo'", async () => {
+  const vivo = cotacaoViva();
+  vivo.buscarComissaoEFrete = async (args) => ({ comissaoValor: Math.round(args.precoEfetivo * 0.12 * 100) / 100, comissaoPercentual: 0.12, fretePrevisto: null });
+  const d = depsSnapshot({ ...deps(fakeDb()), ...vivo });
+  const linha = (await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, veredito: "todos", cotacao: "viva" }, d)).oportunidades[0];
+  assert.strictEqual(linha.veredito, "bloqueado");
+  assert.strictEqual(linha.cotacao.ao_vivo, false);
+  assert.strictEqual(linha.cotacao.falhou, true);
+  assert.strictEqual(linha.numeros.origem, "bloqueado");
+  assert.strictEqual(linha.flags.mudou_faixa_frete, null);
 });
 
 cenario("?cotacao desconhecida: 400; padrão é a estimativa", async () => {
@@ -426,6 +544,29 @@ cenario("fonte PROMO SNAPSHOT: mesma regra — started/active e P' >= preço atu
   assert.strictEqual(r.fonte.tipo, "promo_snapshot");
   assert.deepStrictEqual(r.oportunidades.map((o) => o.itemId).sort(), ["MLB1", "MLB5"]);
   assert.ok(r.oportunidades.every((o) => o.precoPromocao < o.precoAtual && !["started", "active"].includes(o.promocao.status)));
+});
+
+cenario("promoção SEM promotion_id no snapshot: o id da linha cai na chave do snapshot (a mesma identidade do /simular) — o chip da worklist seleciona a promoção na Bancada", async () => {
+  const promos = [
+    { item_id: "MLB1", chave: "MLB1::SMART::0", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: null, promo_tipo: "SMART" },
+    { item_id: "MLB2", chave: "MLB2::DEAL::7", preco_promo: 90, retorno: 0, promo_status: "candidate", promo_id: "P-777", promo_tipo: "DEAL", promo_status_exibicao: "ELEGÍVEL" },
+  ];
+  const snapPorItem = new Map(["MLB1", "MLB2"].map((id) => [id, snapRow(id)]));
+  const d = deps(fakeDb());
+  d.promo = {
+    estadoComAutoTrigger: async () => ({ estado: { state: "ready", hasSnapshot: true, snapshotRunId: 9, snapshotAt: new Date().toISOString(), total: 2, workerEnabled: true }, gatilho: { acao: "nenhuma" } }),
+    syncPublico: (e) => ({ ...e }),
+    listarElegiveis: async () => elegiveisReferencia({ promos, snapPorItem }),
+  };
+  const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, d);
+  const por = Object.fromEntries(r.oportunidades.map((o) => [o.itemId, o.promocao]));
+  assert.strictEqual(por.MLB1.id, "MLB1::SMART::0", "sem promotion_id: a chave");
+  assert.strictEqual(por.MLB2.id, "P-777", "com promotion_id: ele");
+  // Grupo e escrita suportada acompanham a promoção (a lista decide "Participar" só pelo que a Central escreve).
+  assert.strictEqual(por.MLB2.grupo, "pode");
+  assert.deepStrictEqual(por.MLB2.escrita, { suportada: true, acao: "PARTICIPAR", motivo: null });
+  assert.strictEqual(por.MLB1.grupo, "ml", "SMART: o ML define o preço");
+  assert.strictEqual(por.MLB1.escrita.suportada, false);
 });
 
 cenario("performance: 3 consultas ao banco (cabeçalho, elegíveis, rebates da conta) para a conta inteira, página fatiada no serviço, zero ML", async () => {

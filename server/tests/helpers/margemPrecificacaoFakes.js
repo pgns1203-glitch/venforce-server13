@@ -87,7 +87,7 @@ function criarCenario(overrides = {}) {
   };
   const chamadas = {
     mlFetch: [], montarItens: 0, cotacao: [], promocoes: 0, atualizarPreco: [], aplicarPromocao: [],
-    enviosMl: [], leiturasPreco: 0, logs: [], camposConfirmados: [], snapshot: [],
+    enviosMl: [], leiturasPreco: 0, logs: [], camposConfirmados: [], snapshot: [], papel: [],
   };
   let tokens = 0;
 
@@ -207,6 +207,12 @@ function criarCenario(overrides = {}) {
     agendar: (fn) => fn(),
     leituraSnapshotHabilitada: () => estado.snapshotLigado !== false,
     novoToken: () => `tok-${++tokens}`,
+    // Papel de quem escreve em promoção (admin ou coordenador do squad do cliente): por padrão autorizado;
+    // os testes de gate trocam por `estado.papelPromocao = { ok:false }`.
+    podeEscreverPromocao: async (args) => {
+      chamadas.papel.push(args);
+      return estado.papelPromocao || { ok: true, papel: "admin" };
+    },
     env: { MARGIN_PRICING_SIMULACAO_CACHE_MS: "0", ...(overrides.env || {}) },
   };
   return { estado, chamadas, deps };

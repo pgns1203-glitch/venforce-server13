@@ -133,7 +133,9 @@
     promoTop: {},
     oppsLive: "idle",
     promoExpanded: {},
+    promoDetail: {},
     pendingPromoId: null,
+    pendingReview: false,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
@@ -546,6 +548,7 @@
         state.oppsFilters = { veredito: "entrar", tipo: "" };
         state.oppsPage = 1;
         state.promoExpanded = {};
+        state.promoDetail = {};
         setView(ir.getAttribute("data-top-go"));
         loadOpportunities();
         return;
@@ -588,21 +591,43 @@
         return;
       }
       var button = event.target.closest("[data-opp-item]");
-      if (!button) return;
-      // "Simular" abre o drawer já com ESTA promoção selecionada e simulada.
-      openDrawer(button.getAttribute("data-opp-item"), "pricing", null, button, { fromOpportunity: true, promoId: button.getAttribute("data-promo-id") || null });
+      if (button) {
+        // "Simular" abre o drawer já com ESTA promoção selecionada e simulada.
+        openDrawer(button.getAttribute("data-opp-item"), "pricing", null, button, { fromOpportunity: true, promoId: button.getAttribute("data-promo-id") || null });
+        return;
+      }
+      var participar = event.target.closest("[data-opp-participar]");
+      if (participar) {
+        if (participar.disabled) return;
+        // "Participar" abre a Bancada na promoção e já pede o preview (relê ao vivo, gates, fingerprint).
+        openDrawer(participar.getAttribute("data-opp-participar"), "pricing", null, participar, { fromOpportunity: true, promoId: participar.getAttribute("data-promo-id") || null, autoReview: true });
+        return;
+      }
+      if (event.target.closest("a, button, input, select, textarea")) return;
+      var linha = event.target.closest("tr.cm-promo-row");
+      if (linha) alternarDetalhePromo(linha);
+    });
+
+    refs.oppsHost.addEventListener("keydown", function (event) {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      var linha = event.target.closest && event.target.closest("tr.cm-promo-row");
+      if (!linha || event.target !== linha) return;
+      event.preventDefault();
+      alternarDetalhePromo(linha);
     });
 
     refs.promoVeredito.addEventListener("change", function () {
       state.oppsFilters.veredito = refs.promoVeredito.value || "";
       state.oppsPage = 1;
       state.promoExpanded = {};
+      state.promoDetail = {};
       loadOpportunities();
     });
     refs.promoTipo.addEventListener("change", function () {
       state.oppsFilters.tipo = refs.promoTipo.value || "";
       state.oppsPage = 1;
       state.promoExpanded = {};
+      state.promoDetail = {};
       loadOpportunities();
     });
 
@@ -625,6 +650,9 @@
     refs.drawerNext.addEventListener("click", function () { moveDrawer(1); });
     el("cm-confirm-close").addEventListener("click", closeConfirm);
     el("cm-confirm-cancel").addEventListener("click", closeConfirm);
+    refs.confirmBody.addEventListener("click", function (event) {
+      if (event.target.closest("[data-cm-reler]")) relerAplicacao();
+    });
     refs.confirmApply.addEventListener("click", confirmApply);
     refs.confirmOverlay.addEventListener("click", function (event) {
       if (event.target === refs.confirmOverlay) closeConfirm();
@@ -762,6 +790,7 @@
     state.oppsFilters = { veredito: "", tipo: "" };
     state.oppsTipos = [];
     state.promoExpanded = {};
+    state.promoDetail = {};
     state.pendingPromoId = null;
     state.periodParam = lerPeriodoDoShell();
     if (clienteMudou) {
@@ -1697,15 +1726,20 @@
     if (isSnapshotMode()) {
       var listings = state.snapshot && state.snapshot.kpis && state.snapshot.kpis.listings;
       if (listings) partes.push(listings.total + " anúncios · " + listings.active + " ativos · " + listings.paused + " pausados");
-      var calc = state.snapshot && state.snapshot.lastCalculatedAt;
-      if (calc) partes.push("Atualizado " + formatShortDateTime(calc));
+      if (state.snapshot) partes.push(atualizadoTexto(state.snapshot.lastCalculatedAt));
     } else if (state.data) {
       partes.push(coverageLabel(state.data.coverage));
-      if (state.data.lastUpdated) partes.push("Atualizado " + formatShortDateTime(state.data.lastUpdated));
+      partes.push(atualizadoTexto(state.data.lastUpdated));
     } else if (state.loading) {
       partes.push("Carregando leitura…");
     }
     refs.summaryLine.textContent = partes.join(" · ");
+  }
+
+  // "Atualizado dd/mm hh:mm" com a data real; sem data (ou inválida): "sem data registrada" — nunca "Atualizado —".
+  function atualizadoTexto(valor) {
+    var texto = valor ? formatShortDateTime(valor) : "—";
+    return texto === "—" ? "Atualizado: sem data registrada" : "Atualizado " + texto;
   }
 
   function formatShortDateTime(value) {
@@ -1838,6 +1872,9 @@
     lc_por_unidade_cai: "LC por unidade cai",
     margem_abaixo_da_meta: "margem abaixo da meta",
     margem_abaixo_do_minimo: "margem abaixo do mínimo",
+    sem_preco_cheio: "sem preço cheio para calcular quem banca o desconto",
+    preco_acima_do_cheio: "o preço está acima do preço cheio: não é desconto",
+    retorno_maior_que_desconto: "o retorno do Mercado Livre é maior que o desconto sobre o preço cheio",
     sem_preco_viavel: "sem preço viável para a meta",
     meta_inviavel: "a meta não é atingível com estes custos",
     dados_ausentes: "faltam dados para calcular",
@@ -1989,6 +2026,27 @@
     return "";
   }
 
+  /** Expande/recolhe o detalhe (Hoje × Promo) de UMA linha, sem redesenhar a tabela. */
+  function alternarDetalhePromo(linha) {
+    var id = linha.getAttribute("data-opp");
+    state.promoDetail[id] = !state.promoDetail[id];
+    linha.classList.toggle("is-open", state.promoDetail[id]);
+    linha.setAttribute("aria-expanded", state.promoDetail[id] ? "true" : "false");
+    var detalhes = refs.oppsHost.querySelectorAll("tr[data-promo-detail]");
+    Array.prototype.forEach.call(detalhes, function (d) {
+      if (d.getAttribute("data-promo-detail") !== id) return;
+      var celula = d.firstElementChild;
+      if (state.promoDetail[id]) {
+        var lista = state.opps && state.opps.status === "ok" ? state.opps.oportunidades || [] : [];
+        var op = lista.filter(function (x) { return x.itemId === id; })[0];
+        celula.innerHTML = op ? promoDetalheConteudoHtml(op) : "";
+      } else {
+        celula.innerHTML = "";
+      }
+      d.hidden = !state.promoDetail[id];
+    });
+  }
+
   function setPromotionsFilters() {
     if (!refs.promoVeredito) return;
     refs.promoVeredito.value = state.oppsFilters.veredito || "";
@@ -2010,14 +2068,48 @@
     refs.promoTipo.value = atual;
   }
 
+  // Origem dos NÚMEROS da linha (o servidor diz: numeros.origem). Nunca se rotula "ao vivo" o que não é:
+  //   simular     — cotação real completa sobre a lista do Promo Snapshot = o mesmo resultado do simulador;
+  //   estimativa  — comissão/frete do snapshot (sem consulta ao ML) ou promoção vinda do diagnóstico legado;
+  //   bloqueado   — a cotação foi tentada e não veio completa (nada foi estimado).
+  var NUMEROS_MOTIVO_UI = {
+    comissao_e_frete_do_snapshot: "comissão e frete do snapshot, sem consulta ao Mercado Livre",
+    lista_do_diagnostico_legado: "a promoção vem do diagnóstico legado, que o simulador não lê",
+    cotacao_indisponivel: "a cotação ao vivo não veio completa para este preço",
+  };
+
+  function numerosDaPagina() {
+    var o = state.opps;
+    var linhas = o && o.status === "ok" ? (o.oportunidades || []) : [];
+    var contagem = { total: linhas.length, simular: 0, estimativa: 0, bloqueado: 0, primeiroMotivo: null };
+    linhas.forEach(function (l) {
+      var origem = l.numeros && l.numeros.origem;
+      if (origem === "simular") contagem.simular += 1;
+      else if (origem === "bloqueado") contagem.bloqueado += 1;
+      else contagem.estimativa += 1;
+      if (origem !== "simular" && !contagem.primeiroMotivo && l.numeros && l.numeros.motivo) contagem.primeiroMotivo = l.numeros.motivo;
+    });
+    return contagem;
+  }
+
+  // Segunda linha do badge: "Números: …" — só diz "cotação ao vivo" quando TODA linha da página é do simulador.
   function renderPromotionsLive() {
     if (!refs.promosLive) return;
+    var c = numerosDaPagina();
     var texto = "";
-    if (state.oppsLive === "loading") texto = "cotando a página ao vivo no Mercado Livre…";
-    else if (state.oppsLive === "ok") texto = "cotação ao vivo · comissão e frete reais em cada preço";
-    else if (state.oppsLive === "error") texto = "cotação ao vivo indisponível — valores estimados";
+    if (state.oppsLive === "loading") texto = "Números: cotando a página ao vivo no Mercado Livre…";
+    else if (state.oppsLive === "error") texto = "Números: estimativa — a cotação ao vivo está indisponível agora";
+    else if (state.oppsLive === "ok") {
+      var bloqueadas = c.bloqueado ? " · " + c.bloqueado + (c.bloqueado === 1 ? " linha bloqueada" : " linhas bloqueadas") + " (a cotação não veio completa)" : "";
+      if (c.simular > 0 && c.estimativa === 0) texto = "Números: cotação ao vivo · comissão e frete reais em cada preço (mesmo cálculo do simulador)" + bloqueadas;
+      else if (c.simular > 0) texto = "Números: cotação ao vivo em " + c.simular + " de " + c.total + " linhas · " + c.estimativa + (c.estimativa === 1 ? " marcada" : " marcadas") + " como estimativa" + bloqueadas;
+      else if (c.total) texto = "Números: estimativa — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || "não vieram do simulador");
+    } else if (c.total) {
+      texto = "Números: estimativa — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || NUMEROS_MOTIVO_UI.comissao_e_frete_do_snapshot);
+    }
     refs.promosLive.textContent = texto;
     refs.promosLive.setAttribute("data-cm-live", state.oppsLive || "idle");
+    refs.promosLive.setAttribute("data-cm-numeros", c.simular > 0 && c.estimativa === 0 && state.oppsLive === "ok" ? "simular" : c.total ? "estimativa" : "");
   }
 
   function veredictoChipHtml(veredito) {
@@ -2025,17 +2117,32 @@
     return '<span class="vf-status ' + ui.tone + '" data-cm-veredito="' + escapeHtml(veredito || "bloqueado") + '">' + escapeHtml(ui.label) + "</span>";
   }
 
-  function arrowPair(antes, depois, depoisTitle) {
-    return escapeHtml(antes || "—") + '<span class="cm-promo-arrow" aria-hidden="true">→</span>' +
-      (depoisTitle ? '<span title="' + escapeHtml(depoisTitle) + '">' + escapeHtml(depois || "—") + "</span>" : escapeHtml(depois || "—"));
+  // "antes → depois" em duas linhas: antes em cinza, depois forte; o Δ vai em chip (verde/vermelho) quando existe.
+  function antesDepois(antes, depois, extraHtml, depoisClasse) {
+    return '<span class="cm-2l"><span class="cm-2l__antes">' + escapeHtml(antes || "—") + '</span><span class="cm-2l__depois' + (depoisClasse ? " " + depoisClasse : "") + '">' + escapeHtml(depois || "—") + "</span>" + (extraHtml || "") + "</span>";
   }
 
-  function deltaHtml(delta) {
-    if (delta === null || delta === undefined) return "";
-    var tone = delta > 0 ? "is-good" : delta < 0 ? "is-bad" : "";
-    return '<span class="cm-promo-delta ' + tone + '" data-cm-delta-lc>Δ ' + escapeHtml(formatMoney(delta, true)) + "</span>";
+  function chipDelta(valor, texto, attr) {
+    if (valor === null || valor === undefined || !texto) return "";
+    var tom = valor > 0 ? "is-good" : valor < 0 ? "is-bad" : "";
+    return '<span class="cm-chip-delta ' + tom + '"' + (attr ? " " + attr : "") + ">" + escapeHtml(texto) + "</span>";
   }
 
+  function ppTexto(delta) {
+    var n = contract.numberOrNull(delta);
+    if (n === null) return null;
+    return (n > 0 ? "+" : "") + (n * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 2 }) + " pp";
+  }
+
+  // Quem banca é medido contra o preço CHEIO. Sem ele, o seller banca é "—" e o motivo é dito;
+  // banca negativa nunca aparece sem o aviso do porquê.
+  function bancaAvisoHtml(r) {
+    var codigo = r && (r.banca_aviso || r.banca_motivo);
+    if (!codigo) return "";
+    return ' <span class="cm-promo-flag is-warn" data-cm-banca-aviso="' + escapeHtml(codigo) + '" title="' + escapeHtml(motivoTexto(codigo)) + '">⚠</span>';
+  }
+
+  // Marcas que explicam a linha (só o essencial na linha; o resto vai no detalhe expandido).
   function promoFlagsHtml(op) {
     var flags = op.flags || {};
     var itens = [];
@@ -2050,24 +2157,78 @@
     } else if (op.veredito_motivo) {
       itens.push('<span class="cm-promo-flag">' + escapeHtml(motivoTexto(op.veredito_motivo)) + "</span>");
     }
-    if (op.estimado) itens.push('<span class="cm-promo-flag" data-cm-flag="estimado" title="Comissão e frete estimados do snapshot; a cotação ao vivo confirma.">estimado</span>');
+    if (op.estimado) itens.push('<span class="cm-promo-flag" data-cm-flag="estimado" title="' + escapeHtml(((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "Números estimados") + ".") + '">estimativa</span>');
     return itens.length ? '<div class="cm-promo-flags">' + itens.join("") + "</div>" : "";
   }
 
   function freteCelula(op) {
     var atual = op.atual || {};
     var cen = op.cenario || {};
-    if (op.estimado) {
-      return arrowPair(formatMoney(atual.frete), "a cotar", "A faixa de frete só se confirma cotando ao vivo.");
+    // "a cotar" só enquanto o frete não foi cotado; cotação tentada que falhou diz "indisponível" (nada é estimado).
+    var viva = op.cotacao && (op.cotacao.ao_vivo === true || op.cotacao.falhou === true);
+    var aviso = op.flags && op.flags.mudou_faixa_frete === true
+      ? ' <span class="cm-promo-flag is-warn" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
+    if (!viva) {
+      return antesDepois(formatMoney(atual.frete), "a cotar", "", "is-pendente");
     }
     var depois = cen.frete === null || cen.frete === undefined ? "indisponível" : formatMoney(cen.frete);
-    return arrowPair(formatMoney(atual.frete), depois);
+    return '<span class="cm-2l"><span class="cm-2l__antes">' + escapeHtml(formatMoney(atual.frete) || "—") + '</span><span class="cm-2l__depois">' + escapeHtml(depois) + aviso + "</span></span>";
+  }
+
+  // Por que o Participar está (ou não) liberado: só entrar / entrar_se_girar E "Pode participar pelo VenForce".
+  function participarSpec(promo, veredito, motivo) {
+    promo = promo || {};
+    var base = { disabled: true, title: "" };
+    if (promo.grupo === "ativa") return Object.assign(base, { title: "Esta promoção já está ativa neste anúncio." });
+    if (promo.grupo === "participa") return Object.assign(base, { title: "Você já participa desta promoção (ela não forma o preço agora)." });
+    if (promo.grupo !== "pode") return Object.assign(base, { title: (promo.escrita && promo.escrita.motivo) || "Só pelo Mercado Livre: a inscrição é feita no painel do Mercado Livre." });
+    if (veredito === "bloqueado") return Object.assign(base, { title: "Bloqueado: " + (motivoTexto(motivo) || "sem motivo informado") + "." });
+    if (veredito === "nao_entrar") return Object.assign(base, { title: "Veredito “Não entrar”: " + (motivoTexto(motivo) || "a promoção não compensa") + "." });
+    if (veredito !== "entrar" && veredito !== "entrar_se_girar") return Object.assign(base, { title: "Sem veredito para participar." });
+    return { disabled: false, title: "Abre o preview da participação (relê a promoção ao vivo e avalia os gates)." };
+  }
+
+  function acoesPromoHtml(itemId, promo, veredito, motivo, ghost) {
+    var spec = participarSpec(promo, veredito, motivo);
+    var promoId = promo && promo.id ? promo.id : "";
+    return '<span class="cm-promo-acoes">' +
+      '<button class="vf-btn vf-btn--sm' + (ghost ? " vf-btn--ghost" : "") + '" type="button" data-opp-item="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '">Simular</button>' +
+      '<button class="vf-btn vf-btn--sm vf-btn--primary" type="button" data-opp-participar="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '"' +
+        (spec.disabled ? " disabled" : "") + ' title="' + escapeHtml(spec.title) + '">Participar</button></span>';
+  }
+
+  // Fonte da lista e origem dos números, desta linha.
+  function origemLinhaHtml(op) {
+    var lista = op.lista || {};
+    var origemLista = lista.fonte === "diagnostico_legado" ? "diagnóstico legado" : "Promo Snapshot";
+    var quando = lista.observada_em ? formatShortDateTime(lista.observada_em) : null;
+    if (!quando || quando === "—") quando = "data desconhecida";
+    var num = op.numeros || {};
+    var numerosTxt = num.origem === "simular"
+      ? "cotação ao vivo" + (op.cotacao && op.cotacao.consultado_em ? " às " + formatShortDateTime(op.cotacao.consultado_em) : "") + " (mesmo cálculo do simulador)"
+      : num.origem === "bloqueado" ? "cotação ao vivo incompleta — " + (NUMEROS_MOTIVO_UI[num.motivo] || "sem números")
+        : "estimativa — " + (NUMEROS_MOTIVO_UI[num.motivo] || "não vieram do simulador");
+    return '<p class="cm-promo-origem" data-cm-origem-linha="' + escapeHtml(num.origem || "") + '">Lista: ' + escapeHtml(origemLista) + " · " + escapeHtml(quando) + " · Números: " + escapeHtml(numerosTxt) + ".</p>";
+  }
+
+  // Detalhe expansível: a mesma cascata Hoje × Promo do drawer + quem banca e volume de empate.
+  function promoDetalheConteudoHtml(op) {
+    return '<div class="cm-promo-detail__grid">' +
+      '<div class="cm-promo-detail__esq"><h4 class="cm-banc__sub">Hoje × Promoção</h4>' + cascataHtml(op.atual, { resultado: op, hipotese: false, somenteLeitura: true }) + "</div>" +
+      '<div class="cm-promo-detail__dir">' + bancaRodapeHtml(op) + empateHtml(op) + promoFlagsHtml(op) + origemLinhaHtml(op) + "</div></div>";
+  }
+
+  // O conteúdo só existe enquanto a linha está aberta (nada de cascatas escondidas no DOM).
+  function promoDetalheHtml(op, aberto) {
+    return '<tr class="cm-promo-detail" data-promo-detail="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="8">' + (aberto ? promoDetalheConteudoHtml(op) : "") + "</td></tr>";
   }
 
   function promoRowHtml(op) {
     var atual = op.atual || {};
     var cen = op.cenario || {};
     var promo = op.promocao || {};
+    var aberto = state.promoDetail[op.itemId] === true;
+    var flags = op.flags || {};
     var quando = promo.herdada ? formatShortDateTime(promo.observadaEm) : null;
     var herdada = promo.herdada
       ? '<span class="cm-prod-meta cm-opps-herdada" title="A leitura desta promoção falhou na última atualização; mostrando a leitura anterior' +
@@ -2079,22 +2240,35 @@
     var unidades = op.unidades === null || op.unidades === undefined
       ? unavailable("vendas —", "Vendas indisponíveis neste período (a leitura da Central de Vendas falhou).")
       : escapeHtml(formatInt(op.unidades) + " un. no período");
+    var semHist = flags.sem_historico ? ' <span class="cm-promo-flag" data-cm-flag="sem-historico" title="Sem vendas no período: o impacto é por unidade.">sem histórico</span>' : "";
+    var estimativa = op.estimado
+      ? ' <span class="cm-promo-flag" data-cm-flag="estimado" title="' + escapeHtml(((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "Números estimados") + ".") + '">estimativa</span>' : "";
+
     var banca = (op.seller_banca === null || op.seller_banca === undefined) && (op.ml_banca === null || op.ml_banca === undefined)
-      ? "—"
-      : escapeHtml(formatMoney(op.seller_banca) || "—") + '<span class="cm-promo-arrow" aria-hidden="true">/</span>' + escapeHtml(formatMoney(op.ml_banca) || "—");
-    return '<tr class="cm-promo-row" data-opp="' + escapeHtml(op.itemId) + '">' +
-      "<td><strong>" + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + '</span><span class="cm-prod-meta">' + unidades + "</span>" + mais + "</td>" +
-      "<td>" + escapeHtml(promo.nome || promo.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(promo.tipo || "") + "</span>" + herdada + "</td>" +
-      '<td class="num">' + arrowPair(formatMoney(op.precoAtual), formatMoney(op.precoPromocao)) +
-        (op.desconto !== null && op.desconto !== undefined ? '<span class="cm-prod-meta">' + escapeHtml(formatMoney(-op.desconto, true) || "") + "</span>" : "") + "</td>" +
-      '<td class="num" data-cm-banca>' + banca + "</td>" +
+      ? "—" + bancaAvisoHtml(op)
+      : '<span class="cm-2l" data-cm-banca-dupla title="Você banca / ML banca"><span class="cm-2l__depois">' + escapeHtml(formatMoney(op.seller_banca) || "—") + bancaAvisoHtml(op) + '</span><span class="cm-2l__antes">' + escapeHtml(formatMoney(op.ml_banca) || "—") + "</span></span>";
+
+    var precoChip = op.desconto_ratio !== null && op.desconto_ratio !== undefined
+      ? '<span class="cm-chip-delta" data-cm-desc-pct title="Desconto sobre o preço cheio' + (op.delta_preco_atual !== null && op.delta_preco_atual !== undefined ? " · contra o preço de hoje: " + escapeHtml(formatMoney(-op.delta_preco_atual, true) || "R$ 0,00") : "") + '">' + (op.desconto_ratio < 0 ? "+" : "−") + escapeHtml(formatPercent(Math.abs(op.desconto_ratio))) + "</span>"
+      : "";
+    var margemClasse = marginClass(cen.margem_ratio === undefined ? null : cen.margem_ratio, {});
+
+    // Linha curta sob o veredito: o motivo do bloqueio, o volume de empate ou o motivo do veredito.
+    var nota = "";
+    if (op.veredito === "bloqueado") nota = '<span class="cm-promo-nota is-warn" data-cm-flag="bloqueado" title="' + escapeHtml("Bloqueado: " + (motivoTexto(op.veredito_motivo) || "sem motivo informado")) + '">bloqueado · ' + escapeHtml(motivoTexto(op.veredito_motivo) || "sem motivo informado") + "</span>";
+    else if (op.veredito === "entrar_se_girar" && op.empate_volume !== null && op.empate_volume !== undefined) nota = '<span class="cm-promo-nota" data-cm-flag="empate" title="Volume a mais para empatar o LC total de hoje.">precisa vender ' + escapeHtml(formatPercent(op.empate_volume, true)) + "</span>";
+    else if (op.veredito_motivo) nota = '<span class="cm-promo-nota" title="' + escapeHtml(motivoTexto(op.veredito_motivo)) + '">' + escapeHtml(motivoTexto(op.veredito_motivo)) + "</span>";
+
+    return '<tr class="cm-promo-row' + (aberto ? " is-open" : "") + '" data-opp="' + escapeHtml(op.itemId) + '" tabindex="0" aria-expanded="' + (aberto ? "true" : "false") + '" data-cm-numeros="' + escapeHtml((op.numeros && op.numeros.origem) || "") + '">' +
+      '<td class="cm-c-produto"><strong class="cm-clamp2" title="' + escapeHtml(op.titulo) + '">' + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + " · " + unidades + semHist + "</span></td>" +
+      '<td class="cm-c-promo"><strong class="cm-clamp2" title="' + escapeHtml(promo.nome || promo.tipo || "—") + '">' + escapeHtml(promo.nome || promo.tipo || "—") + '</strong><span class="cm-prod-meta">' + escapeHtml(promo.tipo || "") + estimativa + "</span>" + herdada + mais + "</td>" +
+      '<td class="num cm-c-preco">' + antesDepois(formatMoney(op.precoAtual), formatMoney(op.precoPromocao), precoChip) + "</td>" +
+      '<td class="num cm-c-banca" data-cm-banca>' + banca + "</td>" +
       '<td class="num" data-cm-frete>' + freteCelula(op) + "</td>" +
-      '<td class="num" data-cm-lc>' + arrowPair(formatMoney(atual.lc), formatMoney(cen.lc)) + deltaHtml(op.delta_lc) + "</td>" +
-      '<td class="num" data-cm-margem><span class="' + marginClass(cen.margem_ratio === undefined ? null : cen.margem_ratio, {}) + '">' +
-        arrowPair(formatPercent(atual.margem_ratio), formatPercent(cen.margem_ratio)) + "</span></td>" +
-      "<td>" + veredictoChipHtml(op.veredito) + promoFlagsHtml(op) + "</td>" +
-      '<td class="vf-table__actions"><button class="vf-btn vf-btn--sm" type="button" data-opp-item="' + escapeHtml(op.itemId) +
-        '" data-promo-id="' + escapeHtml(promo.id || "") + '">Simular</button></td></tr>' +
+      '<td class="num" data-cm-lc>' + antesDepois(formatMoney(atual.lc), formatMoney(cen.lc), chipDelta(op.delta_lc, op.delta_lc === null || op.delta_lc === undefined ? null : "Δ " + formatMoney(op.delta_lc, true), "data-cm-delta-lc")) + "</td>" +
+      '<td class="num" data-cm-margem>' + antesDepois(formatPercent(atual.margem_ratio), formatPercent(cen.margem_ratio), chipDelta(op.delta_margem_ratio, ppTexto(op.delta_margem_ratio)), margemClasse) + "</td>" +
+      '<td class="cm-c-veredito">' + veredictoChipHtml(op.veredito) + nota + acoesPromoHtml(op.itemId, promo, op.veredito, op.veredito_motivo, false) + "</td></tr>" +
+      promoDetalheHtml(op, aberto) +
       promoOptionsHtml(op);
   }
 
@@ -2102,7 +2276,7 @@
   function promoOptionsHtml(op) {
     if (!(op.opcoes && op.opcoes.length)) return "";
     var aberto = state.promoExpanded[op.itemId] === true;
-    return '<tr class="cm-promo-options" data-promo-options="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="9"><table class="vf-table vf-table--compact"><tbody>' +
+    return '<tr class="cm-promo-options" data-promo-options="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="8"><table class="vf-table vf-table--compact"><tbody>' +
       op.opcoes.map(function (opcao) {
         var promo = opcao.promocao || {};
         return '<tr data-promo-option="' + escapeHtml(promo.id || "") + '">' +
@@ -2111,7 +2285,7 @@
           '<td class="num">' + (opcao.delta_lc === null || opcao.delta_lc === undefined ? "—" : escapeHtml("Δ " + formatMoney(opcao.delta_lc, true))) + "</td>" +
           '<td class="num">' + escapeHtml(formatPercent(opcao.margemDepois) || "—") + "</td>" +
           "<td>" + veredictoChipHtml(opcao.veredito) + (opcao.veredito === "bloqueado" ? '<span class="cm-promo-flag is-warn"> · ' + escapeHtml(motivoTexto(opcao.veredito_motivo)) + "</span>" : "") + "</td>" +
-          '<td class="vf-table__actions"><button class="vf-btn vf-btn--sm vf-btn--ghost" type="button" data-opp-item="' + escapeHtml(op.itemId) + '" data-promo-id="' + escapeHtml(promo.id || "") + '">Simular</button></td></tr>';
+          '<td class="vf-table__actions">' + acoesPromoHtml(op.itemId, promo, opcao.veredito, opcao.veredito_motivo, true) + "</td></tr>";
       }).join("") + "</tbody></table></td></tr>";
   }
 
@@ -2161,7 +2335,7 @@
     // Data real da fonte; sem data (ou inválida) diz "data desconhecida" — nunca "—".
     var geradoTxt = fonte.geradoEm ? formatShortDateTime(fonte.geradoEm) : null;
     if (!geradoTxt || geradoTxt === "—") geradoTxt = "data desconhecida";
-    refs.oppsMeta.textContent = origem + " · " + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "");
+    refs.oppsMeta.textContent = "Lista: " + origem + " · " + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "");
     refs.resultCount.textContent = formatInt(o.total || 0) + (Number(o.total) === 1 ? " anúncio" : " anúncios");
     if (!o.oportunidades || !o.oportunidades.length) {
       var filtrado = state.oppsFilters.veredito || state.oppsFilters.tipo;
@@ -2170,12 +2344,12 @@
         : "Nenhuma promoção disponível que valha entrar nesta conta (promoções já ativas e as que não baixam o preço não contam).") + "</p>";
       return;
     }
-    refs.oppsHost.innerHTML = '<div class="vf-table-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead><tr>' +
-      '<th>Produto</th><th>Promo</th><th class="num">Preço → promo</th><th class="num">Seller banca / ML banca</th><th class="num">Frete antes → depois</th>' +
-      '<th class="num">LC/un antes → depois</th><th class="num">Margem antes → depois</th><th>Veredito</th><th><span class="vf-visually-hidden">Ação</span></th>' +
+    refs.oppsHost.innerHTML = '<div class="vf-table-wrap cm-opps-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead><tr>' +
+      '<th>Produto</th><th>Promo</th><th class="num">Preço → promo</th><th class="num" title="Você banca / ML banca">Seller / ML</th><th class="num">Frete</th>' +
+      '<th class="num">LC/un</th><th class="num">Margem</th><th>Veredito</th>' +
       "</tr></thead><tbody>" + o.oportunidades.map(promoRowHtml).join("") + "</tbody></table></div>" + oppsPagerHtml(o) +
       '<p class="cm-opps-foot">' + escapeHtml(o.criterio || "") + (o.cotacao && o.cotacao.modo === "viva"
-        ? " Página cotada ao vivo (comissão e frete reais em cada preço)."
+        ? " Linhas com cotação ao vivo completa usam o mesmo cálculo do simulador; as marcadas como estimativa, não."
         : " Valores estimados com a taxa de comissão e o frete do snapshot até a cotação ao vivo terminar.") + "</p>";
   }
 
@@ -3010,6 +3184,7 @@
     state.drawerTab = DRAWER_TABS.indexOf(tabName) !== -1 ? tabName : "pricing";
     if (variableKey && contract.VARIABLE_META[variableKey]) state.evidenceVariable = variableKey;
     state.pendingPromoId = opts && opts.promoId ? String(opts.promoId) : null;
+    state.pendingReview = Boolean(opts && opts.autoReview && state.pendingPromoId);
     if (!mesmoItem) {
       resetItemState(item);
       loadBancada(item);
@@ -3034,9 +3209,21 @@
     var id = state.pendingPromoId;
     if (!id || !state.bancada || state.bancada.status === "loading" || state.bancada.status === "idle") return;
     state.pendingPromoId = null;
-    if (state.bancada.status === "ok" && bancadaPromoPorId(id)) {
+    if (state.bancada.status !== "ok") return;
+    var achada = bancadaPromoPorId(id);
+    if (achada) {
       state.drawerTab = "pricing";
-      state.bancada.selecionado = id;
+      state.bancada.selecionado = promoIdDe(achada);
+      // "Participar" da aba Promoções: com a Bancada pronta, já abre o preview (o botão decide se pode).
+      if (state.pendingReview) {
+        state.pendingReview = false;
+        var chave = drawerKey();
+        root.setTimeout(function () { if (chave === drawerKey()) reviewDaBancada(); }, 0);
+      }
+    } else {
+      state.pendingReview = false;
+      // Nunca cai em "Preço manual" em silêncio: a promoção pedida não está na leitura atual.
+      state.bancada.aviso = "A promoção escolhida não está mais na leitura atual das promoções deste anúncio; mostrando o preço manual.";
     }
   }
 
@@ -3165,6 +3352,8 @@
       button.setAttribute("aria-pressed", active ? "true" : "false");
     });
 
+    // Precificar usa o drawer largo (Hoje × Cenário | Cenários); as outras abas ficam no tamanho normal.
+    refs.drawer.classList.toggle("cm-drawer--wide", state.drawerTab !== "evidence" && state.drawerTab !== "history");
     if (state.drawerTab === "evidence") renderEvidenceTab(item);
     else if (state.drawerTab === "history") renderHistoryTab(item);
     else renderPricingTab(item);
@@ -3209,74 +3398,19 @@
       '<span class="cm-delta__values"><span>' + escapeHtml(b) + '</span><span class="cm-arrow" aria-hidden="true">→</span><strong>' + escapeHtml(a) + "</strong></span></div>";
   }
 
-  var FONTE_COPY = { recotada: "recotada", recotado: "recotado", motor: "do Motor", taxa: "estimada pela taxa", atual: "do preço atual", nao_aplicavel: "combinável", indisponivel: "indisponível" };
-
-  function simResultHtml(sim, kind) {
-    var a = sim.atual || {};
-    var p = sim.proposta || {};
-    var promo = sim.promocao;
-    var linhas = deltaRow("Preço", a.preco, p.preco, function (v) { return formatMoney(v); }, true) +
-      (kind === "PROMOTION" && promo
-        ? '<div class="cm-delta"><span class="cm-delta__label">Desconto</span><span class="cm-delta__values"><strong>' +
-          escapeHtml((formatMoney(promo.descontoReais) || "—") + (promo.descontoPercentual !== null && promo.descontoPercentual !== undefined ? " (" + promo.descontoPercentual.toLocaleString("pt-BR") + "%)" : "")) + "</strong></span></div>" +
-          '<div class="cm-delta"><span class="cm-delta__label">ML banca</span><span class="cm-delta__values"><strong>' + escapeHtml(formatMoney(promo.mlBanca) || "R$ 0,00") + "</strong></span></div>" +
-          '<div class="cm-delta"><span class="cm-delta__label">Seller banca</span><span class="cm-delta__values"><strong>' + escapeHtml(formatMoney(promo.sellerBanca) || "—") + "</strong></span></div>"
-        : "") +
-      deltaRow("Margem", a.margem, p.margem, function (v) { return formatPercent(v); }) +
-      deltaRow("LC / un.", a.lucro, p.lucro, function (v) { return formatMoney(v); }) +
-      (p.variacaoPercentual !== null && p.variacaoPercentual !== undefined
-        ? '<div class="cm-delta"><span class="cm-delta__label">Variação</span><span class="cm-delta__values"><strong>' + escapeHtml((p.variacaoPercentual > 0 ? "+" : "") + p.variacaoPercentual.toLocaleString("pt-BR", { maximumFractionDigits: 2 }) + "%") + "</strong></span></div>"
-        : "");
-    var rodape = "Comissão " + (formatMoney(p.comissao) || "—") + " (" + (FONTE_COPY[p.comissaoFonte] || "—") + ") · Frete " +
-      (formatMoney(p.frete) || "—") + " (" + (FONTE_COPY[p.freteFonte] || "—") + ")" + (p.rebate ? " · Retorno ML " + formatMoney(p.rebate) : "") + ". Calculado no backend (Motor).";
-    return '<div class="cm-sim" data-cm-sim="' + escapeHtml(kind) + '">' + linhas + '<p class="cm-sim__foot">' + escapeHtml(rodape) + "</p></div>" +
-      gatesListHtml(sim.gates, true);
-  }
-
-  function manualPricingHtml(item) {
-    var availability = pricingAvailability();
-    var p = state.pricing;
-    var sim = p.sim;
-    var chips = "";
-    if (sim && sim.atual) {
-      if (sim.atual.precoAlvo) chips += '<button class="cm-chip" type="button" data-price-chip="' + sim.atual.precoAlvo + '" title="Preço que atinge a meta de referência do Motor">Meta ' + escapeHtml(formatMoney(sim.atual.precoAlvo)) + "</button>";
-      if (sim.atual.breakEven) chips += '<button class="cm-chip" type="button" data-price-chip="' + sim.atual.breakEven + '" title="Preço de equilíbrio (LC zero) de referência">Break-even ' + escapeHtml(formatMoney(sim.atual.breakEven)) + "</button>";
-    }
-    var resultado = "";
-    if (!availability.ok) resultado = '<p class="cm-empty-note">' + escapeHtml(availability.reason) + "</p>";
-    else if (p.localError) resultado = '<p class="cm-field-error" role="alert">' + escapeHtml(p.localError) + "</p>";
-    else if (p.status === "loading") resultado = '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Calculando no backend…</span></div>';
-    else if (p.status === "error") resultado = '<p class="cm-field-error" role="alert">' + escapeHtml(p.error || "Não foi possível simular.") + "</p>";
-    else if (p.status === "ok" && sim) resultado = simResultHtml(sim, "PRICE");
-    else resultado = '<p class="cm-empty-note">Digite o novo preço para ver margem, LC e os gates antes de qualquer alteração.</p>';
-
-    var podeRevisar = availability.ok && p.status === "ok" && sim && !sim.bloqueado;
-    return '<section class="cm-pp" aria-labelledby="cm-pp-title">' +
-      '<header class="cm-pp__head"><h3 id="cm-pp-title">Ajuste manual</h3><span>só o preço vira escrita real</span></header>' +
-      '<div class="cm-pp__row">' +
-      '<div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(formatMoney(shownPrice(item)) || "—") + "</strong></div>" +
-      '<label class="cm-pp__field"><span class="cm-pp__label">Novo preço</span><input class="vf-input vf-input--sm cm-pp__input" id="cm-new-price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeHtml(p.novoPreco) + '"' + (availability.ok ? "" : " disabled") + "></label>" +
-      (chips ? '<div class="cm-pp__chips">' + chips + "</div>" : "") +
-      "</div>" +
-      (p.precoAoVivo !== null && p.precoAoVivo !== undefined && p.precoTabela !== null && p.precoTabela !== undefined && Math.abs(p.precoAoVivo - p.precoTabela) >= 0.005
-        ? '<p class="cm-live-note" data-cm-live-price>O preço no Mercado Livre mudou desde a última leitura da tabela: ' + escapeHtml(formatMoney(p.precoTabela)) + " → <strong>" + escapeHtml(formatMoney(p.precoAoVivo)) + "</strong> agora. A simulação e o preview usam o preço atual do ML.</p>"
-        : "") +
-      '<div class="cm-pp__result" id="cm-pp-result" aria-live="polite">' + resultado + "</div>" +
-      '<div class="cm-pp__actions"><button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-pp-review"' + (podeRevisar ? "" : " disabled") + ">Revisar alteração</button></div>" +
-      "</section>";
-  }
-
   // --- Bancada ----------------------------------------------------------------
   //
-  // O drawer é uma bancada: o estado ATUAL e um CENÁRIO lado a lado, em cascata
-  // (preço → −imposto → −comissão → −frete → −taxa fixa → −custo → +retorno ML
-  // = LC/un → margem). Todo número vem de POST /api/margem/simular (o núcleo do
-  // Motor com cotação REAL do Mercado Livre em cada preço); a tela não calcula
-  // nada. Cenários: Preço manual e cada promoção do anúncio (Promo Snapshot). O
-  // botão único "Revisar…" abre o preview (a avaliação de verdade é do servidor).
+  // O drawer é uma bancada em duas colunas. À ESQUERDA, o estado de HOJE e o
+  // CENÁRIO em cascata (preço de venda → −imposto → −comissão → −frete → −taxa
+  // fixa → −custo → +retorno ML = LC/un → margem), com quem banca o desconto e
+  // o volume que empata o LC. À DIREITA, os cenários agrupados — Preço manual e
+  // as promoções do anúncio em Ativa agora · Você já participa · Pode participar
+  // pelo VenForce · Só pelo Mercado Livre. Todo número vem de POST
+  // /api/margem/simular (o núcleo do Motor com cotação REAL do Mercado Livre em
+  // cada preço); a tela não calcula nada. Um botão único, dinâmico, no rodapé.
 
   var BANCADA_LINHAS = [
-    { chave: "preco", rotulo: "Preço", sinal: "" },
+    { chave: "preco", rotulo: "Preço de venda", sinal: "" },
     { chave: "imposto", rotulo: "Imposto", sinal: "−" },
     { chave: "comissao", rotulo: "Comissão", sinal: "−" },
     { chave: "frete", rotulo: "Frete", sinal: "−" },
@@ -3285,10 +3419,27 @@
     { chave: "rebate", rotulo: "Retorno ML", sinal: "+" },
   ];
 
+  // Ordem de leitura: o que forma o preço agora, o que já está inscrito, o que dá para inscrever
+  // por aqui e o que só o painel do Mercado Livre resolve. O grupo vem do servidor (promocao.grupo).
+  var BANCADA_GRUPOS = [
+    { chave: "ativa", titulo: "Ativa agora", dica: "É ela que forma o preço de hoje" },
+    { chave: "participa", titulo: "Você já participa", dica: "Inscrita, mas não é a que forma o preço agora" },
+    { chave: "pode", titulo: "Pode participar pelo VenForce", dica: "Escolha, simule e confirme por aqui" },
+    { chave: "ml", titulo: "Só pelo Mercado Livre", dica: "Dá para simular; a inscrição é feita no painel do Mercado Livre" },
+  ];
+
+  var PROMO_STATUS_TOM = { "ATIVA": "is-success", "NÃO APLICADA": "is-warning", "PROGRAMADA": "is-info", "ELEGÍVEL": "is-empty" };
+
+  function novaHipotese() {
+    // `edit`: o campo já foi tocado pelo operador (mantém o texto digitado, mesmo vazio, enquanto ele edita).
+    return { custo: "", taxa_fixa: "", edit: { custo: false, taxa_fixa: false }, status: "idle", resultado: null, error: null, localError: null, seq: 0, timer: null, abort: null };
+  }
+
   function novaBancada() {
     return {
-      status: "idle", data: null, error: null, selecionado: "preco", alvo: null,
+      status: "idle", data: null, error: null, aviso: null, selecionado: "preco", alvo: null,
       manual: { status: "idle", resultado: null, atual: null, error: null, localError: null, seq: 0, timer: null, abort: null },
+      hip: novaHipotese(),
     };
   }
 
@@ -3319,18 +3470,36 @@
     return String(cenario.promocao ? cenario.promocao.id : (cenario.entrada && cenario.entrada.promotion_id) || "");
   }
 
+  // A promoção pode ser pedida pelo id, pela chave do snapshot ou pelo ref_id (o chip da worklist vem da lista de Oportunidades).
   function bancadaPromoPorId(id) {
+    var alvo = String(id);
     var lista = bancadaPromos();
-    for (var i = 0; i < lista.length; i += 1) if (promoIdDe(lista[i]) === String(id) && lista[i].promocao) return lista[i];
+    for (var i = 0; i < lista.length; i += 1) {
+      var p = lista[i].promocao;
+      if (p && (promoIdDe(lista[i]) === alvo || String(p.chave || "") === alvo || String(p.ref_id || "") === alvo)) return lista[i];
+    }
     return null;
   }
 
-  /** Cenário em exibição: o preço manual ou uma promoção. */
+  /** Cenário escolhido: o preço manual ou uma promoção (sem a hipótese de custo). */
   function bancadaSelecionada() {
     var b = state.bancada;
     if (b.selecionado === "preco") return { tipo: "preco", resultado: b.manual.resultado, promo: null };
     var promo = bancadaPromoPorId(b.selecionado);
     return promo ? { tipo: "promo", resultado: promo, promo: promo } : { tipo: "preco", resultado: b.manual.resultado, promo: null };
+  }
+
+  function hipoteseAtiva() {
+    var h = state.bancada && state.bancada.hip;
+    return Boolean(h && (h.custo !== "" || h.taxa_fixa !== ""));
+  }
+
+  /** O que a coluna Cenário mostra: o resultado do cenário escolhido ou, se o operador testou um custo, o da HIPÓTESE. */
+  function bancadaEmExibicao() {
+    var sel = bancadaSelecionada();
+    var h = state.bancada.hip;
+    if (!hipoteseAtiva()) return Object.assign({ hipotese: false, carregando: false, erro: null }, sel);
+    return Object.assign({}, sel, { resultado: h.resultado, hipotese: true, carregando: h.status === "loading", erro: h.localError || (h.status === "error" ? h.error : null) });
   }
 
   function bancadaAtual() {
@@ -3375,7 +3544,7 @@
     });
   }
 
-  /** Depois de uma escrita confirmada e do snapshot recalculado: a composição "Atual" é a nova. */
+  /** Depois de uma escrita confirmada e do snapshot recalculado: a composição "Hoje" é a nova. */
   function recarregarBancada() {
     var item = findSelectedItem();
     if (!item || !state.bancada || !bancadaDisponivel().ok) return;
@@ -3397,12 +3566,12 @@
     if (!parsed.ok) {
       m.status = "idle";
       m.resultado = null;
-      updateBancadaResultado();
+      updateBancadaResultado(true);
       return;
     }
     if (!bancadaDisponivel().ok) return;
     m.status = "loading";
-    updateBancadaResultado();
+    updateBancadaResultado(true);
     var seq = state.drawerSeq;
     var key = drawerKey();
     var item = findSelectedItem();
@@ -3421,39 +3590,163 @@
           m.resultado = (result.cenarios || [])[0] || null;
           m.atual = result.atual || m.atual;
         }
-        updateBancadaResultado();
+        updateBancadaResultado(true);
       });
     }, delay === undefined ? 400 : delay);
   }
 
+  // --- Hipótese de custo ("e se o custo fosse X?") -----------------------------
+  // Custo e taxa fixa (custo adicional) editáveis na coluna Cenário, marcados "hipótese". O servidor
+  // refaz o MESMO cenário com o custo informado (a Base não muda; a escrita nunca usa hipótese).
+
+  var HIP_RE = /^\d+([.,]\d{1,4})?$/;
+
+  function hipoteseDoCampo(texto) {
+    var t = String(texto || "").trim().replace(/^R\$\s*/, "");
+    if (!t) return { vazio: true };
+    if (!HIP_RE.test(t)) return { erro: "Use um número (ex.: 21,35)." };
+    return { valor: Number(t.replace(",", ".")) };
+  }
+
+  function limparHipotese() {
+    var h = state.bancada.hip;
+    if (h.timer) root.clearTimeout(h.timer);
+    if (h.abort) h.abort.abort();
+    state.bancada.hip = novaHipotese();
+  }
+
+  function simularHipotese(delay) {
+    var b = state.bancada;
+    var h = b.hip;
+    if (h.timer) root.clearTimeout(h.timer);
+    if (h.abort) h.abort.abort();
+    h.seq += 1;
+    var seqHip = h.seq;
+    var campos = {};
+    var erro = null;
+    ["custo", "taxa_fixa"].forEach(function (campo) {
+      var p = hipoteseDoCampo(h[campo]);
+      if (p.erro) erro = erro || p.erro;
+      else if (!p.vazio) campos[campo] = p.valor;
+    });
+    h.localError = erro;
+    if (erro || !Object.keys(campos).length) {
+      h.status = "idle";
+      h.resultado = null;
+      updateBancadaResultado();
+      return;
+    }
+    var sel = bancadaSelecionada();
+    var cenario;
+    if (sel.tipo === "promo") cenario = { tipo: "promo", promotion_id: promoIdDe(sel.promo), hipotese: campos };
+    else {
+      var parsed = parsePriceInput(state.pricing.novoPreco);
+      if (!parsed.ok) { h.status = "idle"; h.resultado = null; h.localError = "Digite o novo preço para testar o custo."; updateBancadaResultado(); return; }
+      cenario = { tipo: "preco", preco: parsed.value, hipotese: campos };
+    }
+    h.status = "loading";
+    updateBancadaResultado();
+    var seq = state.drawerSeq;
+    var key = drawerKey();
+    var item = findSelectedItem();
+    h.timer = root.setTimeout(function () {
+      h.timer = null;
+      h.abort = typeof AbortController !== "undefined" ? new AbortController() : null;
+      api.simular({ clienteContaId: state.contaId, mlb: item.itemId, cenarios: [cenario] }, h.abort && h.abort.signal).then(function (result) {
+        if (seq !== state.drawerSeq || key !== drawerKey() || result.aborted || seqHip !== h.seq || state.bancada.hip !== h) return;
+        if (!result.ok) {
+          h.status = "error";
+          h.error = result.error || "Não foi possível simular este custo agora.";
+          h.resultado = null;
+        } else {
+          h.status = "ok";
+          h.error = null;
+          h.resultado = (result.cenarios || [])[0] || null;
+        }
+        updateBancadaResultado();
+      });
+    }, delay === undefined ? 500 : delay);
+  }
+
   function money(v) { return formatMoney(v) || "—"; }
 
-  function cascataHtml(atual, r) {
+  function formatShortDate(value) {
+    if (!value) return null;
+    var d = new Date(value);
+    if (Number.isNaN(d.getTime())) return null;
+    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  }
+
+  // --- Coluna da esquerda: Hoje × Cenário ----------------------------------------
+
+  function hipCelulaHtml(campo, cenValor, exibicao) {
+    var h = state.bancada.hip;
+    var digitado = h[campo] !== "";
+    var tocado = h.edit[campo] === true;
+    var valor = tocado ? h[campo] : (cenValor === null || cenValor === undefined ? "" : Number(cenValor).toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
+    var pode = Boolean(exibicao.resultado && exibicao.resultado.cenario && exibicao.resultado.cenario[campo] !== null && exibicao.resultado.cenario[campo] !== undefined) || tocado;
+    if (!pode) return escapeHtml(money(cenValor));
+    return '<input class="vf-input vf-input--sm cm-banc__hip' + (digitado ? " is-hipotese" : "") + '" type="text" inputmode="decimal" autocomplete="off" data-hip="' + campo + '" value="' + escapeHtml(valor) +
+      '" aria-label="' + (campo === "custo" ? "Custo" : "Taxa fixa (custos adicionais)") + ' como hipótese" title="Edite para testar outro valor — hipótese: a Base e a escrita usam os custos reais.">' +
+      (digitado ? '<span class="cm-banc__hip-tag" data-cm-hipotese>hipótese</span>' : "");
+  }
+
+  function cascataHtml(atual, exibicao) {
     if (!atual) return '<p class="cm-empty-note" data-cm-bancada="sem-atual">A composição de hoje não está disponível (sem leitura de margem deste anúncio).</p>';
-    r = r || {};
+    var r = exibicao.resultado || {};
     var cen = r.cenario || {};
+    var mudouFrete = r.flags && r.flags.mudou_faixa_frete === true;
     var linhas = BANCADA_LINHAS.map(function (l) {
       var a = atual[l.chave];
       var c = cen[l.chave];
       // Retorno ML só aparece quando existe em algum dos lados (o resto da cascata é sempre mostrado).
       if (l.chave === "rebate" && !a && !c) return "";
-      return '<tr data-cm-linha="' + l.chave + '"><th scope="row">' + (l.sinal ? '<span class="cm-banc__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) + "</th>" +
-        '<td class="num">' + escapeHtml(money(a)) + '</td><td class="num">' + escapeHtml(money(c)) + "</td><td></td></tr>";
+      var mudou = c !== null && c !== undefined && a !== null && a !== undefined && a !== c;
+      var celula = (l.chave === "custo" || l.chave === "taxa_fixa") && !exibicao.somenteLeitura ? hipCelulaHtml(l.chave, c, exibicao) : escapeHtml(money(c));
+      var aviso = l.chave === "frete" && mudouFrete ? ' <span class="cm-banc__faixa" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
+      return '<tr data-cm-linha="' + l.chave + '"' + (mudou ? ' class="is-mudou"' : "") + '><th scope="row">' + (l.sinal ? '<span class="cm-banc__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) + aviso + "</th>" +
+        '<td class="num">' + escapeHtml(money(a)) + '</td><td class="num">' + celula + "</td><td></td></tr>";
     }).join("");
     var deltaLc = r.delta_lc;
     var tom = deltaLc === null || deltaLc === undefined ? "" : deltaLc > 0 ? " is-up" : deltaLc < 0 ? " is-down" : "";
-    return '<table class="cm-banc__tabela" data-cm-bancada-cascata><thead><tr><th></th><th class="num">Atual</th><th class="num">Cenário</th><th class="num">Δ</th></tr></thead><tbody>' + linhas +
+    return '<table class="cm-banc__tabela" data-cm-bancada-cascata><thead><tr><th></th><th class="num">Hoje</th><th class="num">Cenário</th><th class="num">Δ</th></tr></thead><tbody>' + linhas +
       '<tr class="cm-banc__total" data-cm-linha="lc"><th scope="row"><span class="cm-banc__sinal" aria-hidden="true">=</span> LC/un</th><td class="num">' + escapeHtml(money(atual.lc)) + '</td><td class="num"><strong>' + escapeHtml(money(cen.lc)) +
       '</strong></td><td class="num' + tom + '">' + escapeHtml(deltaLc === null || deltaLc === undefined ? "—" : formatMoney(deltaLc, true)) + "</td></tr>" +
       '<tr class="cm-banc__total" data-cm-linha="margem"><th scope="row">Margem</th><td class="num">' + escapeHtml(formatPercent(atual.margem_ratio) || "—") + '</td><td class="num"><strong>' + escapeHtml(formatPercent(cen.margem_ratio) || "—") +
       '</strong></td><td class="num">' + escapeHtml(r.delta_margem_ratio === null || r.delta_margem_ratio === undefined ? "—" : formatPercent(r.delta_margem_ratio, true)) + "</td></tr></tbody></table>";
   }
 
-  // Quanto a mais precisa vender para o LC TOTAL empatar com o de hoje (número do núcleo).
+  // Quem banca o desconto — sempre sobre o PREÇO CHEIO (números do núcleo; a tela só os mostra).
+  function bancaRodapeHtml(r) {
+    if (!r || (r.ml_banca === null || r.ml_banca === undefined) && (r.desconto_total === null || r.desconto_total === undefined) && !r.banca_motivo) return "";
+    var partes;
+    if (r.banca_motivo === "sem_preco_cheio") {
+      partes = '<span data-cm-banca="sem-cheio">Desconto: ' + escapeHtml(motivoTexto("sem_preco_cheio")) + "</span>" +
+        ' · ML banca <strong>' + escapeHtml(money(r.ml_banca)) + "</strong>";
+    } else {
+      var pct = r.desconto_ratio === null || r.desconto_ratio === undefined ? "" : " (" + (r.desconto_ratio < 0 ? "+" : "−") + formatPercent(Math.abs(r.desconto_ratio)) + " sobre o preço cheio)";
+      partes = 'Desconto total <strong data-cm-banca="desconto">' + escapeHtml(money(r.desconto_total)) + "</strong>" + escapeHtml(pct) +
+        ' · ML banca <strong data-cm-banca="ml">' + escapeHtml(money(r.ml_banca)) + "</strong>" +
+        ' · Você banca <strong data-cm-banca="seller">' + escapeHtml(money(r.seller_banca)) + "</strong>" + bancaAvisoHtml(r);
+    }
+    var fonte = r.preco_cheio_fonte === "promo_snapshot" ? " Preço cheio da própria promoção (original_price)." : r.preco_cheio_fonte === "margin_snapshot" ? " Preço cheio do anúncio." : "";
+    return '<p class="cm-banc__banca-linha" data-cm-banca-linha>' + partes + "." + escapeHtml(fonte) +
+      (r.delta_preco_atual !== null && r.delta_preco_atual !== undefined ? ' <span class="cm-prod-meta">Contra o preço de hoje: ' + escapeHtml(formatMoney(-r.delta_preco_atual, true) || "R$ 0,00") + ".</span>" : "") + "</p>";
+  }
+
+  // Quanto a mais precisa vender para o LC TOTAL empatar com o de hoje — ou o ganho por unidade (números do núcleo).
   function empateHtml(r) {
-    if (!r || r.empate_volume === null || r.empate_volume === undefined) return "";
-    if (r.empate_volume > 0) return '<p class="cm-banc__empate" data-cm-empate>Precisa vender <strong>' + escapeHtml(formatPercent(r.empate_volume, true)) + "</strong> a mais para empatar o LC total de hoje.</p>";
-    return '<p class="cm-banc__empate" data-cm-empate>Empata o LC total de hoje mesmo vendendo <strong>' + escapeHtml(formatPercent(Math.abs(r.empate_volume)) || "") + "</strong> a menos.</p>";
+    if (!r) return "";
+    if (r.empate_volume !== null && r.empate_volume !== undefined && r.empate_volume > 0) {
+      return '<p class="cm-banc__empate" data-cm-empate>Precisa vender <strong>' + escapeHtml(formatPercent(r.empate_volume, true)) + "</strong> pra empatar o LC total de hoje.</p>";
+    }
+    if (r.delta_lc !== null && r.delta_lc !== undefined && r.delta_lc >= 0 && r.cenario && r.cenario.lc !== null && r.cenario.lc !== undefined) {
+      var menos = r.empate_volume !== null && r.empate_volume !== undefined && r.empate_volume < 0
+        ? "empata o LC total de hoje mesmo vendendo " + formatPercent(Math.abs(r.empate_volume)) + " a menos"
+        : "não precisa vender mais pra empatar";
+      return '<p class="cm-banc__empate" data-cm-empate>Ganha LC por unidade (<strong>' + escapeHtml(formatMoney(r.delta_lc, true) || "R$ 0,00") + "</strong>) — " + escapeHtml(menos) + ".</p>";
+    }
+    return "";
   }
 
   function evidenciaBancadaHtml(r) {
@@ -3465,6 +3758,7 @@
     }
     if (ev.preco && ev.preco.fonte === "promo_snapshot") partes.push("promoção lida em " + (formatShortDateTime(ev.preco.observado_em) === "—" ? "data desconhecida" : formatShortDateTime(ev.preco.observado_em)));
     if (ev.preco && ev.preco.fonte === "busca_preco_alvo") partes.push("preço encontrado pela busca com cotações reais");
+    if (ev.hipotese) partes.push("custo de hipótese informado por você (a Base não mudou)");
     return partes.length ? '<p class="cm-banc__fonte">' + escapeHtml(partes.join(" · ")) + ".</p>" : "";
   }
 
@@ -3473,13 +3767,48 @@
     var ui = VEREDITO_UI[r.veredito] || VEREDITO_UI.bloqueado;
     var flags = [];
     var f = r.flags || {};
-    if (f.mudou_faixa_frete === true) flags.push('<span class="cm-promo-flag is-warn" data-cm-flag="faixa-frete">⚠ muda faixa de frete</span>');
     if (f.ativa) flags.push('<span class="cm-promo-flag" data-cm-flag="ativa">ativa</span>');
     if (f.rebate_ambiguo) flags.push('<span class="cm-promo-flag is-warn" data-cm-flag="rebate-ambiguo">retorno ambíguo</span>');
     var motivo = r.motivo ? (r.veredito === "bloqueado" ? "bloqueado · " : "") + motivoTexto(r.motivo) : "";
     return '<div class="cm-banc__veredito"><span class="vf-status ' + ui.tone + '" data-cm-veredito="' + escapeHtml(r.veredito) + '">' + escapeHtml(ui.label) + "</span>" +
       (motivo ? '<span class="cm-promo-flag' + (r.veredito === "bloqueado" ? " is-warn" : "") + '" data-cm-motivo>' + escapeHtml(motivo) + "</span>" : "") + flags.join("") + "</div>";
   }
+
+  function bancadaCenarioTituloHtml(sel) {
+    if (!sel.promo) return '<div class="cm-banc__titulo" data-cm-cenario-titulo="preco"><strong>Preço manual</strong><span class="cm-prod-meta">cenário de preço digitado por você</span></div>';
+    var p = sel.promo.promocao || {};
+    var periodo = [formatShortDate(p.inicio), formatShortDate(p.fim)].filter(Boolean).join(" – ");
+    return '<div class="cm-banc__titulo" data-cm-promo-info="' + escapeHtml(promoIdDe(sel.promo)) + '"><strong>' + escapeHtml(p.nome || p.tipo || "Promoção") + "</strong>" +
+      '<span class="cm-prod-meta">' + escapeHtml([p.tipo, p.status_exibicao || p.status, periodo].filter(Boolean).join(" · ")) + "</span></div>";
+  }
+
+  /** Miolo da esquerda (cascata, quem banca, empate, veredito, fonte) — redesenhado a cada resposta. */
+  function bancadaResultadoHtml() {
+    var b = state.bancada;
+    var ex = bancadaEmExibicao();
+    var atual = bancadaAtual();
+    if (ex.tipo === "preco" && !ex.hipotese) {
+      var m = b.manual;
+      if (m.localError) return '<p class="cm-field-error" role="alert">' + escapeHtml(m.localError) + "</p>";
+      if (m.status === "loading") return '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Calculando no backend com a cotação real do Mercado Livre…</span></div>';
+      if (m.status === "error") return '<p class="cm-field-error" role="alert">' + escapeHtml(m.error || "Não foi possível simular.") + "</p>";
+      if (!m.resultado) return '<p class="cm-empty-note" data-cm-bancada="digite">Digite o novo preço para ver o cenário ao lado de hoje.</p>';
+    }
+    var h = b.hip;
+    var hipAviso = "";
+    if (ex.hipotese) {
+      var estado = ex.erro ? '<span class="cm-field-error" role="alert">' + escapeHtml(ex.erro) + "</span>"
+        : ex.carregando ? "calculando a hipótese…" : "";
+      hipAviso = '<p class="cm-banc__hip-aviso" data-cm-hip-aviso><strong>Hipótese de custo.</strong> A Base e a escrita usam os custos reais; este cenário é só para comparar. ' + estado +
+        ' <button class="vf-btn vf-btn--ghost vf-btn--sm" type="button" id="cm-hip-reset">Restaurar custos reais</button></p>';
+    } else if (h.localError) {
+      hipAviso = '<p class="cm-field-error" role="alert">' + escapeHtml(h.localError) + "</p>";
+    }
+    var r = ex.resultado;
+    return bancadaCenarioTituloHtml(ex) + hipAviso + vereditoBancadaHtml(r) + cascataHtml(atual, ex) + bancaRodapeHtml(r) + empateHtml(r) + evidenciaBancadaHtml(r);
+  }
+
+  // --- Coluna da direita: cenários agrupados -------------------------------------
 
   function bancadaPrecoAlvoHtml(item) {
     var b = state.bancada;
@@ -3498,63 +3827,145 @@
     return chips ? '<div class="cm-pp__chips">' + chips + "</div>" : "";
   }
 
-  function bancadaSeletorHtml() {
-    var b = state.bancada;
-    var promos = bancadaPromos().filter(function (c) { return c.promocao; });
-    var opcao = function (id, rotulo, resultado, extra) {
-      var ativo = String(b.selecionado) === String(id);
-      var ui = resultado ? (VEREDITO_UI[resultado.veredito] || VEREDITO_UI.bloqueado) : null;
-      return '<button class="cm-banc__opcao' + (ativo ? " is-active" : "") + '" type="button" role="radio" aria-checked="' + (ativo ? "true" : "false") + '" data-cenario="' + escapeHtml(id) + '"' + (extra || "") + ">" +
-        "<span>" + escapeHtml(rotulo) + "</span>" + (ui ? '<span class="vf-status ' + ui.tone + '" data-cm-veredito="' + escapeHtml(resultado.veredito) + '">' + escapeHtml(ui.label) + "</span>" : "") + "</button>";
-    };
-    var html = opcao("preco", "Preço manual", null);
-    promos.forEach(function (c) { html += opcao(promoIdDe(c), c.promocao.nome || c.promocao.tipo || "Promoção", c, ""); });
-    return '<div class="cm-banc__cenarios" id="cm-banc-cenarios" role="radiogroup" aria-label="Cenário" data-cm-cenarios>' + html + "</div>";
+  /** Sem preço sugerido pelo Mercado Livre: o card não é selecionável e diz por quê. */
+  function cardDesabilitado(cenario) {
+    return cenario.veredito === "bloqueado" && cenario.motivo === "promocao_sem_preco";
   }
 
-  function bancadaPromoInfoHtml(promo) {
-    var p = promo.promocao || {};
+  function vsHojeChipHtml(r) {
+    if (r.delta_lc === null || r.delta_lc === undefined) return '<span class="cm-banc__vs">—</span>';
+    var tom = r.delta_lc >= 0 ? "is-good" : "is-warn";
+    return '<span class="cm-banc__vs ' + tom + '" data-cm-vs>' + escapeHtml(formatMoney(r.delta_lc, true) || "R$ 0,00") + "/un</span>";
+  }
+
+  function promoCardHtml(c) {
+    var b = state.bancada;
+    var p = c.promocao;
+    var id = promoIdDe(c);
+    var ativo = String(b.selecionado) === String(id);
+    var desabilitado = cardDesabilitado(c);
+    var cen = c.cenario || {};
     var periodo = [formatShortDate(p.inicio), formatShortDate(p.fim)].filter(Boolean).join(" – ");
-    return '<div class="cm-banc__promo" data-cm-promo-info="' + escapeHtml(promoIdDe(promo)) + '"><strong>' + escapeHtml(p.nome || p.tipo || "Promoção") + "</strong>" +
-      '<span class="cm-prod-meta">' + escapeHtml([p.tipo, p.status_exibicao || p.status, periodo].filter(Boolean).join(" · ")) + "</span>" +
-      '<dl class="cm-banc__banca"><div><dt>Preço</dt><dd>' + escapeHtml(money(promo.cenario && promo.cenario.preco)) + "</dd></div>" +
-      "<div><dt>Seller banca</dt><dd>" + escapeHtml(money(promo.seller_banca)) + "</dd></div><div><dt>ML banca</dt><dd>" + escapeHtml(money(promo.ml_banca)) + "</dd></div></dl></div>";
+    var statusTxt = p.status_exibicao || p.status || "";
+    var motivoDesab = "Sem sugestão do Mercado Livre para esta promoção: não há preço para simular.";
+    var preco = desabilitado
+      ? '<span class="cm-banc__sem-sugestao">Sem sugestão do ML</span>'
+      : '<span class="cm-banc__num">' + escapeHtml(money(cen.preco)) + "</span>" +
+        (c.desconto_ratio !== null && c.desconto_ratio !== undefined ? '<span class="cm-banc__pct" data-cm-desc-pct>' + (c.desconto_ratio < 0 ? "+" : "−") + escapeHtml(formatPercent(Math.abs(c.desconto_ratio))) + "</span>" : "");
+    var num = function (valor, fmt) { return desabilitado || valor === null || valor === undefined ? "—" : escapeHtml(fmt(valor)); };
+    return '<button class="cm-banc__card' + (ativo ? " is-active" : "") + (desabilitado ? " is-disabled" : "") + '" type="button" role="radio" aria-checked="' + (ativo ? "true" : "false") + '" data-cenario="' + escapeHtml(id) + '"' +
+      (desabilitado ? ' disabled aria-disabled="true" title="' + escapeHtml(motivoDesab) + '"' : "") + ">" +
+      '<span class="cm-banc__c-nome"><strong>' + escapeHtml(p.nome || p.tipo || "Promoção") + "</strong>" +
+        '<span class="cm-banc__c-meta">' + (statusTxt ? '<span class="vf-status ' + (PROMO_STATUS_TOM[statusTxt] || "is-empty") + '">' + escapeHtml(statusTxt) + "</span>" : "") +
+        (periodo ? "<span>" + escapeHtml(periodo) + "</span>" : "") + "</span></span>" +
+      '<span class="cm-banc__c-col cm-banc__c-preco">' + preco + "</span>" +
+      '<span class="cm-banc__c-col" data-cm-subsidio>' + num(c.ml_banca, money) + "</span>" +
+      '<span class="cm-banc__c-col" data-cm-card-lc>' + num(cen.lc, money) + "</span>" +
+      '<span class="cm-banc__c-col" data-cm-card-margem>' + num(cen.margem_ratio, function (v) { return formatPercent(v) || "—"; }) + "</span>" +
+      '<span class="cm-banc__c-col">' + (desabilitado ? "—" : vsHojeChipHtml(c)) + "</span>" +
+      '<span class="cm-banc__c-col cm-banc__c-vered">' + veredictoChipHtml(c.veredito) + "</span></button>";
   }
 
-  function formatShortDate(value) {
-    if (!value) return null;
-    var d = new Date(value);
-    if (Number.isNaN(d.getTime())) return null;
-    return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  function bancadaCabecalhoCards() {
+    return '<div class="cm-banc__cols" aria-hidden="true"><span>Promoção</span><span>Preço final</span><span>Subsídio ML</span><span>LC/un</span><span>Margem</span><span>vs hoje</span><span>Veredito</span></div>';
   }
 
-  /** Miolo do cenário em exibição (cascata, empate, veredito, fonte) — redesenhado a cada resposta. */
-  function bancadaResultadoHtml() {
+  // Card do Preço manual (selecionável); o campo do novo preço fica logo abaixo dele, fora da parte que é redesenhada.
+  function bancadaManualCardHtml() {
     var b = state.bancada;
+    var manualAtivo = String(b.selecionado) === "preco";
+    var vManual = b.manual.resultado ? veredictoChipHtml(b.manual.resultado.veredito) : "";
+    return '<button class="cm-banc__card cm-banc__card--manual' + (manualAtivo ? " is-active" : "") + '" type="button" role="radio" aria-checked="' + (manualAtivo ? "true" : "false") + '" data-cenario="preco">' +
+      '<span class="cm-banc__c-nome"><strong>Preço manual</strong><span class="cm-banc__c-meta"><span>digite um preço e compare com hoje</span></span></span>' +
+      '<span class="cm-banc__c-vered">' + vManual + "</span></button>";
+  }
+
+  function bancadaPromosHtml() {
+    var promos = bancadaPromos().filter(function (c) { return c.promocao; });
+    var html = "";
+    BANCADA_GRUPOS.forEach(function (g) {
+      var itens = promos.filter(function (c) { return (c.promocao.grupo || "ml") === g.chave; });
+      if (!itens.length) return;
+      html += '<section class="cm-banc__grupo" data-grupo="' + g.chave + '"><header class="cm-banc__grupo-cab"><span class="cm-banc__grupo-titulo">' + escapeHtml(g.titulo) + '</span><span class="cm-banc__grupo-dica">' + escapeHtml(g.dica) + "</span></header>" +
+        bancadaCabecalhoCards() + itens.map(promoCardHtml).join("") + "</section>";
+    });
+    return html;
+  }
+
+  /** Campo do novo preço (só no cenário Preço manual), logo sob o card — fora do que é redesenhado a cada resposta, para não perder foco nem cursor. */
+  function bancadaManualHtml(item) {
+    var b = state.bancada;
+    if (String(b.selecionado) !== "preco") return "";
+    return '<div class="cm-banc__manual" id="cm-banc-manual"><div class="cm-pp__row"><div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(money(shownPrice(item))) + "</strong></div>" +
+      '<label class="cm-pp__field"><span class="cm-pp__label">Novo preço</span><input class="vf-input vf-input--sm cm-pp__input" id="cm-new-price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeHtml(state.pricing.novoPreco) + '"></label>' +
+      bancadaPrecoAlvoHtml(item) + "</div></div>";
+  }
+
+  function bancadaSeletorHtml(item) {
+    return '<div class="cm-banc__cenarios" id="cm-banc-cenarios" role="radiogroup" aria-label="Cenário" data-cm-cenarios>' +
+      '<section class="cm-banc__grupo" data-grupo="manual"><div id="cm-banc-manual-card">' + bancadaManualCardHtml() + "</div>" + bancadaManualHtml(item) + "</section>" +
+      '<div id="cm-banc-promos">' + bancadaPromosHtml() + "</div></div>";
+  }
+
+  // --- Botão único, dinâmico -----------------------------------------------------
+
+  /**
+   * O que o botão faz para o cenário em exibição:
+   *   Preço manual ........................ "Revisar novo preço" (preview do preço)
+   *   promoção que a Central escreve ...... "Participar desta promoção" (preview da participação)
+   *   qualquer outra (Ativa, já participa,
+   *   Só pelo Mercado Livre) .............. "Abrir no Mercado Livre" (link externo, nada é escrito)
+   * Desabilitado se bloqueado (e, na participação, se o veredito é "Não entrar"); com hipótese de
+   * custo ativa também — a escrita usa os custos reais.
+   */
+  function bancadaBotaoSpec() {
+    var ex = bancadaEmExibicao();
     var sel = bancadaSelecionada();
-    var atual = bancadaAtual();
-    if (sel.tipo === "preco") {
-      var m = b.manual;
-      if (m.localError) return '<p class="cm-field-error" role="alert">' + escapeHtml(m.localError) + "</p>";
-      if (m.status === "loading") return '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Calculando no backend com a cotação real do Mercado Livre…</span></div>';
-      if (m.status === "error") return '<p class="cm-field-error" role="alert">' + escapeHtml(m.error || "Não foi possível simular.") + "</p>";
-      if (!m.resultado) return '<p class="cm-empty-note" data-cm-bancada="digite">Digite o novo preço para ver o cenário ao lado do atual.</p>';
-    }
     var r = sel.resultado;
-    return (sel.promo ? bancadaPromoInfoHtml(sel.promo) : "") + vereditoBancadaHtml(r) + cascataHtml(atual, r) + empateHtml(r) + evidenciaBancadaHtml(r);
+    var b = state.bancada;
+    var base = { kind: "preco", rotulo: "Revisar novo preço", href: null, disabled: true, title: "" };
+    if (sel.tipo === "preco") {
+      var pode = Boolean(r) && r.veredito !== "bloqueado" && bancadaDisponivel().ok && b.manual.status === "ok";
+      var motivo = !r ? "Digite um preço calculado." : r.veredito === "bloqueado" ? "Cenário bloqueado: " + motivoTexto(r.motivo) + "." : "";
+      if (pode && ex.hipotese) { pode = false; motivo = "Hipótese de custo: a escrita usa os custos reais da Base. Restaure os custos para revisar."; }
+      return Object.assign(base, { disabled: !pode, title: motivo });
+    }
+    var p = sel.promo.promocao || {};
+    var participar = p.grupo === "pode" && p.escrita && p.escrita.suportada && p.escrita.acao === "PARTICIPAR";
+    if (!participar) {
+      var url = bancadaData("ml_promos_url");
+      var motivoMl = p.escrita && p.escrita.motivo ? p.escrita.motivo : "A inscrição/alteração desta promoção é feita no painel do Mercado Livre.";
+      return { kind: "ml", rotulo: "Abrir no Mercado Livre", href: url, disabled: !url, title: url ? motivoMl : "Sem link do Mercado Livre para este anúncio." };
+    }
+    var vered = r ? r.veredito : null;
+    var liberado = (vered === "entrar" || vered === "entrar_se_girar") && bancadaDisponivel().ok;
+    var motivoPart = "";
+    if (!r || vered === "bloqueado") motivoPart = "Cenário bloqueado: " + motivoTexto(r && r.motivo) + ".";
+    else if (vered === "nao_entrar") motivoPart = "Veredito “Não entrar”: " + (motivoTexto(r.motivo) || "o cenário não compensa") + ".";
+    if (liberado && ex.hipotese) { liberado = false; motivoPart = "Hipótese de custo: a escrita usa os custos reais da Base. Restaure os custos para participar."; }
+    return { kind: "promocao", rotulo: "Participar desta promoção", href: null, disabled: !liberado, title: motivoPart };
+  }
+
+  function bancadaData(campo) {
+    var d = state.bancada && state.bancada.data;
+    return d && d.item ? d.item[campo] || null : null;
   }
 
   function bancadaBotaoHtml() {
-    var b = state.bancada;
-    var sel = bancadaSelecionada();
-    var r = sel.resultado;
-    var promo = sel.tipo === "promo";
-    var rotulo = promo ? "Revisar entrada na promoção" : "Revisar novo preço";
-    var pode = Boolean(r) && r.veredito !== "bloqueado" && bancadaDisponivel().ok && (promo || b.manual.status === "ok");
-    var motivo = !r ? "Escolha um cenário calculado." : r.veredito === "bloqueado" ? "Cenário bloqueado: " + motivoTexto(r.motivo) + "." : "";
-    return '<div class="cm-pp__actions"><button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-bancada-review" data-cm-review="' + (promo ? "PROMOTION" : "PRICE") + '"' + (pode ? "" : " disabled") +
-      (motivo ? ' title="' + escapeHtml(motivo) + '"' : "") + ">" + rotulo + "</button>" +
-      '<span class="cm-banc__nota">Abre o preview (relê o anúncio ao vivo e avalia os gates). A escrita no Mercado Livre depende da liberação do cliente — hoje desligada.</span></div>';
+    var spec = bancadaBotaoSpec();
+    var botao;
+    if (spec.kind === "ml") {
+      botao = spec.href && !spec.disabled
+        ? '<a class="vf-btn vf-btn--primary vf-btn--sm" id="cm-bancada-ml" data-cm-review="ML" href="' + escapeHtml(spec.href) + '" target="_blank" rel="noopener noreferrer" title="' + escapeHtml(spec.title) + '">' + spec.rotulo + " ↗</a>"
+        : '<button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-bancada-ml" data-cm-review="ML" disabled title="' + escapeHtml(spec.title) + '">' + spec.rotulo + "</button>";
+    } else {
+      botao = '<button class="vf-btn vf-btn--primary vf-btn--sm" type="button" id="cm-bancada-review" data-cm-review="' + (spec.kind === "promocao" ? "PROMOTION" : "PRICE") + '"' + (spec.disabled ? " disabled" : "") +
+        (spec.title ? ' title="' + escapeHtml(spec.title) + '"' : "") + ">" + spec.rotulo + "</button>";
+    }
+    var nota = spec.kind === "ml"
+      ? "A Central só escreve o que tem preview, fingerprint e auditoria; esta promoção é resolvida no painel do Mercado Livre."
+      : "Abre o preview: relê o anúncio ao vivo e avalia os gates. Nada vai ao Mercado Livre sem a sua confirmação — e só se a escrita estiver liberada para o cliente.";
+    return '<div class="cm-pp__actions">' + botao + '<span class="cm-banc__nota">' + escapeHtml(nota) + "</span></div>";
   }
 
   function bancadaHtml(item) {
@@ -3571,53 +3982,88 @@
     } else {
       var semPromos = b.data && b.data.promocoes && b.data.promocoes.disponivel === false
         ? '<p class="cm-prod-meta" data-cm-bancada="sem-promos">Promoções indisponíveis: ' + escapeHtml(motivoTexto(b.data.promocoes.motivo)) + ".</p>" : "";
-      var manual = b.selecionado === "preco"
-        ? '<div class="cm-pp__row"><div class="cm-pp__field"><span class="cm-pp__label">Preço atual</span><strong class="cm-pp__current">' + escapeHtml(money(shownPrice(item))) + "</strong></div>" +
-          '<label class="cm-pp__field"><span class="cm-pp__label">Novo preço</span><input class="vf-input vf-input--sm cm-pp__input" id="cm-new-price" inputmode="decimal" autocomplete="off" placeholder="0,00" value="' + escapeHtml(state.pricing.novoPreco) + '"></label>' +
-          bancadaPrecoAlvoHtml(item) + "</div>"
-        : "";
       var ap = state.pricing && state.pricing.aplicacao;
       var defasado = ap && (ap.status === "aplicado" || ap.status === "divergente") && ["atualizado", "nao_aplicavel"].indexOf(ap.snapshotStatus) === -1
-        ? '<p class="cm-banc__nota" data-cm-bancada="atual-defasado">A coluna Atual ainda é a de antes da alteração; ela é atualizada quando a margem for recalculada.</p>' : "";
-      corpo = defasado + bancadaSeletorHtml() + semPromos + manual + '<div class="cm-banc__resultado" id="cm-banc-resultado" aria-live="polite">' + bancadaResultadoHtml() + "</div>" + '<div id="cm-banc-botao">' + bancadaBotaoHtml() + "</div>";
+        ? '<p class="cm-banc__nota" data-cm-bancada="atual-defasado">A coluna Hoje ainda é a de antes da alteração; ela é atualizada quando a margem for recalculada.</p>' : "";
+      var avisoPromo = b.aviso ? '<p class="cm-banc__nota" role="status" data-cm-bancada="promo-nao-encontrada">' + escapeHtml(b.aviso) + "</p>" : "";
+      corpo = defasado + avisoPromo +
+        '<div class="cm-banc__grid">' +
+          '<div class="cm-banc__esq"><h4 class="cm-banc__sub">Hoje × Cenário</h4><div class="cm-banc__resultado" id="cm-banc-resultado" aria-live="polite">' + bancadaResultadoHtml() + "</div></div>" +
+          '<div class="cm-banc__dir"><h4 class="cm-banc__sub">Cenários</h4>' + semPromos + bancadaSeletorHtml(item) + "</div>" +
+        "</div>" +
+        '<div id="cm-banc-botao">' + bancadaBotaoHtml() + "</div>";
     }
-    return '<section class="cm-banc" aria-labelledby="cm-banc-title" data-cm-bancada-status="' + escapeHtml(b.status) + '"><header class="cm-pp__head"><h3 id="cm-banc-title">Bancada</h3><span>atual × cenário · cálculo do Motor</span></header>' + corpo + "</section>";
+    return '<section class="cm-banc" aria-labelledby="cm-banc-title" data-cm-bancada-status="' + escapeHtml(b.status) + '"><header class="cm-pp__head"><h3 id="cm-banc-title">Bancada</h3><span>hoje × cenário · cálculo do Motor</span></header>' + corpo + "</section>";
   }
 
   function bindCenarios() {
     Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-cenario]"), function (botao) {
       botao.addEventListener("click", function () {
-        state.bancada.selecionado = botao.getAttribute("data-cenario");
+        if (botao.disabled) return;
+        var novo = botao.getAttribute("data-cenario");
+        if (String(state.bancada.selecionado) !== String(novo)) limparHipotese();
+        state.bancada.selecionado = novo;
         renderDrawer();
       });
     });
   }
 
-  /** Redesenha só o resultado e o botão (o input não perde foco nem cursor); `comSeletor` também os chips de veredito. */
+  function bindHipotese() {
+    Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-hip]"), function (campo) {
+      campo.addEventListener("input", function () {
+        var nome = campo.getAttribute("data-hip");
+        state.bancada.hip[nome] = campo.value.trim();
+        state.bancada.hip.edit[nome] = true;
+        simularHipotese();
+      });
+    });
+    var reset = el("cm-hip-reset");
+    if (reset) reset.addEventListener("click", function () { limparHipotese(); updateBancadaResultado(); });
+  }
+
+  /** Preserva o foco e o cursor de um campo de hipótese enquanto a coluna é redesenhada. */
+  function preservandoFoco(fn) {
+    var ativo = document.activeElement;
+    var campo = ativo && ativo.getAttribute ? ativo.getAttribute("data-hip") : null;
+    var ini = campo && typeof ativo.selectionStart === "number" ? ativo.selectionStart : null;
+    var fim = campo && typeof ativo.selectionEnd === "number" ? ativo.selectionEnd : null;
+    fn();
+    if (!campo) return;
+    var novo = refs.drawerBody.querySelector('[data-hip="' + campo + '"]');
+    if (!novo) return;
+    novo.focus();
+    if (ini !== null) { try { novo.setSelectionRange(ini, fim); } catch (_) { /* tipo sem seleção */ } }
+  }
+
+  /** Redesenha só o resultado e o botão (o input não perde foco nem cursor); `comSeletor` também os cards de cenário. */
   function updateBancadaResultado(comSeletor) {
     if (state.drawerTab !== "pricing") return;
     var host = el("cm-banc-resultado");
     if (!host) { renderBancada(); return; }
-    if (comSeletor === true) {
-      var seletor = el("cm-banc-cenarios");
-      if (seletor) {
-        seletor.outerHTML = bancadaSeletorHtml();
+    preservandoFoco(function () {
+      if (comSeletor === true) {
+        // Só o card do preço manual e a lista de promoções: o campo do novo preço não é tocado.
+        var cartao = el("cm-banc-manual-card");
+        var promos = el("cm-banc-promos");
+        if (cartao) cartao.innerHTML = bancadaManualCardHtml();
+        if (promos) promos.innerHTML = bancadaPromosHtml();
         bindCenarios();
       }
-    }
-    host.innerHTML = bancadaResultadoHtml();
-    var botao = el("cm-banc-botao");
-    if (botao) {
-      botao.innerHTML = bancadaBotaoHtml();
-      var review = el("cm-bancada-review");
-      if (review) review.addEventListener("click", reviewDaBancada);
-    }
+      host.innerHTML = bancadaResultadoHtml();
+      bindHipotese();
+      var botao = el("cm-banc-botao");
+      if (botao) {
+        botao.innerHTML = bancadaBotaoHtml();
+        var review = el("cm-bancada-review");
+        if (review) review.addEventListener("click", reviewDaBancada);
+      }
+    });
   }
 
   function reviewDaBancada() {
+    var spec = bancadaBotaoSpec();
+    if (spec.disabled || spec.kind === "ml") return;
     var sel = bancadaSelecionada();
-    var r = sel.resultado;
-    if (!r || r.veredito === "bloqueado") return;
     if (sel.tipo === "promo") {
       var p = sel.promo.promocao;
       reviewPricing("PROMOTION", { id: p.id, nome: p.nome, tipo: p.tipo }, null);
@@ -3671,12 +4117,14 @@
     Array.prototype.forEach.call(refs.drawerBody.querySelectorAll("[data-price-chip]"), function (chip) {
       chip.addEventListener("click", function () {
         state.pricing.novoPreco = Number(chip.getAttribute("data-price-chip")).toFixed(2).replace(".", ",");
+        if (String(state.bancada.selecionado) !== "preco") limparHipotese();
         state.bancada.selecionado = "preco";
         simularManual(0);
         renderDrawer();
       });
     });
     bindCenarios();
+    bindHipotese();
     var review = el("cm-bancada-review");
     if (review) review.addEventListener("click", reviewDaBancada);
     var retry = el("cm-bancada-retry");
@@ -3819,7 +4267,7 @@
       (c.kind === "PROMOTION" && promo
         ? confirmRow("Desconto total", escapeHtml(formatMoney(promo.descontoReais) || "—")) +
           confirmRow("ML banca", escapeHtml(formatMoney(promo.mlBanca) || "R$ 0,00")) +
-          confirmRow("Seller banca", escapeHtml(formatMoney(promo.sellerBanca) || "—"))
+          confirmRow("Seller banca", escapeHtml(formatMoney(promo.sellerBanca) || "—") + bancaAvisoHtml({ banca_aviso: promo.bancaAviso, banca_motivo: promo.bancaMotivo }))
         : "") +
       confirmRow("Margem", arrow(a.margem, p.margem, formatPercent)) +
       confirmRow("LC / un.", arrow(a.lucro, p.lucro, formatMoney)) +
@@ -3832,6 +4280,7 @@
     var apl = c.result && c.result.aplicacao;
     if (c.status === "applying") status = '<div class="vf-loading-state" role="status"><span class="vf-spinner" aria-hidden="true"></span><span>Aplicando no Mercado Livre… não feche esta janela.</span></div>';
     else if (c.status === "done" && !(apl && apl.status === "divergente")) status = '<div class="vf-banner is-success" role="status" data-cm-apply-result="aplicado"><div class="vf-banner__content"><p class="vf-banner__title">Aplicado no Mercado Livre</p><p class="vf-banner__description">Preço confirmado pelo Mercado Livre: <strong>' + escapeHtml(formatMoney(c.result.aplicacao.precoConfirmado) || "—") + "</strong>. A margem está sendo recalculada.</p></div></div>";
+    else if (c.status === "failed" && apl && apl.status === "resultado_desconhecido") status = resultadoDesconhecidoHtml(c, apl);
     else if (c.status === "failed") status = '<div class="vf-banner is-danger" role="alert" data-cm-apply-result="' + escapeHtml(c.result && c.result.aplicacao ? c.result.aplicacao.status : "erro") + '"><div class="vf-banner__content"><p class="vf-banner__title">' + escapeHtml(c.result && c.result.aplicacao && c.result.aplicacao.status === "recusado" ? "Alteração recusada — nada foi alterado" : "A alteração não foi confirmada") + '</p><p class="vf-banner__description">' + escapeHtml(c.error || "") + (c.retryable ? " Você pode tentar de novo com segurança (mesma chave, sem escrita dupla)." : " Gere um novo preview para tentar de novo.") + "</p></div></div>";
     refs.confirmBody.innerHTML =
       '<div class="cm-confirm__who"><strong>' + escapeHtml(pv.item && pv.item.titulo || (item && item.title) || "Produto") + "</strong>" +
@@ -3846,7 +4295,56 @@
     var podeAplicar = c.status === "ready" && !pv.bloqueado && escrita.habilitada && pv.preview && pv.preview.id && pv.preview.fingerprint;
     var podeRetentar = c.status === "failed" && c.retryable;
     refs.confirmApply.disabled = !(podeAplicar || podeRetentar);
-    refs.confirmApply.textContent = podeRetentar ? "Tentar de novo" : c.status === "done" ? "Aplicado" : "Confirmar alteração no Mercado Livre";
+    var promocao = c.kind === "PROMOTION";
+    // Escrita desligada: o preview abre completo, mas o botão final diz por que não confirma (nunca simula sucesso).
+    var desligada = promocao && !escrita.habilitada && c.status !== "done";
+    refs.confirmApply.textContent = podeRetentar ? "Tentar de novo"
+      : c.status === "done" ? (promocao ? "Participação confirmada" : "Aplicado")
+        : desligada ? "Escrita desligada — piloto não liberado"
+          : promocao ? "Confirmar participação no Mercado Livre" : "Confirmar alteração no Mercado Livre";
+  }
+
+  // Timeout/falha depois do envio: o Mercado Livre pode ter aplicado. Nada é repetido sozinho e o botão final
+  // não volta: o operador relê a aplicação (reconciliação no servidor) e confere o anúncio antes de qualquer nova tentativa.
+  function resultadoDesconhecidoHtml(c, apl) {
+    var rel = c.releitura;
+    var estado = rel && rel.erro
+      ? '<span class="cm-field-error" role="alert">' + escapeHtml(rel.erro) + "</span>"
+      : rel && rel.aplicacao
+        ? "Estado relido: <strong>" + escapeHtml(rel.aplicacao.status || "—") + "</strong>" + (rel.aplicacao.execucao ? " (" + escapeHtml(rel.aplicacao.execucao) + ")" : "") + (rel.em ? " às " + escapeHtml(formatShortDateTime(rel.em)) : "") + "."
+        : "";
+    return '<div class="vf-banner is-danger" role="alert" data-cm-apply-result="resultado_desconhecido"><div class="vf-banner__content">' +
+      '<p class="vf-banner__title">Resultado desconhecido — confira o anúncio antes de qualquer nova tentativa</p>' +
+      '<p class="vf-banner__description">O Mercado Livre não confirmou a ' + (c.kind === "PROMOTION" ? "participação" : "alteração") + ' a tempo: ela <strong>pode ter sido aplicada</strong>. A Central não repete sozinha. ' +
+      escapeHtml(c.error || "") + " " + estado + "</p>" +
+      '<p><button class="vf-btn vf-btn--secondary vf-btn--sm" type="button" id="cm-confirm-reler" data-cm-reler' + (c.relendo ? " disabled" : "") + ">" + (c.relendo ? "Relendo…" : "Reler aplicação e anúncio") + "</button></p></div></div>";
+  }
+
+  function relerAplicacao() {
+    var c = state.confirm;
+    var apl = c && c.result && c.result.aplicacao;
+    if (!c || !apl || c.relendo || typeof api.getPricingApplication !== "function") return;
+    c.relendo = true;
+    renderConfirm();
+    var seq = state.drawerSeq;
+    api.getPricingApplication({ clientSlug: state.client.slug, clienteContaId: state.contaId, id: apl.id }).then(function (result) {
+      if (state.confirm !== c) return;
+      c.relendo = false;
+      if (result.ok && result.aplicacao) {
+        c.releitura = { aplicacao: result.aplicacao, em: new Date().toISOString() };
+        c.result.aplicacao = result.aplicacao;
+        // Se a releitura mostra que de fato aplicou (reconciliado), o estado segue o servidor.
+        if (result.aplicacao.status === "aplicado" || result.aplicacao.status === "divergente") {
+          c.status = "done";
+          if (seq === state.drawerSeq && state.pricing) { state.pricing.aplicacao = result.aplicacao; if (result.aplicacao.snapshotStatus !== "nao_aplicavel") trackPostWrite(result.aplicacao.id, seq); }
+        }
+      } else {
+        c.releitura = { erro: result.error || "Não foi possível reler agora." };
+      }
+      // O anúncio também é relido (a coluna Hoje volta do Mercado Livre/snapshot, nunca do que foi enviado).
+      if (seq === state.drawerSeq) recarregarBancada();
+      renderConfirm();
+    });
   }
 
   var ATENCAO_TEXTO = {
@@ -3914,6 +4412,7 @@
           // O cenário era do preço anterior: depois da escrita a bancada recomeça do preço novo.
           state.pricing.novoPreco = "";
           state.bancada.manual = novaBancada().manual;
+          limparHipotese();
           state.bancada.selecionado = "preco";
           if (c.kind === "PRICE" && aplicacao.precoConfirmado !== null && aplicacao.precoConfirmado !== undefined) {
             state.pricing.precoTabela = null;
@@ -4309,6 +4808,7 @@
     setDrawerTab: setDrawerTab,
     applyPreset: applyPreset,
     reload: loadCentral,
+    atualizadoTexto: atualizadoTexto,
   };
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);

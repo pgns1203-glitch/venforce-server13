@@ -22,7 +22,8 @@ const META = { margem_alvo: 0.1, margem_minima: 0 };
 function promo(extra = {}) {
   return calcularCenario({
     atual: ATUAL,
-    cenario: { tipo: "promo", preco: 89.77, rebate: 3.3, status_promocao: "candidate" },
+    // Item sem promoção ativa: o preço atual (94,90) é o preço cheio.
+    cenario: { tipo: "promo", preco: 89.77, rebate: 3.3, status_promocao: "candidate", preco_cheio: 94.9, preco_cheio_fonte: "margin_snapshot" },
     cotacao: COTACAO_89_77,
     meta: META,
     ...extra,
@@ -35,9 +36,14 @@ cenario("94,90 → 89,77 com retorno de 3,30: ΔLC negativo, entrar_se_girar, em
   assert.strictEqual(r.motivo, "lc_por_unidade_cai");
   assert.ok(r.delta_lc < 0, `ΔLC deveria ser negativo, veio ${r.delta_lc}`);
   assert.ok(r.empate_volume > 0.017 && r.empate_volume < 0.019, `empate ≈ +1,8%, veio ${r.empate_volume}`);
-  assert.strictEqual(r.desconto, 5.13);
+  assert.strictEqual(r.preco_cheio, 94.9);
+  assert.strictEqual(r.preco_cheio_fonte, "margin_snapshot");
+  assert.strictEqual(r.desconto_total, 5.13);
+  assert.strictEqual(r.delta_preco_atual, 5.13, "sem promoção ativa, cheio = atual: os dois descontos coincidem");
   assert.strictEqual(r.ml_banca, 3.3);
   assert.strictEqual(r.seller_banca, 1.83);
+  assert.strictEqual(r.banca_motivo, null);
+  assert.strictEqual(r.banca_aviso, null);
   assert.strictEqual(r.flags.mudou_faixa_frete, false);
 });
 
@@ -171,7 +177,7 @@ cenario("promoção já ativa (started/active): flag ativa e bloqueado — não 
 cenario("subir o preço (cenário `preco`) é legítimo: não vira sem_desconto_efetivo", () => {
   const r = calcularCenario({
     atual: ATUAL,
-    cenario: { tipo: "preco", preco: 99.9 },
+    cenario: { tipo: "preco", preco: 99.9, preco_cheio: 94.9 },
     cotacao: { comissao: 13.99, frete: 10 },
     meta: META,
   });
@@ -179,8 +185,94 @@ cenario("subir o preço (cenário `preco`) é legítimo: não vira sem_desconto_
   assert.ok(r.delta_lc > 0);
   assert.strictEqual(r.veredito, VEREDITOS.ENTRAR);
   assert.ok(r.empate_volume < 0);
-  assert.strictEqual(r.desconto, -5);
+  assert.strictEqual(r.desconto_total, -5);
+  assert.strictEqual(r.delta_preco_atual, -5);
+  // Subir acima do cheio não é "seller banca": o número sai COM o aviso, nunca sem explicação.
   assert.strictEqual(r.seller_banca, -5);
+  assert.strictEqual(r.banca_aviso, "preco_acima_do_cheio");
+});
+
+// ─── Quem banca: sempre sobre o PREÇO CHEIO, nunca sobre o preço atual (já promocional) ───
+
+// Caso real: preço atual 112,42 (já com uma promoção ativa), nova promoção a 110,25 com
+// retorno ML de 6,62 e preço cheio 141,90. O desconto de verdade é 31,65 sobre o cheio.
+const ATUAL_EM_PROMO = { preco: 112.42, custo: 40, aliquota: 0.06, taxa_fixa: 0, comissao: 15.74, frete: 18.9, rebate: 0 };
+function promoSobreCheio(extra = {}) {
+  return calcularCenario({
+    atual: ATUAL_EM_PROMO,
+    cenario: { tipo: "promo", preco: 110.25, rebate: 6.62, status_promocao: "candidate", preco_cheio: 141.9, preco_cheio_fonte: "margin_snapshot", ...extra },
+    cotacao: { comissao: 15.44, frete: 18.9 },
+    meta: META,
+  });
+}
+
+cenario("quem banca: 112,42 atual · P' 110,25 · retorno 6,62 · cheio 141,90 → seller banca ≥ 0 e coerente com o desconto sobre o cheio", () => {
+  const r = promoSobreCheio();
+  assert.strictEqual(r.preco_cheio, 141.9);
+  assert.strictEqual(r.desconto_total, 31.65);
+  assert.strictEqual(r.ml_banca, 6.62);
+  assert.strictEqual(r.seller_banca, 25.03);
+  assert.ok(r.seller_banca >= 0);
+  assert.strictEqual(r.desconto_total, Math.round((r.ml_banca + r.seller_banca) * 100) / 100, "desconto_total = ML banca + seller banca");
+  assert.strictEqual(r.desconto_ratio, Math.round((31.65 / 141.9) * 1e6) / 1e6);
+  assert.strictEqual(r.banca_aviso, null);
+  assert.strictEqual(r.banca_motivo, null);
+});
+
+cenario("quem banca: a queda contra o preço ATUAL é um campo à parte (delta_preco_atual) e não entra na banca", () => {
+  const r = promoSobreCheio();
+  assert.strictEqual(r.delta_preco_atual, 2.17, "112,42 − 110,25");
+  // Com a fórmula antiga (desconto = atual − P' = 2,17) o seller banca daria 2,17 − 6,62 = −4,45.
+  assert.notStrictEqual(r.seller_banca, -4.45);
+});
+
+cenario("quem banca: preço cheio ausente → seller banca e desconto null + motivo sem_preco_cheio (nunca cai no preço atual)", () => {
+  const r = promoSobreCheio({ preco_cheio: undefined, preco_cheio_fonte: undefined });
+  assert.strictEqual(r.preco_cheio, null);
+  assert.strictEqual(r.seller_banca, null);
+  assert.strictEqual(r.desconto_total, null);
+  assert.strictEqual(r.desconto_ratio, null);
+  assert.strictEqual(r.banca_motivo, "sem_preco_cheio");
+  assert.strictEqual(r.ml_banca, 6.62, "o retorno ML não depende do cheio");
+  assert.strictEqual(r.delta_preco_atual, 2.17);
+  assert.notStrictEqual(r.veredito, VEREDITOS.BLOQUEADO, "o LC não depende do preço cheio: o veredito segue");
+  assert.ok(!r.motivos.includes("sem_preco_cheio"), "não é bloqueio");
+});
+
+cenario("quem banca: preço cheio 0 ou negativo é tratado como ausente", () => {
+  for (const cheio of [0, -10, null, "abc"]) {
+    const r = promoSobreCheio({ preco_cheio: cheio });
+    assert.strictEqual(r.seller_banca, null, String(cheio));
+    assert.strictEqual(r.banca_motivo, "sem_preco_cheio", String(cheio));
+  }
+});
+
+cenario("quem banca: retorno ML maior que o desconto sobre o cheio sai COM aviso (negativo nunca é silencioso)", () => {
+  const r = promoSobreCheio({ preco_cheio: 114, rebate: 6.62 });
+  assert.strictEqual(r.desconto_total, 3.75);
+  assert.strictEqual(r.seller_banca, -2.87);
+  assert.strictEqual(r.banca_aviso, "retorno_maior_que_desconto");
+});
+
+cenario("quem banca: todo seller banca negativo carrega aviso; todo não negativo, não", () => {
+  for (const cheio of [105, 110.25, 112.42, 120, 141.9, 200]) {
+    for (const rebate of [0, 3, 6.62, 40]) {
+      const r = promoSobreCheio({ preco_cheio: cheio, rebate });
+      if (r.seller_banca !== null && r.seller_banca < 0) assert.ok(r.banca_aviso, `cheio ${cheio} · retorno ${rebate}: banca negativa sem aviso`);
+      else assert.strictEqual(r.banca_aviso, null, `cheio ${cheio} · retorno ${rebate}`);
+    }
+  }
+});
+
+cenario("quem banca: bloqueado de verdade (cotação ausente) mantém a banca calculável e o motivo do bloqueio", () => {
+  const r = calcularCenario({
+    atual: ATUAL_EM_PROMO,
+    cenario: { tipo: "promo", preco: 110.25, rebate: 6.62, status_promocao: "candidate", preco_cheio: 141.9 },
+    cotacao: {},
+    meta: META,
+  });
+  assert.strictEqual(r.veredito, VEREDITOS.BLOQUEADO);
+  assert.strictEqual(r.seller_banca, 25.03, "a banca só depende de cheio, P' e retorno");
 });
 
 cenario("preço igual ao atual no cenário `preco`: bloqueado, sem inventar variação", () => {

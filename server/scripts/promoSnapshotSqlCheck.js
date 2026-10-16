@@ -51,7 +51,7 @@ const BASE_DDL = `
     id SERIAL PRIMARY KEY, cliente_conta_id INTEGER, marketplace TEXT, item_id TEXT, titulo TEXT, image_url TEXT,
     price NUMERIC, cost NUMERIC, tax_rate NUMERIC, fixed_fee NUMERIC, commission_rate NUMERIC, freight NUMERIC,
     margin NUMERIC, commission NUMERIC, profit NUMERIC, catalog_missing_since TIMESTAMPTZ,
-    quality_json JSONB, calculated_at TIMESTAMPTZ);
+    quality_json JSONB, calculated_at TIMESTAMPTZ, list_price NUMERIC);
   CREATE TABLE meli_anuncios (cliente_id INTEGER NOT NULL, item_id TEXT NOT NULL, logistic_type TEXT, UNIQUE (cliente_id, item_id));
   INSERT INTO clientes (id, slug, nome) VALUES (3, 'loja-a', 'Loja A'), (4, 'loja-b', 'Loja B');
   INSERT INTO cliente_contas (id, cliente_id, marketplace, external_account_id) VALUES (7, 3, 'meli', '555'), (8, 3, 'meli', '666'), (9, 4, 'meli', '777');
@@ -274,10 +274,12 @@ async function montarCatalogoOportunidades(db, pg, n) {
     await repo.registrarLote({ run: claimed, seq, itemIds: ids, linhas }, db);
   }
   await repo.finalizarRun({ runId: run.id, status: "completed", promover: true, freshMinutes: 360 }, db);
-  await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, commission, freight, margin, quality_json)
+  // list_price (preço cheio do item): em parte dos anúncios; o resto fica null (a fonte secundária é o original_price da promoção).
+  await pg.query(`INSERT INTO margin_projection_snapshots (cliente_conta_id, marketplace, item_id, titulo, price, cost, tax_rate, fixed_fee, commission_rate, commission, freight, margin, quality_json, list_price)
                   SELECT 7, 'meli', 'MLB' || g, 'T' || g, 100, 30 + (g % 40), CASE WHEN g % 29 = 0 THEN NULL ELSE 0.08 + (g % 5) / 100.0 END,
                          g % 3, 0.12 + (g % 4) / 100.0, ROUND(100 * (0.12 + (g % 4) / 100.0), 2), CASE WHEN g % 11 = 0 THEN NULL ELSE 8 + g % 9 END, 0.2,
-                         CASE WHEN g % 6 = 0 THEN '{"targetMargin": 0.15}'::jsonb ELSE '{}'::jsonb END
+                         CASE WHEN g % 6 = 0 THEN '{"targetMargin": 0.15}'::jsonb ELSE '{}'::jsonb END,
+                         CASE WHEN g % 3 = 0 THEN 120.50 ELSE NULL END
                     FROM generate_series(1, $1::int) g`, [n]);
   // Cadastro de anúncios: logística combinável em parte; o MESMO MLB de outro cliente nunca entra no join.
   await pg.query(`INSERT INTO meli_anuncios (cliente_id, item_id, logistic_type)
@@ -299,7 +301,7 @@ check("Oportunidades (SQL real): 5.000 anúncios → UMA consulta de ELEGÍVEIS 
   // Referência JS: todas as promoções disponíveis + snapshots + cadastro de anúncios do cliente 3.
   const todas = await pg.query(
     `SELECT p.item_id, p.promocao_chave AS chave, p.preco_final AS preco_promo, p.subsidio_ml AS retorno, p.herdado AS promo_herdado,
-            p.status AS promo_status
+            p.status AS promo_status, p.preco_original AS promo_preco_original
        FROM promo_snapshot_itens p
       WHERE p.run_id = $1 AND p.preco_final > 0 AND p.status IN ('candidate','started','active','pending')`, [runId]);
   const snaps = await pg.query(`SELECT * FROM margin_projection_snapshots WHERE cliente_conta_id = 7`);
@@ -310,7 +312,7 @@ check("Oportunidades (SQL real): 5.000 anúncios → UMA consulta de ELEGÍVEIS 
   assert.ok(ref.rows.length > 2000 && ref.rows.length < todas.rows.length, `elegíveis de referência plausíveis (${ref.rows.length} de ${todas.rows.length})`);
 
   const sqlRes = await repo.listarOportunidadesElegiveis({ clienteId: 3, clienteContaId: 7, sellerId: "555", runId }, db);
-  const chave = (r) => `${r.item_id}|${r.chave}|${Number(r.preco_promo)}|${r.anuncio_logistic_type}|${r.snap_target_margin}`;
+  const chave = (r) => `${r.item_id}|${r.chave}|${Number(r.preco_promo)}|${r.anuncio_logistic_type}|${r.snap_target_margin}|${r.snap_list_price === null ? null : Number(r.snap_list_price)}|${r.promo_preco_original === null ? null : Number(r.promo_preco_original)}`;
   assert.deepStrictEqual(sqlRes.rows.map(chave).sort(), ref.rows.map(chave).sort(), "mesma seleção que a referência (a ordem do banco não importa: o serviço ordena)");
   assert.strictEqual(new Set(sqlRes.rows.map((r) => `${r.item_id}|${r.chave}`)).size, sqlRes.rows.length, "o join com meli_anuncios não duplica linhas");
   assert.ok(
@@ -321,6 +323,7 @@ check("Oportunidades (SQL real): 5.000 anúncios → UMA consulta de ELEGÍVEIS 
   assert.ok(sqlRes.rows.some((r) => r.anuncio_logistic_type === "custom") && sqlRes.rows.some((r) => r.anuncio_logistic_type === null), "logística vem do cadastro do cliente; sem cadastro = null");
   assert.ok(sqlRes.rows.every((r) => r.anuncio_logistic_type !== "not_specified"), "o anúncio de OUTRO cliente nunca entra no join");
   assert.ok(sqlRes.rows.some((r) => r.snap_target_margin === "0.15"), "meta de margem do snapshot acompanha a linha");
+  assert.ok(sqlRes.rows.some((r) => Number(r.snap_list_price) === 120.5) && sqlRes.rows.some((r) => r.snap_list_price === null), "preço cheio do item (list_price) acompanha a linha; ausente = null");
 
   // O serviço sobre o banco real == sobre a referência: mesmo ranking, mesmos vereditos, mesmas páginas.
   const baseDeps = {

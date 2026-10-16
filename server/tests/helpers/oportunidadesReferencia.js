@@ -34,6 +34,7 @@ function elegiveisReferencia({ promos, snapPorItem, anuncioPorItem = new Map() }
       freight: snap.freight, margin: snap.margin, snap_commission: snap.commission, snap_profit: snap.profit,
       snap_target_margin: meta === undefined || meta === null ? null : String(meta),
       snap_calculated_at: snap.calculated_at || null,
+      snap_list_price: snap.list_price === undefined ? null : snap.list_price,
       anuncio_logistic_type: anuncio ? anuncio.logistic_type ?? null : null,
     });
   }

@@ -147,6 +147,114 @@ cenario("94,90 → 89,77 com retorno 3,30: ΔLC negativo, entrar_se_girar, empat
   assert.strictEqual(r.atual.lc, LINHA_BASE.profit);
 });
 
+// ── Quem banca: sobre o preço CHEIO do item, não sobre o preço atual (já promocional) ──
+
+cenario("quem banca: preço atual 112,42 já em promoção, cheio 141,90 (do item): desconto 31,65 sobre o cheio, ML 6,62, seller 25,03; Δ vs hoje 2,17 à parte", async () => {
+  const linha = { ...LINHA_BASE, price: 112.42, listPrice: 141.9, commission: 15.74, freight: 18.9, cost: 40 };
+  const w = mundo({ linhaBase: linha, promocoes: [promoLinha("P1", { precoFinal: 110.25, subsidioMl: 6.62, precoOriginal: 141.9 })] });
+  const r = await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]));
+  const c = r.cenarios[0];
+  assert.strictEqual(c.preco_cheio, 141.9);
+  assert.strictEqual(c.preco_cheio_fonte, "margin_snapshot");
+  assert.strictEqual(c.desconto_total, 31.65);
+  assert.strictEqual(c.ml_banca, 6.62);
+  assert.strictEqual(c.seller_banca, 25.03);
+  assert.strictEqual(c.delta_preco_atual, 2.17);
+  assert.strictEqual(c.banca_aviso, null);
+  assert.deepStrictEqual(c.evidencia.preco_cheio, { fonte: "margin_snapshot", calculado_em: "2026-10-13T06:00:00.000Z" });
+});
+
+cenario("quem banca: o cheio do ITEM tem prioridade sobre o original_price da promoção (a fonte é dita)", async () => {
+  const w = mundo({ linhaBase: { ...LINHA_BASE, listPrice: 100 }, promocoes: [promoLinha("P1", { precoOriginal: 94.9 })] });
+  const c = (await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]))).cenarios[0];
+  assert.strictEqual(c.preco_cheio, 100);
+  assert.strictEqual(c.preco_cheio_fonte, "margin_snapshot");
+  assert.strictEqual(c.desconto_total, 10.23);
+});
+
+cenario("quem banca: sem cheio no item, usa o original_price da promoção — declarado como promo_snapshot", async () => {
+  const w = mundo({ promocoes: [promoLinha("P1", { precoOriginal: 94.9 })] });
+  const c = (await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]))).cenarios[0];
+  assert.strictEqual(c.preco_cheio_fonte, "promo_snapshot");
+  assert.strictEqual(c.seller_banca, 1.83);
+  assert.strictEqual(c.evidencia.preco_cheio.fonte, "promo_snapshot");
+});
+
+cenario("quem banca: sem cheio em lugar nenhum ⇒ seller banca null + sem_preco_cheio (o veredito continua)", async () => {
+  const w = mundo({ promocoes: [promoLinha("P1", { precoOriginal: null })] });
+  const c = (await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]))).cenarios[0];
+  assert.strictEqual(c.preco_cheio, null);
+  assert.strictEqual(c.seller_banca, null);
+  assert.strictEqual(c.desconto_total, null);
+  assert.strictEqual(c.banca_motivo, "sem_preco_cheio");
+  assert.strictEqual(c.ml_banca, 3.3);
+  assert.strictEqual(c.veredito, "entrar_se_girar");
+  assert.deepStrictEqual(c.evidencia.preco_cheio, { fonte: null, motivo: "sem_preco_cheio" });
+});
+
+cenario("quem banca: cenário `preco` manual também usa o cheio do item (sem retorno ML: o seller banca todo o desconto)", async () => {
+  const w = mundo({ linhaBase: { ...LINHA_BASE, listPrice: 100 } });
+  const c = (await rodar(w, pedido([{ tipo: "preco", preco: 90 }]))).cenarios[0];
+  assert.strictEqual(c.desconto_total, 10);
+  assert.strictEqual(c.ml_banca, 0);
+  assert.strictEqual(c.seller_banca, 10);
+  assert.strictEqual(c.delta_preco_atual, 4.9);
+});
+
+// ── Grupo, escrita suportada, link do ML e hipótese de custo (Bancada) ──
+
+cenario("cada promoção sai com o GRUPO (ativa · participa · pode · ml) e a escrita suportada pela Central", async () => {
+  const promocoes = [
+    promoLinha("P-ATIVA", { tipo: "DEAL", status: "started", statusExibicao: "ATIVA", precoFinal: 89.77 }),
+    promoLinha("P-NAOAPL", { tipo: "DEAL", status: "started", statusExibicao: "NÃO APLICADA", precoFinal: 85 }),
+    promoLinha("P-PROG", { tipo: "SELLER_CAMPAIGN", status: "pending", statusExibicao: "PROGRAMADA", precoFinal: 84 }),
+    promoLinha("P-DEAL", { tipo: "DEAL", status: "candidate", statusExibicao: "ELEGÍVEL", precoFinal: 88 }),
+    promoLinha("P-SELLER", { tipo: "SELLER_CAMPAIGN", status: "candidate", statusExibicao: "ELEGÍVEL", precoFinal: 87 }),
+    promoLinha("P-SMART", { tipo: "SMART", status: "candidate", statusExibicao: "ELEGÍVEL", precoFinal: 86 }),
+    promoLinha("P-LGH", { tipo: "LIGHTNING", status: "candidate", statusExibicao: "ELEGÍVEL", precoFinal: 83 }),
+  ];
+  const r = await rodar(mundo({ promocoes }), pedido([{ tipo: "todas_promos" }]));
+  const por = Object.fromEntries(r.cenarios.map((c) => [c.promocao.id, c.promocao]));
+  assert.deepStrictEqual(Object.fromEntries(Object.entries(por).map(([id, p]) => [id, p.grupo])), {
+    "P-ATIVA": "ativa", "P-NAOAPL": "participa", "P-PROG": "participa", "P-DEAL": "pode", "P-SELLER": "pode", "P-SMART": "ml", "P-LGH": "ml",
+  });
+  assert.deepStrictEqual(por["P-DEAL"].escrita, { suportada: true, acao: "PARTICIPAR", motivo: null });
+  assert.strictEqual(por["P-SMART"].escrita.suportada, false, "SMART: o ML define o preço — a Central só simula");
+  assert.ok(/Somente simulação/.test(por["P-SMART"].escrita.motivo));
+  assert.strictEqual(por["P-ATIVA"].escrita.acao, "ALTERAR");
+  assert.strictEqual(por["P-PROG"].escrita.suportada, false);
+  assert.strictEqual(r.item.ml_promos_url, "https://www.mercadolivre.com.br/anuncios/lista/promos?page=1&search=100");
+});
+
+cenario("hipótese de custo: o cenário usa o custo informado, o `atual` segue real; vem marcado como hipótese", async () => {
+  const w = mundo();
+  const real = (await rodar(w, pedido([{ tipo: "promo", promotion_id: "P1" }]))).cenarios[0];
+  const r = await rodar(mundo(), pedido([{ tipo: "promo", promotion_id: "P1", hipotese: { custo: 30, taxa_fixa: 2 } }]));
+  const c = r.cenarios[0];
+  assert.strictEqual(c.cenario.custo, 30);
+  assert.strictEqual(c.cenario.taxa_fixa, 2);
+  assert.strictEqual(r.atual.custo, 21.35, "Hoje continua com o custo real da Base");
+  const esperado = core.computeMargin({ price: 89.77, cost: 30, taxRate: 0.06, fixedFee: 2, commission: 12.57, freight: 10, rebate: 3.3 });
+  assert.strictEqual(c.cenario.lc, esperado.profit);
+  assert.ok(c.cenario.lc < real.cenario.lc);
+  assert.deepStrictEqual(c.entrada.hipotese, { custo: 30, taxa_fixa: 2 });
+  assert.strictEqual(c.evidencia.hipotese, true);
+  assert.deepStrictEqual(c.evidencia.custo, { fonte: "hipotese_do_operador", valor: 30 });
+  // Também no preço manual.
+  const m = (await rodar(mundo(), pedido([{ tipo: "preco", preco: 90, hipotese: { custo: 25 } }]))).cenarios[0];
+  assert.strictEqual(m.cenario.custo, 25);
+  assert.strictEqual(m.cenario.taxa_fixa, 0, "sem hipótese de taxa fixa: a da Base");
+});
+
+cenario("hipótese inválida é 400 (nada é ignorado em silêncio)", async () => {
+  const w = mundo();
+  await recusa(rodar(w, pedido([{ tipo: "preco", preco: 90, hipotese: { custo: -1 } }])), 400, "HIPOTESE_VALOR_INVALIDO");
+  await recusa(rodar(w, pedido([{ tipo: "preco", preco: 90, hipotese: { custo: "abc" } }])), 400, "HIPOTESE_VALOR_INVALIDO");
+  await recusa(rodar(w, pedido([{ tipo: "preco", preco: 90, hipotese: { frete: 1 } }])), 400, "HIPOTESE_CAMPO_DESCONHECIDO");
+  await recusa(rodar(w, pedido([{ tipo: "promo", promotion_id: "P1", hipotese: [1] }])), 400, "HIPOTESE_INVALIDA");
+  await recusa(rodar(w, pedido([{ tipo: "preco", preco: 90, hipotese: { custo: null } }])), 400, "HIPOTESE_VALOR_INVALIDO");
+});
+
 cenario("cenário `preco`: P' digitado; faixa de frete mudou ⇒ mudou_faixa_frete=true e frete' ≠ frete", async () => {
   const w = mundo();
   const r = await rodar(w, pedido([{ tipo: "preco", preco: 74.9 }]));

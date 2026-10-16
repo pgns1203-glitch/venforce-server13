@@ -67,7 +67,7 @@ Convenções (as da pasta): `.jsx` + JSDoc, sem TypeScript, wrapper fino sobre a
   - `aria-label`/`title` com o valor final formatado; ausente → `—` sem animação.
 - **`VFKpi`:** `label`, `value` + `format` (via `VFNumber`), `trend`, `foot`, `tone` (`warning` | `danger`), `featured`, `onClick` (vira `--interactive`, com elevação `--vf-shadow-hover` no hover — sombra como resposta a estado, permitido pelo DESIGN.md), `active`.
   - **Entrada:** numa grade de KPIs, os cartões entram com `.vf-motion-enter` em sequência (30 ms entre eles, só no primeiro carregamento da tela).
-  - Unifica `.vf-kpi` e `.vf-visao-figure` (13 arquivos) — ver decisão pendente A.
+  - Cobre só `.vf-kpi`; a Visão usa `VFNumber` direto na sua figura (ver decisão A).
 
 ## 4. Movimento entre telas (PR 6, paralelo, só CSS)
 
@@ -92,7 +92,7 @@ Cada PR cria o componente **e migra um consumidor real** como prova; o resto mig
 | 2 | `VFField` + controles | `ProdutosFinanceiroFilters` |
 | 3 | `VFBanner`, `VFStatus`, `VFTag`, `VFBadge` | `FaixaBloqueio` (Cliente 360 V3) |
 | 4 | Estados (`VFEmpty`, `VFError`, `VFLoading`, `VFSkeleton`) | 4 duplicados apagados, 2 viram tradutores de texto |
-| 5 | `VFNumber` + `VFKpi` | `ResumoKpis` (Financeiro) e um bloco da Visão |
+| 5 | `VFNumber` + `VFKpi` | `FullSummaryKpis` (Central Full, `VFKpi`), `ResumoKpis` (Financeiro) e `ResultadoPeriodo` (Visão), os dois com `VFNumber` |
 | 6 | View Transitions no Portal | Todas as páginas com shell |
 
 ## 6. Testes
@@ -104,6 +104,6 @@ Cada PR cria o componente **e migra um consumidor real** como prova; o resto mig
 
 ## 7. Decisões pendentes
 
-- **A.** `VFKpi` absorve o `.vf-visao-figure` como variante (`variant="figure"`), ou a Visão mantém o seu? Recomendação: variante, para ficar um só componente.
+- **A.** ~~`VFKpi` absorve o `.vf-visao-figure`~~ — **revertida na implementação:** a Visão V3 (Direção A) já decidiu não usar cards KPI e tem teste de guarda (`não usa nenhuma classe .vf-kpi na Visão`). A Visão ganha o dinamismo pelo `VFNumber` dentro da figura que já existe; o `VFKpi` cobre só o `.vf-kpi`.
 - **B.** View Transitions em todas as páginas de uma vez, ou opt-in por página? Recomendação: todas — é reversível apagando 3 linhas.
 - **C.** Destaque de mudança do `VFNumber` neutro por padrão (recomendado) ou colorido por padrão?

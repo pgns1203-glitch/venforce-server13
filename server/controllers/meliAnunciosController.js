@@ -32,6 +32,7 @@ const promocoesRebateService = require("../services/meliAnuncios/meliPromocoesRe
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const precoAoVivoService = require("../services/meliAnuncios/meliPrecoAoVivoService");
 const custosLoteService = require("../services/meliAnuncios/meliCustosLoteService");
+const marginSnapshotRepository = require("../services/motorMargem/marginSnapshotRepository");
 const custosPlanilhaService = require("../services/meliAnuncios/meliCustosPlanilhaService");
 const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/activityLogService");
 const motorMargemService = require("../services/motorMargem/motorMargemService");
@@ -178,6 +179,22 @@ async function resumo(req, res) {
       dados.semCusto = await familiaService.contarSemCusto({
         clienteId: cliente.id, clienteContaId: contaId, includeLegacy, baseCustoId: baseCustos.base.id,
       });
+    }
+
+    // "Margem calculada" do card: o cálculo mais recente do Margin Snapshot
+    // desta conta (a mesma fonte da Central de Margem). Sem conta, ou se a
+    // leitura falhar, fica null: o resumo nunca quebra por causa dela.
+    dados.margemCalculadaEm = null;
+    if (contaId != null) {
+      try {
+        const filtro = marginSnapshotRepository.montarFiltroSnapshots({
+          clienteId: cliente.id, clienteContaId: contaId, marketplace: "meli",
+        });
+        const contagem = await marginSnapshotRepository.countProjectionSnapshotsFiltrado({ filtro });
+        dados.margemCalculadaEm = contagem.ultimoCalculoEm || null;
+      } catch (err) {
+        console.warn("[anuncios-meli] resumo: margemCalculadaEm indisponível:", err && err.message);
+      }
     }
 
     return res.json({

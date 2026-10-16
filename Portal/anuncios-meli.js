@@ -682,10 +682,22 @@
     var conexao = clienteCompleto
       ? (clienteCompleto.mlConectado ? { cls: "is-success", txt: "ML conectado" } : { cls: "is-danger", txt: "Sem conexão ML" })
       : (AM.prontidaoCarregada ? { cls: "is-warning", txt: "Fora da lista de Anúncios ML" } : { cls: "is-info", txt: "Verificando conexão ML…" });
+    // Data que mudou desde o último desenho (mesmo cliente) pisca uma vez:
+    // é o retorno visual de que o sync/recálculo atualizou o card.
+    var anteriores = AM.hudDatas && AM.hudDatas.slug === c.slug ? AM.hudDatas : null;
+    function dataHud(campo) {
+      var valor = resumo[campo] || null;
+      var mudou = anteriores && anteriores[campo] !== undefined && anteriores[campo] !== valor;
+      return "<strong" + (mudou ? ' class="is-atualizado"' : "") + ">" + formatData(valor) + "</strong>";
+    }
     var subInfo = resumo
-      ? '<span>Última sincronização: <strong>' + formatData(resumo.ultimaSync) + "</strong></span>" +
-        '<span>Total sincronizado: <strong>' + (resumo.total || 0) + " anúncios</strong></span>"
+      ? '<span>Última sincronização: ' + dataHud("ultimaSync") + "</span>" +
+        '<span>Total sincronizado: <strong>' + (resumo.total || 0) + " anúncios</strong></span>" +
+        // Sem conta/snapshot o backend manda null: aí a linha nem aparece
+        // (formatData diria "nunca", que não é verdade sem conta escolhida).
+        (resumo.margemCalculadaEm ? '<span>Margem calculada: ' + dataHud("margemCalculadaEm") + "</span>" : "")
       : '<span class="vf-status is-info">Carregando resumo…</span>';
+    if (resumo) AM.hudDatas = { slug: c.slug, ultimaSync: resumo.ultimaSync || null, margemCalculadaEm: resumo.margemCalculadaEm || null };
 
     el("am-hud-top").innerHTML =
       '<div class="am-cliente-contexto vf-card">' +

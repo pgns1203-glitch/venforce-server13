@@ -1885,13 +1885,14 @@
   gap: 2px;
 }
 
-/* Medidor compacto (44×24, mesma proporção do viewBox 64×34): a linha
-   ficava alta por causa dele. O valor fica visível; a legenda vai para o
-   title (ver scoreGaugeHtml). */
+/* Medidor compacto (56×30, mesma proporção do viewBox 64×34). Em 44×24
+   o "100" (e até dois dígitos) encostava no arco; 56 é o mínimo da
+   coluna (--am-c-score), então não alarga a grade. O valor fica visível;
+   a legenda vai para o title (ver scoreGaugeHtml). */
 .vf-page-anuncios-meli .am-gauge__wrap {
   position: relative;
-  width: 44px;
-  height: 24px;
+  width: 56px;
+  height: 30px;
 }
 
 .vf-page-anuncios-meli .am-gauge__wrap svg {

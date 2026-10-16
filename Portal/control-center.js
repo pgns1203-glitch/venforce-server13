@@ -930,6 +930,11 @@
    * ============================================================ */
 
   function toast(mensagem, tipo) {
+    // Com o vf-ui.js, o aviso entra na pilha única da V2.
+    if (window.VF && typeof window.VF.toast === "function") {
+      window.VF.toast({ title: mensagem, tone: tipo === "erro" ? "danger" : tipo === "ok" ? "success" : "info" });
+      return;
+    }
     if (!els.toasts) return;
     var caixa = document.createElement("div");
     caixa.className = "vf-toast vfc-toast" + (tipo === "erro" ? " is-danger" : tipo === "ok" ? " is-success" : "");

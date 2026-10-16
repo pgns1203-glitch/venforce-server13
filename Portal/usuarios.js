@@ -34,8 +34,14 @@ function esc(s) {
 }
 
 /* ── TOAST ───────────────────────────────────────────────── */
+// Com o vf-ui.js, o aviso é o .vf-toast da V2 (pilha, erro como alert);
+// sem ele, o vu-toast antigo continua funcionando.
 let _toastTimer = null;
 function toast(msg, tipo = "ok") {
+  if (window.VF && typeof window.VF.toast === "function") {
+    window.VF.toast({ title: msg, tone: tipo === "danger" ? "danger" : tipo === "ok" ? "success" : "info" });
+    return;
+  }
   const el = document.getElementById("vu-toast");
   if (!el) return;
   el.textContent = msg;

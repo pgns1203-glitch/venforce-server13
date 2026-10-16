@@ -72,15 +72,22 @@ function sideValues(fields, kind) {
 /**
  * @param {object} params
  *  - fields     saída de resolveAllFields (evidências dos dois momentos)
- *  - projected  { profit, margin, computable, assumed } (computeMargin projetado)
+ *  - projected  { profit, margin, computable, assumed } (computeMargin projetado, JÁ com o
+ *               retorno ML da promoção em andamento somado ao lucro — a MESMA margem do header)
  *  - realized   { profit, margin, computable, assumed, missing } (computeMargin realizado)
  *  - sales      { hasOrders, unidades, pedidos, receita, ultimaVendaEm }
  *  - coverage   cobertura por componente do adapter da Central de Vendas (opcional)
+ *  - rebate     { value: number|null, motivo: string|null } retorno ML da promoção em
+ *               andamento (margemAtualRebate). `value` só vem preenchido quando há UMA
+ *               promoção sem ambiguidade; `motivo` (ex. REBATE_AMBIGUO) é exposto mesmo
+ *               quando `value` é null, para o front avisar sem recalcular nada.
  */
-function buildProjectedVsRealized({ fields = {}, projected = {}, realized = {}, sales = {}, coverage = null } = {}) {
+function buildProjectedVsRealized({ fields = {}, projected = {}, realized = {}, sales = {}, coverage = null, rebate = null } = {}) {
   const hasOrders = Boolean(sales.hasOrders);
   const projectedValues = sideValues(fields, EVIDENCE_KINDS.PROJECTED);
   const realizedValues = sideValues(fields, EVIDENCE_KINDS.REALIZED);
+  const rebateValue = rebate && Number.isFinite(rebate.value) ? rebate.value : null;
+  const rebateMotivo = rebate ? rebate.motivo || null : null;
 
   let status = COMPARISON_STATUS.COMPARABLE;
   if (!hasOrders) status = COMPARISON_STATUS.NO_SALES;
@@ -106,9 +113,17 @@ function buildProjectedVsRealized({ fields = {}, projected = {}, realized = {}, 
       realized.computable ? realized.margin : null
     );
     const taxRate = difference(projectedValues[FIELDS.TAX_RATE], realizedValues[FIELDS.TAX_RATE], round6);
+    // Comissão like-for-like: quando há retorno ML de UMA promoção em andamento
+    // (rebateValue conhecido, nunca em caso ambíguo), a tarifa realizada que a
+    // Orders API do ML devolve já vem LÍQUIDA do subsídio — comparar contra a
+    // comissão projetada em cheio faria a comissão parecer "melhor" só pelo
+    // rebate. Compara projetada já líquida (projetada − retorno) × realizada.
+    const commissionProjected = rebateValue !== null
+      ? round2(projectedValues[FIELDS.COMMISSION] - rebateValue)
+      : projectedValues[FIELDS.COMMISSION];
     drift = {
       price: difference(projectedValues[FIELDS.PRICE], realizedValues[FIELDS.PRICE], round2),
-      commission: difference(projectedValues[FIELDS.COMMISSION], realizedValues[FIELDS.COMMISSION], round2),
+      commission: difference(commissionProjected, realizedValues[FIELDS.COMMISSION], round2),
       freight: difference(projectedValues[FIELDS.FREIGHT], realizedValues[FIELDS.FREIGHT], round2),
       cost: difference(projectedValues[FIELDS.COST], realizedValues[FIELDS.COST], round2),
       taxRate,
@@ -133,6 +148,10 @@ function buildProjectedVsRealized({ fields = {}, projected = {}, realized = {}, 
       marginPercent: projected.computable ? percent(num(projected.margin)) : null,
       computable: projected.computable === true,
       assumed: Array.isArray(projected.assumed) ? projected.assumed : [],
+      // Retorno ML em andamento — a MESMA margem/lucro do header já o inclui;
+      // aqui vira linha própria para a soma dos componentes continuar fechando.
+      rebate: rebateValue,
+      rebateMotivo,
     },
     realized: {
       available: hasOrders,
@@ -150,6 +169,10 @@ function buildProjectedVsRealized({ fields = {}, projected = {}, realized = {}, 
       // Lucro do período recalculado pelo núcleo (lucro/un × unidades).
       totalProfit: realizedProfit === null || units === null ? null : round2(realizedProfit * units),
       coverage: hasOrders ? coverage || null : null,
+      // Informativo: retorno ML já embutido na tarifa realizada (líquida do
+      // subsídio). NUNCA somado de novo — só explica por que a comissão
+      // realizada é menor que a projetada em cheio.
+      rebateEmbutido: hasOrders ? rebateValue : null,
     },
     drift,
     notComparable,

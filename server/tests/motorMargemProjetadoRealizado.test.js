@@ -217,6 +217,64 @@ cenario("snapshot: produto sem venda no período → NO_SALES, sales vazio e nad
   assert.strictEqual(item.margin.projectionError.comparable, false);
 });
 
+// ── Caso real (MLB5537622816, Red Fish): retorno ML no painel ──────────────
+// Header: 26,16% "inclui retorno ML R$ 2,24". Painel: 22,1%. Comissão
+// projetada 6,35 × realizada 4,08 (a tarifa da Orders API já vem líquida do
+// subsídio). O painel deve mostrar a MESMA margem do header, com o retorno
+// como linha própria, e o desvio de comissão deve ir a ~0 depois do ajuste
+// like-for-like (comissão projetada − retorno) × comissão realizada líquida.
+
+// margemAtualRebate lê os insumos do TOPO da linha (price/cost/taxRate/...),
+// não de quality.evidencias — precisam bater com os valores projetados de linhaSnapshot().
+function linhaSnapshotComInsumos() {
+  return { ...linhaSnapshot(), price: 100, cost: 45, taxRate: 0.03, fixedFee: 2, commission: 16, freight: 18 };
+}
+
+function pedidosUmaVendaComTarifa(tarifaUnitRealizada) {
+  const pedidos = [{ id: 1, status: "paid", data_pedido: "2026-09-10" }];
+  const itens = [{ id: 11, pedido_row_id: 1, mlb: "MLB1", quantidade: 1, valor_unitario: 100, receita_produto: 100, custo_produto: 45, imposto_interno: 3, resultado: 100 - 45 - 3 - tarifaUnitRealizada - 18 }];
+  const componentes = [
+    { item_row_id: 11, pedido_row_id: 1, tipo: "tarifa_venda", valor: -tarifaUnitRealizada },
+    { item_row_id: 11, pedido_row_id: 1, tipo: "frete_seller", valor: -18 },
+  ];
+  return realizadaDe({ pedidos, itens, componentes });
+}
+
+cenario("painel Projetado×Realizado: retorno ML em andamento usa a MESMA margem do header, com rebate em linha própria", () => {
+  // Comissão projetada da linha (snapshot) é 16; retorno ML de uma promoção = 5.
+  const item = read.comporItem(linhaSnapshotComInsumos(), pedidosUmaVendaComTarifa(11), {}, { promocoes: 1, rebate: 5 });
+  const cmp = item.projectedVsRealized;
+  assert.strictEqual(cmp.projected.margin, item.projected.margin, "painel = header, nunca dois números diferentes");
+  assert.strictEqual(item.projected.rebate, 5);
+  assert.strictEqual(cmp.projected.rebate, 5, "retorno ML exposto como linha própria no painel");
+  assert.strictEqual(cmp.projected.rebateMotivo, null);
+  // Comissão: projetada 16 em cheio; realizada 11 (já líquida do retorno).
+  // Like-for-like: (16 − 5) × 11 = 0 de desvio — nada de "comissão melhorou".
+  assert.strictEqual(cmp.projected.commission, 16, "a comissão projetada mostrada segue em cheio");
+  assert.strictEqual(cmp.realized.commission, 11);
+  assert.strictEqual(cmp.drift.commission, 0, "desvio ≈ 0 depois do ajuste like-for-like");
+  assert.strictEqual(cmp.realized.rebateEmbutido, 5, "informativo: retorno embutido na comissão realizada, nunca somado de novo");
+});
+
+cenario("painel Projetado×Realizado: SEM retorno ML, o desvio de comissão continua o cálculo de sempre", () => {
+  const item = read.comporItem(linhaSnapshotComInsumos(), pedidosUmaVendaComTarifa(16));
+  const cmp = item.projectedVsRealized;
+  assert.strictEqual(cmp.projected.rebate, null);
+  assert.strictEqual(cmp.realized.rebateEmbutido, null);
+  assert.strictEqual(cmp.drift.commission, 0);
+});
+
+cenario("painel Projetado×Realizado: REBATE_AMBIGUO não ajusta a comissão (não sabe qual promoção está embutida), mas expõe o motivo", () => {
+  // Duas promoções com retorno no mesmo anúncio: margemAtualRebate não adivinha.
+  const item = read.comporItem(linhaSnapshotComInsumos(), pedidosUmaVendaComTarifa(11), {}, { promocoes: 2, rebate: null });
+  const cmp = item.projectedVsRealized;
+  assert.strictEqual(cmp.projected.rebate, null);
+  assert.strictEqual(cmp.projected.rebateMotivo, "REBATE_AMBIGUO");
+  assert.strictEqual(cmp.projected.margin, item.projected.margin, "ambíguo: painel e header seguem iguais (margem do snapshot)");
+  // Sem rebate conhecido, a comparação de comissão é a bruta de sempre (16 × 11 = -5), nunca "0 por adivinhação".
+  assert.strictEqual(cmp.drift.commission, -5);
+});
+
 (async () => {
   let falhas = 0;
   for (const { nome, fn } of casos) {

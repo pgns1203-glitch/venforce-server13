@@ -101,6 +101,27 @@ async function sincronizar(req, res) {
       clienteContaId,
     });
 
+    // Margin Snapshot: o sync só grava os anúncios — a margem da lista (e a
+    // data "calculada em") só muda com um novo run. Falha aqui nunca derruba
+    // o sync, que já foi gravado.
+    if (resultado && resultado.ok) {
+      try {
+        const marginTriggers = require("../services/motorMargem/marginSnapshotTriggers");
+        const margem = await marginTriggers.enfileirarAposSyncAnuncios({
+          resultado,
+          clienteId: cliente.id,
+          clienteSlug: cliente.slug,
+          requestedBy: req.user?.id ?? null,
+        });
+        resultado.margemRecalculo = margem.enfileirado
+          ? { enfileirado: true, runId: margem.runId }
+          : { enfileirado: false };
+      } catch (err) {
+        console.error("[anuncios-meli] sincronizar: falha ao enfileirar margem:", String(err?.message || err).slice(0, 300));
+        resultado.margemRecalculo = { enfileirado: false };
+      }
+    }
+
     // Falhas esperadas (sem token, erro de API) voltam como 200 + ok:false
     // para o frontend tratar com mensagem amigável.
     return res.json(resultado);

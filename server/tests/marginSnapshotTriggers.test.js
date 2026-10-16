@@ -360,6 +360,47 @@ cenario("run QUEUED + mudança de Base: só reaproveita (o run ainda vai ler a B
   assert.ok(!r.run.metadata.rerunSolicitado);
 });
 
+// ── Sync de Anúncios ML ──────────────────────────────────────────────────
+cenario("sync de anúncios COMPLETO enfileira o recálculo da conta mesmo com o worker desligado", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  let kicks = 0;
+  const r = await triggers.enfileirarAposSyncAnuncios(
+    { resultado: { ok: true, modo: "completo", contaId: 5, totalSalvos: 0 }, clienteId: 1, clienteSlug: "loja", requestedBy: 9 },
+    { db, env: {}, kick: () => { kicks += 1; } }
+  );
+  assert.strictEqual(r.enfileirado, true);
+  assert.strictEqual(kicks, 1);
+  assert.strictEqual(db.runs.length, 1);
+  assert.strictEqual(db.runs[0].reason, "anuncios_sync_completo");
+  assert.strictEqual(db.runs[0].cliente_conta_id, 5);
+  assert.strictEqual(db.runs[0].status, "queued");
+});
+
+cenario("sync de anúncios: 2 cliques seguidos reaproveitam o mesmo run", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const args = { resultado: { ok: true, modo: "completo", contaId: 5 }, clienteId: 1, clienteSlug: "loja" };
+  const a = await triggers.enfileirarAposSyncAnuncios(args, { db, kick() {} });
+  const b = await triggers.enfileirarAposSyncAnuncios(args, { db, kick() {} });
+  assert.strictEqual(b.reaproveitado, true);
+  assert.strictEqual(a.runId, b.runId);
+  assert.strictEqual(db.runs.length, 1);
+});
+
+cenario("sync de anúncios NOVOS só enfileira quando gravou algo; falha/sem conta nunca enfileira", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const deps = { db, kick() {} };
+  const nada = await triggers.enfileirarAposSyncAnuncios({ resultado: { ok: true, modo: "novos", contaId: 5, totalSalvos: 0 }, clienteId: 1 }, deps);
+  assert.strictEqual(nada.motivo, "NADA_NOVO");
+  const falhou = await triggers.enfileirarAposSyncAnuncios({ resultado: { ok: false, codigo: "NO_TOKEN" }, clienteId: 1 }, deps);
+  assert.strictEqual(falhou.motivo, "SYNC_SEM_SUCESSO");
+  const semConta = await triggers.enfileirarAposSyncAnuncios({ resultado: { ok: true, modo: "completo" }, clienteId: 1 }, deps);
+  assert.strictEqual(semConta.motivo, "SEM_CONTA");
+  assert.strictEqual(db.runs.length, 0);
+  const novos = await triggers.enfileirarAposSyncAnuncios({ resultado: { ok: true, modo: "novos", contaId: 5, totalSalvos: 3 }, clienteId: 1 }, deps);
+  assert.strictEqual(novos.enfileirado, true);
+  assert.strictEqual(db.runs[0].reason, "anuncios_sync_novos");
+});
+
 async function main() {
   let falhas = 0;
   for (const caso of casos) {

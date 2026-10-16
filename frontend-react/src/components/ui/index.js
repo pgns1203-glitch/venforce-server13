@@ -19,5 +19,6 @@ export { VFField, VFInput, VFSelect, VFTextarea } from "./VFField/index.js";
 export { VFMonthYearSelector } from "./VFMonthYearSelector/index.js";
 export { VFNumber } from "./VFNumber/index.js";
 export { VFStatus, VFTag, VFBadge } from "./VFStatus/index.js";
+export { VFTable } from "./VFTable/index.js";
 export { VFTabs } from "./VFTabs/index.js";
 export { VFTooltip } from "./VFTooltip/index.js";

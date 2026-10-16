@@ -1,3 +1,4 @@
+import { VFTable } from "../ui/VFTable/index.js";
 import { formatarNumero, ehAusente, AUSENTE } from "../../utils/numbers.js";
 import { STATUS_LABEL, STATUS_TONE } from "../../utils/fullOperationalStatus.js";
 
@@ -21,82 +22,89 @@ function referenciaPrincipal(inv) {
   };
 }
 
+// Colunas da tabela de inventários Full (VFTable da Fundação V2).
+function colunas(onDetalhar) {
+  const numero = (key, header, valor) => ({ key, header, align: "right", render: valor });
+  return [
+    {
+      key: "produto",
+      header: "Produto / referências",
+      render: (inv) => {
+        const principal = referenciaPrincipal(inv);
+        return (
+          <div className="full-table-produto">
+            <strong>{principal.titulo}</strong>
+            <span className="full-table-refs">
+              <span className="vf-mono">{principal.mlb}</span> · SKU{" "}
+              <span className="vf-mono">{principal.sku}</span>
+              {principal.extras > 0 ? ` · +${principal.extras} ref.` : ""}
+            </span>
+          </div>
+        );
+      },
+    },
+    {
+      key: "status",
+      header: "Status",
+      render: (inv) => {
+        const statusTom = STATUS_TONE[inv.operationalStatus] || "";
+        return (
+          <span className={`vf-status${statusTom ? ` ${statusTom}` : ""}`}>
+            {STATUS_LABEL[inv.operationalStatus] || inv.operationalStatus || AUSENTE}
+          </span>
+        );
+      },
+    },
+    numero("disponivel", "Estoque disp.", (inv) => formatarNumero(inv.stock?.available)),
+    numero("indisponivel", "Indisp.", (inv) => formatarNumero(inv.stock?.notAvailable)),
+    numero("anterior7d", "7d anterior", (inv) => formatarNumero(inv.sales?.previous7d)),
+    numero("atual7d", "7d atual", (inv) => formatarNumero(inv.sales?.current7d)),
+    numero("variacao", "Δ / variação", (inv) =>
+      inv.trend ? (
+        <>
+          {formatarNumero(inv.trend.deltaUnits)} ({formatarVariacaoPontos(inv.trend.variationPct)})
+        </>
+      ) : (
+        AUSENTE
+      ),
+    ),
+    numero("giro", "Giro/dia", (inv) => formatarNumero(inv.dailyTurnover, 2)),
+    numero("cobertura", "Cobertura (dias)", (inv) => formatarNumero(inv.coverageDays, 1)),
+    numero("enviar", "Enviar", (inv) => formatarNumero(inv.sendQuantity)),
+    {
+      key: "acoes",
+      header: <span className="vf-visually-hidden">Ações</span>,
+      render: (inv) => (
+        <button
+          type="button"
+          className="vf-btn vf-btn--ghost vf-btn--sm"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDetalhar(inv.inventoryId);
+          }}
+        >
+          Detalhar
+        </button>
+      ),
+    },
+  ];
+}
+
+// Clicar na linha também abre o detalhe (atalho de mouse); o botão
+// "Detalhar" continua sendo o caminho de teclado e leitor de tela.
 export default function FullInventoryTable({ inventories, onDetalhar }) {
   if (!inventories.length) {
     return <p className="full-table-vazio">Nenhum inventário encontrado com os filtros atuais.</p>;
   }
 
   return (
-    <div className="vf-table-wrap">
-      <table className="vf-table">
-        <thead>
-          <tr>
-            <th scope="col">Produto / referências</th>
-            <th scope="col">Status</th>
-            <th scope="col" className="num">Estoque disp.</th>
-            <th scope="col" className="num">Indisp.</th>
-            <th scope="col" className="num">7d anterior</th>
-            <th scope="col" className="num">7d atual</th>
-            <th scope="col" className="num">Δ / variação</th>
-            <th scope="col" className="num">Giro/dia</th>
-            <th scope="col" className="num">Cobertura (dias)</th>
-            <th scope="col" className="num">Enviar</th>
-            <th scope="col">
-              <span className="vf-visually-hidden">Ações</span>
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {inventories.map((inv) => {
-            const principal = referenciaPrincipal(inv);
-            const statusTom = STATUS_TONE[inv.operationalStatus] || "";
-            return (
-              <tr key={inv.inventoryId}>
-                <td>
-                  <div className="full-table-produto">
-                    <strong>{principal.titulo}</strong>
-                    <span className="full-table-refs">
-                      <span className="vf-mono">{principal.mlb}</span> · SKU{" "}
-                      <span className="vf-mono">{principal.sku}</span>
-                      {principal.extras > 0 ? ` · +${principal.extras} ref.` : ""}
-                    </span>
-                  </div>
-                </td>
-                <td>
-                  <span className={`vf-status${statusTom ? ` ${statusTom}` : ""}`}>
-                    {STATUS_LABEL[inv.operationalStatus] || inv.operationalStatus || AUSENTE}
-                  </span>
-                </td>
-                <td className="num">{formatarNumero(inv.stock?.available)}</td>
-                <td className="num">{formatarNumero(inv.stock?.notAvailable)}</td>
-                <td className="num">{formatarNumero(inv.sales?.previous7d)}</td>
-                <td className="num">{formatarNumero(inv.sales?.current7d)}</td>
-                <td className="num">
-                  {inv.trend ? (
-                    <>
-                      {formatarNumero(inv.trend.deltaUnits)} ({formatarVariacaoPontos(inv.trend.variationPct)})
-                    </>
-                  ) : (
-                    AUSENTE
-                  )}
-                </td>
-                <td className="num">{formatarNumero(inv.dailyTurnover, 2)}</td>
-                <td className="num">{formatarNumero(inv.coverageDays, 1)}</td>
-                <td className="num">{formatarNumero(inv.sendQuantity)}</td>
-                <td>
-                  <button
-                    type="button"
-                    className="vf-btn vf-btn--ghost vf-btn--sm"
-                    onClick={() => onDetalhar(inv.inventoryId)}
-                  >
-                    Detalhar
-                  </button>
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-    </div>
+    <VFTable
+      columns={colunas(onDetalhar)}
+      rows={inventories}
+      getRowKey={(inv) => inv.inventoryId}
+      onRowClick={(inv) => onDetalhar(inv.inventoryId)}
+      compact={false}
+      caption="Inventários Full"
+    />
   );
 }

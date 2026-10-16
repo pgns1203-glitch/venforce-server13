@@ -519,7 +519,8 @@ function calcularCenario({ atual = {}, cenario = {}, cotacao = {}, meta = {}, fl
     ml_banca: mlBanca,
     seller_banca: sellerBanca,
     delta_preco_atual: deltaPrecoAtual,
-    // P' contra o preço de HOJE (fração, + sobe / − desce) — o "−13,6%" sob o preço final.
+    // P' contra o preço de HOJE: em R$ (P' − P, a coluna "Diferença") e em fração (+ sobe / − desce, o "−13,6%" sob o preço final).
+    delta_preco: precoAtual !== null && precoNovoValido ? round2(precoNovo - precoAtual) : null,
     variacao_preco_ratio: precoAtual !== null && precoAtual > 0 && precoNovoValido ? round6(precoNovo / precoAtual - 1) : null,
     banca_motivo: bancaMotivo,
     banca_aviso: bancaAviso,
@@ -587,6 +588,7 @@ function resultadoBloqueado(motivo, { flags = {}, meta = {} } = {}) {
     ml_banca: null,
     seller_banca: null,
     delta_preco_atual: null,
+    delta_preco: null,
     variacao_preco_ratio: null,
     banca_motivo: null,
     banca_aviso: null,

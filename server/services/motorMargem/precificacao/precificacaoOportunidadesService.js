@@ -272,6 +272,7 @@ function montarCandidata(args) {
     ml_banca: calc.ml_banca,
     seller_banca: calc.seller_banca,
     delta_preco_atual: calc.delta_preco_atual,
+    delta_preco: calc.delta_preco,
     variacao_preco_ratio: calc.variacao_preco_ratio,
     frase: calc.frase,
     banca_motivo: calc.banca_motivo,

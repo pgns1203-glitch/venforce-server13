@@ -528,6 +528,7 @@ cenario("Bancada real: preço digitado 59,90 sai da promoção ativa → 'Ganha 
   assert.strictEqual(r.delta_lc, 1.41);
   assert.strictEqual(r.veredito, VEREDITOS.ENTRAR);
   assert.strictEqual(r.frase, "Ganha R$ 1,41 por unidade em relação a hoje.");
+  assert.strictEqual(r.delta_preco, 4.71, "coluna Diferença do preço: P' − P, pronta");
   assert.ok(r.variacao_preco_ratio > 0.085 && r.variacao_preco_ratio < 0.086, String(r.variacao_preco_ratio));
 });
 

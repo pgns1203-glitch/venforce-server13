@@ -258,7 +258,7 @@ async function check(name, fn) {
 
 // Mesmos contratos e fixtures do teste de listagem; apenas rotas de leitura
 // necessarias para montar a lista, os KPIs e a expansao de FAM-1.
-const MOCK = { syncPendentes: [], syncResposta: null, refreshPosts: 0, familiasGets: 0, run: null };
+const MOCK = { syncPendentes: [], syncResposta: null, refreshPosts: 0, familiasGets: 0, run: null, margemCalculadaEm: "2026-10-15T12:00:00.000Z" };
 
 function wireInterception(cdp) {
   cdp.onEvent = async (method, params) => {
@@ -286,7 +286,7 @@ function wireInterception(cdp) {
     if (pathname.includes("/operacao/cliente-360/clientes")) return respond({ ok: true, clientes: [N97] });
     if (/\/clientes\/[^/?]+\/contas/.test(pathname)) return respond({ ok: true, cliente: N97, contas: N97_CONTAS });
     if (pathname === "/anuncios-meli/clientes") return respond({ ok: true, clientes: [{ id: 87, nome: N97.nome, slug: "n97", mlConectado: true, totalAnuncios: 5 }] });
-    if (pathname === "/anuncios-meli/resumo") return respond({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, semCusto: 2, full: 2, ultimaSync: new Date().toISOString() } });
+    if (pathname === "/anuncios-meli/resumo") return respond({ ok: true, resumo: { total: 11, ativos: 9, pausados: 2, scoreBaixo: 3, semSku: 1, semCusto: 2, full: 2, ultimaSync: new Date().toISOString(), margemCalculadaEm: MOCK.margemCalculadaEm } });
     const family = pathname.match(/^\/anuncios-meli\/familias\/([^/]+)/);
     if (family) return respond({ ok: true, cliente: N97, familia: DETALHE_CONTA_42[decodeURIComponent(family[1])] });
     if (pathname === "/anuncios-meli/familias") { MOCK.familiasGets += 1; } if (pathname === "/anuncios-meli/familias") return respond({ ok: true, cliente: N97, anuncios: LINHAS_CONTA_42, paginacao: { page: 1, limit: 20, total: LINHAS_CONTA_42.length, totalPaginas: 1 } });
@@ -416,6 +416,7 @@ async function run() {
 
     await check("S4 - recálculo concluído: status de sucesso, lista relida, botões liberados", async () => {
       const antes = MOCK.familiasGets;
+      MOCK.margemCalculadaEm = "2026-10-16T17:05:00.000Z";
       MOCK.run = { runId: 77, status: "completed", processedItems: 175, totalItems: 175, successItems: 175, failedItems: 0 };
       await waitFor(cdp, "/is-ok/.test((document.getElementById('am-sync-status')||{}).className||'')", "não chegou ao estado concluído");
       const e = await cdp.evaluate(estado);
@@ -426,6 +427,8 @@ async function run() {
       await waitFor(cdp, "true");
       for (let i = 0; i < 50 && MOCK.familiasGets <= antes; i++) await sleep(30);
       assert.ok(MOCK.familiasGets > antes, "lista não foi relida após o recálculo");
+      await waitFor(cdp, "((document.querySelector('.am-hud-sub')||{}).textContent||'').includes('Margem calculada: 16/10/2026')", "data da margem não foi atualizada no card");
+      assert.ok(await cdp.evaluate("Array.from(document.querySelectorAll('.am-hud-sub span')).some((s) => s.textContent.startsWith('Margem calculada') && s.querySelector('strong.is-atualizado'))"), "data nova da margem deveria piscar");
       await shot(cdp, "3-concluido");
     });
 

@@ -3337,6 +3337,23 @@
 /* Lado direito do card do cliente: parado mostra as duas ações (cada uma com
    a sua explicação); rodando vira o painel de andamento com a linha do tempo
    de 2 etapas. A altura do card é a mesma nos dois modos. */
+/* Data do card que acabou de mudar (sync/recálculo terminou): pisca uma vez. */
+.vf-page-anuncios-meli .am-hud-sub strong.is-atualizado {
+  margin: -1px -4px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  animation: am-data-atualizada 2.4s var(--vf-ease);
+}
+
+@keyframes am-data-atualizada {
+  0%, 35% { background: var(--vf-success-bg); color: var(--vf-success-strong); }
+  100% { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vf-page-anuncios-meli .am-hud-sub strong.is-atualizado { animation: none; }
+}
+
 .vf-page-anuncios-meli .am-sync-acoes {
   display: grid;
   align-content: center;

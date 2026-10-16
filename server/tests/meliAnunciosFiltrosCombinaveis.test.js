@@ -155,6 +155,50 @@ function respostaFalsa() {
       assert.strictEqual(res.corpo.resumo.semCusto, null);
       assert.strictEqual(res.corpo.resumo.semCustoMotivo, "Nenhuma base vinculada.");
     });
+
+    const marginSnapshotRepository = require("../services/motorMargem/marginSnapshotRepository");
+    const originalContagem = marginSnapshotRepository.countProjectionSnapshotsFiltrado;
+    const originalContexto = anunciosService.resolverContextoConta;
+    anunciosService.resolverContextoConta = async () => ({ contaId: 42, includeLegacy: false });
+    try {
+      await caso("resumo: margemCalculadaEm = último cálculo do Margin Snapshot da conta", async () => {
+        let filtroUsado = null;
+        marginSnapshotRepository.countProjectionSnapshotsFiltrado = async ({ filtro }) => {
+          filtroUsado = filtro;
+          return { total: 173, ultimoCalculoEm: "2026-10-16T16:58:00.000Z" };
+        };
+        const res = respostaFalsa();
+        await ctrl.resumo({ query: { clienteSlug: "cliente-a", clienteContaId: "42" } }, res);
+        assert.strictEqual(res.corpo.resumo.margemCalculadaEm, "2026-10-16T16:58:00.000Z");
+        assert.deepStrictEqual(filtroUsado.params.slice(0, 3), [1, 42, "meli"], "escopo: cliente, conta e marketplace");
+      });
+
+      await caso("resumo: falha ao ler o snapshot deixa margemCalculadaEm null sem quebrar", async () => {
+        marginSnapshotRepository.countProjectionSnapshotsFiltrado = async () => { throw new Error("relation does not exist"); };
+        const avisoOriginal = console.warn;
+        console.warn = () => {};
+        try {
+          const res = respostaFalsa();
+          await ctrl.resumo({ query: { clienteSlug: "cliente-a", clienteContaId: "42" } }, res);
+          assert.strictEqual(res.corpo.ok, true);
+          assert.strictEqual(res.corpo.resumo.margemCalculadaEm, null);
+        } finally {
+          console.warn = avisoOriginal;
+        }
+      });
+
+      await caso("resumo: sem conta, margemCalculadaEm é null e o snapshot nem é lido", async () => {
+        let leu = false;
+        marginSnapshotRepository.countProjectionSnapshotsFiltrado = async () => { leu = true; return {}; };
+        const res = respostaFalsa();
+        await ctrl.resumo({ query: { clienteSlug: "cliente-a" } }, res);
+        assert.strictEqual(res.corpo.resumo.margemCalculadaEm, null);
+        assert.strictEqual(leu, false);
+      });
+    } finally {
+      marginSnapshotRepository.countProjectionSnapshotsFiltrado = originalContagem;
+      anunciosService.resolverContextoConta = originalContexto;
+    }
   } finally {
     Object.assign(anunciosService, { resolverCliente: original.resolverCliente, obterResumo: original.obterResumo });
     Object.assign(familiaService, { listarAgrupado: original.listarAgrupado, contarSemCusto: original.contarSemCusto });

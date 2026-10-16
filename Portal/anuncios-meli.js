@@ -9916,12 +9916,70 @@
   // ===========================================================================
   // Sincronização
   // ===========================================================================
-  // O sync grava os anúncios; a margem da lista vem de um recálculo em
-  // segundo plano que o backend enfileira junto (margemRecalculo) — a data
-  // "calculada em" só muda quando ele termina, não na hora do OK.
-  function margemRecalculoAvisoHtml(d) {
-    if (!d.margemRecalculo || !d.margemRecalculo.enfileirado) return "";
-    return '<p class="vf-banner__description">A margem dos anúncios está sendo recalculada em segundo plano — atualize a página em alguns minutos para ver a data nova.</p>';
+  // Recálculo da margem após o sync — EXATAMENTE o "Atualizar leitura" da
+  // Central de Margem: POST .../snapshot/refresh (reaproveita o run que o
+  // backend já enfileirou no sync), acompanha o run e relê a lista quando
+  // ele termina. Antes a lista era relida no OK, com o cálculo ainda na fila,
+  // e a data "calculada em" não mudava.
+  var MARGEM_POLL_MS = Number(window.__VF_AM_MARGEM_POLL_MS__) || 4000;
+  var margemRecalculo = { seq: 0, timer: null };
+
+  function margemRecalculoTexto(texto) {
+    var p = el("am-sync-margem");
+    if (p) p.textContent = texto;
+  }
+
+  function margemRecalculoProgresso(run) {
+    if (run && run.totalItems) {
+      return "Recalculando a margem dos anúncios… " + (run.processedItems || 0) + " de " + run.totalItems + ".";
+    }
+    return "Recalculando a margem dos anúncios…";
+  }
+
+  function recalcularMargemAposSync() {
+    if (!AM.clienteAtual || !AM.contaMlId) return;
+    margemRecalculo.seq += 1;
+    if (margemRecalculo.timer) clearTimeout(margemRecalculo.timer);
+    var seq = margemRecalculo.seq;
+    var slug = AM.clienteAtual.slug;
+    var conta = AM.contaMlId;
+    var base = "/operacao/central-margem/" + encodeURIComponent(slug) + "/snapshot/refresh";
+    function mesmaTela() {
+      return seq === margemRecalculo.seq && AM.clienteAtual && AM.clienteAtual.slug === slug && AM.contaMlId === conta;
+    }
+    margemRecalculoTexto("Recalculando a margem dos anúncios…");
+    api(base, { method: "POST", body: { clienteContaId: conta } }).then(function (r) {
+      if (!mesmaTela()) return;
+      var d = r.data || {};
+      if (!d.ok || !d.runId) {
+        margemRecalculoTexto("Não foi possível recalcular a margem agora. Use \"Atualizar leitura\" na Central de Margem.");
+        return;
+      }
+      function tick() {
+        margemRecalculo.timer = null;
+        if (!mesmaTela()) return;
+        api(base + "/" + encodeURIComponent(d.runId) + "?clienteContaId=" + encodeURIComponent(conta)).then(function (s) {
+          if (!mesmaTela()) return;
+          var run = s.data && s.data.ok ? s.data.run : null;
+          // Falha pontual de rede não encerra o acompanhamento.
+          if (!run || (run.status !== "completed" && run.status !== "failed")) {
+            if (run) margemRecalculoTexto(margemRecalculoProgresso(run));
+            margemRecalculo.timer = setTimeout(tick, MARGEM_POLL_MS);
+            return;
+          }
+          if (run.status === "completed") {
+            margemRecalculoTexto("Margem recalculada: " + (run.successItems || 0) + " anúncio(s).");
+            toast("Margem recalculada: " + (run.successItems || 0) + " anúncio(s).", "is-success");
+          } else {
+            margemRecalculoTexto("O recálculo da margem falhou. Tente \"Atualizar leitura\" na Central de Margem.");
+            toast("O recálculo da margem falhou.", "is-danger");
+          }
+          carregarResumo(); carregarAnuncios();
+        });
+      }
+      margemRecalculoTexto(margemRecalculoProgresso(d.run));
+      margemRecalculo.timer = setTimeout(tick, MARGEM_POLL_MS);
+    });
   }
 
   function sincronizar(modo) {
@@ -9953,12 +10011,13 @@
           msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Sincronização concluída</p><p class="vf-banner__description">' + (d.totalEncontrados || 0) +
             " anúncios na conta · " + d.totalSalvos + " gravados/atualizados.</p>" +
             (d.limitado ? '<p class="vf-banner__description">O limite de itens por sincronização foi atingido. Rode novamente para continuar.</p>' : "") +
-            margemRecalculoAvisoHtml(d) + "</div></div>";
+            '<p class="vf-banner__description" id="am-sync-margem" aria-live="polite"></p>' + "</div></div>";
         } else {
-          msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Tudo em dia</p><p class="vf-banner__description">' + escapeHtml(d.mensagem || "Nenhum anúncio novo para gravar.") + "</p>" + margemRecalculoAvisoHtml(d) + "</div></div>";
+          msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Tudo em dia</p><p class="vf-banner__description">' + escapeHtml(d.mensagem || "Nenhum anúncio novo para gravar.") + "</p>" + '<p class="vf-banner__description" id="am-sync-margem" aria-live="polite"></p>' + "</div></div>";
         }
         box.innerHTML = '<div class="vf-modal__body">' + msg + '</div><div class="vf-modal__footer"><button type="button" class="vf-btn vf-btn--primary" id="am-sync-ok">OK</button></div>';
         carregarResumo(); carregarAnuncios();
+        recalcularMargemAposSync();
       } else {
         box.innerHTML = '<div class="vf-modal__body"><div class="vf-banner is-danger" role="alert"><div class="vf-banner__content"><p class="vf-banner__title">Não foi possível sincronizar</p><p class="vf-banner__description">' +
           escapeHtml(d.motivo || "Erro ao consultar o Mercado Livre.") + "</p>" +

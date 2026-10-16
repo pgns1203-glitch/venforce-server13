@@ -468,6 +468,7 @@
   // Inicialização e bind de eventos fixos
   // ===========================================================================
   function init() {
+    renderBarraCustos();
     AM.token = localStorage.getItem("vf-token");
     if (!AM.token) {
       el("am-clientes-container").innerHTML =
@@ -535,7 +536,8 @@
 
     AM.clienteAtual = { slug: ctx.slug, nome: ctx.nome };
     AM.contaMlId = ctx.contaId;
-    atualizarBotaoRebate();
+    renderBarraCustos();
+    garantirCustos([]);
     AM.sync = null;
     AM.resumo = null;
     AM.anuncios = [];
@@ -4389,7 +4391,8 @@
     if (!box) return;
     var slot = el("am-custos-acoes-slot");
     if (slot) slot.innerHTML = "";
-    if (!AM.clienteAtual || CUSTOS.base === undefined) { box.innerHTML = ""; return; }
+    var indisponivel = !custoEditavel();
+    box.innerHTML = "";
 
     if (CUSTOS.base === null) {
       box.innerHTML = '<div class="vf-alert is-info am-custos-aviso" role="status">' +
@@ -4403,14 +4406,14 @@
       var semCusto = itensDeCustoNaTela(true).filter(function (id) { return CUSTOS.cache[id] === null; }).length;
       // Na linha da busca quando há o slot; senão, na barra própria.
       var alvo = slot || box;
-      if (slot) box.innerHTML = "";
+      if (slot && CUSTOS.base !== null) box.innerHTML = "";
       // Split (modelo B aprovado): o corpo entra em "Editar custos", a seta
       // abre o menu com "Importar base de custo". O aviso "N sem custo nesta
       // página" vira a segunda linha do botão. Altura inteira da barra, ao
       // lado do Radar de subsídios.
       alvo.innerHTML = '<div class="am-custos-acoes">' +
         '<div class="am-custos-split">' +
-          '<button type="button" class="am-custos-split__main" data-custos-acao="entrar">' +
+          '<button type="button" class="am-custos-split__main" data-custos-acao="entrar"' + (indisponivel ? ' disabled' : '') + '>' +
             '<span class="am-custos-split__ico" aria-hidden="true">' + icLapis(16) + "</span>" +
             '<span class="am-custos-split__txt"><span class="am-custos-split__titulo">Editar custos</span>' +
               (semCusto ? '<span class="am-custos-split__sub am-custos-acoes__aviso" title="Anúncios desta página sem custo na Base">' +
@@ -4418,7 +4421,7 @@
                 : '<span class="am-custos-split__sub">Custo do produto na Base</span>') +
             "</span></button>" +
           '<button type="button" class="am-custos-split__seta" data-custos-acao="menu" aria-label="Mais opções de custo"' +
-            ' aria-haspopup="menu" aria-expanded="' + (CUSTOS.menuAberto ? "true" : "false") + '" aria-controls="am-custos-menu">' +
+            (indisponivel ? ' disabled' : '') + ' aria-haspopup="menu" aria-expanded="' + (CUSTOS.menuAberto ? "true" : "false") + '" aria-controls="am-custos-menu">' +
             '<svg width="14" height="14" viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" /></svg>' +
           "</button>" +
         "</div>" +

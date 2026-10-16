@@ -410,16 +410,17 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
     // Reembolso é conciliação: fica visível, nunca entra na margem.
     reembolso: reembolsoInfo ? { total: reembolsoInfo.reembolsoTotal, pedidos: reembolsoInfo.pedidos } : null,
   };
-  // O painel Projetado × Realizado compara COMPONENTES (preço, comissão, frete…)
-  // que não carregam o retorno ML: ele segue com a margem persistida, para a
-  // soma dos componentes fechar com o número exibido ali.
-  const projetadoPersistido = { ...projected, profit: row.profit, margin: row.margin, marginPercent: row.marginPercent };
+  // O painel Projetado × Realizado usa a MESMA margem projetada do header
+  // (atual, já com o retorno ML da promoção em andamento) — o retorno sai
+  // como linha própria "Retorno ML" (ver buildProjectedVsRealized), então os
+  // componentes exibidos + o retorno continuam fechando com o total mostrado.
   const projectedVsRealized = core.buildProjectedVsRealized({
     fields,
-    projected: projetadoPersistido,
+    projected,
     realized,
     sales,
     coverage: sales.cobertura,
+    rebate: { value: atual.rebate, motivo: atual.rebateMotivo },
   });
 
   // Integridade do dado lida da linha (preço × custo PROJETADOS) pela mesma
@@ -438,8 +439,9 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
       projected,
       realized: realizedContrato,
       target: { marginTarget: quality.targetMargin ?? null },
-      // Mesmo erro de projeção do Motor ao vivo (marginItem.margin.projectionError).
-      projectionError: core.compareMargins(projetadoPersistido.margin, realized.margin),
+      // Mesmo erro de projeção do Motor ao vivo (marginItem.margin.projectionError) —
+      // sobre a MESMA margem projetada do header/painel (atual, com o retorno ML).
+      projectionError: core.compareMargins(projected.margin, realized.margin),
     },
     // Realizado indisponível: nada de "NO_SALES" (afirmaria que não vendeu).
     projectedVsRealized: realizadoMotivo ? null : projectedVsRealized,

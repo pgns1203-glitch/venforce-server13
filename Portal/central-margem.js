@@ -3291,10 +3291,25 @@
       '<div class="cm-panel__body">' + body + "</div></section>";
   }
 
-  function dsumCell(label, valueHtml, foot, tone) {
+  function dsumCell(label, valueHtml, foot, tone, footAttr) {
     return '<div class="cm-dsum__cell' + (tone ? " " + tone : "") + '"><span class="cm-dsum__label">' + escapeHtml(label) + "</span>" +
       '<strong class="cm-dsum__value">' + valueHtml + "</strong>" +
-      (foot ? '<span class="cm-dsum__foot">' + escapeHtml(foot) + "</span>" : "") + "</div>";
+      (foot ? '<span class="cm-dsum__foot"' + (footAttr ? " " + footAttr : "") + ">" + escapeHtml(foot) + "</span>" : "") + "</div>";
+  }
+
+  // Nota da margem projetada: retorno ML somado (valor) ou, se ambíguo (duas
+  // promoções com retorno no mesmo anúncio), o aviso de que NÃO foi somado —
+  // o header nunca fica mudo sobre a ambiguidade (ver rebateNoteHtml da tabela).
+  function rebateFootOf(item) {
+    var p = item && item.projected;
+    if (!p) return { text: null, attr: null };
+    if (p.rebate !== null && p.rebate !== undefined) {
+      return { text: "inclui retorno ML " + formatMoney(p.rebate), attr: null };
+    }
+    if (p.rebateReason === "REBATE_AMBIGUO") {
+      return { text: "retorno ML não somado — duas promoções ativas (ambíguo)", attr: 'data-cm-rebate-reason="REBATE_AMBIGUO"' };
+    }
+    return { text: null, attr: null };
   }
 
   function listingStatusHtml(item) {
@@ -3331,12 +3346,12 @@
       ? escapeHtml(formatPercent(item.realized.margin))
       : unavailable(item.hasOrders || item.realizedUnavailable ? "Indisponível" : "Sem venda");
     var aplicacao = state.pricing && state.pricing.aplicacao;
+    var rebateFoot = rebateFootOf(item);
     refs.drawerSummary.innerHTML =
       dsumCell("Preço atual", precoAtual === null ? unavailable("Indisponível") : escapeHtml(formatMoney(precoAtual)), precoFoot) +
       dsumCell("Margem projetada", item.projected && item.projected.margin !== null && item.projected.margin !== undefined
         ? escapeHtml(formatPercent(item.projected.margin)) : unavailable("Indisponível"),
-        item.projected && item.projected.rebate !== null && item.projected.rebate !== undefined ? "inclui retorno ML " + formatMoney(item.projected.rebate) : null,
-        marginClass(item.projected ? item.projected.margin : null, item)) +
+        rebateFoot.text, marginClass(item.projected ? item.projected.margin : null, item), rebateFoot.attr) +
       dsumCell("Margem realizada", realized, null) +
       dsumCell("Vendas", sales.units === null || sales.units === undefined ? unavailable("—") : escapeHtml(formatInt(sales.units) + " un."), periodShortLabel()) +
       dsumCell("Receita", sales.revenue === null || sales.revenue === undefined ? unavailable("—") : escapeHtml(formatMoney(sales.revenue)), periodShortLabel()) +
@@ -4813,16 +4828,31 @@
         escapeHtml(cmp.projected.margin === null ? "indisponível" : formatPercent(cmp.projected.margin)) + ".</p>");
     }
     var drift = cmp.drift || {};
-    var linhas = COMPARISON_ROWS.map(function (row) {
+    // Retorno ML em andamento: a comissão realizada (Orders API) já vem
+    // líquida do subsídio — o rótulo avisa, e uma linha própria "Retorno ML"
+    // mostra o valor somado ao lucro do header/painel (nunca somado de novo).
+    var temRebate = cmp.projected.rebate !== null && cmp.projected.rebate !== undefined;
+    var linhaRows = COMPARISON_ROWS.map(function (row) {
       var proj = cmpValue(row.format, cmp.projected[row.key]);
       var real = cmpValue(row.format, cmp.realized[row.key]);
       var semHistorico = row.key === "fixedFee" && cmp.notComparable.some(function (n) { return n.field === "fixedFee"; });
       var impactoVal = cmpImpactoValor(row.format, row, drift);
       var impacto = impactoVal === null ? null : (row.format === "percent" ? formatPp(impactoVal) : formatMoney(impactoVal, true));
-      return "<tr><td>" + escapeHtml(row.label) + '</td><td class="num">' + (proj === null ? unavailable("—") : escapeHtml(proj)) +
+      var label = row.key === "commission" && temRebate ? row.label + " (líquida do retorno ML)" : row.label;
+      var html = "<tr><td>" + escapeHtml(label) + '</td><td class="num">' + (proj === null ? unavailable("—") : escapeHtml(proj)) +
         '</td><td class="num">' + (real === null ? unavailable(semHistorico ? "sem histórico" : "—", semHistorico ? "A Central de Vendas não guarda taxa fixa histórica: o realizado não a desconta." : null) : escapeHtml(real)) +
         '</td><td class="num' + cmpImpactoClasse(impactoVal) + '">' + escapeHtml(impacto || "—") + "</td></tr>";
-    }).join("");
+      if (row.key === "commission" && temRebate) {
+        html += '<tr data-cm-cmp-rebate-row="1"><td>Retorno ML</td><td class="num">' + escapeHtml(formatMoney(cmp.projected.rebate)) +
+          '</td><td class="num">' + unavailable("incluído na comissão", "O retorno ML já está embutido na comissão realizada, líquida do subsídio.") +
+          '</td><td class="num">—</td></tr>';
+      }
+      return html;
+    });
+    if (!temRebate && cmp.projected.rebateMotivo === "REBATE_AMBIGUO") {
+      linhaRows.push('<tr data-cm-cmp-rebate-ambiguo="1"><td colspan="4"><span class="cm-cell-meta" title="Duas ou mais promoções com retorno ML ativas neste anúncio: o Motor não adivinha qual, então nada foi somado.">⚠ Retorno ML não somado — duas promoções ativas (ambíguo)</span></td></tr>');
+    }
+    var linhas = linhaRows.join("");
     var impactoLucro = drift.profit === null || drift.profit === undefined ? null : drift.profit;
     var impactoMargem = drift.marginPercentagePoints === null || drift.marginPercentagePoints === undefined ? null : drift.marginPercentagePoints;
     var margemRow = '<tr class="cm-cmp-total"><td>Lucro / un.</td><td class="num">' + escapeHtml(formatMoney(cmp.projected.profit) || "—") +
@@ -4841,6 +4871,13 @@
     }
     if (cmp.realized.assumed && cmp.realized.assumed.length) {
       fatos.push("<li>Assumido 0 no realizado: " + escapeHtml(cmp.realized.assumed.map(variableLabel).join(", ")) + ".</li>");
+    }
+    if (cmp.realized.rebateEmbutido !== null && cmp.realized.rebateEmbutido !== undefined) {
+      fatos.push('<li data-cm-cmp-rebate-embutido="' + escapeHtml(String(cmp.realized.rebateEmbutido)) + '">Retorno ML embutido na comissão realizada ≈ ' +
+        escapeHtml(formatMoney(cmp.realized.rebateEmbutido)) + " — já incluído na tarifa que o Mercado Livre cobrou, não somado de novo.</li>");
+    }
+    if (cmp.projected.rebateMotivo === "REBATE_AMBIGUO") {
+      fatos.push('<li data-cm-cmp-rebate-ambiguo-fato="1">Duas ou mais promoções com retorno ML ativas neste anúncio: o Motor não soma nem adivinha qual — a comissão comparada aqui é a bruta de sempre.</li>');
     }
     fatos.push("<li>" + escapeHtml(parcial.length ? "Cobertura parcial — " + parcial.join("; ") + ". Valores por unidade são a média das vendas com o dado." : "Cobertura completa dos componentes nas vendas do período.") + "</li>");
     if (sales.refund && sales.refund.total) {

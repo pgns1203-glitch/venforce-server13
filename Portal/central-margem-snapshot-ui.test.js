@@ -537,7 +537,8 @@ async function run() {
       await cdp.evaluate("window.VFCentralMargemUi.openDrawer('C900-MLB100000', 'evidence')");
       await waitFor(cdp, "document.querySelector('[data-cm-cmp-panel=\"COMPARABLE\"]')", "painel Projetado × Realizado não apareceu no drawer");
       const painel = await cdp.evaluate("document.querySelector('[data-cm-cmp-panel=\"COMPARABLE\"]').closest('section').textContent");
-      for (const trecho of ["Projetado", "Realizado", "Desvio", "sem histórico", "-3,2 pp", "rateado", "Contraprova"]) {
+      // A coluna de desvio virou "Impacto no lucro" (#316); o Δ margem do núcleo (marginPercentagePoints) aparece no total.
+      for (const trecho of ["Projetado", "Realizado", "Impacto no lucro", "sem histórico", "-3,2 pp", "rateado", "Contraprova"]) {
         assert.ok(painel.toLowerCase().includes(trecho.toLowerCase()), `falta "${trecho}" no painel: ${painel}`);
       }
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");

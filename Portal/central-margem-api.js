@@ -843,7 +843,8 @@
       COMPARISON_FIELDS.forEach(function (key) { drift[key] = numberOrNull(raw.drift[key]); });
       drift.taxRatePp = numberOrNull(raw.drift.taxRatePp);
       drift.profit = numberOrNull(raw.drift.profit);
-      drift.marginPp = numberOrNull(raw.drift.marginPercentagePoints);
+      // Mesmo nome do núcleo (marginComparison.js): o painel e o chip da worklist leem `marginPercentagePoints`.
+      drift.marginPercentagePoints = numberOrNull(raw.drift.marginPercentagePoints);
     }
     return {
       status: String(raw.status || "NO_SALES"),

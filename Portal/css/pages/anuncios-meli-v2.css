@@ -3347,9 +3347,95 @@
   pointer-events: none;
 }
 
-.vf-page-anuncios-meli .am-sync-box .vf-modal__body {
+/* Andamento da sincronização DENTRO do card (substitui o modal que travava a
+   tela). Etapa 1 = sync, etapa 2 = recálculo da margem; fica até o operador
+   dispensar. */
+.vf-page-anuncios-meli .am-sync-status {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vf-sp-3);
+  width: 100%;
+  max-width: 520px;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border: 1px solid var(--vf-info-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-info-bg);
+  color: var(--vf-info-strong);
+  text-align: left;
+}
+
+.vf-page-anuncios-meli .am-sync-status.is-ok {
+  border-color: var(--vf-success-border);
+  background: var(--vf-success-bg);
+  color: var(--vf-success-strong);
+}
+
+.vf-page-anuncios-meli .am-sync-status.is-aviso {
+  border-color: var(--vf-warning-border);
+  background: var(--vf-warning-bg);
+  color: var(--vf-warning-strong);
+}
+
+.vf-page-anuncios-meli .am-sync-status.is-erro {
+  border-color: var(--vf-danger-border);
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-anuncios-meli .am-sync-status__spinner {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.vf-page-anuncios-meli .am-sync-status__icone {
+  flex: 0 0 auto;
+  width: 18px;
+  font-weight: var(--vf-fw-semibold);
   text-align: center;
 }
+
+.vf-page-anuncios-meli .am-sync-status__texto {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vf-page-anuncios-meli .am-sync-status__titulo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--vf-sp-2);
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-anuncios-meli .am-sync-status__etapa {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-medium);
+  opacity: .8;
+}
+
+.vf-page-anuncios-meli .am-sync-status__detalhe {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-anuncios-meli .am-sync-status__fechar {
+  flex: 0 0 auto;
+  border: 0;
+  background: none;
+  padding: 0 2px;
+  font-size: 18px;
+  line-height: 1;
+  color: inherit;
+  cursor: pointer;
+  opacity: .7;
+}
+
+.vf-page-anuncios-meli .am-sync-status__fechar:hover { opacity: 1; }
 
 @media (max-width: 1024px) {
   .vf-page-anuncios-meli .am-cliente-contexto {

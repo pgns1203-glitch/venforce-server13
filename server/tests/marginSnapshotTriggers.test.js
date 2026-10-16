@@ -371,7 +371,7 @@ cenario("sync de anúncios COMPLETO enfileira o recálculo da conta mesmo com o 
   assert.strictEqual(r.enfileirado, true);
   assert.strictEqual(kicks, 1);
   assert.strictEqual(db.runs.length, 1);
-  assert.strictEqual(db.runs[0].reason, "anuncios_sync_completo");
+  assert.strictEqual(db.runs[0].reason, "manual_refresh");
   assert.strictEqual(db.runs[0].cliente_conta_id, 5);
   assert.strictEqual(db.runs[0].status, "queued");
 });
@@ -398,7 +398,21 @@ cenario("sync de anúncios NOVOS só enfileira quando gravou algo; falha/sem con
   assert.strictEqual(db.runs.length, 0);
   const novos = await triggers.enfileirarAposSyncAnuncios({ resultado: { ok: true, modo: "novos", contaId: 5, totalSalvos: 3 }, clienteId: 1 }, deps);
   assert.strictEqual(novos.enfileirado, true);
-  assert.strictEqual(db.runs[0].reason, "anuncios_sync_novos");
+  assert.strictEqual(db.runs[0].reason, "manual_refresh");
+});
+
+cenario("sync de anúncios usa um reason aceito pelo CHECK de margin_snapshot_runs", async () => {
+  // Espelho de margin_snapshot_runs_reason_check (produção): o fake db não
+  // valida reason, então a regra fica explícita aqui.
+  const REASONS_DO_BANCO = ["central_vendas_sync_completed", "base_changed", "manual_refresh", "freshness_cron"];
+  for (const resultado of [{ ok: true, modo: "completo", contaId: 5 }, { ok: true, modo: "novos", contaId: 6, totalSalvos: 1 }]) {
+    let reason = null;
+    await triggers.enfileirarAposSyncAnuncios(
+      { resultado, clienteId: 1 },
+      { enqueue: async (args) => { reason = args.reason; return { run: { id: 1 }, reaproveitado: false }; }, kick() {} }
+    );
+    assert.ok(REASONS_DO_BANCO.includes(reason), "reason fora do CHECK: " + reason);
+  }
 });
 
 async function main() {

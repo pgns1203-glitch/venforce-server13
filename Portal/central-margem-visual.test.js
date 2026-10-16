@@ -266,7 +266,12 @@ async function run() {
       await waitFor(cdp, "document.querySelector('[data-cm-cenarios]')", "a Bancada não carregou");
       await cdp.evaluate("document.querySelector('[data-cenario=\"P-DEAL\"]').click()");
       const resultado = await texto("#cm-banc-resultado");
-      for (const t of ["Entrar se girar", "Retorno ML", "LC/un", "Margem", "Precisa vender"]) assert.ok(resultado.includes(t), `falta ${t}: ${resultado}`);
+      for (const t of ["Entrar se girar", "LC/UN", "MARGEM", "Precisa vender"]) assert.ok(resultado.includes(t), `falta ${t}: ${resultado}`);
+      // Retorno ML fica dentro de "Ver conta completa" (fechado por padrão) — abre e confere.
+      await cdp.evaluate("document.querySelector('[data-cm-conta-completa]').setAttribute('open', '')");
+      const comContaAberta = await texto("#cm-banc-resultado");
+      assert.ok(comContaAberta.includes("Retorno ML"), comContaAberta);
+      await cdp.evaluate("document.querySelector('[data-cm-conta-completa]').removeAttribute('open')");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Participar desta promoção");
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
       await shot("04-bancada-promocao");

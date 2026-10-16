@@ -80,7 +80,23 @@
 /* Esquerda: cascata */
 .cm-drawer .cm-banc__resultado { display: flex; flex-direction: column; gap: var(--vf-sp-2); }
 .cm-drawer .cm-banc__titulo { display: flex; flex-direction: column; gap: 2px; }
-.cm-drawer .cm-banc__veredito { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2); }
+.cm-drawer .cm-banc__veredito, .vf-page-central-margem .cm-promo-detail .cm-banc__veredito { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2); font-size: var(--vf-fs-md, 1rem); margin: var(--vf-sp-2) 0; }
+.cm-drawer .cm-banc__veredito .vf-status, .vf-page-central-margem .cm-promo-detail .cm-banc__veredito .vf-status { font-size: var(--vf-fs-md, 1rem); padding: 4px 10px; }
+
+/* 3 números grandes: Preço · LC/un · Margem — antes → depois + Δ. */
+.cm-banc__numeros { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--vf-sp-3); margin: var(--vf-sp-2) 0; }
+.cm-banc__numero { display: flex; flex-direction: column; gap: 2px; }
+.cm-banc__numero-rotulo { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; }
+.cm-banc__numero-valor { font-size: var(--vf-fs-lg, 1.25rem); font-variant-numeric: tabular-nums; }
+.cm-banc__numero-valor strong { font-weight: 700; }
+.cm-banc__numero-antes { color: var(--vf-text-muted); font-size: var(--vf-fs-sm); }
+.cm-banc__numero-delta { font-size: var(--vf-fs-xs); font-variant-numeric: tabular-nums; color: var(--vf-text-secondary); }
+.cm-banc__numero-delta.is-up { color: var(--vf-success-strong); }
+.cm-banc__numero-delta.is-down { color: var(--vf-danger-strong); }
+
+/* Custo (hipótese) em destaque — sempre visível, fora da cascata. */
+.cm-banc__hip-destaque { display: flex; align-items: center; gap: var(--vf-sp-2); margin: var(--vf-sp-2) 0; }
+.cm-banc__hip-destaque-rotulo { color: var(--vf-text-secondary); font-size: var(--vf-fs-xs); font-weight: 600; white-space: nowrap; }
 .cm-drawer .cm-banc__tabela { width: 100%; border-collapse: collapse; font-size: var(--vf-fs-sm); }
 .cm-drawer .cm-banc__tabela th, .cm-drawer .cm-banc__tabela td { padding: 5px 8px; border-bottom: 1px solid var(--vf-border); text-align: left; }
 .cm-drawer .cm-banc__tabela thead th { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }

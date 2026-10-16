@@ -2224,11 +2224,14 @@
 
   // Detalhe expansível: a mesma cascata Hoje × Promo do drawer + quem banca e volume de empate.
   function promoDetalheConteudoHtml(op) {
-    var contaFeita = comoAContaFoiFeitaHtml(op, op.atual);
-    var contaCompleta = contaFeita ? '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Ver conta completa</summary>' + contaFeita + "</details>" : "";
+    var exibicaoLeitura = { resultado: op, hipotese: false, somenteLeitura: true };
+    var contaCompleta = '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Ver conta completa</summary>' +
+      cascataHtml(op.atual, exibicaoLeitura) + comoAContaFoiFeitaHtml(op, op.atual) + "</details>";
+    // `op` (oportunidades) usa `veredito_motivo`; vereditoBancadaHtml espera `motivo` (/simular) — normaliza na borda.
+    var opComMotivo = Object.assign({}, op, { motivo: op.veredito_motivo });
+    // Mesma ordem da Bancada: veredito → 3 números → efeitos → Ver conta completa.
     return '<div class="cm-promo-detail__grid">' +
-      '<div class="cm-promo-detail__esq"><h4 class="cm-banc__sub">Hoje × Promoção</h4>' + efeitosHtml(op) +
-      cascataHtml(op.atual, { resultado: op, hipotese: false, somenteLeitura: true }) + contaCompleta + "</div>" +
+      '<div class="cm-promo-detail__esq"><h4 class="cm-banc__sub">Hoje × Promoção</h4>' + vereditoBancadaHtml(opComMotivo) + tresNumerosHtml(op.atual, op) + efeitosHtml(op) + contaCompleta + "</div>" +
       '<div class="cm-promo-detail__dir">' + bancaRodapeHtml(op) + empateHtml(op) + promoFlagsHtml(op) + origemLinhaHtml(op) + "</div></div>";
   }
 
@@ -3744,7 +3747,8 @@
       // Retorno ML só aparece quando existe em algum dos lados (o resto da cascata é sempre mostrado).
       if (l.chave === "rebate" && !a && !c) return "";
       var mudou = c !== null && c !== undefined && a !== null && a !== undefined && a !== c;
-      var celula = (l.chave === "custo" || l.chave === "taxa_fixa") && !exibicao.somenteLeitura ? hipCelulaHtml(l.chave, c, exibicao) : escapeHtml(money(c));
+      // Custo é hipótese em DESTAQUE (campo próprio, sempre visível, fora da cascata) — só taxa fixa fica editável aqui.
+      var celula = l.chave === "taxa_fixa" && !exibicao.somenteLeitura ? hipCelulaHtml(l.chave, c, exibicao) : escapeHtml(money(c));
       var aviso = l.chave === "frete" && mudouFrete ? ' <span class="cm-banc__faixa" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
       var fonteLinha = l.chave === "frete" && freteFonte ? '<div class="cm-banc__fonte-componente" data-cm-frete-fonte>' + escapeHtml(freteFonte) + "</div>" : "";
       return '<tr data-cm-linha="' + l.chave + '"' + (mudou ? ' class="is-mudou"' : "") + '><th scope="row">' + (l.sinal ? '<span class="cm-banc__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) + aviso + fonteLinha + "</th>" +
@@ -3832,7 +3836,8 @@
     var c = r.cenario;
     var a = atual;
     var ev = r.evidencia || {};
-    var taxaPct = c.preco && c.imposto !== null ? formatPercent(c.imposto / c.preco) : null;
+    var aliquota = r.explicacao && r.explicacao.aliquota;
+    var taxaPct = aliquota !== null && aliquota !== undefined ? formatPercent(aliquota) : null;
     var freteTexto = freteFonteTexto(r);
     var freteLinha = "Frete = " + (freteTexto || "no preço de " + money(c.preco)) +
       (a.frete !== null && a.frete !== c.frete ? " (antes " + money(a.frete) + " em " + money(a.preco) + ")" : "") + " = " + money(c.frete);
@@ -3847,6 +3852,34 @@
     ].filter(Boolean);
     return '<div class="cm-banc__conta-feita" data-cm-conta-feita><h4 class="cm-banc__sub">Como a conta foi feita</h4><ul>' +
       linhas.map(function (l) { return "<li>" + escapeHtml(l) + "</li>"; }).join("") + "</ul></div>";
+  }
+
+  // 3 números grandes: Preço, LC/un, Margem — antes → depois, Δ colorido embaixo (margem em pp).
+  function numeroGrandeHtml(rotulo, antes, depois, deltaTexto, deltaValor) {
+    var tom = deltaValor === null || deltaValor === undefined || deltaValor === 0 ? "" : deltaValor > 0 ? "is-up" : "is-down";
+    return '<div class="cm-banc__numero" data-cm-numero="' + escapeHtml(rotulo) + '"><span class="cm-banc__numero-rotulo">' + escapeHtml(rotulo) + "</span>" +
+      '<span class="cm-banc__numero-valor"><span class="cm-banc__numero-antes">' + escapeHtml(antes || "—") + "</span> → <strong>" + escapeHtml(depois || "—") + "</strong></span>" +
+      (deltaTexto ? '<span class="cm-banc__numero-delta ' + tom + '">' + escapeHtml(deltaTexto) + "</span>" : "") + "</div>";
+  }
+
+  function tresNumerosHtml(atual, r) {
+    if (!atual || !r || !r.cenario) return "";
+    var cen = r.cenario;
+    var deltaPreco = r.delta_preco_atual === null || r.delta_preco_atual === undefined ? null : round2ish(-r.delta_preco_atual);
+    return '<div class="cm-banc__numeros" data-cm-numeros-grandes>' +
+      numeroGrandeHtml("Preço", money(atual.preco), money(cen.preco), deltaPreco === null ? null : formatMoney(deltaPreco, true), deltaPreco) +
+      numeroGrandeHtml("LC/un", money(atual.lc), money(cen.lc), r.delta_lc === null || r.delta_lc === undefined ? null : formatMoney(r.delta_lc, true), r.delta_lc) +
+      numeroGrandeHtml("Margem", formatPercent(atual.margem_ratio) || "—", formatPercent(cen.margem_ratio) || "—", r.delta_margem_ratio === null || r.delta_margem_ratio === undefined ? null : ppTexto(r.delta_margem_ratio), r.delta_margem_ratio) +
+      "</div>";
+  }
+
+  function round2ish(v) { return Math.round(v * 100) / 100; }
+
+  // Custo em destaque: a hipótese PRINCIPAL, sempre visível (taxa fixa — secundária — fica dentro de "Ver conta completa").
+  function hipoteseCustoHtml(ex) {
+    if (!ex || ex.somenteLeitura) return "";
+    var cen = (ex.resultado && ex.resultado.cenario) || {};
+    return '<div class="cm-banc__hip-destaque" data-cm-hip-destaque><span class="cm-banc__hip-destaque-rotulo">Custo (hipótese)</span>' + hipCelulaHtml("custo", cen.custo, ex) + "</div>";
   }
 
   function vereditoBancadaHtml(r) {
@@ -3892,9 +3925,10 @@
       hipAviso = '<p class="cm-field-error" role="alert">' + escapeHtml(h.localError) + "</p>";
     }
     var r = ex.resultado;
-    var contaFeita = comoAContaFoiFeitaHtml(r, atual);
-    var contaCompleta = contaFeita ? '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Ver conta completa</summary>' + contaFeita + "</details>" : "";
-    return bancadaCenarioTituloHtml(ex) + hipAviso + vereditoBancadaHtml(r) + efeitosHtml(r) + cascataHtml(atual, ex) + contaCompleta + bancaRodapeHtml(r) + empateHtml(r) + evidenciaBancadaHtml(r);
+    var contaCompleta = '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Ver conta completa</summary>' +
+      cascataHtml(atual, ex) + comoAContaFoiFeitaHtml(r, atual) + "</details>";
+    // Ordem: veredito → 3 números → hipótese de custo (sempre visível) → efeitos → Ver conta completa (cascata editável de taxa fixa + como a conta foi feita) → rodapé.
+    return bancadaCenarioTituloHtml(ex) + hipAviso + vereditoBancadaHtml(r) + tresNumerosHtml(atual, r) + hipoteseCustoHtml(ex) + efeitosHtml(r) + contaCompleta + bancaRodapeHtml(r) + empateHtml(r) + evidenciaBancadaHtml(r);
   }
 
   // --- Coluna da direita: cenários agrupados -------------------------------------

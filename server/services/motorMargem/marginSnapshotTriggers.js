@@ -86,6 +86,39 @@ async function enfileirarAposSyncCentralVendas({ run } = {}, deps = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// B. Após a sincronização de Anúncios ML (botões da tela de Anúncios)
+// ---------------------------------------------------------------------------
+//
+// O sync só grava os anúncios; a margem da lista vem do snapshot. Sem este
+// gatilho o operador clicava "Sincronização completa" e o tooltip continuava
+// com a data do último cálculo (caso real 16/10/2026: "15/10 às 11:35").
+// É um pedido EXPLÍCITO do operador, então segue a regra do refresh manual:
+// não depende das flags (o run fica queued até uma instância com o worker
+// ligado reivindicá-lo; o dedupe impede acúmulo — 1 run ativo por conta).
+// "novos" só recalcula quando de fato gravou anúncio novo.
+async function enfileirarAposSyncAnuncios({ resultado, clienteId, clienteSlug = null, requestedBy = null } = {}, deps = {}) {
+  const { db, enqueue, kick } = defaults(deps);
+  if (!resultado || !resultado.ok) return { enfileirado: false, motivo: "SYNC_SEM_SUCESSO" };
+  if (resultado.modo !== "completo" && !(resultado.totalSalvos > 0)) {
+    return { enfileirado: false, motivo: "NADA_NOVO" };
+  }
+  const clienteContaId = resultado.contaId ?? null;
+  if (!clienteContaId || !clienteId) return { enfileirado: false, motivo: "SEM_CONTA" };
+
+  const { run, reaproveitado } = await enqueue({
+    clienteId,
+    clienteSlug,
+    clienteContaId,
+    marketplace: "meli",
+    reason: "anuncios_sync_" + (resultado.modo === "completo" ? "completo" : "novos"),
+    requestedBy,
+    db,
+  });
+  kick();
+  return { enfileirado: true, runId: run.id, reaproveitado };
+}
+
+// ---------------------------------------------------------------------------
 // D. Mudança de Base (custo/imposto/taxa fixa, vínculo)
 // ---------------------------------------------------------------------------
 //
@@ -173,6 +206,7 @@ function dispararSemBloquear(fn, logger = console) {
 
 module.exports = {
   enfileirarAposSyncCentralVendas,
+  enfileirarAposSyncAnuncios,
   resolverContasAfetadasPorBase,
   enfileirarPorMudancaDeBase,
   baseTriggerHabilitado,

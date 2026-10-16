@@ -9916,6 +9916,14 @@
   // ===========================================================================
   // Sincronização
   // ===========================================================================
+  // O sync grava os anúncios; a margem da lista vem de um recálculo em
+  // segundo plano que o backend enfileira junto (margemRecalculo) — a data
+  // "calculada em" só muda quando ele termina, não na hora do OK.
+  function margemRecalculoAvisoHtml(d) {
+    if (!d.margemRecalculo || !d.margemRecalculo.enfileirado) return "";
+    return '<p class="vf-banner__description">A margem dos anúncios está sendo recalculada em segundo plano — atualize a página em alguns minutos para ver a data nova.</p>';
+  }
+
   function sincronizar(modo) {
     // Sem operação escolhida o Shell nem exibe esta tela (scope="account"):
     // nenhuma guarda de cardinalidade própria aqui (R8).
@@ -9944,9 +9952,10 @@
         if (d.totalSalvos > 0) {
           msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Sincronização concluída</p><p class="vf-banner__description">' + (d.totalEncontrados || 0) +
             " anúncios na conta · " + d.totalSalvos + " gravados/atualizados.</p>" +
-            (d.limitado ? '<p class="vf-banner__description">O limite de itens por sincronização foi atingido. Rode novamente para continuar.</p>' : "") + "</div></div>";
+            (d.limitado ? '<p class="vf-banner__description">O limite de itens por sincronização foi atingido. Rode novamente para continuar.</p>' : "") +
+            margemRecalculoAvisoHtml(d) + "</div></div>";
         } else {
-          msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Tudo em dia</p><p class="vf-banner__description">' + escapeHtml(d.mensagem || "Nenhum anúncio novo para gravar.") + "</p></div></div>";
+          msg = '<div class="vf-banner is-success"><div class="vf-banner__content"><p class="vf-banner__title">Tudo em dia</p><p class="vf-banner__description">' + escapeHtml(d.mensagem || "Nenhum anúncio novo para gravar.") + "</p>" + margemRecalculoAvisoHtml(d) + "</div></div>";
         }
         box.innerHTML = '<div class="vf-modal__body">' + msg + '</div><div class="vf-modal__footer"><button type="button" class="vf-btn vf-btn--primary" id="am-sync-ok">OK</button></div>';
         carregarResumo(); carregarAnuncios();

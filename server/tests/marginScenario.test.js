@@ -502,6 +502,50 @@ cenario("efeitos: sem ΔLC (bloqueado ou faltando dado), não há barras", () =>
   assert.deepStrictEqual(bloqueado.efeitos, []);
 });
 
+// ── Caso real da Bancada (MLB5537622816, Red Fish): frase e variação contra hoje ──
+// Hoje 55,19 com retorno ML 2,24 (imposto 11%, comissão 6,35, frete 8,15, custo 22,42) → LC 14,44.
+const ATUAL_REDFISH = { preco: 55.19, custo: 22.42, aliquota: 0.11, taxa_fixa: 0, comissao: 6.35, frete: 8.15, rebate: 2.24 };
+
+cenario("Bancada real: 11.11 da Black a 47,67 → frase 'Perde R$ 6,76… precisa vender 88% a mais' e −13,6% contra hoje", () => {
+  const r = calcularCenario({
+    atual: ATUAL_REDFISH,
+    cenario: { tipo: "promo", preco: 47.67, rebate: 0, status_exibicao: "ELEGÍVEL" },
+    cotacao: { comissao: 5.48, frete: 6.85 },
+    meta: META,
+  });
+  assert.strictEqual(r.atual.lc, 14.44);
+  assert.strictEqual(r.cenario.lc, 7.68);
+  assert.strictEqual(r.delta_lc, -6.76);
+  assert.strictEqual(r.veredito, VEREDITOS.ENTRAR_SE_GIRAR);
+  assert.strictEqual(r.frase, "Perde R$ 6,76 por unidade. Para empatar o lucro de hoje, precisa vender 88% a mais.");
+  assert.strictEqual(r.variacao_preco_ratio, Math.round((47.67 / 55.19 - 1) * 1e6) / 1e6);
+  assert.ok(r.variacao_preco_ratio < -0.136 && r.variacao_preco_ratio > -0.137, String(r.variacao_preco_ratio));
+});
+
+cenario("Bancada real: preço digitado 59,90 sai da promoção ativa → 'Ganha R$ 1,41 por unidade em relação a hoje.' e +8,5%", () => {
+  const r = calcularCenario({ atual: ATUAL_REDFISH, cenario: { tipo: "preco", preco: 59.9 }, cotacao: { comissao: 6.89, frete: 8.15 }, meta: META });
+  assert.strictEqual(r.cenario.lc, 15.85);
+  assert.strictEqual(r.delta_lc, 1.41);
+  assert.strictEqual(r.veredito, VEREDITOS.ENTRAR);
+  assert.strictEqual(r.frase, "Ganha R$ 1,41 por unidade em relação a hoje.");
+  assert.ok(r.variacao_preco_ratio > 0.085 && r.variacao_preco_ratio < 0.086, String(r.variacao_preco_ratio));
+});
+
+cenario("frase: ativa, não entrar e bloqueado (sem frase — o motivo explica)", () => {
+  const ativa = calcularCenario({ atual: ATUAL_REDFISH, cenario: { tipo: "promo", preco: 55.19, status_exibicao: "ATIVA" }, cotacao: {}, meta: META });
+  assert.strictEqual(ativa.veredito, VEREDITOS.ATIVA);
+  assert.strictEqual(ativa.frase, "É a promoção que forma o preço de hoje.");
+  assert.strictEqual(ativa.variacao_preco_ratio, 0);
+  const prejuizo = calcularCenario({ atual: ATUAL_REDFISH, cenario: { tipo: "preco", preco: 30 }, cotacao: { comissao: 3.45, frete: 6.85 }, meta: META });
+  assert.strictEqual(prejuizo.veredito, VEREDITOS.NAO_ENTRAR);
+  assert.strictEqual(prejuizo.frase, `O lucro por unidade fica em −R$ ${(Math.abs(prejuizo.cenario.lc)).toFixed(2).replace(".", ",")}: não cobre os custos.`);
+  const bloqueado = calcularCenario({ atual: ATUAL_REDFISH, cenario: { tipo: "preco", preco: 59.9 }, cotacao: { comissao: null, frete: 8.15 }, meta: META });
+  assert.strictEqual(bloqueado.veredito, VEREDITOS.BLOQUEADO);
+  assert.strictEqual(bloqueado.frase, null);
+  assert.strictEqual(core.resultadoBloqueado("promocao_sem_preco").frase, null);
+  assert.strictEqual(core.resultadoBloqueado("promocao_sem_preco").variacao_preco_ratio, null);
+});
+
 (async () => {
   let falhas = 0;
   for (const { nome, fn } of casos) {

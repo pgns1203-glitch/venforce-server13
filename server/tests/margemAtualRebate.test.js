@@ -106,8 +106,11 @@ cenario("promo started com subsídio 3,30: tabela, drawer e Oportunidades têm a
   assert.strictEqual(item.margin.projected.margin, COM_REBATE.margin);
   assert.strictEqual(item.projected.rebate, 3.3);
   assert.notStrictEqual(item.projected.margin, SEM_REBATE.margin);
-  // O painel Projetado × Realizado segue com a margem persistida (compara componentes, que não têm rebate).
-  assert.strictEqual(item.projectedVsRealized.projected.margin, SEM_REBATE.margin);
+  // O painel Projetado × Realizado usa a MESMA margem do header (com o retorno ML),
+  // e expõe o retorno como linha própria — nunca dois números de "projetada" no mesmo drawer.
+  assert.strictEqual(item.projectedVsRealized.projected.margin, COM_REBATE.margin);
+  assert.strictEqual(item.projectedVsRealized.projected.rebate, 3.3);
+  assert.strictEqual(item.projectedVsRealized.projected.rebateMotivo, null);
 
   // 2) Oportunidades: a MESMA função, com a mesma promoção em andamento.
   const snapRow = { item_id: "MLB1", titulo: "P", image_url: null, price: 89.77, cost: 40, tax_rate: 0.1, fixed_fee: 0, commission_rate: 0.12, freight: 15, margin: SEM_REBATE.margin, commission: 12.1, profit: SEM_REBATE.profit };

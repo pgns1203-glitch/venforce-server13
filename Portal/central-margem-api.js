@@ -817,6 +817,13 @@
       out.assumed = arrayOf(block.assumed);
       return out;
     }
+    var projected = lado(raw.projected);
+    var p = raw.projected || {};
+    // Retorno ML da promoção em andamento — a MESMA margem/lucro do header já
+    // o inclui; aqui é só a linha própria "Retorno ML" do painel.
+    projected.rebate = numberOrNull(p.rebate);
+    projected.rebateMotivo = firstValue(p.rebateMotivo, null);
+
     var realized = lado(raw.realized);
     var r = raw.realized || {};
     realized.available = r.available === true;
@@ -827,6 +834,9 @@
     realized.lastSaleAt = r.lastSaleAt || null;
     realized.totalProfit = numberOrNull(r.totalProfit);
     realized.coverage = r.coverage || null;
+    // Informativo: retorno ML já embutido na comissão realizada (líquida do
+    // subsídio). Nunca somado de novo — só explica a comissão menor.
+    realized.rebateEmbutido = numberOrNull(r.rebateEmbutido);
     var drift = null;
     if (raw.drift && typeof raw.drift === "object") {
       drift = {};
@@ -837,7 +847,7 @@
     }
     return {
       status: String(raw.status || "NO_SALES"),
-      projected: lado(raw.projected),
+      projected: projected,
       realized: realized,
       drift: drift,
       notComparable: arrayOf(raw.notComparable),

@@ -848,6 +848,41 @@ async function run() {
     assert.strictEqual(normalizedItem().comparison, null);
   });
 
+  await test("comparação com retorno ML em andamento: a MESMA margem do header, retorno em linha própria, embutido no realizado sem somar de novo", () => {
+    const item = normalizedItem({
+      projected: { margin: 0.21, profit: 21, rebate: 5 },
+      projectedVsRealized: {
+        status: "COMPARABLE",
+        projected: { price: 100, commission: 16, freight: 18, cost: 45, taxRate: 0.03, fixedFee: 2, profit: 21, margin: 0.21, marginPercent: 21, computable: true, assumed: [], rebate: 5, rebateMotivo: null },
+        realized: { available: true, price: 100, commission: 11, freight: 18, cost: 45, taxRate: 0.03, fixedFee: null, profit: 23, margin: 0.23, marginPercent: 23, computable: true, assumed: [], missing: [], units: 1, orders: 1, revenue: 100, lastSaleAt: "2026-09-10", totalProfit: 23, coverage: null, rebateEmbutido: 5 },
+        drift: { price: 0, commission: 0, freight: 0, cost: 0, taxRate: 0, taxRatePp: 0, fixedFee: null, profit: 2, marginPercentagePoints: 2 },
+        notComparable: [],
+      },
+    });
+    const cmp = item.comparison;
+    assert.strictEqual(cmp.projected.margin, item.projected.margin, "painel = header, nunca dois números diferentes");
+    assert.strictEqual(cmp.projected.rebate, 5);
+    assert.strictEqual(cmp.projected.rebateMotivo, null);
+    assert.strictEqual(cmp.realized.rebateEmbutido, 5, "informativo: nunca somado de novo");
+    assert.strictEqual(cmp.drift.commission, 0, "desvio like-for-like");
+  });
+
+  await test("comparação com REBATE_AMBIGUO: motivo repassado, sem número de retorno (não adivinha)", () => {
+    const item = normalizedItem({
+      projectedVsRealized: {
+        status: "COMPARABLE",
+        projected: { price: 100, commission: 16, freight: 18, cost: 45, taxRate: 0.03, fixedFee: 2, profit: 16, margin: 0.16, marginPercent: 16, computable: true, assumed: [], rebate: null, rebateMotivo: "REBATE_AMBIGUO" },
+        realized: { available: true, price: 100, commission: 11, freight: 18, cost: 45, taxRate: 0.03, fixedFee: null, profit: 18, margin: 0.18, marginPercent: 18, computable: true, assumed: [], missing: [], units: 1, orders: 1, revenue: 100, lastSaleAt: "2026-09-10", totalProfit: 18, coverage: null, rebateEmbutido: null },
+        drift: { price: 0, commission: -5, freight: 0, cost: 0, taxRate: 0, taxRatePp: 0, fixedFee: null, profit: 2, marginPercentagePoints: 2 },
+        notComparable: [],
+      },
+    });
+    const cmp = item.comparison;
+    assert.strictEqual(cmp.projected.rebate, null);
+    assert.strictEqual(cmp.projected.rebateMotivo, "REBATE_AMBIGUO");
+    assert.strictEqual(cmp.realized.rebateEmbutido, null);
+  });
+
   await test("realizado da conta: KPIs, cobertura e freshness normalizados; flag desligada = enabled false", () => {
     const r = api.normalizeSnapshotRealizado({
       ok: true, habilitado: true,

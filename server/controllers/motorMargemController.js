@@ -14,6 +14,8 @@ const CAMPOS_SENSIVEIS = new Set([
 
 function maskSensitiveData(obj) {
   if (!obj || typeof obj !== "object") return obj;
+  // Date não tem chaves próprias: copiar chave a chave a transformaria em {}.
+  if (obj instanceof Date) return obj;
   if (Array.isArray(obj)) return obj.map(maskSensitiveData);
   const out = {};
   for (const [key, value] of Object.entries(obj)) {

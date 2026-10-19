@@ -1044,6 +1044,20 @@ cenario("o controller mascara campos sensíveis antes de responder", () => {
   assert.strictEqual(mascarado.cliente.slug, "x");
 });
 
+// Datas do pg chegam como Date: Object.entries(Date) é vazio, e a máscara as
+// devolvia como {} — a Bancada mostrava "Promo Snapshot · data desconhecida".
+cenario("o controller mascara sem apagar datas (Date do pg sai como ISO)", () => {
+  const snapshotAt = new Date("2026-10-16T17:12:00.000Z");
+  const json = JSON.parse(JSON.stringify(controller.maskSensitiveData({
+    fontePromocoes: { ultimoBom: { geradoEm: snapshotAt }, falha: { em: snapshotAt } },
+    linhas: [{ observado_em: snapshotAt, access_token: "abc" }],
+  })));
+  assert.strictEqual(json.fontePromocoes.ultimoBom.geradoEm, "2026-10-16T17:12:00.000Z");
+  assert.strictEqual(json.fontePromocoes.falha.em, "2026-10-16T17:12:00.000Z");
+  assert.strictEqual(json.linhas[0].observado_em, "2026-10-16T17:12:00.000Z");
+  assert.strictEqual(json.linhas[0].access_token, "[REDACTED]");
+});
+
 cenario("erro de contexto chega ao cliente com o código de ação", async () => {
   const respostas = [];
   const res = {

@@ -247,6 +247,24 @@
 .cm-bancada .cm-cens__sem-nome { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--vf-text); }
 .cm-bancada .cm-cens__sem-info { flex: 0 0 auto; color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
 
+/* Conta: Hoje × cenário — sempre visível sob a tabela: rótulo | Hoje | Cenário | Δ, linhas de ~34px. */
+.cm-bancada .cm-conta { display: flex; flex-direction: column; gap: var(--vf-sp-2); }
+.cm-bancada .cm-conta:empty { display: none; }
+.cm-bancada .cm-conta__titulo { margin: 0; font-size: var(--vf-fs-sm); font-weight: var(--vf-fw-semibold); color: var(--vf-text); }
+.cm-bancada .cm-conta__tabela { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: var(--vf-fs-sm); font-variant-numeric: tabular-nums; }
+.cm-bancada .cm-conta__tabela th, .cm-bancada .cm-conta__tabela td { height: 34px; padding: 0 var(--vf-sp-3); border-bottom: 1px solid var(--vf-border); text-align: left; font-weight: var(--vf-fw-regular); color: var(--vf-text); white-space: nowrap; }
+.cm-bancada .cm-conta__tabela thead th { height: 30px; color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
+.cm-bancada .cm-conta__tabela tbody th { overflow: hidden; text-overflow: ellipsis; }
+.cm-bancada .cm-conta__tabela .cm-conta__num { width: 17%; text-align: right; }
+.cm-bancada .cm-conta__tabela--hoje .cm-conta__num { width: 30%; }
+.cm-bancada .cm-conta__tabela .is-up { color: var(--vf-success-strong); }
+.cm-bancada .cm-conta__tabela .is-down { color: var(--vf-danger-strong); }
+.cm-bancada .cm-conta__sinal { display: inline-block; width: 1em; color: var(--vf-text-muted); }
+.cm-bancada .cm-conta__nota { color: var(--vf-text-muted); font-size: var(--vf-fs-xs); }
+.cm-bancada .cm-conta__lc th, .cm-bancada .cm-conta__lc td { border-top: 1px solid var(--vf-text-muted); font-weight: var(--vf-fw-semibold); }
+.cm-bancada .cm-conta__tabela tr:last-child th, .cm-bancada .cm-conta__tabela tr:last-child td { border-bottom: 0; }
+.cm-bancada .cm-conta .cm-banc__hip { width: 84px; height: 28px; min-height: 28px; }
+
 /* Preço-alvo / break-even: atalhos que preenchem o Preço manual, abaixo do card. */
 .cm-drawer .cm-banc__sugestoes .cm-pp__chips { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2); }
 @media (max-width: 1100px) {

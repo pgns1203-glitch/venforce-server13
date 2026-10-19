@@ -3503,7 +3503,7 @@
 
   function novaBancada() {
     return {
-      status: "idle", data: null, error: null, aviso: null, selecionado: "preco", alvo: null, semAberto: false, contaAberta: false,
+      status: "idle", data: null, error: null, aviso: null, selecionado: "preco", alvo: null, semAberto: false,
       manual: { status: "idle", resultado: null, atual: null, error: null, localError: null, seq: 0, timer: null, abort: null },
       hip: novaHipotese(),
     };
@@ -4002,14 +4002,19 @@
     return '<div class="cm-banc__hip-destaque" data-cm-hip-destaque><span class="cm-banc__hip-destaque-rotulo">Custo (hipótese)</span>' + hipCelulaHtml("custo", cen.custo, ex) + base + "</div>";
   }
 
-  /** Corpo do detalhe: resposta → Hoje×Cenário → de onde sai a diferença → [custo] → Ver conta completa. */
+  /**
+   * Corpo do detalhe: resposta → Hoje×Cenário → de onde sai a diferença → [custo] → Ver conta completa.
+   * Na Bancada (`semConta`) a conta fica sempre visível na direita (bancadaContaHtml): não se repete aqui.
+   */
   function cenarioDetalheHtml(r, atual, ex, opts) {
     var exibicao = ex || { resultado: r, hipotese: false, somenteLeitura: true };
+    var resumo = respostaHtml(r) + comparativoHtml(atual, r) + efeitosHtml(r) + hipoteseCustoHtml(ex, atual);
+    if (opts && opts.semConta) return resumo;
     // Na aba Promoções quem banca e o empate ficam visíveis ao lado (`bancaFora`): não se repetem aqui dentro.
     var bancaDentro = opts && opts.bancaFora ? "" : bancaRodapeHtml(r) + empateHtml(r);
     var contaCompleta = '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Ver conta completa</summary>' +
       cascataHtml(atual, exibicao) + bancaDentro + comoAContaFoiFeitaHtml(r, atual) + evidenciaBancadaHtml(r) + "</details>";
-    return respostaHtml(r) + comparativoHtml(atual, r) + efeitosHtml(r) + hipoteseCustoHtml(ex, atual) + contaCompleta;
+    return resumo + contaCompleta;
   }
 
   // --- Esquerda: o cenário selecionado ----------------------------------------------
@@ -4060,10 +4065,69 @@
     } else if (h.localError) {
       hipAviso = '<p class="cm-field-error" role="alert">' + escapeHtml(h.localError) + "</p>";
     }
-    return titulo + hipAviso + cenarioDetalheHtml(ex.resultado, atual, ex);
+    return titulo + hipAviso + cenarioDetalheHtml(ex.resultado, atual, ex, { semConta: true });
   }
 
   // --- Direita: a lista de cenários --------------------------------------------------
+
+  // Δ de um componente da conta: o efeito já decomposto pelo núcleo (`efeitos[]`); zero (no formato exibido) fica vazio.
+  // `escala` leva a razão da margem para pontos percentuais antes de decidir a cor.
+  function contaDeltaHtml(valor, texto, escala) {
+    var n = contract.numberOrNull(valor);
+    if (n === null || !texto || /^0,0+( pp)?$/.test(texto)) return '<td class="cm-conta__num"></td>';
+    return '<td class="cm-conta__num' + tomGanho(n * (escala || 1)) + '">' + escapeHtml(texto) + "</td>";
+  }
+
+  // "cotado em R$ P' · muda de faixa": cotação real do ML no preço do cenário e/ou a flag de faixa do núcleo.
+  function contaFreteNotaHtml(r, atual) {
+    var ev = r && r.evidencia && r.evidencia.frete;
+    var preco = r && r.cenario && r.cenario.preco;
+    var cotado = ev && ev.fonte === "ml_shipping_options_free" && ev.aplicavel && preco !== null && preco !== undefined && preco !== atual.preco;
+    var partes = [];
+    if (cotado) partes.push("cotado em " + escapeHtml(money(preco)));
+    if (r && r.flags && r.flags.mudou_faixa_frete === true) partes.push('<span data-cm-flag="faixa-frete">muda de faixa</span>');
+    return partes.length ? ' <span class="cm-conta__nota" data-cm-frete-fonte>' + partes.join(" · ") + "</span>" : "";
+  }
+
+  /**
+   * "Conta: Hoje × {cenário}" — sempre visível sob a tabela de cenários. Só exibe a conta que o
+   * /simular devolve (atual × cenario, efeitos[], delta_lc, delta_margem_ratio): nada é recalculado.
+   * Cenário que é o preço de hoje (ativa), sem resultado ou bloqueado: só a coluna Hoje.
+   */
+  function bancadaContaHtml() {
+    var atual = bancadaAtual();
+    if (!atual) return "";
+    var ex = bancadaEmExibicao();
+    var r = ex.resultado && ex.resultado.cenario && contract.numberOrNull(ex.resultado.cenario.lc) !== null ? ex.resultado : null;
+    var soHoje = !r || r.veredito === "ativa";
+    var cen = soHoje ? {} : r.cenario;
+    var nome = ex.promo ? (ex.promo.promocao && (ex.promo.promocao.nome || tipoPromoTexto(ex.promo.promocao.tipo))) || "Promoção" : "Preço manual";
+    var efeito = {};
+    if (!soHoje) (r.efeitos || []).forEach(function (e) { efeito[e.chave] = e.valor; });
+    var aliquota = r && r.explicacao && r.explicacao.aliquota !== null && r.explicacao.aliquota !== undefined ? r.explicacao.aliquota : atual.aliquota;
+    var linha = function (chave, rotuloHtml, hoje, cenarioHtml, deltaHtml, classe) {
+      return '<tr data-cm-linha="' + chave + '"' + (classe ? ' class="' + classe + '"' : "") + '><th scope="row">' + rotuloHtml + '</th><td class="cm-conta__num">' + escapeHtml(hoje) + "</td>" +
+        (soHoje ? "" : '<td class="cm-conta__num">' + cenarioHtml + "</td>" + deltaHtml) + "</tr>";
+    };
+    var linhas = BANCADA_LINHAS.map(function (l) {
+      var rotulo = (l.sinal ? '<span class="cm-conta__sinal" aria-hidden="true">' + l.sinal + "</span> " : "") + escapeHtml(l.rotulo) +
+        (l.chave === "imposto" && formatPct1(aliquota) ? " (" + escapeHtml(formatPct1(aliquota)) + ")" : "") +
+        (l.chave === "frete" && !soHoje ? contaFreteNotaHtml(r, atual) : "");
+      // Taxa fixa segue editável como hipótese (o servidor refaz o cenário); o custo fica no destaque da esquerda.
+      var celula = l.chave === "taxa_fixa" && !soHoje ? hipCelulaHtml("taxa_fixa", cen.taxa_fixa, ex) : escapeHtml(formatNumero(cen[l.chave]));
+      return linha(l.chave, rotulo, formatNumero(atual[l.chave]), celula, contaDeltaHtml(efeito[l.chave], formatNumero(efeito[l.chave], true)));
+    }).join("") +
+      linha("lc", '<span class="cm-conta__sinal" aria-hidden="true">=</span> LC por unidade', formatNumero(atual.lc), escapeHtml(formatNumero(cen.lc)),
+        soHoje ? "" : contaDeltaHtml(r.delta_lc, formatNumero(r.delta_lc, true)), "cm-conta__lc") +
+      linha("margem", "Margem", formatPct1(atual.margem_ratio), escapeHtml(formatPct1(cen.margem_ratio)),
+        soHoje ? "" : contaDeltaHtml(r.delta_margem_ratio, formatPp1(r.delta_margem_ratio), 100));
+    var cab = '<tr><th scope="col"><span class="vf-visually-hidden">Componente</span></th><th scope="col" class="cm-conta__num">Hoje</th>' +
+      (soHoje ? "" : '<th scope="col" class="cm-conta__num">Cenário</th><th scope="col" class="cm-conta__num">Δ</th>') + "</tr>";
+    // Quem banca, empate e a origem dos números: vinham dentro de "Ver conta completa".
+    var rodape = soHoje ? "" : bancaRodapeHtml(r) + empateHtml(r) + evidenciaBancadaHtml(r);
+    return '<h4 class="cm-conta__titulo" data-cm-conta-titulo>' + escapeHtml(soHoje ? "Conta: Hoje" : "Conta: Hoje × " + nome) + "</h4>" +
+      '<table class="cm-conta__tabela' + (soHoje ? " cm-conta__tabela--hoje" : "") + '" data-cm-bancada-cascata data-cm-conta-colunas="' + (soHoje ? 2 : 4) + '"><thead>' + cab + "</thead><tbody>" + linhas + "</tbody></table>" + rodape;
+  }
 
   function bancadaPrecoAlvoHtml(item) {
     var b = state.bancada;
@@ -4231,6 +4295,7 @@
       '<div class="cm-cens__cab" aria-hidden="true"><span>Cenário</span><span class="cm-cens__num">Preço · mudança</span><span class="cm-cens__num">LC / un · vs hoje</span><span>Resultado</span></div>' +
       '<div id="cm-banc-manual-card">' + bancadaManualCardHtml() + "</div>" +
       '<div id="cm-banc-promos">' + bancadaPromosHtml() + "</div></div>" +
+      '<section class="cm-conta" id="cm-banc-conta" data-cm-conta aria-live="polite">' + bancadaContaHtml() + "</section>" +
       (sugestoes ? '<div class="cm-banc__sugestoes">' + sugestoes + "</div>" : "");
   }
 
@@ -4392,12 +4457,6 @@
     });
     var reset = el("cm-hip-reset");
     if (reset) reset.addEventListener("click", function () { limparHipotese(); updateBancadaResultado(); });
-    // "Ver conta completa" aberto/fechado sobrevive ao redesenho da coluna.
-    var conta = refs.drawerBody.querySelector("#cm-banc-resultado [data-cm-conta-completa]");
-    if (conta) {
-      if (state.bancada.contaAberta) conta.setAttribute("open", "");
-      conta.addEventListener("toggle", function () { state.bancada.contaAberta = conta.open; });
-    }
   }
 
   /** Preserva o foco e o cursor de um campo de hipótese enquanto a coluna é redesenhada. */
@@ -4434,6 +4493,8 @@
       }
       atualizarLinhaManual();
       host.innerHTML = bancadaResultadoHtml();
+      var conta = el("cm-banc-conta");
+      if (conta) conta.innerHTML = bancadaContaHtml();
       bindHipotese();
       renderBancadaRodape();
     });

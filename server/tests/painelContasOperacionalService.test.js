@@ -14,8 +14,10 @@
 //   I  query param nunca alcança cliente/conta fora da carteira (lista e escrita)
 //   J  seções por marketplace (ML / Shopee / TikTok Shop)
 //   K  competências independentes + rastreabilidade do lançamento
-//   L  acesso por Squad no Painel: admin · coordenador · gestor · demais
-//      (independente de SQUADS_ENFORCEMENT; escrita = interseção)
+//   L  acesso por Squad no Painel: admin · qualquer membro ativo do Squad
+//      (coordenador, gestor, membro comum, papel `interno`) · vários Squads ·
+//      sem Squad = vazio · gestor do cliente; independente de
+//      SQUADS_ENFORCEMENT (leitura e escrita); escrita = interseção
 //   -  performance: número FIXO de queries, independente do nº de clientes
 
 process.env.DATABASE_URL = "postgres://nobody@127.0.0.1:1/teste-sem-banco";
@@ -58,8 +60,11 @@ const service = require("../services/painelContas/painelContasService");
 const U = {
   ana: { id: 100, role: "membro" },   // coordena Squad 6 + Squad 8 (legado)
   beto: { id: 200, role: "membro" },  // coordena Squad 2
-  carla: { id: 400, role: "user" },   // membro comum do Squad 2
-  dani: { id: 500, role: "membro" },  // membro comum do Squad 2
+  carla: { id: 400, role: "user", nome: "Carla" },   // membro comum do Squad 2
+  dani: { id: 500, role: "membro", nome: "Dani" },   // membro comum do Squad 2
+  eva: { id: 600, role: "interno", nome: "Eva" },    // papel interno (membro do Squad 2 no bloco L)
+  fabi: { id: 700, role: "interno", nome: "Fabi" },  // papel interno sem Squad
+  reviewer: { id: 800, role: "shopee_reviewer" },
   admin: { id: 1, role: "admin" },
   seller: { id: 300, role: "seller" },
 };
@@ -299,26 +304,85 @@ async function run() {
     const acessoAna = (await service.listar(U.ana, { competencia: SET })).acesso;
     eq("L: a resposta diz de onde vem a carteira", [acessoAna.tipo, acessoAna.squadsCoordenados.map((x) => x.nome)], ["carteira", ["Squad 6", "Squad 8 - Legado"]]);
 
-    await rejeita("L: membro comum (sem coordenação nem gestão) não recebe acesso", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
-    await rejeita("L: membro comum não lê histórico de cliente do próprio Squad", service.listarMeses(U.carla, "6"), 403, "CLIENTE_FORA_DA_CARTEIRA");
-    await rejeita("L: membro comum não lê semanas das contas", service.listarSemanasDasContas(U.carla, "6", SET), 403);
-    await rejeita("L: membro comum não lança, mesmo com o cliente na carteira global", service.salvarLancamentoManual(U.carla, "6", "61", SET, { faturamento: 1 }), 403);
+    // Toda a equipe interna: qualquer membership ativa (membro comum,
+    // gestor, coordenador) dá a carteira do Squad — leitura E lançamento.
+    // Conta Shopee no cliente 6: lançável mesmo no modo automático deste
+    // arquivo (a conta ML 61 tem import publicado → 409 AUTOMATICO_DISPONIVEL).
+    m.contas.push({ id: 62, cliente_id: 6, marketplace: "shopee", nome: "OUTRO SHOP", slug: "out-sh", external_account_id: null, is_primary: false, ativo: true });
+    const listaCarla = await service.listar(U.carla, { competencia: SET });
+    eq("L: membro comum (role user) vê os clientes do seu Squad", [slugs(listaCarla), listaCarla.acesso.tipo, listaCarla.acesso.squads.map((x) => x.nome)], [["fora-da-carteira"], "carteira", ["Squad 2"]]);
+    ok("L: membro comum tem o botão de lançamento", listaCarla.permissoes.lancarManual === true && listaCarla.clientes[0].podeLancarManual === true
+      && listaCarla.clientes[0].contas.find((c) => c.id === 62).podeLancarManual === true);
+    ok("L: membro comum lê o histórico do cliente do Squad", (await service.listarMeses(U.carla, "6")).ok === true);
+    ok("L: membro comum lê os lançamentos de uma conta do Squad", (await service.listarLancamentosDaConta(U.carla, "6", "62")).ok === true);
+    await rejeita("L: membro comum não lê cliente de outro Squad", service.listarMeses(U.carla, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    const salvoCarla = await service.salvarLancamentoManual(U.carla, "6", "62", SET, { faturamento: 30000, lucroContribuicao: 6000, investimentoAds: 1500 });
+    eq("L: membro comum lança na conta do cliente do Squad", [salvoCarla.conta.fonte.tipo, salvoCarla.conta.resumo.fat], ["manual", 30000]);
+    await service.salvarLancamentoManual(U.dani, "6", "62", SET, { faturamento: 31000 });
+    const histCarla = await service.listarHistoricoLancamento(U.carla, "6", "62", SET);
+    eq("L: histórico diz quem alterou", histCarla.historico.map((h) => [h.acao, h.por]), [["alterado", "Dani"], ["criado", "Carla"]]);
+    eq("L: lançamentos da conta mostram criador e último editor", (await service.listarLancamentosDaConta(U.carla, "6", "62")).lancamentos.map((l) => [l.criadoPor, l.atualizadoPor]), [["Carla", "Dani"]]);
+    await rejeita("L: membro comum não lança em cliente de outro Squad", service.salvarLancamentoManual(U.carla, "3", "31", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: conta de outro cliente pelo path → 404", service.salvarLancamentoManual(U.carla, "6", "31", SET, { faturamento: 1 }), 404, "CONTA_NAO_ENCONTRADA");
+    await rejeita("L: membro comum não remove lançamento de outro Squad", service.removerLancamentoManual(U.carla, "3", "31", SET), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    ok("L: membro comum remove o lançamento do seu cliente", (await service.removerLancamentoManual(U.dani, "6", "62", SET)).removido === true);
+    eq("L: remoção fica na trilha com o autor", (await service.listarHistoricoLancamento(U.carla, "6", "62", SET)).historico[0].acao, "removido");
 
+    // Papel `interno` (requireAutomacoesAccess não aceita; o Painel aceita).
+    m.users.push({ id: 600, nome: "Eva" }, { id: 700, nome: "Fabi" });
+    m.members.push({ squad_id: 20, user_id: 600, is_primary: true, funcao: "membro", ativo: true });
+    const listaEva = await service.listar(U.eva, { competencia: SET });
+    eq("L: papel interno vê a carteira do Squad", [slugs(listaEva), listaEva.permissoes.lancarManual], [["fora-da-carteira"], true]);
+    ok("L: papel interno lança", (await service.salvarLancamentoManual(U.eva, "6", "62", SET, { faturamento: 10 })).conta.resumo.fat === 10);
+    ok("L: papel interno remove", (await service.removerLancamentoManual(U.eva, "6", "62", SET)).removido === true);
+    await rejeita("L: papel interno não lê outro Squad", service.listarMeses(U.eva, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+
+    // Vários Squads: a carteira é a união; o filtro só recorta e nunca amplia.
+    m.members.push({ squad_id: 10, user_id: 400, is_primary: false, funcao: "membro", ativo: true });
+    const multi = await service.listar(U.carla, { competencia: SET });
+    eq("L: vários Squads = união das carteiras", slugs(multi), ["amr-ecommerce", "carpei", "coremix", "fora-da-carteira", "red-fish"]);
+    eq("L: filtro de Squad oferece os dois Squads", multi.squadsDisponiveis.map((x) => x.nome), ["Squad 2", "Squad 6"]);
+    eq("L: alterna para o Squad 6", slugs(await service.listar(U.carla, { competencia: SET, squadId: 10 })), ["amr-ecommerce", "carpei", "coremix", "red-fish"]);
+    eq("L: alterna para o Squad 2", slugs(await service.listar(U.carla, { competencia: SET, squadId: "20" })), ["fora-da-carteira"]);
+    eq("L: squadId de Squad alheio (legado da Ana) não amplia", slugs(await service.listar(U.carla, { competencia: SET, squadId: 80, mostrarLegado: "true" })), []);
+    await rejeita("L: e o legado não abre pelo path", service.listarMeses(U.carla, "5"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    m.members = m.members.filter((x) => !(x.user_id === 400 && x.squad_id === 10));
+
+    // Sem Squad: estado vazio, nunca clientes de fora.
+    const vazio = await service.listar(U.fabi, { competencia: SET });
+    eq("L: interno sem Squad → 200 com carteira vazia", [vazio.ok, vazio.acesso.tipo, vazio.clientes, vazio.resumoCarteira.operacionais], [true, "nenhum", [], 0]);
+    eq("L: sem Squad, squadId do frontend não abre nada", (await service.listar(U.fabi, { competencia: SET, squadId: 20, mostrarLegado: "true" })).clientes, []);
+    await rejeita("L: sem Squad não lê cliente pelo path", service.listarMeses(U.fabi, "6"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: sem Squad não lança", service.salvarLancamentoManual(U.fabi, "6", "62", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: shopee_reviewer não entra", service.listar(U.reviewer, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    await rejeita("L: shopee_reviewer não lança", service.salvarLancamentoManual(U.reviewer, "6", "62", SET, { faturamento: 1 }), 403);
+
+    // Independente de SQUADS_ENFORCEMENT: com a flag desligada a carteira
+    // global de um interno é "todos" — o escopo do Painel continua valendo
+    // para leitura E escrita.
     process.env.SQUADS_ENFORCEMENT = "off";
-    await rejeita("L: flag global desligada não abre o Painel para membro comum", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
-    eq("L: flag global desligada não amplia a carteira do coordenador", slugs(await service.listar(U.beto, { competencia: SET })), ["fora-da-carteira"]);
+    eq("L: flag desligada não amplia a carteira do membro comum", slugs(await service.listar(U.carla, { competencia: SET })), ["fora-da-carteira"]);
+    eq("L: flag desligada não amplia a carteira do coordenador", slugs(await service.listar(U.beto, { competencia: SET })), ["fora-da-carteira"]);
+    eq("L: flag desligada não dá clientes a quem não tem Squad", (await service.listar(U.fabi, { competencia: SET })).clientes, []);
+    await rejeita("L: flag desligada — leitura fora do Squad continua 403", service.listarMeses(U.carla, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: flag desligada — lançar fora do Squad continua 403", service.salvarLancamentoManual(U.carla, "3", "31", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: flag desligada — remover fora do Squad continua 403", service.removerLancamentoManual(U.ana, "6", "62", SET), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    await rejeita("L: flag desligada — sem Squad não lança", service.salvarLancamentoManual(U.fabi, "6", "62", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    ok("L: flag desligada — dentro do Squad lança normalmente", (await service.salvarLancamentoManual(U.carla, "6", "62", SET, { faturamento: 5 })).conta.resumo.fat === 5);
+    ok("L: flag desligada — e remove", (await service.removerLancamentoManual(U.carla, "6", "62", SET)).removido === true);
     process.env.SQUADS_ENFORCEMENT = "on";
 
-    // Auxiliar/designer não dão acesso; gestor dá, só ao próprio cliente.
-    m.responsaveis.push({ cliente_id: 6, user_id: 400, papel: "auxiliar", ativo: true });
-    await rejeita("L: auxiliar do cliente não recebe acesso", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
-    m.responsaveis.push({ cliente_id: 6, user_id: 400, papel: "gestor", ativo: true });
-    const listaGestora = await service.listar(U.carla, { competencia: SET });
+    // Auxiliar do cliente (cliente_responsaveis) sem Squad não dá acesso;
+    // gestor do cliente dá, só ao próprio cliente.
+    m.responsaveis.push({ cliente_id: 6, user_id: 700, papel: "auxiliar", ativo: true });
+    eq("L: auxiliar do cliente sem Squad continua sem carteira", (await service.listar(U.fabi, { competencia: SET })).clientes, []);
+    m.responsaveis.push({ cliente_id: 6, user_id: 700, papel: "gestor", ativo: true });
+    const listaGestora = await service.listar(U.fabi, { competencia: SET });
     eq("L: gestor vê só a carteira a que está vinculado", [slugs(listaGestora), listaGestora.acesso.tipo, listaGestora.acesso.clientesComoGestor], [["fora-da-carteira"], "carteira", 1]);
-    ok("L: gestor lê o histórico do próprio cliente", (await service.listarMeses(U.carla, "6")).ok === true);
-    await rejeita("L: gestor não lê cliente de que não é gestor", service.listarMeses(U.carla, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
-    m.responsaveis.find((r) => r.papel === "gestor" && r.user_id === 400).ativo = false;
-    await rejeita("L: gestão encerrada (ativo=false) tira o acesso", service.listar(U.carla, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    ok("L: gestor lê o histórico do próprio cliente", (await service.listarMeses(U.fabi, "6")).ok === true);
+    await rejeita("L: gestor não lê cliente de que não é gestor", service.listarMeses(U.fabi, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    m.responsaveis.find((r) => r.papel === "gestor" && r.user_id === 700).ativo = false;
+    eq("L: gestão encerrada (ativo=false) tira o acesso", (await service.listar(U.fabi, { competencia: SET })).clientes, []);
 
     // Gestor de cliente FORA da carteira global de escrita: lê, não lança.
     m.responsaveis.push({ cliente_id: 3, user_id: 500, papel: "gestor", ativo: true });
@@ -329,26 +393,28 @@ async function run() {
     await rejeita("L: e o servidor recusa o lançamento", service.salvarLancamentoManual(U.dani, "3", "31", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
     m.responsaveis = [];
 
-    // Gestor do Squad (funcao 'gestor' em squad_members): mesma carteira do
-    // coordenador, sem precisar de cliente_responsaveis.
+    // Função no Squad só rotula a carteira (coordenador/gestor/membro).
     const membroDani = m.members.find((x) => x.user_id === 500);
     membroDani.funcao = "gestor";
     const listaGestorSquad = await service.listar(U.dani, { competencia: SET });
     eq("L: gestor do Squad vê os clientes do Squad", slugs(listaGestorSquad), ["fora-da-carteira"]);
     eq("L: a resposta diz que vem da gestão do Squad, não da coordenação",
-      [listaGestorSquad.acesso.squadsGeridos.map((x) => x.nome), listaGestorSquad.acesso.squadsCoordenados], [["Squad 2"], []]);
-    ok("L: gestor do Squad lê o histórico do cliente do Squad", (await service.listarMeses(U.dani, "6")).ok === true);
-    await rejeita("L: gestor do Squad não lê cliente de outro Squad", service.listarMeses(U.dani, "1"), 403, "CLIENTE_FORA_DA_CARTEIRA");
+      [listaGestorSquad.acesso.squadsGeridos.map((x) => x.nome), listaGestorSquad.acesso.squadsCoordenados, listaGestorSquad.acesso.squads.map((x) => x.funcao)], [["Squad 2"], [], ["gestor"]]);
     membroDani.funcao = "membro";
-    await rejeita("L: voltar a membro tira o acesso", service.listar(U.dani, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    eq("L: voltar a membro mantém a carteira do Squad", slugs(await service.listar(U.dani, { competencia: SET })), ["fora-da-carteira"]);
 
     // Squad inativo e membership inativa não dão acesso.
     m.squads.find((sq) => sq.id === 20).ativo = false;
-    await rejeita("L: coordenador de Squad inativo perde o acesso", service.listar(U.beto, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
+    const semSquadAtivo = await service.listar(U.beto, { competencia: SET });
+    eq("L: Squad inativo → carteira vazia", [semSquadAtivo.acesso.tipo, semSquadAtivo.clientes], ["nenhum", []]);
+    await rejeita("L: Squad inativo não abre o cliente pelo path", service.listarMeses(U.carla, "6"), 403, "CLIENTE_FORA_DA_CARTEIRA");
     m.squads.find((sq) => sq.id === 20).ativo = true;
-    m.members.find((x) => x.user_id === 200).ativo = false;
-    await rejeita("L: coordenação encerrada (membership inativa) tira o acesso", service.listar(U.beto, { competencia: SET }), 403, "PAINEL_SEM_ACESSO");
-    m.members.find((x) => x.user_id === 200).ativo = true;
+    m.members.find((x) => x.user_id === 400).ativo = false;
+    eq("L: membership inativa → carteira vazia", (await service.listar(U.carla, { competencia: SET })).clientes, []);
+    await rejeita("L: membership inativa não lança", service.salvarLancamentoManual(U.carla, "6", "62", SET, { faturamento: 1 }), 403, "CLIENTE_FORA_DA_CARTEIRA");
+    m.members.find((x) => x.user_id === 400).ativo = true;
+    m.contas = m.contas.filter((c) => c.id !== 62);
+    m.manuais = m.manuais.filter((x) => x.cliente_conta_id !== 62);
 
     // Isolamento entre carteiras pelo path.
     await rejeita("L: coordenador não lê cliente de outro Squad pelo path", service.listarSemanas(U.beto, "1", SET), 403, "CLIENTE_FORA_DA_CARTEIRA");

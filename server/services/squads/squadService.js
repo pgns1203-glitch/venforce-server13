@@ -17,8 +17,9 @@ const {
   contarResponsaveisAtivos,
 } = require("./squadsRepository");
 
-// Função dentro do Squad. 'gestor' dá a carteira do Squad no Painel de Contas
-// (painelContasAcesso); administrar o Squad continua só do coordenador.
+// Função dentro do Squad. No Painel de Contas qualquer membro ativo vê a
+// carteira do Squad (painelContasAcesso); administrar o Squad continua só do
+// coordenador.
 const FUNCOES_SQUAD = Object.freeze(["membro", "gestor", "coordenador"]);
 
 // Quando um Cliente muda de Squad, as responsabilidades (gestor/auxiliar/

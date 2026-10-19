@@ -42,7 +42,17 @@ function Vazio({ titulo, descricao, acao, onAcao, icone = "∅", tom = "" }) {
   );
 }
 
-function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, onLimpar, onStatus, visao, onConsolidado }) {
+function EstadoVazio({ busca, squadId, status, competencia, squadsDisponiveis, onLimpar, onStatus, visao, onConsolidado, acesso }) {
+  // Sem Squad: nenhum filtro mudaria o resultado — a carteira vem do vínculo.
+  if (acesso?.tipo === "nenhum") {
+    return (
+      <Vazio
+        titulo="Você ainda não faz parte de um Squad"
+        descricao="O Painel mostra os clientes dos Squads de que você participa. Peça ao coordenador do seu Squad ou ao administrador para incluir você."
+      />
+    );
+  }
+
   if (busca.trim()) {
     return (
       <Vazio
@@ -151,15 +161,14 @@ export function IndicadorModoManual() {
   );
 }
 
-// De onde vem a carteira (regra do Painel: admin · coordenador · gestor).
+// De onde vem a carteira (regra do Painel: admin · membros dos Squads ·
+// gestor do cliente).
 export function descreverAcesso(acesso) {
   if (!acesso) return null;
   if (acesso.tipo === "admin") return "todos os Squads";
   const partes = [];
-  const squads = (acesso.squadsCoordenados || []).map((s) => s.nome);
-  if (squads.length) partes.push(`${squads.length === 1 ? "Squad que você coordena" : "Squads que você coordena"}: ${squads.join(", ")}`);
-  const geridos = (acesso.squadsGeridos || []).map((s) => s.nome);
-  if (geridos.length) partes.push(`${geridos.length === 1 ? "Squad em que você é gestor" : "Squads em que você é gestor"}: ${geridos.join(", ")}`);
+  const squads = (acesso.squads || []).map((s) => s.nome);
+  if (squads.length) partes.push(`${squads.length === 1 ? "Seu Squad" : "Seus Squads"}: ${squads.join(", ")}`);
   if (acesso.clientesComoGestor > 0) {
     partes.push(`gestor de ${acesso.clientesComoGestor} ${acesso.clientesComoGestor === 1 ? "cliente" : "clientes"}`);
   }
@@ -266,7 +275,7 @@ export default function PainelContasPage() {
           <Vazio
             icone="⊘"
             titulo="O Painel de Contas não está liberado para você"
-            descricao="O Painel mostra a carteira de quem coordena ou é gestor de um Squad. Se você deveria ver esta carteira, fale com o administrador."
+            descricao="O Painel de Contas é exclusivo da equipe interna. Se você faz parte da equipe, fale com o administrador."
           />
         )}
 
@@ -320,6 +329,7 @@ export default function PainelContasPage() {
                 onStatus={setStatus}
                 visao={visao}
                 onConsolidado={() => setMarketplace(null)}
+                acesso={acesso}
               />
             )}
 

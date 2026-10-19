@@ -4,7 +4,7 @@
 // (PGlite). Não é teste da suíte (a suíte usa fake db): prova a semântica que o
 // fake não prova — a migration manual da CHECK de TikTok (idempotente), a
 // coluna data_referencia do ensure lazy, as queries de escopo do Painel
-// (coordenador/gestor), a trilha do lançamento manual e a composição do
+// (membros dos Squads/gestor do cliente), a trilha do lançamento manual e a composição do
 // faturamento por conta.
 //
 // SEGURANÇA: nunca lê DATABASE_URL e nunca abre conexão de rede.
@@ -37,10 +37,10 @@ let n = 0; const ok = (l, c) => { assert.ok(c, "FALHOU: " + l); n++; console.log
     CREATE TABLE cliente_responsaveis (id SERIAL PRIMARY KEY, cliente_id INT REFERENCES clientes(id), user_id INT REFERENCES users(id), papel TEXT NOT NULL, ativo BOOLEAN DEFAULT true);
     CREATE TABLE cliente_contas (id SERIAL PRIMARY KEY, cliente_id INTEGER NOT NULL REFERENCES clientes(id) ON DELETE CASCADE, marketplace TEXT NOT NULL, nome TEXT NOT NULL, slug TEXT UNIQUE NOT NULL, external_account_id TEXT, is_primary BOOLEAN NOT NULL DEFAULT false, ativo BOOLEAN NOT NULL DEFAULT true, metadata_json JSONB NOT NULL DEFAULT '{}'::jsonb);
     ALTER TABLE cliente_contas ADD CONSTRAINT cliente_contas_marketplace_check CHECK (marketplace IN ('meli', 'shopee'));
-    INSERT INTO users (nome, role) VALUES ('Ana','membro'),('Beto','membro'),('Carla','user'),('Admin','admin');
+    INSERT INTO users (nome, role) VALUES ('Ana','membro'),('Beto','membro'),('Carla','user'),('Admin','admin'),('Eva','interno'),('Fabi','interno'),('Seller','seller');
     INSERT INTO clientes (slug, nome, ativo) VALUES ('a','A',true),('b','B',true),('c','C',true),('d','D inativo',false);
     INSERT INTO squads (nome, slug, ativo) VALUES ('S1','s1',true),('S2','s2',true),('S3','s3',false);
-    INSERT INTO squad_members (squad_id, user_id, funcao, ativo) VALUES (1,1,'coordenador',true),(2,2,'membro',true),(3,2,'coordenador',true),(2,3,'membro',true);
+    INSERT INTO squad_members (squad_id, user_id, funcao, ativo) VALUES (1,1,'coordenador',true),(2,2,'membro',true),(3,2,'coordenador',true),(2,3,'membro',true),(1,6,'membro',true),(2,6,'membro',false),(1,7,'membro',true);
     INSERT INTO cliente_squad_history (cliente_id, squad_id, fim_em) VALUES (1,1,NULL),(2,2,NULL),(3,3,NULL),(2,1,NOW()),(4,1,NULL);
     INSERT INTO cliente_responsaveis (cliente_id, user_id, papel, ativo) VALUES (2,3,'gestor',true),(1,3,'auxiliar',true),(3,3,'gestor',false);
   `);
@@ -77,9 +77,20 @@ let n = 0; const ok = (l, c) => { assert.ok(c, "FALHOU: " + l); n++; console.log
   const ana = await acesso.resolverEscopoPainel({ id: 1, role: "membro" });
   ok("coordenador S1: só cliente do Squad vigente (histórico encerrado e inativo fora)", ana.tipo === "carteira" && JSON.stringify(ids(ana)) === "[1]" && ana.squadsCoordenados.map((s) => s.nome).join() === "S1");
   const beto = await acesso.resolverEscopoPainel({ id: 2, role: "membro" });
-  ok("membro comum + coordenador de Squad inativo: sem acesso", beto.tipo === "nenhum" && beto.clientes.length === 0);
+  ok("membro comum de S2 vê S2; coordenação de Squad inativo (S3) não conta", beto.tipo === "carteira" && JSON.stringify(ids(beto)) === "[2]" && beto.squads.map((s) => s.nome).join() === "S2");
   const carla = await acesso.resolverEscopoPainel({ id: 3, role: "user" });
-  ok("gestor ativo: só o cliente que gere (auxiliar e gestão inativa não contam)", carla.tipo === "carteira" && JSON.stringify(ids(carla)) === "[2]" && carla.clientesComoGestor === 1);
+  ok("membro + gestor ativo: auxiliar e gestão inativa não ampliam", carla.tipo === "carteira" && JSON.stringify(ids(carla)) === "[2]" && carla.clientesComoGestor === 1);
+  const eva = await acesso.resolverEscopoPainel({ id: 5, role: "interno" });
+  ok("papel interno sem Squad: carteira vazia", eva.tipo === "nenhum" && eva.clientes.length === 0);
+  const fabi = await acesso.resolverEscopoPainel({ id: 6, role: "interno" });
+  ok("papel interno membro de S1 (membership inativa em S2 não conta)", fabi.tipo === "carteira" && JSON.stringify(ids(fabi)) === "[1]");
+  const seller = await acesso.resolverEscopoPainel({ id: 7, role: "seller" });
+  ok("seller com membership não entra no Painel", seller.tipo === "sem_papel" && seller.clientes.length === 0);
+  let sellerNegado = null; try { await acesso.assertClienteNoPainel({ id: 7, role: "seller" }, "a"); } catch (e) { sellerNegado = e; }
+  ok("PODE_VER_CLIENTE: seller negado mesmo com membership", sellerNegado?.statusCode === 403);
+  await acesso.assertClienteNoPainel({ id: 6, role: "interno" }, "a");
+  let fabiB = null; try { await acesso.assertClienteNoPainel({ id: 6, role: "interno" }, "b"); } catch (e) { fabiB = e; }
+  ok("PODE_VER_CLIENTE: interno lê o cliente do seu Squad e não o de outro", fabiB?.statusCode === 403);
   await acesso.assertClienteNoPainel({ id: 3, role: "user" }, "b");
   let negado = null; try { await acesso.assertClienteNoPainel({ id: 3, role: "user" }, "a"); } catch (e) { negado = e; }
   ok("PODE_VER_CLIENTE: gestor de B lê B e não lê A (auxiliar)", negado?.statusCode === 403);

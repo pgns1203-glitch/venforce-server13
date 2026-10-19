@@ -462,30 +462,69 @@ describe("seções por marketplace", () => {
 });
 
 describe("acesso por Squad", () => {
-  it("sem vínculo (403) mostra estado de acesso, não erro técnico", () => {
+  it("papel fora da equipe interna (403) mostra estado de acesso, não erro técnico", () => {
     mocks.usePainelContas.mockReturnValue(estado({
       clientes: null, erro: { codigo: "sem_permissao", status: 403, mensagem: "Você não tem permissão." },
     }));
     render(<PainelContasPage />);
     expect(screen.getByText(/não está liberado para você/i)).toBeInTheDocument();
-    expect(screen.getByText(/coordena ou é gestor de um Squad/i)).toBeInTheDocument();
+    expect(screen.getByText(/exclusivo da equipe interna/i)).toBeInTheDocument();
+    expect(screen.queryByText(/coordena/i)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.queryByRole("button", { name: /tentar de novo/i })).toBeNull();
   });
 
-  it("cabeçalho diz de onde vem a carteira", () => {
+  it("interno sem Squad vê estado vazio próprio, sem clientes", () => {
     mocks.usePainelContas.mockReturnValue(estado({
-      acesso: { tipo: "carteira", squadsCoordenados: [{ id: 2, nome: "Squad 2" }], clientesComoGestor: 1 },
+      clientes: [], squadsDisponiveis: [], acesso: { tipo: "nenhum", squads: [], clientesComoGestor: 0 },
+      resumoCarteira: { operacionais: 0, comDados: 0, semDados: 0, parciais: 0, manuais: 0, automaticos: 0, atencao: 0, legadoOcultos: 0 },
     }));
     render(<PainelContasPage />);
-    expect(screen.getByTestId("escopo-acesso")).toHaveTextContent("Squad que você coordena: Squad 2 · gestor de 1 cliente");
+    expect(screen.getByText("Você ainda não faz parte de um Squad")).toBeInTheDocument();
+    expect(screen.queryByText(/não está liberado/i)).toBeNull();
+    expect(screen.queryByRole("button", { name: /lançar dados/i })).toBeNull();
   });
 
-  it("descreverAcesso cobre admin, coordenador, gestor e ausência", () => {
+  it("membro de vários Squads alterna a carteira pelo filtro de Squad", async () => {
+    const e = estado({ acesso: { tipo: "carteira", squads: [{ id: 7, nome: "Squad Alpha" }, { id: 9, nome: "Squad Beta" }], clientesComoGestor: 0 } });
+    mocks.usePainelContas.mockReturnValue(e);
+    render(<PainelContasPage />);
+    const filtro = screen.getByRole("combobox", { name: /filtrar por squad/i });
+    await userEvent.selectOptions(filtro, "9");
+    expect(e.setSquadId).toHaveBeenCalledWith(9);
+    expect(screen.getByTestId("escopo-acesso")).toHaveTextContent("Seus Squads: Squad Alpha, Squad Beta");
+  });
+
+  it("membro de um Squad só não vê o filtro de Squad", () => {
+    mocks.usePainelContas.mockReturnValue(estado({ squadsDisponiveis: [{ id: 7, nome: "Squad Alpha" }] }));
+    render(<PainelContasPage />);
+    expect(screen.queryByRole("combobox", { name: /filtrar por squad/i })).toBeNull();
+  });
+
+  it("membro comum tem o botão de lançamento quando o servidor libera a conta", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({
+      clientes: [semDadosShopee()],
+      acesso: { tipo: "carteira", squads: [{ id: 7, nome: "Squad Alpha", funcao: "membro" }], clientesComoGestor: 0 },
+    }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Coremix Loja/ }));
+    expect(screen.getByRole("button", { name: /lançar dados — shopee 1 · coremix/i })).toBeInTheDocument();
+  });
+
+  it("cabeçalho diz de onde vem a carteira", () => {
+    mocks.usePainelContas.mockReturnValue(estado({
+      acesso: { tipo: "carteira", squads: [{ id: 2, nome: "Squad 2", funcao: "membro" }], clientesComoGestor: 1 },
+    }));
+    render(<PainelContasPage />);
+    expect(screen.getByTestId("escopo-acesso")).toHaveTextContent("Seu Squad: Squad 2 · gestor de 1 cliente");
+  });
+
+  it("descreverAcesso cobre admin, membro de Squad(s), gestor e ausência", () => {
     expect(descreverAcesso({ tipo: "admin" })).toBe("todos os Squads");
-    expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [{ nome: "A" }, { nome: "B" }], clientesComoGestor: 0 })).toBe("Squads que você coordena: A, B");
-    expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [], clientesComoGestor: 3 })).toBe("gestor de 3 clientes");
-    expect(descreverAcesso({ tipo: "carteira", squadsCoordenados: [], squadsGeridos: [{ nome: "Squad 4" }], clientesComoGestor: 0 })).toBe("Squad em que você é gestor: Squad 4");
+    expect(descreverAcesso({ tipo: "carteira", squads: [{ nome: "A" }, { nome: "B" }], clientesComoGestor: 0 })).toBe("Seus Squads: A, B");
+    expect(descreverAcesso({ tipo: "carteira", squads: [], clientesComoGestor: 3 })).toBe("gestor de 3 clientes");
+    expect(descreverAcesso({ tipo: "carteira", squads: [{ nome: "Squad 4", funcao: "gestor" }], clientesComoGestor: 0 })).toBe("Seu Squad: Squad 4");
+    expect(descreverAcesso({ tipo: "nenhum", squads: [], clientesComoGestor: 0 })).toBeNull();
     expect(descreverAcesso(null)).toBeNull();
   });
 });

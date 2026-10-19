@@ -1,7 +1,7 @@
 // server/services/painelContas/painelContasService.js
 // Orquestrador do Painel de Contas (Auditoria §13) — versão operacional.
 //
-// O escopo do Painel (painelContasAcesso: admin · coordenador do Squad ·
+// O escopo do Painel (painelContasAcesso: admin · membros ativos dos Squads ·
 // gestor do cliente) é SEMPRE o primeiro passo — squad/busca/status/
 // marketplace/legado são filtros aplicados DEPOIS, sobre o conjunto já
 // autorizado pelo servidor. Filtro enviado pelo frontend é preferência de
@@ -21,7 +21,7 @@
 
 const pool = require("../../config/database");
 const { assertClienteNaCarteira, clientesAutorizadosSet } = require("../squads/authorizationService");
-const { resolverEscopoPainel, assertClienteNoPainel } = require("./painelContasAcesso");
+const { resolverEscopoPainel, assertClienteNoPainel, podeUsarPainel } = require("./painelContasAcesso");
 const squadsRepo = require("../squads/squadsRepository");
 const cliente360Repo = require("../cliente360/cliente360Repository");
 const { selecionarMelhorImportPorCompetencia } = require("../centralVendas/centralVendasRepository");
@@ -40,9 +40,6 @@ const { montarComposicaoConta, somarComposicoes } = require("./painelContasCompo
 
 const TIMEZONE = "America/Sao_Paulo";
 const FILTROS_STATUS = new Set(["todos", "com_dados", "sem_dados", "parcial", "manual", "automatico", "atencao"]);
-// Mesmo conjunto de requireAutomacoesAccess — o gate das rotas deste painel e
-// de PUT /ads/resumo-mensal (o outro lançamento gerencial manual do projeto).
-const PAPEIS_LANCAMENTO_MANUAL = new Set(["admin", "user", "membro"]);
 
 function erro(statusCode, code, mensagem) {
   const e = new Error(mensagem);
@@ -91,8 +88,10 @@ function competenciaAnterior(competencia) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
+// Mesmo conjunto do gate das rotas (requirePainelContasAccess): admin e papéis
+// internos. O cliente/conta ainda passa pelo escopo do Painel e pela carteira.
 function podeLancar(user) {
-  return PAPEIS_LANCAMENTO_MANUAL.has(String(user?.role || "").toLowerCase());
+  return podeUsarPainel(user);
 }
 
 function agruparPor(lista, chave) {
@@ -173,10 +172,11 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
 
   await squadsRepo.ensureSquadsTables();
   const acesso = await resolverEscopoPainel(user, pool);
-  if (acesso.tipo === "nenhum") {
-    throw erro(403, "PAINEL_SEM_ACESSO",
-      "O Painel de Contas é liberado para quem coordena um Squad ou é gestor de um cliente. Fale com o administrador se precisar de acesso.");
+  if (acesso.tipo === "sem_papel") {
+    throw erro(403, "PAINEL_SEM_ACESSO", "O Painel de Contas é exclusivo da equipe interna.");
   }
+  // Interno sem Squad (tipo "nenhum"): segue com a carteira VAZIA — a tela
+  // mostra o estado vazio, nunca clientes de fora.
   const autorizados = acesso.clientes;
   // Lançar exige também a carteira global (o gate de escrita de sempre).
   const carteiraEscrita = permitido ? await clientesAutorizadosSet(user, pool) : new Set();
@@ -290,6 +290,7 @@ async function listar(user, filtros = {}, { agora = new Date() } = {}) {
     // De onde vem a carteira deste usuário no Painel (só leitura).
     acesso: {
       tipo: acesso.tipo,
+      squads: acesso.squads,
       squadsCoordenados: acesso.squadsCoordenados,
       squadsGeridos: acesso.squadsGeridos,
       clientesComoGestor: acesso.clientesComoGestor,

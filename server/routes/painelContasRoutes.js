@@ -2,41 +2,43 @@
 // Montado em server/index.js: app.use("/painel-contas", painelContasRoutes).
 //
 // Autorização SEMPRE no servidor (Auditoria §4/§15 — nunca "o cliente existe,
-// logo acessa"). Papel: authMiddleware + requireAutomacoesAccess
-// (admin/user/membro; seller/shopee_reviewer não entram). Depois:
-//   LEITURA  → escopo próprio do Painel (painelContasAcesso: admin, coordenador
-//              ou gestor do Squad, gestor do cliente), independente de SQUADS_ENFORCEMENT;
-//   ESCRITA  → carteira global (requireClienteNaCarteira) E o escopo do Painel
-//              (no service) — interseção, nunca ampliação;
+// logo acessa"). Papel: authMiddleware + requirePainelContasAccess (admin e
+// papéis internos, inclusive `interno`; seller/shopee_reviewer não entram).
+// Gate próprio do Painel: requirePainelContasAccess não aceita `interno` e não
+// foi ampliado. Depois:
+//   LEITURA  → escopo do Painel (painelContasAcesso: clientes dos Squads em
+//              que o usuário tem membership ativa), independente de
+//              SQUADS_ENFORCEMENT;
+//   ESCRITA  → escopo do Painel E a carteira global (requireClienteNaCarteira)
+//              — interseção, nunca ampliação; o service repete as duas e exige
+//              que a conta pertença ao cliente do path;
 //   ATUALIZAR → admin + carteira, como antes.
 
 const express = require("express");
 const { authMiddleware, requireAdmin } = require("../middlewares/authMiddleware");
-const { requireAutomacoesAccess } = require("../middlewares/accessMiddleware");
 const { requireClienteNaCarteira } = require("../middlewares/carteiraMiddleware");
-const { requireClienteNoPainel } = require("../services/painelContas/painelContasAcesso");
+const { requireClienteNoPainel, requirePainelContasAccess } = require("../services/painelContas/painelContasAcesso");
 const controller = require("../controllers/painelContasController");
 
 const router = express.Router();
 const naCarteira = requireClienteNaCarteira("clienteId");
 const noPainel = requireClienteNoPainel("clienteId");
 
-router.get("/", authMiddleware, requireAutomacoesAccess, controller.listar);
-router.get("/:clienteId/meses", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarMeses);
-router.get("/:clienteId/meses/:competencia/semanas", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarSemanas);
-router.get("/:clienteId/contas/semanas", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarSemanasDasContas);
-router.get("/:clienteId/contas/composicao", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarComposicaoDasContas);
-// Lançamento manual por conta × competência. Mesmo gate de PUT
-// /ads/resumo-mensal (o outro lançamento gerencial manual): papel de
-// automações + cliente na carteira; o service ainda exige o escopo de leitura
-// do Painel e que a conta pertença ao cliente do path.
+router.get("/", authMiddleware, requirePainelContasAccess, controller.listar);
+router.get("/:clienteId/meses", authMiddleware, requirePainelContasAccess, noPainel, controller.listarMeses);
+router.get("/:clienteId/meses/:competencia/semanas", authMiddleware, requirePainelContasAccess, noPainel, controller.listarSemanas);
+router.get("/:clienteId/contas/semanas", authMiddleware, requirePainelContasAccess, noPainel, controller.listarSemanasDasContas);
+router.get("/:clienteId/contas/composicao", authMiddleware, requirePainelContasAccess, noPainel, controller.listarComposicaoDasContas);
+// Lançamento manual por conta × competência: papel do Painel + cliente no
+// escopo do Painel + cliente na carteira global; o service repete as duas
+// checagens e exige que a conta pertença ao cliente do path.
 const manual = "/:clienteId/contas/:contaId/manual/:competencia";
 // Rastreabilidade (só leitura): competências lançadas da conta e a trilha de
 // alterações de uma competência.
-router.get("/:clienteId/contas/:contaId/manual", authMiddleware, requireAutomacoesAccess, noPainel, controller.listarLancamentosDaConta);
-router.get(`${manual}/historico`, authMiddleware, requireAutomacoesAccess, noPainel, controller.listarHistoricoLancamento);
-router.put(manual, authMiddleware, requireAutomacoesAccess, naCarteira, controller.salvarLancamentoManual);
-router.delete(manual, authMiddleware, requireAutomacoesAccess, naCarteira, controller.removerLancamentoManual);
+router.get("/:clienteId/contas/:contaId/manual", authMiddleware, requirePainelContasAccess, noPainel, controller.listarLancamentosDaConta);
+router.get(`${manual}/historico`, authMiddleware, requirePainelContasAccess, noPainel, controller.listarHistoricoLancamento);
+router.put(manual, authMiddleware, requirePainelContasAccess, noPainel, naCarteira, controller.salvarLancamentoManual);
+router.delete(manual, authMiddleware, requirePainelContasAccess, noPainel, naCarteira, controller.removerLancamentoManual);
 // Atualização sob demanda (cliente × competência). Dispara sync no Mercado
 // Livre: MESMO gate de POST /central-vendas/:slug/sync-runs (admin + carteira)
 // — nenhuma regra de autorização nova.

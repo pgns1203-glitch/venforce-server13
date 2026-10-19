@@ -96,14 +96,14 @@ function portfolioInterno(m, userId) {
     .map(({ id, slug, nome }) => ({ id, slug, nome }));
 }
 
-// Espelho em memória das queries de painelContasAcesso.
-// Coordenador e gestor do Squad têm a mesma carteira no Painel.
-function coordenadosDe(m, userId) {
-  return m.members.filter((x) => x.user_id === userId && x.ativo && ["coordenador", "gestor"].includes(x.funcao)
+// Espelho em memória das queries de painelContasAcesso: qualquer membership
+// ativa (coordenador, gestor ou membro) em Squad ativo dá a carteira do Squad.
+function squadsDe(m, userId) {
+  return m.members.filter((x) => x.user_id === userId && x.ativo
     && m.squads.some((sq) => sq.id === x.squad_id && sq.ativo)).map((x) => x.squad_id);
 }
 function clientesPainel(m, userId) {
-  const sqs = new Set(coordenadosDe(m, userId));
+  const sqs = new Set(squadsDe(m, userId));
   const porSquad = m.clientes.filter((c) => c.ativo && m.history.some((h) => h.cliente_id === c.id && h.fim_em === null && sqs.has(h.squad_id)));
   const porGestor = m.clientes.filter((c) => c.ativo && m.responsaveis.some((r) => r.cliente_id === c.id && r.user_id === userId && r.ativo && r.papel === "gestor"));
   return { porSquad, porGestor };
@@ -126,11 +126,11 @@ function instalarMock(m) {
     if (/^(--|CREATE|ALTER|DROP|BEGIN|COMMIT|ROLLBACK|DO )/i.test(q) || q.includes("pg_advisory")) return { rows: [] };
 
     if (q.includes("painelAcesso:ADMIN_TODOS")) { contar("authz"); return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
-    if (q.includes("painelAcesso:SQUADS_COORDENADOS")) {
+    if (q.includes("painelAcesso:SQUADS_DO_USUARIO")) {
       contar("authz");
-      return { rows: coordenadosDe(m, params[0]).map((id) => m.squads.find((sq) => sq.id === id)).map(({ id, nome, slug }) => ({ id, nome, slug, funcao: m.members.find((x) => x.user_id === params[0] && x.squad_id === id).funcao })) };
+      return { rows: squadsDe(m, params[0]).map((id) => m.squads.find((sq) => sq.id === id)).map(({ id, nome, slug }) => ({ id, nome, slug, funcao: m.members.find((x) => x.user_id === params[0] && x.squad_id === id).funcao })) };
     }
-    if (q.includes("painelAcesso:CLIENTES_COORDENADOS")) { contar("authz"); return { rows: clientesPainel(m, params[0]).porSquad.map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
+    if (q.includes("painelAcesso:CLIENTES_DOS_SQUADS")) { contar("authz"); return { rows: clientesPainel(m, params[0]).porSquad.map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
     if (q.includes("painelAcesso:CLIENTES_GESTOR")) { contar("authz"); return { rows: clientesPainel(m, params[0]).porGestor.map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
     if (q.includes("painelAcesso:PODE_VER_CLIENTE")) {
       contar("authz");

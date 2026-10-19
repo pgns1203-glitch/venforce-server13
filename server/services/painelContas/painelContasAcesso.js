@@ -1,28 +1,45 @@
 // server/services/painelContas/painelContasAcesso.js
-// Escopo de LEITURA do Painel de Contas — regra própria do Painel, decidida
-// pela gestão em 01/10/2026 e INDEPENDENTE da flag global SQUADS_ENFORCEMENT
-// (que continua governando os outros módulos via authorizationService):
+// Escopo do Painel de Contas — regra própria do Painel, INDEPENDENTE da flag
+// global SQUADS_ENFORCEMENT (que continua governando os outros módulos via
+// authorizationService). Liberado para toda a equipe interna em 19/10/2026
+// (antes: só coordenador/gestor do Squad, decisões de 01/10 e 15/10):
 //
 //   admin        → todos os clientes ativos.
-//   coordenador  → clientes ativos cujo Squad VIGENTE (cliente_squad_history,
-//   e gestor       fim_em IS NULL) é um Squad ATIVO em que o usuário tem
-//   do Squad       membership ativa com funcao 'coordenador' ou 'gestor'
-//                  (gestor liberado em 15/10/2026: cada Squad tem 1 gestor e a
-//                  carteira dele é a do Squad).
-//   gestor do    → clientes ativos em que o usuário é responsável ativo com
-//   cliente        papel = 'gestor' (cliente_responsaveis). Vale sozinho
-//                  quando o vínculo existir (hoje a tabela está vazia).
-//   demais       → sem acesso (auxiliar, designer, membro comum, sem vínculo).
+//   interno      → clientes ativos cujo Squad VIGENTE (cliente_squad_history,
+//   (user/membro/  fim_em IS NULL) é um Squad ATIVO em que o usuário tem
+//   interno)       membership ativa — qualquer função (coordenador, gestor,
+//                  analista, auxiliar, membro...). Vários Squads = a união das
+//                  carteiras; o filtro de Squad da tela só RECORTA isto.
+//   gestor do    → clientes ativos em que o usuário (interno) é responsável
+//   cliente        ativo com papel = 'gestor' (cliente_responsaveis). Vínculo
+//                  vigente que vale sozinho, só para LEITURA (ver escrita).
+//   interno sem  → carteira VAZIA (tipo "nenhum"). Nunca "todos os clientes".
+//   vínculo
+//   demais       → sem acesso (seller, shopee_reviewer, desconhecido).
 //
-// Não existe role "coordenador" nem "gestor": são vínculos reais do banco
-// (função no Squad e responsabilidade no cliente), não papéis globais. O gate
-// de papel continua antes disto (requireAutomacoesAccess: admin/user/membro).
+// O squadId que o frontend manda é filtro de exibição; a carteira sai SEMPRE
+// destas queries.
 //
-// LEITURA apenas. Lançamento manual exige ISTO e, além disso, o gate de
-// escrita que já existia (papel + carteira global) — nunca amplia escrita.
+// ESCRITA (lançamento manual): este escopo E a carteira global
+// (authorizationService) — interseção, nunca ampliação. Com SQUADS_ENFORCEMENT
+// desligado a carteira global de um interno é "todos", então é este escopo
+// que restringe; ligado, as duas coincidem para quem é membro do Squad.
 
 const pool = require("../../config/database");
 const { resolverClienteRef, ehAdmin } = require("../squads/authorizationService");
+const { ROLES_COBRADAS_NA_AUDITORIA } = require("../squads/rolesInternas");
+
+// Papéis internos — fonte canônica (rolesInternas). Inclui `interno`, que
+// requireAutomacoesAccess não aceita: por isso o Painel tem gate próprio.
+const ROLES_INTERNAS = ROLES_COBRADAS_NA_AUDITORIA.set;
+
+function ehInternoPainel(user) {
+  return ROLES_INTERNAS.has(String(user?.role || "").toLowerCase());
+}
+
+function podeUsarPainel(user) {
+  return ehAdmin(user) || ehInternoPainel(user);
+}
 
 function erro(statusCode, code, mensagem, extra = {}) {
   const e = new Error(mensagem);
@@ -32,9 +49,14 @@ function erro(statusCode, code, mensagem, extra = {}) {
   return e;
 }
 
+function escopoVazio(tipo) {
+  return { tipo, squads: [], squadsCoordenados: [], squadsGeridos: [], clientesComoGestor: 0, clientes: [] };
+}
+
 /**
  * @returns {Promise<{
- *   tipo: "admin"|"carteira"|"nenhum",
+ *   tipo: "admin"|"carteira"|"nenhum"|"sem_papel",
+ *   squads: Array<{id:number,nome:string,slug:string,funcao:string|null}>,
  *   squadsCoordenados: Array<{id:number,nome:string,slug:string}>,
  *   squadsGeridos: Array<{id:number,nome:string,slug:string}>,
  *   clientesComoGestor: number,
@@ -48,32 +70,31 @@ async function resolverEscopoPainel(user = {}, db = pool) {
        SELECT c.id, c.slug, c.nome FROM clientes c
         WHERE c.ativo = true ORDER BY c.nome ASC`
     );
-    return { tipo: "admin", squadsCoordenados: [], squadsGeridos: [], clientesComoGestor: 0, clientes: rows };
+    return { ...escopoVazio("admin"), clientes: rows };
   }
+  if (!ehInternoPainel(user)) return escopoVazio("sem_papel");
 
   const userId = Number(user?.id);
-  if (!Number.isInteger(userId) || userId <= 0) {
-    return { tipo: "nenhum", squadsCoordenados: [], squadsGeridos: [], clientesComoGestor: 0, clientes: [] };
-  }
+  if (!Number.isInteger(userId) || userId <= 0) return escopoVazio("nenhum");
 
-  const [coordenados, clientesCoordenados, clientesGestor] = await Promise.all([
+  const [squadsDoUsuario, clientesDosSquads, clientesGestor] = await Promise.all([
     db.query(
-      `/* painelAcesso:SQUADS_COORDENADOS */
+      `/* painelAcesso:SQUADS_DO_USUARIO */
        SELECT s.id, s.nome, s.slug, sm.funcao
          FROM squad_members sm
          JOIN squads s ON s.id = sm.squad_id AND s.ativo = true
-        WHERE sm.user_id = $1 AND sm.ativo = true AND sm.funcao IN ('coordenador', 'gestor')
+        WHERE sm.user_id = $1 AND sm.ativo = true
         ORDER BY s.nome ASC`,
       [userId]
     ),
     db.query(
-      `/* painelAcesso:CLIENTES_COORDENADOS */
+      `/* painelAcesso:CLIENTES_DOS_SQUADS */
        SELECT DISTINCT c.id, c.slug, c.nome
          FROM cliente_squad_history csh
          JOIN clientes c ON c.id = csh.cliente_id AND c.ativo = true
          JOIN squads s ON s.id = csh.squad_id AND s.ativo = true
          JOIN squad_members sm ON sm.squad_id = s.id
-          AND sm.user_id = $1 AND sm.ativo = true AND sm.funcao IN ('coordenador', 'gestor')
+          AND sm.user_id = $1 AND sm.ativo = true
         WHERE csh.fim_em IS NULL`,
       [userId]
     ),
@@ -88,15 +109,18 @@ async function resolverEscopoPainel(user = {}, db = pool) {
   ]);
 
   const porId = new Map();
-  for (const c of [...clientesCoordenados.rows, ...clientesGestor.rows]) porId.set(Number(c.id), c);
+  for (const c of [...clientesDosSquads.rows, ...clientesGestor.rows]) porId.set(Number(c.id), c);
   const clientes = [...porId.values()].sort((a, b) => String(a.nome).localeCompare(String(b.nome), "pt-BR"));
-  const temVinculo = coordenados.rows.length > 0 || clientesGestor.rows.length > 0;
+  const temVinculo = squadsDoUsuario.rows.length > 0 || clientesGestor.rows.length > 0;
 
-  const squad = (s) => ({ id: Number(s.id), nome: s.nome, slug: s.slug });
+  // squad_members é único por (squad_id, user_id): uma linha por Squad.
+  const squads = squadsDoUsuario.rows.map((s) => ({ id: Number(s.id), nome: s.nome, slug: s.slug, funcao: s.funcao || null }));
+  const semFuncao = ({ id, nome, slug }) => ({ id, nome, slug });
   return {
     tipo: temVinculo ? "carteira" : "nenhum",
-    squadsCoordenados: coordenados.rows.filter((s) => s.funcao !== "gestor").map(squad),
-    squadsGeridos: coordenados.rows.filter((s) => s.funcao === "gestor").map(squad),
+    squads,
+    squadsCoordenados: squads.filter((s) => s.funcao === "coordenador").map(semFuncao),
+    squadsGeridos: squads.filter((s) => s.funcao === "gestor").map(semFuncao),
     clientesComoGestor: clientesGestor.rows.length,
     clientes,
   };
@@ -113,7 +137,7 @@ async function assertClienteNoPainel(user, ref, db = pool) {
 
   const userId = Number(user?.id);
   const negado = () => erro(403, "CLIENTE_FORA_DA_CARTEIRA", "Cliente fora da sua carteira no Painel de Contas.", { clienteId: cliente.id });
-  if (!Number.isInteger(userId) || userId <= 0 || cliente.ativo === false) throw negado();
+  if (!ehInternoPainel(user) || !Number.isInteger(userId) || userId <= 0 || cliente.ativo === false) throw negado();
 
   const { rows } = await db.query(
     `/* painelAcesso:PODE_VER_CLIENTE */
@@ -123,7 +147,7 @@ async function assertClienteNoPainel(user, ref, db = pool) {
                 FROM cliente_squad_history csh
                 JOIN squads s ON s.id = csh.squad_id AND s.ativo = true
                 JOIN squad_members sm ON sm.squad_id = s.id
-                 AND sm.user_id = $1 AND sm.ativo = true AND sm.funcao IN ('coordenador', 'gestor')
+                 AND sm.user_id = $1 AND sm.ativo = true
                WHERE csh.cliente_id = $2 AND csh.fim_em IS NULL)
          OR EXISTS (
               SELECT 1 FROM cliente_responsaveis r
@@ -134,9 +158,21 @@ async function assertClienteNoPainel(user, ref, db = pool) {
   return cliente;
 }
 
-// Middleware das rotas de LEITURA por cliente (`/:clienteId/...`). Fica no
-// lugar de requireClienteNaCarteira nessas rotas; as de escrita continuam com
-// a carteira global E o escopo do Painel (no service).
+// Gate de PAPEL das rotas do Painel: admin + papéis internos (inclui
+// `interno`). Fica no lugar de requireAutomacoesAccess só aqui — Automações,
+// Design e os demais módulos continuam com o gate deles.
+function requirePainelContasAccess(req, res, next) {
+  if (podeUsarPainel(req.user)) return next();
+  return res.status(403).json({
+    ok: false,
+    code: "PAINEL_SEM_ACESSO",
+    erro: "O Painel de Contas é exclusivo da equipe interna.",
+  });
+}
+
+// Middleware das rotas por cliente (`/:clienteId/...`), leitura e escrita.
+// Na escrita roda junto da carteira global (interseção) e o service repete as
+// duas checagens.
 function requireClienteNoPainel(param = "clienteId") {
   return async function clienteNoPainel(req, res, next) {
     try {
@@ -153,4 +189,7 @@ function requireClienteNoPainel(param = "clienteId") {
   };
 }
 
-module.exports = { resolverEscopoPainel, assertClienteNoPainel, requireClienteNoPainel };
+module.exports = {
+  resolverEscopoPainel, assertClienteNoPainel, requireClienteNoPainel,
+  requirePainelContasAccess, podeUsarPainel,
+};

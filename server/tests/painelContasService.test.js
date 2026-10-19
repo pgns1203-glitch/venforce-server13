@@ -36,8 +36,8 @@ function novoModelo() {
       { id: 10, nome: "Squad Alpha", slug: "alpha", ativo: true },
       { id: 20, nome: "Squad Beta", slug: "beta", ativo: true },
     ],
-    // Painel de Contas V3: o escopo do Painel é de quem COORDENA o Squad (ou
-    // é gestor do cliente) — Alpha e Beta coordenam os seus.
+    // Escopo do Painel: membros ativos do Squad (qualquer função) e gestor
+    // do cliente — Alpha e Beta estão nos seus.
     members: [
       { squad_id: 10, user_id: 100, is_primary: true, funcao: "coordenador", ativo: true },
       { squad_id: 20, user_id: 200, is_primary: true, funcao: "coordenador", ativo: true },
@@ -152,16 +152,16 @@ function instalarMock(m) {
       contar("painelAcesso:ADMIN_TODOS");
       return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) };
     }
-    if (q.includes("painelAcesso:SQUADS_COORDENADOS")) {
-      contar("painelAcesso:SQUADS_COORDENADOS");
+    if (q.includes("painelAcesso:SQUADS_DO_USUARIO")) {
+      contar("painelAcesso:SQUADS_DO_USUARIO");
       return {
-        rows: m.members.filter((x) => x.user_id === params[0] && x.ativo && x.funcao === "coordenador")
-          .map((x) => m.squads.find((sq) => sq.id === x.squad_id && sq.ativo)).filter(Boolean)
-          .map(({ id, nome, slug }) => ({ id, nome, slug })),
+        rows: m.members.filter((x) => x.user_id === params[0] && x.ativo)
+          .map((x) => ({ x, sq: m.squads.find((sq) => sq.id === x.squad_id && sq.ativo) })).filter(({ sq }) => sq)
+          .map(({ x, sq }) => ({ id: sq.id, nome: sq.nome, slug: sq.slug, funcao: x.funcao })),
       };
     }
-    if (q.includes("painelAcesso:CLIENTES_COORDENADOS")) {
-      contar("painelAcesso:CLIENTES_COORDENADOS");
+    if (q.includes("painelAcesso:CLIENTES_DOS_SQUADS")) {
+      contar("painelAcesso:CLIENTES_DOS_SQUADS");
       return { rows: portfolioInterno(m, params[0]) };
     }
     if (q.includes("painelAcesso:CLIENTES_GESTOR")) {

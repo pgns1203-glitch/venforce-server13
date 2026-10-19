@@ -4228,7 +4228,7 @@
   function bancadaSeletorHtml(item) {
     var sugestoes = bancadaPrecoAlvoHtml(item);
     return '<div class="cm-cens" id="cm-banc-cenarios" role="radiogroup" aria-label="Cenário" data-cm-cenarios>' +
-      '<div class="cm-cens__cab" aria-hidden="true"><span>Cenário</span><span class="num">Preço · mudança</span><span class="num">LC / un · vs hoje</span><span>Resultado</span></div>' +
+      '<div class="cm-cens__cab" aria-hidden="true"><span>Cenário</span><span class="cm-cens__num">Preço · mudança</span><span class="cm-cens__num">LC / un · vs hoje</span><span>Resultado</span></div>' +
       '<div id="cm-banc-manual-card">' + bancadaManualCardHtml() + "</div>" +
       '<div id="cm-banc-promos">' + bancadaPromosHtml() + "</div></div>" +
       (sugestoes ? '<div class="cm-banc__sugestoes">' + sugestoes + "</div>" : "");

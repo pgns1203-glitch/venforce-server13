@@ -28,6 +28,9 @@ const SHOT_DIR = process.env.CM_SHOT_DIR || path.join(os.tmpdir(), "central-marg
 // 1440×900 por padrão; CM_W/CM_H para capturar em outra largura (ex.: 1920×1080).
 const VIEW_W = Number(process.env.CM_W) || 1440;
 const VIEW_H = Number(process.env.CM_H) || 900;
+// CM_PORTAL_URL: abre o Portal de outra origem (ex.: https://venforce-server-1.onrender.com) em vez do
+// servidor estático local — mesmo HTML/CSS/JS que a produção serve; só a API continua no mock.
+const PORTAL_URL = (process.env.CM_PORTAL_URL || "").replace(/\/+$/, "");
 
 function startStaticServer() {
   const server = http.createServer((request, response) => {
@@ -297,7 +300,7 @@ async function run() {
       ${mock}
     ` });
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: VIEW_W, height: VIEW_H, deviceScaleFactor: 1, mobile: false });
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/central-margem.html?cliente=red_fish` });
+    await cdp.send("Page.navigate", { url: `${PORTAL_URL || `http://127.0.0.1:${serverPort}`}/central-margem.html?cliente=red_fish` });
 
     const arquivos = [];
     const shot = async (name) => {
@@ -421,7 +424,7 @@ async function run() {
       ${mockCasoReal(mock)}
       ${fixtureCasoReal()}
     ` });
-    await cdp.send("Page.navigate", { url: `http://127.0.0.1:${serverPort}/central-margem.html?cliente=red_fish` });
+    await cdp.send("Page.navigate", { url: `${PORTAL_URL || `http://127.0.0.1:${serverPort}`}/central-margem.html?cliente=red_fish` });
     await waitFor(cdp, "window.VFCentralMargemUi && window.VF && window.VF.context && (window.VFCentralMargemUi.getState().awaitingAccount || (window.VF.context.getState() === 'READY' && window.VFCentralMargemUi.getState().contaId === 10))", "caso real: Shell não resolveu a conta");
     for (let i = 0; i < 60; i += 1) {
       await cdp.evaluate("window.VF.context.setConta(10)");
@@ -483,6 +486,61 @@ async function run() {
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-bancada-review').textContent"), "Participar desta promoção");
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
       await shot("20-caso-real-1111");
+    });
+
+    // Em produção o JS novo rodou com o CSS antigo (cache) e a Bancada saiu sem grid. Aqui
+    // a página é a mesma da produção (HTML e <link> sem retoque, nada injetado) e o que se
+    // confere é o layout CALCULADO pelo navegador — com o CSS anterior ao #330 este passo falha.
+    await check(`caso real · CSS como produção (${VIEW_W}px): só os <link> do HTML, tabela de 4 colunas, cabeçalho em 4 células, 6 números numa linha`, async () => {
+      const css = JSON.parse(await cdp.evaluate(`fetch(location.href, { cache: "no-store" }).then(function (r) { return r.text(); }).then(function (html) {
+        var doc = new DOMParser().parseFromString(html, "text/html");
+        var hrefs = function (root) { return Array.prototype.map.call(root.querySelectorAll('link[rel="stylesheet"]'), function (l) { return l.getAttribute("href"); }); };
+        var layout = Array.prototype.find.call(document.styleSheets, function (s) { return s.href && s.href.indexOf("central-margem-layout.css") !== -1; });
+        return JSON.stringify({
+          doHtml: hrefs(doc), naPagina: hrefs(document),
+          estilosInline: Array.prototype.filter.call(document.querySelectorAll("style"), function (s) { return /cm-(cens|cen|dsum|bancada)/.test(s.textContent); }).length,
+          layoutHref: layout ? layout.href : null,
+          regraCab: layout ? Array.prototype.some.call(layout.cssRules, function (r) { return r.selectorText && r.selectorText.indexOf(".cm-bancada .cm-cens__cab") !== -1; }) : false,
+        });
+      })`));
+      assert.deepStrictEqual(css.naPagina, css.doHtml, "a página carrega exatamente os <link> do HTML servido");
+      assert.strictEqual(css.estilosInline, 0, "nenhum CSS da Bancada injetado");
+      assert.ok(/central-margem-layout\.css\?v=[0-9a-f]{10}$/.test(css.layoutHref || ""), `layout com cache-busting: ${css.layoutHref}`);
+      assert.ok(css.regraCab, "a regra do cabeçalho vem do central-margem-layout.css servido");
+
+      const g = JSON.parse(await cdp.evaluate(`(function () {
+        function caixa(e) { var r = e.getBoundingClientRect(); return { l: r.left, r: r.right, t: r.top, b: r.bottom, w: r.width, h: r.height }; }
+        function lado(cels) { for (var i = 1; i < cels.length; i += 1) if (!(cels[i].l >= cels[i - 1].r - 0.5)) return false; return cels.every(function (c) { return c.w > 0; }); }
+        var cab = document.querySelector("#cm-drawer .cm-cens__cab");
+        var linhas = Array.prototype.slice.call(document.querySelectorAll("#cm-drawer .cm-cens .cm-cen"));
+        var radio = document.querySelector("#cm-drawer .cm-cen__radio");
+        var cels = Array.prototype.map.call(document.querySelectorAll("#cm-drawer-summary .cm-dsum__cell"), caixa);
+        var lc = document.querySelector('[data-cenario="P-1111"] .cm-cen__lc');
+        return JSON.stringify({
+          cabDisplay: getComputedStyle(cab).display,
+          cabColunas: getComputedStyle(cab).gridTemplateColumns.split(" ").length,
+          cabCelulas: Array.prototype.map.call(cab.children, caixa),
+          cabLadoALado: lado(Array.prototype.map.call(cab.children, caixa)),
+          linhasLadoALado: linhas.every(function (l) { return getComputedStyle(l).display === "grid" && l.children.length === 4 && lado(Array.prototype.map.call(l.children, caixa)); }),
+          radio: caixa(radio), radioRaio: getComputedStyle(radio).borderTopLeftRadius,
+          nomesCortados: Array.prototype.filter.call(document.querySelectorAll("#cm-drawer .cm-cen__nome strong"), function (s) { return s.scrollWidth > s.clientWidth + 1; }).map(function (s) { return s.textContent; }),
+          lcEmpilhado: caixa(lc.querySelector("[data-cm-vs]")).t >= caixa(lc.querySelector(".cm-cen__num")).b - 1,
+          topoTops: cels.map(function (c) { return Math.round(c.t); }).filter(function (v, i, a) { return a.indexOf(v) === i; }),
+          topoAltura: caixa(document.getElementById("cm-drawer-summary")).h,
+          topoFonte: getComputedStyle(document.querySelector("#cm-drawer-summary .cm-dsum__value")).fontSize,
+        });
+      })()`));
+      assert.strictEqual(g.cabDisplay, "grid", "cabeçalho em grid");
+      assert.strictEqual(g.cabColunas, 4, "4 colunas");
+      assert.strictEqual(g.cabCelulas.length, 4, "cabeçalho com 4 células");
+      assert.ok(g.cabLadoALado, `cabeçalho em 4 células separadas: ${JSON.stringify(g.cabCelulas)}`);
+      assert.ok(g.linhasLadoALado, "toda linha em grid com 4 células lado a lado");
+      assert.ok(Math.round(g.radio.w) === 16 && Math.round(g.radio.h) === 16 && g.radioRaio !== "0px", `radio redondo 16×16: ${JSON.stringify(g.radio)} ${g.radioRaio}`);
+      assert.deepStrictEqual(g.nomesCortados, [], "nomes dos cenários inteiros");
+      assert.ok(g.lcEmpilhado, "LC e vs hoje em linhas separadas");
+      assert.strictEqual(g.topoTops.length, 1, `6 números numa linha só: tops ${g.topoTops}`);
+      assert.ok(g.topoAltura <= 90, `topo ≤ 90px: ${g.topoAltura}`);
+      assert.strictEqual(g.topoFonte, "20px", "número do topo 20px");
     });
 
     await check("caso real · Preço manual 59,90 (1ª linha, campo inline): 'Vale entrar', 'Ganha R$ 1,41…', +4,71 (+9%) e +0,3 pp; a linha fica selecionada", async () => {

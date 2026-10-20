@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("../mlGrantIdentity");
 // server/services/clienteContas/clienteContaService.js
 //
 // Fundação de Contas do Marketplace (Fase 1).
@@ -145,7 +146,7 @@ async function listarContasDoCliente({ clienteId, clienteSlug, marketplace, incl
        FROM cliente_contas cc
        LEFT JOIN LATERAL (
          SELECT * FROM ml_tokens g
-          WHERE g.cliente_conta_id = cc.id
+          WHERE g.cliente_conta_id = cc.id AND ${currentGrantSql("g")}
           ORDER BY g.updated_at DESC NULLS LAST, g.id DESC
           LIMIT 1
        ) g ON true
@@ -246,7 +247,7 @@ async function listarContasDeClientesAtivos(clienteIds) {
        FROM cliente_contas cc
        LEFT JOIN LATERAL (
          SELECT * FROM ml_tokens g
-          WHERE g.cliente_conta_id = cc.id
+          WHERE g.cliente_conta_id = cc.id AND ${currentGrantSql("g")}
           ORDER BY g.updated_at DESC NULLS LAST, g.id DESC
           LIMIT 1
        ) g ON true
@@ -443,7 +444,7 @@ async function garantirContaMlParaGrant({ clienteId, clienteSlug, mlUserId, gran
 
     if (conta) {
       await client.query(
-        "UPDATE ml_tokens SET cliente_conta_id = $1 WHERE cliente_id = $2 AND ml_user_id = $3 AND cliente_conta_id IS NULL",
+        `UPDATE ml_tokens SET cliente_conta_id = $1 WHERE cliente_id = $2 AND ml_user_id = $3 AND cliente_conta_id IS NULL AND ${currentGrantSql()}`,
         [conta.id, clienteId, mlUserIdStr]
       );
     }
@@ -492,7 +493,7 @@ async function vincularGrantMlNaConta({ contaId, mlUserId, transactionClient = n
     }
 
     await client.query(
-      "UPDATE ml_tokens SET cliente_conta_id = $1 WHERE cliente_id = $2 AND ml_user_id = $3",
+      `UPDATE ml_tokens SET cliente_conta_id = $1 WHERE cliente_id = $2 AND ml_user_id = $3 AND ${currentGrantSql()}`,
       [conta.id, conta.cliente_id, mlUserIdStr]
     );
 

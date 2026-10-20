@@ -65,6 +65,10 @@ async function environment() {
     );
     await pool.query(sql);
     await pool.query(sql); // DDL idempotente; nenhum backfill.
+    const identitySql = fs.readFileSync(path.resolve(__dirname, "../../sql/migrations/20261020_ml_grants_superseded.sql"), "utf8");
+    await pool.query(identitySql);
+    await pool.query(identitySql); // Migration v2 igualmente idempotente.
+
   } catch (e) {
     await pool.end();
     await admin.query('DROP DATABASE "' + database + '"');

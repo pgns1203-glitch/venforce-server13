@@ -175,6 +175,22 @@ function identity(c, preview) {
     ],
   ])}`;
 }
+function identityResolutionMarkup(p) {
+  const r = p.plan?.identityResolution;
+  if (!r) return "";
+  return `<section class="cu-review-section"><h3>Resolver identidade</h3><p>Escolha a Conta de cada seller e o Grant que deve permanecer operacional. Grants substituídos serão preservados no histórico.</p>${(
+    r.sellers || []
+  )
+    .map((item) => {
+      const account = (p.clienteContas || []).find((a) =>
+        equalId(a.id, item.accountId),
+      );
+      return `<div class="cu-decision"><h4>Seller ${e(item.seller)}</h4><p>${account ? `${e(account.nome)} · Conta #${e(account.id)}` : "Conta: decisão pendente"} → ${item.canonicalGrantId ? `Grant #${e(item.canonicalGrantId)}` : "Grant: decisão pendente"}</p>${item.supersededGrantIds.length ? `<p>Preservar Grants ${item.supersededGrantIds.map((id) => `#${e(id)}`).join(", ")} como superseded por #${e(item.canonicalGrantId)}.</p>` : ""}</div>`;
+    })
+    .join(
+      "",
+    )}${(r.emptyAccounts || []).map((a) => `<p>${e(a.nome)} · Conta #${e(a.id)}: ${a.assigned ? "receberá o seller escolhido" : a.selected ? "desativar após a unificação" : a.canDeactivate ? "sem seller, Grant operacional, Base ativa ou referências críticas; pode ser desativada por decisão explícita" : "desativação bloqueada"}${a.references.length ? ` · Referências: ${a.references.map((r) => `${e(r.table)} (${e(r.count)})`).join(", ")}` : ""}</p>`).join("")}</section>`;
+}
 function previewMarkup(p) {
   // Apenas apresenta o plano retornado: não calcula novo estado/regra.
   const accounts = (p.clienteContas || []).map((a) => {
@@ -182,16 +198,24 @@ function previewMarkup(p) {
       p.plan?.changes?.find(
         (c) => c.table === "cliente_contas" && equalId(c.pk.id, a.id),
       )?.after || {};
-    const grants = (p.grants || []).filter((g) =>
-      equalId(g.cliente_conta_id, a.id),
-    );
+    const grants = (p.grants || [])
+      .map((g) => ({
+        ...g,
+        ...(p.plan?.changes?.find(
+          (c) => c.table === "ml_tokens" && equalId(c.pk.id, g.id),
+        )?.after || {}),
+      }))
+      .filter(
+        (g) =>
+          g.superseded_by_grant_id == null && equalId(g.cliente_conta_id, a.id),
+      );
     const bindings = (p.baseVinculos || []).filter((b) =>
       equalId(b.cliente_conta_id, a.id),
     );
     return [
       market(a.marketplace),
-      `<strong>Conta #${e(a.id)}</strong><small>${e(a.nome || a.slug || "")}</small>`,
-      e(a.external_account_id || "Não informado"),
+      `<strong>${e(a.nome || a.slug || "Conta")}</strong><small>Conta #${e(a.id)}</small>`,
+      e(after.external_account_id ?? a.external_account_id ?? "Não informado"),
       grants
         .map((g) => `Grant #${e(g.id)} · ${e(g.token_status || "Sem status")}`)
         .join("<br>") || "Sem vínculo explícito; veja Grants",
@@ -203,7 +227,7 @@ function previewMarkup(p) {
         .join("<br>") || "Sem vínculo retornado",
       e((after.is_primary ?? a.is_primary) ? "Sim" : "Não"),
       `Cliente #${e(a.cliente_id)}`,
-      e(a.ativo ? "Ativa" : "Inativa"),
+      e((after.ativo ?? a.ativo) ? "Ativa" : "Inativa"),
     ];
   });
   const preserved = p.plan?.preserved || {};
@@ -227,7 +251,7 @@ function previewMarkup(p) {
           e(b.ativo ? "Ativa" : "Inativa"),
         ]),
       )}</details></section>
-    <section class="cu-review-section"><h3>3. Impacto e preservação</h3>${facts(
+    ${identityResolutionMarkup(p)}<section class="cu-review-section"><h3>3. Impacto e preservação</h3>${facts(
       [
         [
           "Contas preservadas (IDs)",
@@ -272,7 +296,14 @@ export function createUnificacaoPage({
     operation: null,
     detail: null,
     required: [],
-    decisions: { primaryAccounts: {}, primaryGrantId: null, referencias: {} },
+    decisions: {
+      primaryAccounts: {},
+      primaryGrantId: null,
+      referencias: {},
+      sellerAccounts: {},
+      canonicalGrantsBySeller: {},
+      deactivateEmptyAccountIds: [],
+    },
     approval: { aprovada: false, aprovadorUserId: null, evidencia: null },
     candidates: [],
     history: [],
@@ -367,7 +398,14 @@ export function createUnificacaoPage({
       key: null,
       keyHash: null,
       operation: null,
-      decisions: { primaryAccounts: {}, primaryGrantId: null, referencias: {} },
+      decisions: {
+        primaryAccounts: {},
+        primaryGrantId: null,
+        referencias: {},
+        sellerAccounts: {},
+        canonicalGrantsBySeller: {},
+        deactivateEmptyAccountIds: [],
+      },
       approval: { aprovada: false, aprovadorUserId: null, evidencia: null },
     });
     invalidate({ newAttempt: true });
@@ -404,6 +442,9 @@ export function createUnificacaoPage({
       primaryAccounts: {},
       primaryGrantId: null,
       referencias: {},
+      sellerAccounts: {},
+      canonicalGrantsBySeller: {},
+      deactivateEmptyAccountIds: [],
     };
     state.approval = {
       aprovada: false,
@@ -496,7 +537,7 @@ export function createUnificacaoPage({
   }
   function manifest() {
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       clienteCanonicoId: Number(state.canonical.id),
       clientesLegadosIds: state.legacies.map((c) => Number(c.id)),
       decisoes: clone(state.decisions),
@@ -517,15 +558,76 @@ export function createUnificacaoPage({
         return `<fieldset class="cu-decision"><legend>Conta principal · ${e(MARKETS[key]?.[0] || key)}</legend>${(
           p.clienteContas || []
         )
-          .filter((a) => a.marketplace === key && a.ativo === true)
+          .filter(
+            (a) =>
+              a.marketplace === key &&
+              a.ativo === true &&
+              !p.plan?.changes?.some(
+                (c) =>
+                  c.table === "cliente_contas" &&
+                  equalId(c.pk.id, a.id) &&
+                  c.after.ativo === false,
+              ),
+          )
           .map(
             (a) =>
               `<label><input type="radio" name="cu-primary-${e(key)}" data-decision="primary" data-marketplace="${e(key)}" value="${e(a.id)}" ${equalId(state.decisions.primaryAccounts[key], a.id) ? "checked" : ""}> ${e(a.nome || `Conta #${a.id}`)} · Conta #${e(a.id)} · Origem #${e(a.cliente_id)}</label>`,
           )
           .join("")}</fieldset>`;
       }
+      if (path.startsWith("decisoes.sellerAccounts.")) {
+        const seller = path.split(".").at(-1);
+        const item = p.plan?.identityResolution?.sellers.find(
+          (i) => i.seller === seller,
+        );
+        return `<fieldset class="cu-decision"><legend>Seller ${e(seller)} · Conta que representa este seller</legend>${(item?.accountOptions || []).map((a) => `<label><input type="radio" name="cu-seller-${e(seller)}" data-decision="seller-account" data-seller="${e(seller)}" value="${e(a.id)}" ${equalId(state.decisions.sellerAccounts?.[seller], a.id) ? "checked" : ""}> ${e(a.nome || "Conta")} · Conta #${e(a.id)} · Cliente #${e(a.cliente_id)}</label>`).join("")}</fieldset>`;
+      }
+      if (path.startsWith("decisoes.canonicalGrantsBySeller.")) {
+        const seller = path.split(".").at(-1);
+        const item = p.plan?.identityResolution?.sellers.find(
+          (i) => i.seller === seller,
+        );
+        return `<fieldset class="cu-decision"><legend>Seller ${e(seller)} · Grant que deve permanecer</legend>${(
+          item?.grantOptions || []
+        )
+          .map((g) => {
+            const client = [
+              p.clienteCanonico,
+              ...(p.clientesLegados || []),
+            ].find((c) => equalId(c?.id, g.cliente_id));
+            return `<label><input type="radio" name="cu-canonical-grant-${e(seller)}" data-decision="canonical-grant" data-seller="${e(seller)}" value="${e(g.id)}" ${equalId(state.decisions.canonicalGrantsBySeller?.[seller], g.id) ? "checked" : ""}> Grant #${e(g.id)} · ${e(client?.nome || "Cliente")} · Cliente #${e(g.cliente_id)} · ${e(g.token_status || "Sem status")}</label>`;
+          })
+          .join("")}</fieldset>`;
+      }
+      if (path === "decisoes.deactivateEmptyAccountIds")
+        return `<fieldset class="cu-decision"><legend>Contas sem seller</legend>${(
+          p.plan?.identityResolution?.emptyAccounts || []
+        )
+          .filter((a) => !a.assigned)
+          .map(
+            (a) =>
+              `<label><input type="checkbox" data-decision="deactivate-empty" value="${e(a.id)}" ${state.decisions.deactivateEmptyAccountIds?.includes(Number(a.id)) ? "checked" : ""} ${!a.canDeactivate && !a.selected ? "disabled" : ""}> ${e(a.nome || "Conta")} · Conta #${e(a.id)} · Desativar após a unificação${!a.canDeactivate ? " (bloqueado por referências ou cobertura incompleta)" : ""}</label>`,
+          )
+          .join("")}</fieldset>`;
       if (path === "decisoes.primaryGrantId")
-        return `<fieldset class="cu-decision"><legend>Grant principal</legend>${(p.grants || []).map((g) => `<label><input type="radio" name="cu-primary-grant" data-decision="grant" value="${e(g.id)}" ${equalId(state.decisions.primaryGrantId, g.id) ? "checked" : ""}> Grant #${e(g.id)} · Seller ${e(g.ml_user_id)} · Origem #${e(g.cliente_id)}</label>`).join("")}</fieldset>`;
+        return `<fieldset class="cu-decision"><legend>Grant principal</legend>${(
+          p.grants || []
+        )
+          .filter(
+            (g) =>
+              g.superseded_by_grant_id == null &&
+              !p.plan?.changes?.some(
+                (c) =>
+                  c.table === "ml_tokens" &&
+                  equalId(c.pk.id, g.id) &&
+                  c.after.superseded_by_grant_id != null,
+              ),
+          )
+          .map(
+            (g) =>
+              `<label><input type="radio" name="cu-primary-grant" data-decision="grant" value="${e(g.id)}" ${equalId(state.decisions.primaryGrantId, g.id) ? "checked" : ""}> Grant #${e(g.id)} · Seller ${e(g.ml_user_id)} · Origem #${e(g.cliente_id)}</label>`,
+          )
+          .join("")}</fieldset>`;
       return `<p class="cu-issue cu-blocker">Decisão sem controle disponível nesta versão: ${e(path)}. A execução permanece bloqueada pelo backend.</p>`;
     });
     el("decisions").hidden = !fields.length;
@@ -610,7 +712,22 @@ export function createUnificacaoPage({
       );
     else if (kind === "grant")
       state.decisions.primaryGrantId = Number(target.value);
-    else if (kind === "approved") state.approval.aprovada = target.checked;
+    else if (kind === "seller-account")
+      state.decisions.sellerAccounts[target.dataset.seller] = Number(
+        target.value,
+      );
+    else if (kind === "canonical-grant")
+      state.decisions.canonicalGrantsBySeller[target.dataset.seller] = Number(
+        target.value,
+      );
+    else if (kind === "deactivate-empty") {
+      const ids = new Set(state.decisions.deactivateEmptyAccountIds || []);
+      if (target.checked) ids.add(Number(target.value));
+      else ids.delete(Number(target.value));
+      state.decisions.deactivateEmptyAccountIds = [...ids].sort(
+        (a, b) => a - b,
+      );
+    } else if (kind === "approved") state.approval.aprovada = target.checked;
     else if (kind === "approver")
       state.approval.aprovadorUserId = target.value
         ? Number(target.value)
@@ -935,6 +1052,9 @@ export function createUnificacaoPage({
           primaryAccounts: {},
           primaryGrantId: null,
           referencias: {},
+          sellerAccounts: {},
+          canonicalGrantsBySeller: {},
+          deactivateEmptyAccountIds: [],
         };
         state.approval = {
           aprovada: false,

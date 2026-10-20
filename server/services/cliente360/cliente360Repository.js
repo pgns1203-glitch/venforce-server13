@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("../mlGrantIdentity");
 // server/services/cliente360/cliente360Repository.js
 // Camada de dados do Cliente 360. TODO o SQL vive aqui, sempre parametrizado.
 // Nunca seleciona access_token, refresh_token nem api_key.
@@ -62,7 +63,7 @@ async function findMlGrantByCliente(clienteId) {
     `SELECT t.ml_user_id, t.expires_at, t.token_status, t.updated_at,
             COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) AS is_primary
        FROM ml_tokens t
-      WHERE t.cliente_id = $1
+      WHERE t.cliente_id = $1 AND ${currentGrantSql("t")}
       ORDER BY COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) DESC,
                t.updated_at DESC NULLS LAST, t.id DESC
       LIMIT 1`,
@@ -78,7 +79,7 @@ async function findGrantsResumo() {
             t.cliente_id, t.ml_user_id, t.expires_at, t.token_status,
             COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) AS is_primary
        FROM ml_tokens t
-      WHERE t.cliente_id IS NOT NULL
+      WHERE t.cliente_id IS NOT NULL AND ${currentGrantSql("t")}
       ORDER BY t.cliente_id,
                COALESCE(NULLIF(to_jsonb(t)->>'is_primary', '')::boolean, false) DESC,
                t.updated_at DESC NULLS LAST, t.id DESC`
@@ -115,7 +116,7 @@ async function findContasResumoPorCliente() {
        FROM cliente_contas cc
        LEFT JOIN LATERAL (
          SELECT id, token_status, expires_at FROM ml_tokens g
-          WHERE g.cliente_conta_id = cc.id
+          WHERE g.cliente_conta_id = cc.id AND ${currentGrantSql("g")}
           ORDER BY g.updated_at DESC NULLS LAST, g.id DESC
           LIMIT 1
        ) g ON true

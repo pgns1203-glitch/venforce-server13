@@ -1,3 +1,5 @@
+const { resolveIdentity, finalIdentityViolations } = require("./identity");
+const { isCurrentGrant } = require("../mlGrantIdentity");
 const legacy = require("./snapshotPlanner");
 const { normalizeManifest, hash, canonical } = require("./contracts");
 const {
@@ -203,6 +205,15 @@ function buildExecutablePlan(snapshot, input) {
     )
       changes.push({ table, pk, before, after });
   };
+  const identity =
+    manifest.schemaVersion === 2
+      ? resolveIdentity(snapshot, manifest, issue, decisionsRequired)
+      : null;
+  const currentGrants = grants
+    .filter(isCurrentGrant)
+    .filter(
+      (g) => !identity?.grantPatches.get(Number(g.id))?.superseded_by_grant_id,
+    );
   const selectedPrimary = manifest.decisoes.primaryAccounts;
   for (const [marketplace, choice] of Object.entries(selectedPrimary))
     if (
@@ -210,7 +221,8 @@ function buildExecutablePlan(snapshot, input) {
         (a) =>
           same(a.id, choice) &&
           a.marketplace === marketplace &&
-          a.ativo === true,
+          a.ativo === true &&
+          identity?.accountPatches.get(Number(a.id))?.ativo !== false,
       )
     )
       issue("PRIMARY_DECISION_INVALID", { marketplace });
@@ -219,7 +231,8 @@ function buildExecutablePlan(snapshot, input) {
       (a) =>
         a.marketplace === marketplace &&
         a.ativo === true &&
-        a.is_primary === true,
+        a.is_primary === true &&
+        identity?.accountPatches.get(Number(a.id))?.ativo !== false,
     );
     if (activePrimaries.length > 1 && !selectedPrimary[marketplace]) {
       issue("UNIQUE_COLLISION", {
@@ -231,7 +244,7 @@ function buildExecutablePlan(snapshot, input) {
     }
   }
   if (
-    grants.filter((g) => g.is_primary === true).length > 1 &&
+    currentGrants.filter((g) => g.is_primary === true).length > 1 &&
     !manifest.decisoes.primaryGrantId
   ) {
     issue("UNIQUE_COLLISION", { table: "ml_tokens", kind: "primary" });
@@ -239,13 +252,13 @@ function buildExecutablePlan(snapshot, input) {
   }
   if (
     manifest.decisoes.primaryGrantId &&
-    !grants.some((g) => same(g.id, manifest.decisoes.primaryGrantId))
+    !currentGrants.some((g) => same(g.id, manifest.decisoes.primaryGrantId))
   )
     issue("PRIMARY_GRANT_DECISION_INVALID");
   for (const a of accounts) {
     if (!["meli", "shopee", "tiktok"].includes(a.marketplace))
       issue("MARKETPLACE_MISMATCH", { clienteContaId: a.id });
-    if (a.external_account_id != null) {
+    if (!identity && a.external_account_id != null) {
       const shared = rows(snapshot, "cliente_contas").filter(
         (b) =>
           b.marketplace === a.marketplace &&
@@ -262,20 +275,23 @@ function buildExecutablePlan(snapshot, input) {
       )
         issue("SELLER_AMBIGUOUS", { clienteContaId: a.id });
     }
-    const exact = grants.filter(
-      (g) =>
-        same(g.cliente_conta_id, a.id) ||
-        (g.cliente_conta_id == null &&
-          same(g.cliente_id, a.cliente_id) &&
-          same(g.ml_user_id, a.external_account_id)),
-    );
+    const exact = grants
+      .filter(isCurrentGrant)
+      .filter(
+        (g) =>
+          same(g.cliente_conta_id, a.id) ||
+          (g.cliente_conta_id == null &&
+            same(g.cliente_id, a.cliente_id) &&
+            same(g.ml_user_id, a.external_account_id)),
+      );
     if (
+      !identity &&
       a.marketplace === "meli" &&
       a.ativo === true &&
       (!a.external_account_id || exact.length !== 1)
     )
       issue("GRANT_AMBIGUOUS", { clienteContaId: a.id });
-    for (const g of exact) {
+    for (const g of identity ? [] : exact) {
       const result = checkAccountContext({
         clienteId: a.cliente_id,
         clienteContaId: a.id,
@@ -331,6 +347,7 @@ function buildExecutablePlan(snapshot, input) {
     if (selectedPrimary[a.marketplace])
       after.is_primary =
         a.ativo === true && same(a.id, selectedPrimary[a.marketplace]);
+    Object.assign(after, identity?.accountPatches.get(Number(a.id)) || {});
     mutate("cliente_contas", a, after);
   }
   for (const g of grants) {
@@ -341,8 +358,11 @@ function buildExecutablePlan(snapshot, input) {
         same(a.external_account_id, g.ml_user_id) &&
         (g.cliente_conta_id == null || same(a.id, g.cliente_conta_id)),
     );
-    if (candidates.length !== 1) issue("GRANT_AMBIGUOUS", { grantId: g.id });
+    if (!identity && isCurrentGrant(g) && candidates.length !== 1)
+      issue("GRANT_AMBIGUOUS", { grantId: g.id });
     if (
+      !identity &&
+      isCurrentGrant(g) &&
       g.cliente_conta_id != null &&
       !accounts.some(
         (a) =>
@@ -351,9 +371,16 @@ function buildExecutablePlan(snapshot, input) {
     )
       issue("ACCOUNT_OWNER_MISMATCH", { table: "ml_tokens", id: g.id });
     const after = {};
-    if (sources.includes(Number(g.cliente_id))) after.cliente_id = target;
+    if (
+      !identity &&
+      isCurrentGrant(g) &&
+      sources.includes(Number(g.cliente_id))
+    )
+      after.cliente_id = target;
     if (manifest.decisoes.primaryGrantId)
-      after.is_primary = same(g.id, manifest.decisoes.primaryGrantId);
+      after.is_primary =
+        isCurrentGrant(g) && same(g.id, manifest.decisoes.primaryGrantId);
+    Object.assign(after, identity?.grantPatches.get(Number(g.id)) || {});
     mutate("ml_tokens", g, after);
     if (g.token_status !== "valid")
       warnings.push({
@@ -519,9 +546,12 @@ function buildExecutablePlan(snapshot, input) {
             new RegExp(`\\b${k}\\b`).test(c.definition || ""),
           ),
       ) &&
-      !["clientes_merge_not_self", "cliente_contas_marketplace_check"].includes(
-        c.name,
-      )
+      ![
+        "clientes_merge_not_self",
+        "cliente_contas_marketplace_check",
+        "ml_tokens_superseded_not_self",
+        "ml_tokens_superseded_metadata",
+      ].includes(c.name)
     )
       issue("UNKNOWN_CRITICAL_REFERENCE", {
         table: c.table_name,
@@ -608,7 +638,7 @@ function buildExecutablePlan(snapshot, input) {
       (r) => `${r.cliente_id}/${r.marketplace}/${r.external_account_id}`,
       (r) => r.external_account_id != null,
     ],
-    ["ml_tokens", (r) => `${r.cliente_id}/${r.ml_user_id}`, () => true],
+    ["ml_tokens", (r) => `${r.cliente_id}/${r.ml_user_id}`, isCurrentGrant],
   ]) {
     const seen = new Set();
     for (const r of virtual(table).filter(filter)) {
@@ -617,6 +647,18 @@ function buildExecutablePlan(snapshot, input) {
         issue("UNIQUE_COLLISION", { table });
       seen.add(k);
     }
+  }
+  if (identity) {
+    const finalTables = {
+      cliente_contas: virtual("cliente_contas"),
+      ml_tokens: virtual("ml_tokens"),
+    };
+    for (const seller of finalIdentityViolations(
+      finalTables,
+      target,
+      identity.sellers.map((s) => s.seller),
+    ))
+      issue("FINAL_IDENTITY_INVALID", { seller });
   }
   const material = materialSnapshot(snapshot, manifest);
   const validation = {
@@ -630,8 +672,16 @@ function buildExecutablePlan(snapshot, input) {
     ]),
   };
   const plan = {
-    schemaVersion: 1,
+    schemaVersion: manifest.schemaVersion,
     manifest,
+    ...(identity
+      ? {
+          identityResolution: {
+            sellers: identity.sellers,
+            emptyAccounts: identity.emptyAccounts,
+          },
+        }
+      : {}),
     changes: order(changes),
     impactCounts: order(impactCounts),
     decisionsRequired: [...new Set(decisionsRequired)].sort(),
@@ -680,6 +730,8 @@ function materialSnapshot(snapshot, manifest) {
       .filter((a) => a.external_account_id)
       .map((a) => `${a.marketplace}/${a.external_account_id}`),
   );
+  for (const g of rows(snapshot, "ml_tokens"))
+    if (ids.includes(Number(g.cliente_id))) sellers.add(`meli/${g.ml_user_id}`);
   const bindings = rows(snapshot, "base_cliente_vinculos").filter((v) =>
     ids.includes(Number(v.cliente_id)),
   );

@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("../mlGrantIdentity");
 // server/services/promoSnapshot/promoSnapshotRepository.js
 // Promo Snapshot — persistência (runs, linhas, lotes e snapshot atual).
 //
@@ -902,7 +903,7 @@ async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto
         AND ('*' = ANY($4::text[]) OR LOWER(cl.slug) = ANY($4::text[]))
         AND EXISTS (
           SELECT 1 FROM ml_tokens t
-           WHERE t.cliente_id = c.cliente_id AND t.ml_user_id::text = c.external_account_id::text
+           WHERE ${currentGrantSql("t")} AND t.cliente_id = c.cliente_id AND t.ml_user_id::text = c.external_account_id::text
              AND COALESCE(t.access_token, '') <> '' AND COALESCE(t.refresh_token, '') <> ''
              AND LOWER(COALESCE(t.token_status, 'valid')) NOT IN ('revoked','blocked','invalid'))
         AND NOT EXISTS (

@@ -39,6 +39,9 @@ const CORE_FIELDS = {
     "ml_user_id",
     "is_primary",
     "token_status",
+    "superseded_by_grant_id",
+    "superseded_at",
+    "superseded_reason",
   ],
   bases: ["id", "nome", "slug", "marketplace", "ativo"],
   base_cliente_vinculos: [
@@ -269,6 +272,23 @@ async function lockClients(db, manifest) {
   const ids = [manifest.clienteCanonicoId, ...manifest.clientesLegadosIds].sort(
     (a, b) => a - b,
   );
+  // Mesma ordem do OAuth: seller -> Clientes -> Grants -> row locks.
+  const sellers = (
+    await db.query(
+      `SELECT DISTINCT seller FROM (
+    SELECT external_account_id AS seller FROM cliente_contas WHERE marketplace='meli' AND cliente_id=ANY($1::integer[]) AND external_account_id IS NOT NULL
+    UNION SELECT ml_user_id FROM ml_tokens WHERE cliente_id=ANY($1::integer[])
+  ) s ORDER BY seller`,
+      [ids],
+    )
+  ).rows;
+  for (const { seller } of sellers) {
+    const lock = await db.query(
+      "SELECT pg_try_advisory_xact_lock(1296845910, hashtext($1)) AS locked",
+      [seller],
+    );
+    if (lock.rows[0]?.locked !== true) throw fail("MERGE_BUSY");
+  }
   for (const id of ids)
     for (const namespace of [1296845907, 1296845909]) {
       const r = await db.query(
@@ -285,6 +305,15 @@ async function lockClients(db, manifest) {
 }
 async function lockRows(db, snapshot, manifest) {
   const material = materialSnapshot(snapshot, manifest);
+  for (const g of [...(material.ml_tokens || [])].sort(
+    (a, b) => Number(a.id) - Number(b.id),
+  )) {
+    const lock = await db.query(
+      "SELECT pg_try_advisory_xact_lock(1296845908, $1::integer) AS locked",
+      [g.id],
+    );
+    if (lock.rows[0]?.locked !== true) throw fail("MERGE_BUSY");
+  }
   for (const table of Object.keys(material).sort()) {
     if (
       ["clientes", "squads", "squad_members"].includes(table) ||
@@ -342,8 +371,18 @@ async function applyChanges(db, snapshot, changes) {
     if (r.rowCount !== 1) throw fail("MERGE_PLAN_CHANGED");
   }
   for (const c of staged) await write({ ...c, after: { is_primary: false } });
+  const rank = (c) =>
+    c.table === "clientes"
+      ? 4
+      : c.after.superseded_by_grant_id != null
+        ? 0
+        : c.before.superseded_by_grant_id != null
+          ? 3
+          : 1;
   const ordered = [
-    ...changes.filter((c) => c.table !== "clientes"),
+    ...changes
+      .filter((c) => c.table !== "clientes")
+      .sort((a, b) => rank(a) - rank(b)),
     ...changes.filter((c) => c.table === "clientes"),
   ];
   for (const c of ordered)
@@ -431,7 +470,7 @@ async function reserve(
 ) {
   const r = await db.query(
     `INSERT INTO cliente_unificacoes(operation_key,status,schema_version,cliente_canonico_id,manifest_json,plan_json,validation_json,plan_hash,request_hash,idempotency_key,requested_by_user_id,confirmed_by_user_id)
-   VALUES($1,'validated',1,$2,$3,$4,$5,$6,$7,$8,$9,$9) ON CONFLICT(idempotency_key) DO NOTHING RETURNING *`,
+   VALUES($1,'validated',$10,$2,$3,$4,$5,$6,$7,$8,$9,$9) ON CONFLICT(idempotency_key) DO NOTHING RETURNING *`,
     [
       randomUUID(),
       manifest.clienteCanonicoId,
@@ -442,6 +481,7 @@ async function reserve(
       requestHash,
       idempotencyKey,
       Number(actor.id),
+      manifest.schemaVersion,
     ],
   );
   return {

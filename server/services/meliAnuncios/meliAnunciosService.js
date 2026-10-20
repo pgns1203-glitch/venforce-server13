@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("../mlGrantIdentity");
 // server/services/meliAnuncios/meliAnunciosService.js
 // -----------------------------------------------------------------------------
 // Módulo: Anúncios Meli — Central operacional de anúncios por cliente.
@@ -148,7 +149,7 @@ async function listarClientes() {
     SELECT
       c.*,
       EXISTS (
-        SELECT 1 FROM ml_tokens t WHERE t.cliente_id = c.id
+        SELECT 1 FROM ml_tokens t WHERE t.cliente_id = c.id AND ${currentGrantSql("t")}
       ) AS ml_conectado,
       (
         SELECT COUNT(*)::int FROM meli_anuncios m WHERE m.cliente_id = c.id

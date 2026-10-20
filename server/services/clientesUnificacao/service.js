@@ -1,3 +1,5 @@
+const { finalIdentityViolations, TRANSACTION_TIME } = require("./identity");
+const { isCurrentGrant, currentGrantSql } = require("../mlGrantIdentity");
 const { flags } = require("../../config/clientesUnificacao");
 const {
   normalizeManifest,
@@ -220,19 +222,33 @@ function createService({
               throw fail("MERGE_PLAN_CHANGED");
             if (!fresh.validation.ok) throw fail("MERGE_VALIDATION_BLOCKED");
             const before = materialSnapshot(locked, manifest);
+            const appliedChanges = await materializeChanges(db, fresh.changes);
+            const rollbackChanges = [...appliedChanges]
+              .reverse()
+              .map((c) => ({
+                ...c,
+                pk: Object.fromEntries(
+                  Object.entries(c.pk).map(([k, v]) => [
+                    k,
+                    Object.hasOwn(c.after, k) ? c.after[k] : v,
+                  ]),
+                ),
+                before: c.after,
+                after: c.before,
+              }));
             await repo.update(db, op.id, {
               status: "executing",
               started_at: new Date(),
               before_snapshot_json: before,
-              rollback_plan_json: fresh.rollback,
+              rollback_plan_json: { changes: rollbackChanges },
             });
-            await repo.applyChanges(db, locked, fresh.changes);
+            await repo.applyChanges(db, locked, appliedChanges);
             const afterSource = await repo.readSnapshot(db, manifest);
-            verifyChanges(afterSource, fresh.changes);
+            verifyChanges(afterSource, appliedChanges);
             verifyIdentity(afterSource, manifest, fresh);
             const after = materialSnapshot(afterSource, manifest);
             const expected = JSON.parse(JSON.stringify(before));
-            for (const c of fresh.changes) {
+            for (const c of appliedChanges) {
               const row = expected[c.table]?.find((r) =>
                 Object.entries(c.pk).every(
                   ([k, v]) => String(r[k]) === String(v),
@@ -440,7 +456,7 @@ function createService({
           ).rows;
           tables.ml_tokens = (
             await db.query(
-              "SELECT id,cliente_id,ml_user_id FROM ml_tokens LIMIT 5001",
+              `SELECT id,cliente_id,ml_user_id FROM ml_tokens WHERE ${currentGrantSql()} LIMIT 5001`,
             )
           ).rows;
           tables.cliente_squad_history = (
@@ -539,11 +555,32 @@ function verifyChanges(snapshot, changes) {
       Object.entries(c.after).some(([k, v]) =>
         matches[0][k] == null || v == null
           ? matches[0][k] !== v
-          : String(matches[0][k]) !== String(v),
+          : (matches[0][k] instanceof Date
+              ? matches[0][k].toISOString()
+              : String(matches[0][k])) !==
+            (v instanceof Date ? v.toISOString() : String(v)),
       )
     )
       throw fail("MERGE_POST_VALIDATION_FAILED");
   }
+}
+async function materializeChanges(db, changes) {
+  if (!changes.some((c) => c.after.superseded_at === TRANSACTION_TIME))
+    return changes;
+  const result = await db.query(
+    "SELECT transaction_timestamp() AS identity_timestamp",
+  );
+  const timestamp = result.rows[0]?.identity_timestamp;
+  if (!timestamp) throw fail("MERGE_TIMESTAMP_UNAVAILABLE");
+  return changes.map((c) => ({
+    ...c,
+    after: {
+      ...c.after,
+      ...(c.after.superseded_at === TRANSACTION_TIME
+        ? { superseded_at: new Date(timestamp).toISOString() }
+        : {}),
+    },
+  }));
 }
 function verifyIdentity(snapshot, manifest, plan) {
   const target = manifest.clienteCanonicoId,
@@ -560,10 +597,21 @@ function verifyIdentity(snapshot, manifest, plan) {
   for (const id of plan.preserved.grantIds)
     if (
       !grants.some(
-        (g) => Number(g.id) === id && Number(g.cliente_id) === target,
+        (g) =>
+          Number(g.id) === id &&
+          (Number(g.cliente_id) === target || !isCurrentGrant(g)),
       )
     )
       throw fail("MERGE_POST_VALIDATION_FAILED");
+  if (
+    manifest.schemaVersion === 2 &&
+    finalIdentityViolations(
+      snapshot.tables,
+      target,
+      (plan.identityResolution?.sellers || []).map((s) => s.seller),
+    ).length
+  )
+    throw fail("MERGE_POST_VALIDATION_FAILED");
   for (const v of bindings.filter((v) => Number(v.cliente_id) === target))
     if (
       v.cliente_conta_id != null &&
@@ -590,4 +638,5 @@ module.exports = {
   withoutVersions,
   verifyChanges,
   verifyIdentity,
+  materializeChanges,
 };

@@ -1,18 +1,24 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Manifesto de unificação de Clientes v1",
+  "title": "Manifesto de unificação de Clientes v1/v2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "clienteCanonicoId", "clientesLegadosIds"],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "clienteCanonicoId": { "$ref": "#/$defs/id" },
+    "schemaVersion": {
+      "enum": [1, 2]
+    },
+    "clienteCanonicoId": {
+      "$ref": "#/$defs/id"
+    },
     "clientesLegadosIds": {
       "type": "array",
       "minItems": 1,
       "maxItems": 20,
       "uniqueItems": true,
-      "items": { "$ref": "#/$defs/id" }
+      "items": {
+        "$ref": "#/$defs/id"
+      }
     },
     "decisoes": {
       "type": "object",
@@ -22,18 +28,33 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "meli": { "$ref": "#/$defs/id" },
-            "shopee": { "$ref": "#/$defs/id" },
-            "tiktok": { "$ref": "#/$defs/id" }
+            "meli": {
+              "$ref": "#/$defs/id"
+            },
+            "shopee": {
+              "$ref": "#/$defs/id"
+            },
+            "tiktok": {
+              "$ref": "#/$defs/id"
+            }
           }
         },
         "primaryGrantId": {
-          "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "referencias": {
           "type": "object",
           "maxProperties": 100,
-          "propertyNames": { "pattern": "^[a-z][a-z0-9_]{0,62}$" },
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,62}$"
+          },
           "additionalProperties": {
             "enum": [
               "MOVE_TO_CANONICAL",
@@ -42,6 +63,34 @@
               "DERIVED_REBUILDABLE"
             ]
           }
+        },
+        "sellerAccounts": {
+          "type": "object",
+          "maxProperties": 100,
+          "propertyNames": {
+            "pattern": "^[1-9][0-9]{0,29}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "canonicalGrantsBySeller": {
+          "type": "object",
+          "maxProperties": 100,
+          "propertyNames": {
+            "pattern": "^[1-9][0-9]{0,29}$"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/id"
+          }
+        },
+        "deactivateEmptyAccountIds": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
         }
       }
     },
@@ -49,13 +98,61 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "aprovada": { "type": "boolean" },
-        "aprovadorUserId": {
-          "anyOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        "aprovada": {
+          "type": "boolean"
         },
-        "evidencia": { "type": ["string", "null"], "maxLength": 160 }
+        "aprovadorUserId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/id"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidencia": {
+          "type": ["string", "null"],
+          "maxLength": 160
+        }
       }
     }
   },
-  "$defs": { "id": { "type": "integer", "minimum": 1, "maximum": 2147483647 } }
+  "$defs": {
+    "id": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2147483647
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "decisoes": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": ["sellerAccounts"]
+                },
+                {
+                  "required": ["canonicalGrantsBySeller"]
+                },
+                {
+                  "required": ["deactivateEmptyAccountIds"]
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  ]
 }

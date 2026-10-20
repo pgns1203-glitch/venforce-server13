@@ -46,6 +46,7 @@ const DEFAULT_CONFIG = Object.freeze({
   itemScanMaxRecords: 20000,
   multigetBatchSize: 20,
   stockConcurrency: 4,
+  replenishmentConcurrency: 4,
   operationsInventoryBatchSize: 50, // [VALIDAR] tamanho seguro real (secao 24 do plano)
   operationsMaxPages: 50,
   operationsMaxRecords: 200000,
@@ -127,6 +128,61 @@ function findInventoryOrThrow(snapshot, inventoryId) {
 }
 
 /**
+ * Le a resposta de GET .../replenishment (200 ou 206). `total_stock` soma
+ * disponivel + indisponivel + AGUARDANDO CHEGADA; sem ele, nao ha como
+ * saber o que esta a caminho.
+ */
+function parseReplenishmentResponse(data) {
+  const stock = data && data.stock;
+  const totalStock = stock ? numericOrNull(stock.total_stock) : null;
+  if (totalStock === null) return { status: "unavailable", reason: "sem_estoque_na_resposta", totalStock: null, recommendation: null };
+  const rec = data.recommendation || null;
+  const qtd = rec && rec.suggested_quantity;
+  return {
+    status: "ok",
+    reason: null,
+    totalStock,
+    recommendation: {
+      type: rec ? rec.recommendation_type || null : null,
+      quantity: qtd && qtd.type !== "range" ? numericOrNull(qtd.value) : null,
+      quantityMin: qtd && qtd.type === "range" ? numericOrNull(qtd.min) : null,
+      quantityMax: qtd && qtd.type === "range" ? numericOrNull(qtd.max) : null,
+      deadline: rec ? rec.replenishment_deadline || null : null,
+      urgency: stock.shipping_urgency || null,
+    },
+  };
+}
+
+/**
+ * Unidades a caminho = total_stock (reposicao ML) - total (estoque Full).
+ * O `total` do estoque ja inclui o indisponivel (transferencia, fiscal...),
+ * entao a diferenca e o que ainda nao chegou. Desconhecido -> null.
+ */
+function buildInboundFields(inbound, stockTotal) {
+  if (!inbound || inbound.status !== "ok") {
+    return {
+      inbound: {
+        status: inbound ? inbound.status : "unavailable",
+        reason: inbound ? inbound.reason || null : "nao_consultado",
+        units: null,
+        totalStock: null,
+      },
+      mlRecommendation: null,
+    };
+  }
+  const units = typeof stockTotal === "number" ? Math.max(0, inbound.totalStock - stockTotal) : null;
+  return {
+    inbound: {
+      status: units === null ? "unavailable" : "ok",
+      reason: units === null ? "stock_unavailable" : null,
+      units,
+      totalStock: inbound.totalStock,
+    },
+    mlRecommendation: inbound.recommendation,
+  };
+}
+
+/**
  * Monta a linha de um inventario aplicando as regras puras do PR1.
  * `sales`:
  *   undefined -> nenhuma operacao SALE_CONFIRMATION encontrada para esse
@@ -136,7 +192,7 @@ function findInventoryOrThrow(snapshot, inventoryId) {
  *   objeto    -> agregado de `aggregateOperationsByInventory`; se alguma das
  *                semanas ficou "degraded" internamente, tambem vira ausencia.
  */
-function buildInventoryRow({ inv, stock, sales, config }) {
+function buildInventoryRow({ inv, stock, sales, inbound, config }) {
   const stockStatus = stock ? stock.status : "unavailable";
   const availableStock = stock ? stock.available : null;
 
@@ -182,12 +238,14 @@ function buildInventoryRow({ inv, stock, sales, config }) {
     coverageDays: coverage.coverageDays,
     coverageState: coverage.coverageState,
   });
+  const inboundFields = buildInboundFields(inbound, normalizedStockStatus === "ok" && stock ? stock.total : null);
   const replenishment = calculateBaseReplenishment({
     dailyTurnover: turnover.value,
     turnoverStatus: turnover.status,
     availableStock,
     stockStatus: normalizedStockStatus,
     targetCoverageDays: config.targetCoverageDays,
+    inboundUnits: inboundFields.inbound.units,
   });
 
   return {
@@ -213,6 +271,7 @@ function buildInventoryRow({ inv, stock, sales, config }) {
     targetCoverageDays: config.targetCoverageDays,
     sendQuantity: replenishment.sendQuantity,
     replenishmentReason: replenishment.reason,
+    ...inboundFields,
   };
 }
 
@@ -363,6 +422,69 @@ function createFullService({
   }
 
   /**
+   * "A caminho" por inventory via API de reposicao do ML. Agrupa por MLB: no
+   * formato antigo (variacoes dentro do MLB) o ML recusa TODAS as variacoes
+   * com 400 "not yet available", entao a 1a recusa marca o grupo inteiro
+   * como "unsupported" sem gastar as outras chamadas (limite: 500/min).
+   * Nunca rejeita: falha vira status por linha, nunca derruba o snapshot.
+   */
+  async function fetchInboundForInventories({ clienteId, mlUserId, sellerId, inventories }) {
+    const byId = new Map();
+    const groups = new Map();
+    for (const inv of inventories) {
+      const ref = (inv.references || []).find((r) => r && r.userProductId);
+      if (!ref) {
+        byId.set(inv.inventoryId, { status: "unavailable", reason: "user_product_ausente" });
+        continue;
+      }
+      const key = ref.mlb || inv.inventoryId;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push({ inventoryId: inv.inventoryId, userProductId: ref.userProductId });
+    }
+
+    const limit = createConcurrencyLimiter(config.replenishmentConcurrency);
+    await Promise.all(
+      Array.from(groups.values()).map((group) =>
+        limit(async () => {
+          for (let i = 0; i < group.length; i += 1) {
+            const { inventoryId, userProductId } = group[i];
+            let result;
+            try {
+              result = await mlGateway.getReplenishment({ clienteId, mlUserId, sellerId, userProductId });
+            } catch {
+              result = { ok: false, status: null, data: null };
+            }
+            if (result.ok) {
+              byId.set(inventoryId, parseReplenishmentResponse(result.data));
+              continue;
+            }
+            const message = result.data && typeof result.data.message === "string" ? result.data.message : "";
+            if (result.status === 400 && /not yet available/i.test(message)) {
+              group.slice(i).forEach((g) => byId.set(g.inventoryId, { status: "unsupported", reason: "formato_de_anuncio" }));
+              break;
+            }
+            byId.set(inventoryId, { status: "unavailable", reason: result.status ? `http_${result.status}` : "erro_de_rede" });
+          }
+        })
+      )
+    );
+
+    const values = inventories.map((inv) => byId.get(inv.inventoryId));
+    const received = values.filter((v) => v && v.status === "ok").length;
+    const unsupported = values.filter((v) => v && v.status === "unsupported").length;
+    const failures = inventories.length - received - unsupported;
+    return {
+      inboundById: byId,
+      quality: {
+        status: failures === 0 ? "ok" : received + unsupported === 0 ? "unavailable" : "partial",
+        expected: inventories.length,
+        received,
+        unsupported,
+      },
+    };
+  }
+
+  /**
    * Operacoes por lotes de inventory_id (scroll sequencial por lote via
    * fullPagination). Um lote que falha/para mal degrada SO os inventories
    * daquele lote (marcados em `degradedInventoryIds`), nunca a coleta inteira.
@@ -447,11 +569,24 @@ function createFullService({
       ids: scan.items,
     });
 
-    const stockResult = await fetchStockForInventories({
-      clienteId: resolvedClienteId,
-      mlUserId: sellerId,
-      inventories: itemsResult.inventories,
-    });
+    // Estoque e "a caminho" sao independentes: correm juntos. A reposicao do
+    // ML e opcional - qualquer falha la vira "unavailable", nunca derruba.
+    const [stockResult, inboundResult] = await Promise.all([
+      fetchStockForInventories({
+        clienteId: resolvedClienteId,
+        mlUserId: sellerId,
+        inventories: itemsResult.inventories,
+      }),
+      fetchInboundForInventories({
+        clienteId: resolvedClienteId,
+        mlUserId: sellerId,
+        sellerId,
+        inventories: itemsResult.inventories,
+      }).catch(() => ({
+        inboundById: new Map(),
+        quality: { status: "unavailable", expected: itemsResult.inventories.length, received: 0, unsupported: 0 },
+      })),
+    ]);
 
     const endExclusiveIso = isoDateFromMs(nowFn());
     const window = buildCompletedDayWindow({ endExclusiveIso, days: windowDays });
@@ -510,7 +645,13 @@ function createFullService({
 
     const inventoryRows = itemsResult.inventories.map((inv) => {
       const sales = operationsResult.degradedInventoryIds.has(inv.inventoryId) ? null : salesById.get(inv.inventoryId);
-      const row = buildInventoryRow({ inv, stock: stockResult.stockById.get(inv.inventoryId), sales, config });
+      const row = buildInventoryRow({
+        inv,
+        stock: stockResult.stockById.get(inv.inventoryId),
+        sales,
+        inbound: inboundResult.inboundById.get(inv.inventoryId),
+        config,
+      });
       return {
         ...row,
         ...buildCommercialFields(row, costsResult.costsByItemId),
@@ -535,6 +676,8 @@ function createFullService({
           operations: operationsResult.quality,
           commercial: commercialResult.account,
           costs: { status: costsResult.status, reason: costsResult.reason || null, base: costsResult.base || null },
+          // Opcional como `commercial`: fora do status geral.
+          inbound: inboundResult.quality,
         },
       },
       inventories: inventoryRows,
@@ -551,7 +694,7 @@ function createFullService({
       throw new TypeError("clienteContaId e obrigatorio");
     }
 
-    const cacheKey = `${clienteContaId}:${windowDays}:v1`;
+    const cacheKey = `${clienteContaId}:${windowDays}:v2`;
     const loaded = await cache.getOrLoad(cacheKey, async () => ({
       value: await collectSnapshot({ clienteContaId, clienteId, clienteSlug, marketplace, windowDays }),
     }));
@@ -608,8 +751,9 @@ function createFullService({
     scanAllFullItemIds,
     fetchAndParseItems,
     fetchStockForInventories,
+    fetchInboundForInventories,
     fetchOperations,
   };
 }
 
-module.exports = { createFullService, buildCommercialFields, DEFAULT_CONFIG };
+module.exports = { createFullService, buildCommercialFields, parseReplenishmentResponse, buildInboundFields, DEFAULT_CONFIG };

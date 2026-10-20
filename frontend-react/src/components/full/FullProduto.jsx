@@ -2,6 +2,29 @@
 // Anúncios ML (.am-row__thumb / título display / ids embaixo): miniatura,
 // título numa linha e MLB · SKU · variações · avisos fluindo lado a lado.
 import { STATUS_LABEL, STATUS_TONE } from "../../utils/fullOperationalStatus.js";
+import { formatarNumero } from "../../utils/numbers.js";
+
+const SEM_A_CAMINHO = {
+  unsupported:
+    "O Mercado Livre ainda não informa envios a caminho para anúncios no formato antigo (variações dentro do mesmo MLB).",
+  unavailable: "Não foi possível consultar os envios a caminho no Mercado Livre agora.",
+};
+
+// Unidades a caminho do Full (envio criado e ainda não recebido), vindas da
+// API de reposição do ML. `mostrarDesconhecido`: onde a decisão de envio é
+// tomada, a falta do dado aparece como "?" em vez de sumir.
+export function FullACaminho({ inv, mostrarDesconhecido = false }) {
+  const inbound = inv.inbound;
+  if (inbound?.status === "ok") {
+    return inbound.units > 0 ? <span className="full-a-caminho">+{formatarNumero(inbound.units)} a caminho</span> : null;
+  }
+  if (!mostrarDesconhecido) return null;
+  return (
+    <span className="full-a-caminho is-desconhecido" title={SEM_A_CAMINHO[inbound?.status] || SEM_A_CAMINHO.unavailable}>
+      a caminho: ?
+    </span>
+  );
+}
 
 export function FullThumb({ inv }) {
   const ref = inv.references?.[0];

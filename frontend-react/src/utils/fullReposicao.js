@@ -12,18 +12,26 @@ function numero(valor) {
 
 // Quanto enviar para cobrir `dias` no ritmo atual. Sem giro ou sem estoque
 // conhecido → null (não dá para sugerir), nunca 0 inventado. Só sugere para
-// anúncio que JÁ tem estoque disponível no Full: vender não basta.
+// anúncio que JÁ tem estoque disponível no Full: vender não basta. O que já
+// está a caminho do Full (informado pelo ML) desconta da sugestão.
 export function quantidadeSugerida(inv, dias) {
   if (inv.sales?.status !== "ok" || !numero(inv.dailyTurnover) || inv.dailyTurnover < 0) return null;
   if (inv.stock?.status !== "ok" || !numero(inv.stock?.available) || inv.stock.available < 0) return null;
   if (inv.stock.available === 0) return 0;
-  return Math.max(0, Math.ceil(inv.dailyTurnover * dias - inv.stock.available));
+  return Math.max(0, Math.ceil(inv.dailyTurnover * dias - inv.stock.available - unidadesACaminho(inv)));
 }
 
-// Dias de cobertura depois de enviar `quantidade`. Sem giro → null.
+// Unidades a caminho do Full que o ML informou; desconhecido conta como 0
+// (a tela avisa à parte quando o dado falta).
+export function unidadesACaminho(inv) {
+  return inv.inbound?.status === "ok" && numero(inv.inbound.units) ? inv.inbound.units : 0;
+}
+
+// Dias de cobertura depois de enviar `quantidade` (somando o que já está a
+// caminho). Sem giro → null.
 export function coberturaApos(inv, quantidade) {
   if (!numero(inv.dailyTurnover) || inv.dailyTurnover <= 0 || !numero(inv.stock?.available)) return null;
-  return (inv.stock.available + (quantidade || 0)) / inv.dailyTurnover;
+  return (inv.stock.available + unidadesACaminho(inv) + (quantidade || 0)) / inv.dailyTurnover;
 }
 
 /**

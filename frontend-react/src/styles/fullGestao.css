@@ -585,6 +585,33 @@
   color: var(--vf-text-muted);
 }
 
+/* Disponível + "a caminho" empilhados na mesma célula. */
+.full-page .full-disponivel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.full-page .full-a-caminho {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-info);
+  white-space: nowrap;
+}
+
+.full-page .full-a-caminho.is-desconhecido {
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
+  cursor: help;
+}
+
+.full-page .full-nota-a-caminho {
+  margin: 0;
+  padding: 0 var(--vf-sp-4) var(--vf-sp-3);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
 /* ---- Faixa de ação (atenção / resumo do envio) ----------------------- */
 /* Cabeça | conteúdo em linha | botão. Abaixo de ~860px o conteúdo desce
    para uma linha própria (flex-wrap), sem rolar. */

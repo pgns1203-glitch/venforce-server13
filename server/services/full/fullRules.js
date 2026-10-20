@@ -145,11 +145,14 @@ function classifyOperationalStatus(input, config = DEFAULT_OPERATIONAL_STATUS_CO
 }
 
 /**
- * Reposicao base: sem estoque em transito, sem uplift. Se algum dado
+ * Reposicao base, sem uplift. Se algum dado
  * necessario estiver ausente, sendQuantity=null com o motivo explicito.
  * So sugere para anuncio que JA tem estoque disponivel no Full: vender nao
  * basta (decisao de produto 20/10/2026). Disponivel 0 -> sendQuantity=0
  * com reason "no_full_stock".
+ * `inboundUnits`: unidades ja a caminho do Full (envio criado e ainda nao
+ * recebido). Quando conhecido, desconta da sugestao; null = desconhecido,
+ * a sugestao segue sem desconto (o chamador avisa que o dado falta).
  */
 function calculateBaseReplenishment({
   dailyTurnover,
@@ -157,6 +160,7 @@ function calculateBaseReplenishment({
   availableStock,
   stockStatus = "ok",
   targetCoverageDays,
+  inboundUnits = null,
 }) {
   if (turnoverStatus !== "ok" || !isNonNegativeFiniteNumber(dailyTurnover)) {
     return { sendQuantity: null, targetStock: null, reason: "sales_unavailable" };
@@ -172,7 +176,8 @@ function calculateBaseReplenishment({
   if (availableStock === 0) {
     return { sendQuantity: 0, targetStock, reason: "no_full_stock" };
   }
-  const sendQuantity = Math.max(0, Math.ceil(targetStock - availableStock));
+  const inbound = isNonNegativeFiniteNumber(inboundUnits) ? inboundUnits : 0;
+  const sendQuantity = Math.max(0, Math.ceil(targetStock - availableStock - inbound));
 
   return { sendQuantity, targetStock, reason: null };
 }

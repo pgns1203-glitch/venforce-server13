@@ -46,13 +46,13 @@ function createFullMlGateway({
   nowFn = () => Date.now(),
   retryConfig = DEFAULT_RETRY_CONFIG,
 } = {}) {
-  async function callMl({ clienteId, mlUserId, path, deadlineMs = null }) {
+  async function callMl({ clienteId, mlUserId, path, deadlineMs = null, headers = null }) {
     assertPresent(clienteId, "clienteId e obrigatorio para qualquer chamada Full ao Mercado Livre");
     assertPresent(mlUserId, "mlUserId e obrigatorio para qualquer chamada Full ao Mercado Livre");
 
     return executeWithRetry({
       attempt: async () => {
-        const res = await requestFn(clienteId, path, { mlUserId });
+        const res = await requestFn(clienteId, path, headers ? { mlUserId, headers } : { mlUserId });
         return {
           ok: !!(res && res.ok),
           status: res ? res.status : null,
@@ -191,12 +191,35 @@ function createFullMlGateway({
     return callMl({ clienteId, mlUserId, path, deadlineMs });
   }
 
+  /**
+   * Recomendacao de reposicao do proprio ML para um User Product
+   * (documentacao_api_meli/planejamento-de-reposicao-para-fulfilment.md).
+   * `stock.total_stock` inclui as unidades AGUARDANDO CHEGADA ao Full — a
+   * unica fonte da API que enxerga envio ja criado e ainda nao recebido.
+   * Anuncio no formato antigo (variacoes dentro do MLB) responde 400
+   * "not yet available for replenishment" (teste real WBS, 20/10/2026).
+   * GET /marketplace/fbm/user-products/{user_product_id}/replenishment?country=BR
+   */
+  async function getReplenishment({ clienteId, mlUserId, sellerId, userProductId, deadlineMs }) {
+    assertPresent(userProductId, "userProductId e obrigatorio para consultar reposicao");
+    assertPresent(sellerId, "sellerId e obrigatorio para consultar reposicao");
+    const path = `/marketplace/fbm/user-products/${encodeURIComponent(userProductId)}/replenishment?country=BR`;
+    return callMl({
+      clienteId,
+      mlUserId,
+      path,
+      deadlineMs,
+      headers: { "x-caller-id": String(sellerId), "x-caller-siteId": "MLB" },
+    });
+  }
+
   return {
     searchFullItems,
     multigetItems,
     getInventoryStock,
     searchStockOperations,
     getStockOperationDetail,
+    getReplenishment,
   };
 }
 

@@ -309,6 +309,30 @@ describe("Central do Full · Reposição sugerida", () => {
     expect(screen.getByRole("spinbutton", { name: /quantidade a enviar de produto 1/i })).toHaveValue(5);
   });
 
+  it("a caminho informado pelo ML desconta da sugestão; desconhecido aparece como '?'", async () => {
+    mocks.obterSnapshotFull.mockResolvedValue(
+      snapshotBase({
+        inventories: [
+          inv({ inbound: { status: "ok", units: 15, totalStock: 25 } }),
+          inv({
+            inventoryId: "INV-9",
+            references: [{ mlb: "MLB9", sellerSku: "SKU-9", title: "Produto 9", variationId: 1 }],
+            inbound: { status: "unsupported", units: null, totalStock: null },
+          }),
+        ],
+      })
+    );
+    render(<FullGestaoPage />);
+    await screen.findByText("Produto 1");
+    await userEvent.click(screen.getByRole("button", { name: "Planejar novo envio" }));
+    await screen.findByRole("table", { name: "Reposição sugerida" });
+
+    expect(screen.getByRole("spinbutton", { name: /quantidade a enviar de produto 1/i })).toHaveValue(5); // 30 − 10 − 15
+    expect(within(linhaDe("Produto 1")).getByText("+15 a caminho")).toBeInTheDocument();
+    expect(within(linhaDe("Produto 9")).getByText("a caminho: ?")).toBeInTheDocument();
+    expect(screen.getByText(/1 de 2 produtos/)).toBeInTheDocument();
+  });
+
   it("editar a quantidade marca 'editado' e atualiza o resumo do envio", async () => {
     await abrirReposicao();
     const entrada = screen.getByRole("spinbutton", { name: /quantidade a enviar de produto 1/i });

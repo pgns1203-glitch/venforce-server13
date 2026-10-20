@@ -573,6 +573,13 @@ function recortarAoLimite(titulo, limite) {
   return t.length <= limite ? t : null;
 }
 
+// Toda palavra da sugestão começa com maiúscula ("Camisa Proteção Solar Uv50
+// Branca"), inclusive conectivos. Só troca a 1ª letra: o resto fica como veio
+// (siglas e marcas como JSN, TP-Link e 110V não mudam) e o tamanho não muda.
+function iniciaisMaiusculas(titulo) {
+  return titulo.replace(/(^|[\s(\-/])(\p{Ll})/gu, (_, antes, letra) => antes + letra.toLocaleUpperCase("pt-BR"));
+}
+
 function textoDoCandidato(c) {
   if (typeof c === "string") return c;
   if (c && typeof c === "object" && typeof c.titulo === "string") return c.titulo;
@@ -650,8 +657,8 @@ async function gerarTitulos({ fatos, aiProvider }) {
   }
 
   const sugestoes = unicos.slice(0, MAX_SUGESTOES).map((r) => {
-    const s = { titulo: r.titulo, chars: r.chars, score: r.score, breakdown: r.breakdown };
-    if (r.complemento) s.complemento = r.complemento;
+    const s = { titulo: iniciaisMaiusculas(r.titulo), chars: r.chars, score: r.score, breakdown: r.breakdown };
+    if (r.complemento) s.complemento = r.complemento.map(iniciaisMaiusculas);
     return s;
   });
   const descartadas = Object.values(motivosDescarte).reduce((a, n) => a + n, 0);

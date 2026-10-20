@@ -34,7 +34,7 @@
 }
 
 .vf-page-bases .vf-page-container {
-  max-width: 1320px; /* tela densa de operação (2 colunas de tabela) */
+  max-width: 1320px; /* tela densa de operação (lista de clientes + painel) */
   --vf-section-gap: var(--vf-sp-6);
 }
 
@@ -46,189 +46,525 @@
   min-width: 0;
 }
 
-/* Larguras de drawer e modal específicas desta tela (a tabela de
-   custos precisa de mais espaço que o padrão de 480px) */
-.vf-page-bases {
-  --vf-drawer-md: min(820px, 96vw);
-}
-
-/* A trilha de filtros aplicados não deve ocupar gap quando vazia */
-.vf-page-bases .vf-active-filters:empty {
-  display: none;
-}
-
-/* Rótulo de escopo dos KPIs (reusa o eyebrow como texto) */
-.vf-page-bases .vf-bases-kpi-scope {
-  margin: 0 0 var(--vf-sp-1);
-}
-
 /* ------------------------------------------------------------
- * 2. Grade lado a lado: Mercado Livre + Shopee + TikTok Shop
+ * 2. Carteira: lista de clientes + painel do cliente
+ * Mesmo desenho de Clientes e Contas (modelo B). Os logos dos
+ * marketplaces são os SVGs oficiais de assets/marketplaces.
  * ------------------------------------------------------------ */
-.vf-page-bases .vf-bases-market-grid {
+.vf-page-bases .vf-bases-layout {
   display: grid;
-  /* Mercado Livre e Shopee dividem a linha de cima em partes iguais;
-     minmax(0, 1fr) impede que o conteúdo estoure a coluna (overflow
-     horizontal na página) — a rolagem fica dentro de .vf-table-wrap. */
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: var(--vf-sp-5);
+  grid-template-columns: minmax(260px, 300px) minmax(0, 1fr);
+  gap: var(--vf-sp-4);
   align-items: start;
 }
 
-/* TikTok Shop ocupa a largura inteira, na linha abaixo das duas primeiras */
-.vf-page-bases .vf-bases-mp--tiktok {
-  grid-column: 1 / -1;
+.vf-page-bases .vf-bases-clientes {
+  position: sticky;
+  top: var(--vf-sp-4);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - var(--vf-sp-8));
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  overflow: hidden;
 }
 
-.vf-page-bases .vf-bases-mp {
-  gap: var(--vf-sp-3);
+.vf-page-bases .vf-bases-clientes__topo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-3);
+  border-bottom: 1px solid var(--vf-border);
 }
 
-/* Cabeçalho da seção de marketplace: dot + título + contagem */
-.vf-page-bases .vf-bases-mp__title {
+.vf-page-bases .vf-bases-clientes__topo .vf-input {
+  width: 100%;
+}
+
+.vf-page-bases .vf-bases-seg {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--vf-bg-2);
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-bases .vf-bases-seg button {
+  flex: 1 1 0;
   display: inline-flex;
   align-items: center;
-  gap: var(--vf-sp-2);
-}
-
-.vf-page-bases .vf-bases-mp__dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--vf-radius-pill);
-  flex: 0 0 auto;
-}
-
-.vf-page-bases .vf-bases-mp__dot--meli {
-  background: var(--vf-warning);
-}
-
-.vf-page-bases .vf-bases-mp__dot--shopee {
-  background: var(--vf-danger);
-}
-
-/* TikTok Shop: identidade discreta, dentro da paleta da Fundação V2 */
-.vf-page-bases .vf-bases-mp__dot--tiktok {
-  background: var(--vf-info, var(--vf-primary));
-}
-
-/* Cobertura da base (SKUs / com custo / sem custo) sob o nome da base */
-.vf-page-bases .vf-bases-cobertura {
+  justify-content: center;
+  gap: var(--vf-sp-1);
+  min-height: 28px;
+  padding: 0 var(--vf-sp-2);
+  border: 0;
+  border-radius: var(--vf-radius-sm);
+  background: transparent;
+  font-family: var(--vf-font-body);
   font-size: var(--vf-fs-xs);
-  font-variant-numeric: tabular-nums;
-  margin-top: 2px;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  cursor: pointer;
 }
 
-.vf-page-bases .vf-bases-mp__count {
-  font-size: var(--vf-fs-xs);
+.vf-page-bases .vf-bases-seg button[aria-pressed="true"] {
+  background: var(--vf-surface);
+  color: var(--vf-primary-strong);
+  box-shadow: var(--vf-shadow-xs);
+}
+
+.vf-page-bases .vf-bases-seg__n {
+  font-weight: var(--vf-fw-medium);
   color: var(--vf-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
-/* Rolagem interna das listas + layout fixo de colunas.
-   table-layout:fixed + width:100% faz as 4 colunas caberem no wrapper,
-   então na prática só há rolagem vertical. O overflow:auto mantém
-   qualquer rolagem horizontal residual DENTRO do wrapper, nunca na
-   página. */
-.vf-page-bases .vf-bases-mp .vf-table-wrap {
-  max-height: 520px;
-  overflow: auto;
+.vf-page-bases .vf-bases-clientes__lista {
+  overflow-y: auto;
+  min-height: 0;
 }
 
-.vf-page-bases .vf-bases-mp .vf-table {
-  table-layout: fixed;
-}
-
-.vf-page-bases .vf-bases-mp .vf-table th,
-.vf-page-bases .vf-bases-mp .vf-table td {
-  overflow: hidden;
-}
-
-/* Colunas 1 (cliente/base) e 2 (base/loja) compartilham o espaço
-   restante; status e ações têm largura compacta e fixa. */
-.vf-page-bases .vf-bases-mp .vf-table th:nth-child(3),
-.vf-page-bases .vf-bases-mp .vf-table td:nth-child(3) {
-  width: 128px;
-}
-
-.vf-page-bases .vf-bases-mp .vf-table th:last-child,
-.vf-page-bases .vf-bases-mp .vf-table td:last-child {
-  width: 88px;
-  overflow: visible; /* deixa o menu "⋯" escapar da célula */
-}
-
-/* Mensagem "nenhuma base para os filtros" abaixo de cada lista */
-.vf-page-bases .vf-bases-empty-msg {
+.vf-page-bases .vf-bases-clientes__vazio {
+  margin: 0;
   padding: var(--vf-sp-5) var(--vf-sp-4);
-  color: var(--vf-text-muted);
   font-size: var(--vf-fs-sm);
-}
-
-/* Rodapé com a contagem exibida/total */
-.vf-page-bases .vf-bases-datastate {
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
-  font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
-}
-
-/* ------------------------------------------------------------
- * 3. Células das linhas (conteúdo gerado por JS)
- * ------------------------------------------------------------ */
-.vf-page-bases .vf-bases-basename {
-  font-weight: var(--vf-fw-semibold);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.vf-page-bases .vf-bases-basename .name-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.vf-page-bases .vf-bases-cliente {
-  color: var(--vf-text-secondary);
-  min-width: 0;
-}
-
-.vf-page-bases .vf-bases-cliente strong {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--vf-text);
-  font-weight: var(--vf-fw-semibold);
-}
-
-.vf-page-bases .vf-bases-muted {
   color: var(--vf-text-muted);
 }
 
-/* Status de atualização (idade + ignorar alerta) */
-.vf-page-bases .vf-bases-status {
-  display: flex;
+.vf-page-bases .vf-bases-cli {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
+  gap: var(--vf-sp-3);
+  width: 100%;
+  padding: var(--vf-sp-3);
+  border: 0;
+  border-bottom: 1px solid var(--vf-border);
+  background: transparent;
+  text-align: left;
+  font-family: var(--vf-font-body);
+  color: var(--vf-text);
+  cursor: pointer;
+}
+
+.vf-page-bases .vf-bases-cli:last-child {
+  border-bottom: 0;
+}
+
+.vf-page-bases .vf-bases-cli:hover {
+  background: var(--vf-surface-hover);
+}
+
+.vf-page-bases .vf-bases-cli[aria-selected="true"] {
+  background: var(--vf-primary-soft);
+  box-shadow: inset 3px 0 0 var(--vf-primary);
+}
+
+.vf-page-bases .vf-bases-cli:focus-visible {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: -2px;
+}
+
+.vf-page-bases .vf-bases-cli__txt {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
   min-width: 0;
 }
 
-.vf-page-bases .vf-bases-ignore {
+.vf-page-bases .vf-bases-cli__nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-bases .vf-bases-cli.is-sem-cliente .vf-bases-cli__nome {
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-cli__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-1);
   font-size: var(--vf-fs-2xs);
   color: var(--vf-text-muted);
 }
 
-/* Ações da linha alinhadas à direita, nunca quebram */
-.vf-page-bases .vf-bases-row-actions {
+.vf-page-bases .vf-bases-cli__meta > span:last-child {
+  margin-left: var(--vf-sp-1);
+}
+
+.vf-page-bases .vf-bases-cli__alerta {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-warning);
+}
+
+/* Avatar do cliente: imagem de /cliente-imagens ou a sigla */
+.vf-page-bases .vf-bases-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-bg-2);
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-cli[aria-selected="true"] .vf-bases-avatar:not(.is-imagem) {
+  background: var(--vf-surface);
+  color: var(--vf-primary-strong);
+}
+
+.vf-page-bases .vf-bases-avatar--lg {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--vf-radius);
+  font-size: var(--vf-fs-md);
+}
+
+.vf-page-bases .vf-bases-avatar.is-imagem {
+  overflow: hidden;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+}
+
+.vf-page-bases .vf-bases-avatar.is-imagem img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.vf-page-bases .vf-bases-avatar.is-vazio {
+  border: 1px dashed var(--vf-border-strong);
+  background: transparent;
+  color: var(--vf-text-muted);
+}
+
+/* Logo oficial do marketplace sobre ladrilho claro */
+.vf-page-bases .vf-bases-logo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.vf-page-bases .vf-bases-logo img {
+  display: block;
+}
+
+.vf-page-bases .vf-bases-logo--xs { width: 18px; height: 18px; border-radius: 4px; }
+.vf-page-bases .vf-bases-logo--xs img { width: 12px; height: 12px; }
+.vf-page-bases .vf-bases-logo--md { width: 32px; height: 32px; }
+.vf-page-bases .vf-bases-logo--md img { width: 20px; height: 20px; }
+.vf-page-bases .vf-bases-logo--lg { width: 40px; height: 40px; border-radius: var(--vf-radius); }
+.vf-page-bases .vf-bases-logo--lg img { width: 26px; height: 26px; }
+
+.vf-page-bases .vf-bases-logo.is-outro {
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text-muted);
+}
+
+/* Painel do cliente */
+.vf-page-bases .vf-bases-painel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-painel__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-4);
+  padding: var(--vf-sp-4);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-bases .vf-bases-painel__head:empty {
+  display: none;
+}
+
+.vf-page-bases .vf-bases-painel__id {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  gap: var(--vf-sp-1);
-  flex-wrap: nowrap;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-painel__titulo {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-lg);
+  font-weight: var(--vf-fw-extrabold);
+  letter-spacing: var(--vf-ls-tight);
+  color: var(--vf-text);
+}
+
+.vf-page-bases .vf-bases-painel__desc {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-painel__cov {
+  flex: 0 1 240px;
+  min-width: 200px;
+}
+
+.vf-page-bases .is-warning {
+  color: var(--vf-warning);
+  font-weight: var(--vf-fw-semibold);
+}
+
+/* Cartões de conta */
+.vf-page-bases .vf-bases-contas {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: var(--vf-sp-3);
+}
+
+.vf-page-bases .vf-bases-conta {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-4);
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  transition: border-color var(--vf-duration-fast) var(--vf-ease);
+}
+
+.vf-page-bases .vf-bases-conta:not(.is-vazia):hover {
+  border-color: var(--vf-border-hover);
+}
+
+.vf-page-bases .vf-bases-conta.is-selected {
+  border-color: var(--vf-primary);
+  box-shadow: 0 0 0 1px var(--vf-primary);
+}
+
+.vf-page-bases .vf-bases-conta.is-vazia {
+  border-style: dashed;
+  border-color: var(--vf-border-strong);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-bases .vf-bases-conta__h {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-conta__id {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-conta__id b,
+.vf-page-bases .vf-bases-conta__abrir {
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text);
+}
+
+.vf-page-bases .vf-bases-conta__id > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+/* O título é o botão; o ::after estica o clique para o cartão todo.
+   O menu "⋯" fica acima dessa camada. */
+.vf-page-bases .vf-bases-conta__abrir {
+  padding: 0;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-family: var(--vf-font-body);
+  cursor: pointer;
+}
+
+.vf-page-bases .vf-bases-conta__abrir::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.vf-page-bases .vf-bases-conta__abrir:focus-visible {
+  outline: none;
+}
+
+.vf-page-bases .vf-bases-conta:has(.vf-bases-conta__abrir:focus-visible) {
+  outline: 2px solid var(--vf-focus-color);
+  outline-offset: var(--vf-focus-offset);
+}
+
+.vf-page-bases .vf-bases-conta .b-menu {
+  position: relative;
+  z-index: 1;
+}
+
+.vf-page-bases .vf-bases-conta__aviso {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-snug);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-bases .vf-bases-conta__rodape {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-conta__base {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+/* Barra de cobertura: itens com custo sobre o total */
+.vf-page-bases .vf-bases-cov {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-1);
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-cov__topo {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-muted);
+}
+
+.vf-page-bases .vf-bases-cov__topo b {
+  color: var(--vf-text);
+  font-weight: var(--vf-fw-bold);
+}
+
+.vf-page-bases .vf-bases-cov__barra {
+  height: 6px;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-bg-2);
+  overflow: hidden;
+}
+
+.vf-page-bases .vf-bases-cov__barra i {
+  display: block;
+  height: 100%;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-text-muted);
+}
+
+.vf-page-bases .vf-bases-cov__barra i.is-ok { background: var(--vf-success); }
+.vf-page-bases .vf-bases-cov__barra i.is-warning { background: var(--vf-warning); }
+.vf-page-bases .vf-bases-cov__barra i.is-danger { background: var(--vf-danger); }
+
+.vf-page-bases .vf-bases-cov.is-vazio {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+/* Itens da base escolhida (era o drawer "Base de custos") */
+.vf-page-bases .vf-bases-itens {
+  display: flex;
+  flex-direction: column;
+  background: var(--vf-surface);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  overflow: hidden;
+  scroll-margin-top: var(--vf-sp-4);
+}
+
+.vf-page-bases .vf-bases-itens__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-4);
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.vf-page-bases .vf-bases-itens__id {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  min-width: 0;
+}
+
+.vf-page-bases .vf-bases-itens__title {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-extrabold);
+  color: var(--vf-text);
+  overflow-wrap: anywhere;
+}
+
+.vf-page-bases .vf-bases-itens__body {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.vf-page-bases .vf-bases-itens__body .vf-bases-costs-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--vf-surface-2);
+}
+
+.vf-page-bases .vf-bases-drawer-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+}
+
+.vf-page-bases .vf-bases-muted {
+  color: var(--vf-text-muted);
 }
 
 /* ------------------------------------------------------------
@@ -270,15 +606,6 @@
   font-weight: var(--vf-fw-semibold);
 }
 
-/* Barra de ações do drawer (só ações; filtros vivem no thead) */
-.vf-page-bases .vf-bases-drawer-toolbar {
-  flex: 0 0 auto;
-  display: flex;
-  justify-content: flex-end;
-  padding: var(--vf-sp-3) var(--vf-sp-5);
-  border-bottom: 1px solid var(--vf-border);
-}
-
 .vf-page-bases .vf-bases-drawer-actions {
   display: flex;
   gap: var(--vf-sp-2);
@@ -296,8 +623,8 @@
   overflow-y: auto;
 }
 
-/* Rodapé do drawer: contagem à esquerda, dica à direita */
-.vf-page-bases .vf-bases-drawer-footer {
+/* Rodapé dos itens: contagem à esquerda, dica à direita */
+.vf-page-bases .vf-bases-itens .vf-bases-drawer-footer {
   justify-content: space-between;
   font-size: var(--vf-fs-xs);
   color: var(--vf-text-muted);
@@ -506,10 +833,15 @@
  * 8. Responsivo específico da página
  * (os componentes globais já respondem sozinhos)
  * ------------------------------------------------------------ */
-/* Tablet e mobile: uma coluna só — Mercado Livre, Shopee e TikTok empilhados */
-@media (max-width: 1024px) {
-  .vf-page-bases .vf-bases-market-grid {
+/* Tablet e mobile: lista de clientes em cima, painel embaixo */
+@media (max-width: 900px) {
+  .vf-page-bases .vf-bases-layout {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vf-page-bases .vf-bases-clientes {
+    position: static;
+    max-height: 320px;
   }
 }
 

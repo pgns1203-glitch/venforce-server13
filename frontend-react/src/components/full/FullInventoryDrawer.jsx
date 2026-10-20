@@ -3,6 +3,7 @@ import { useFullInventoryDetail } from "../../hooks/useFullInventoryDetail.js";
 import { formatarNumero, ehAusente, AUSENTE } from "../../utils/numbers.js";
 import { formatarDataHora } from "../../utils/dates.js";
 import { STATUS_LABEL, STATUS_TONE } from "../../utils/fullOperationalStatus.js";
+import { diasInteiros } from "../../utils/fullSummary.js";
 
 const PRAZO_ML = {
   THIS_WEEK: "esta semana",
@@ -122,7 +123,7 @@ export default function FullInventoryDrawer({ clienteContaId, inventoryId, onFec
               </div>
               <div className="vf-field">
                 <span className="vf-field__label">Cobertura</span>
-                <span className="num">{formatarNumero(detalhe.coverageDays, 1)} dias</span>
+                <span className="num">{formatarNumero(diasInteiros(detalhe.coverageDays))} dias</span>
               </div>
               <div className="vf-field">
                 <span className="vf-field__label">Enviar</span>

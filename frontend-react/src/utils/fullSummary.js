@@ -26,6 +26,13 @@ function semCusto(inv) {
   return numero(inv.stock?.total) && inv.stock.total > 0 && inv.unitCost === null;
 }
 
+// Cobertura em dias inteiros, arredondada PARA BAIXO: 6,9 dias vira "6", que
+// bate com o status (Crítico = menos de 7 dias). Arredondar mostraria "7" num
+// produto Crítico. Ausência continua null.
+export function diasInteiros(valor) {
+  return typeof valor === "number" && Number.isFinite(valor) ? Math.floor(valor) : null;
+}
+
 export function computeFullSummary(inventories = []) {
   const summary = {
     total: inventories.length,

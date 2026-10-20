@@ -313,13 +313,13 @@
 }
 
 .full-page .full-lista--estoque {
-  --full-cols: 44px minmax(120px, 3fr) minmax(80px, 0.8fr) minmax(68px, 0.5fr) minmax(64px, 0.6fr)
-    minmax(96px, 1.1fr) minmax(64px, 0.7fr) minmax(44px, 0.4fr) 24px;
+  --full-cols: 44px minmax(160px, 2.4fr) minmax(88px, 0.8fr) minmax(76px, 0.6fr) minmax(84px, 0.7fr)
+    minmax(132px, 1.2fr) minmax(96px, 0.8fr) minmax(52px, 0.4fr) 24px;
 }
 
 .full-page .full-lista--reposicao {
-  --full-cols: 20px 44px minmax(120px, 3fr) minmax(76px, 0.8fr) minmax(52px, 0.5fr) minmax(56px, 0.5fr)
-    minmax(80px, 1fr) minmax(64px, 0.5fr) 60px minmax(64px, 0.8fr);
+  --full-cols: 20px 44px minmax(160px, 2.4fr) minmax(88px, 0.8fr) minmax(76px, 0.6fr) minmax(64px, 0.5fr)
+    minmax(104px, 1fr) minmax(72px, 0.5fr) 64px minmax(88px, 0.8fr);
 }
 
 .full-page .full-lista__cabeca,
@@ -327,7 +327,7 @@
   display: grid;
   grid-template-columns: var(--full-cols);
   align-items: center;
-  gap: 6px;
+  gap: var(--vf-sp-4);
   min-width: min-content;
   padding: var(--vf-sp-3);
   box-sizing: border-box;

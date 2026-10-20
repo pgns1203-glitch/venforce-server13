@@ -4,6 +4,7 @@
 // Previsão e cobertura média são leitura, não recorte — por isso não são botões.
 import { formatarNumero } from "../../utils/numbers.js";
 import { formatarMoeda } from "../../utils/currency.js";
+import { diasInteiros } from "../../utils/fullSummary.js";
 
 function moeda(valor) {
   return formatarMoeda(valor, { casas: 0 });
@@ -63,7 +64,7 @@ export default function FullKpiStrip({ resumo, kpisAtivos, onAlternar, custosDis
         title={custosDisponiveis ? "Clique para ver os produtos sem custo na Base" : "Vincule uma Base de custo à conta para ver o custo"} />
       <KpiLeitura rotulo="Previsão 30d" valor={moeda(resumo.previsao30d)} rodape="ritmo dos últimos 14d" />
       <KpiLeitura rotulo="Cobertura média" acento="info"
-        valor={resumo.coberturaMedia === null ? "—" : `${formatarNumero(resumo.coberturaMedia, 1)} dias`} rodape="meta 30 dias" />
+        valor={resumo.coberturaMedia === null ? "—" : `${formatarNumero(diasInteiros(resumo.coberturaMedia))} dias`} rodape="meta 30 dias" />
     </div>
   );
 }

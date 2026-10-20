@@ -195,13 +195,10 @@ function getBaseMarketplaceKey(base) {
   return MARKETPLACES_SUPORTADOS.includes(key) ? key : "outro";
 }
 
-// Cobertura da base (vem de GET /bases): total de SKUs e quantos têm custo.
-function getCoberturaBase(base) {
+// Quantidade de itens da base (total_skus vem de GET /bases).
+function getTotalItensBase(base) {
   const total = Number(base?.total_skus);
-  const comCusto = Number(base?.skus_com_custo);
-  if (!Number.isFinite(total)) return null;
-  const com = Number.isFinite(comCusto) ? comCusto : 0;
-  return { total, comCusto: com, semCusto: Math.max(0, total - com) };
+  return Number.isFinite(total) ? total : null;
 }
 
 // ─── Desatualização (COALESCE(updated_at, created_at) < hoje − 30d) ───
@@ -451,31 +448,6 @@ function fmtInt(n) {
   return Number(n || 0).toLocaleString("pt-BR");
 }
 
-// Barra de cobertura: itens com custo sobre o total da base. Arredonda para
-// baixo enquanto faltar item, para 99,6% nunca aparecer como 100%.
-function coberturaHtml(cob) {
-  if (!cob) return `<div class="vf-bases-cov is-vazio"><span>Cobertura indisponível</span></div>`;
-  const pct = cob.total ? cob.comCusto / cob.total : 0;
-  const pctTxt = !cob.total ? "—" : `${cob.semCusto ? Math.floor(pct * 100) : 100}%`;
-  const cls = !cob.total ? "" : pct >= 0.95 ? "is-ok" : pct >= 0.8 ? "is-warning" : "is-danger";
-  return `<div class="vf-bases-cov">
-    <div class="vf-bases-cov__topo"><b>${pctTxt}</b><span>${fmtInt(cob.comCusto)} de ${fmtInt(cob.total)} com custo</span></div>
-    <div class="vf-bases-cov__barra"><i class="${cls}" style="width:${(pct * 100).toFixed(1)}%"></i></div>
-  </div>`;
-}
-
-function somarCobertura(bases) {
-  let total = 0, comCusto = 0, alguma = false;
-  bases.forEach((b) => {
-    const cob = getCoberturaBase(b);
-    if (!cob) return;
-    alguma = true;
-    total += cob.total;
-    comCusto += cob.comCusto;
-  });
-  return alguma ? { total, comCusto, semCusto: Math.max(0, total - comCusto) } : null;
-}
-
 function statusIdadeHtml(base) {
   const dias = diasDesdeAtualizacao(base);
   const texto = dias == null ? "Sem data" : dias === 0 ? "Atualizada hoje" : `Atualizada há ${dias} ${dias === 1 ? "dia" : "dias"}`;
@@ -658,6 +630,8 @@ function cartaoContaHtml(cli, { mp, conta, base }) {
   }
   const sel = String(base.slug) === String(BASE_SEL);
   const inativa = base.ativo === false ? `<span class="vf-tag">Inativa</span>` : "";
+  const total = getTotalItensBase(base);
+  const itensTxt = total == null ? "" : ` · ${fmtInt(total)} ${total === 1 ? "item" : "itens"}`;
   return `<div class="vf-bases-conta${sel ? " is-selected" : ""}">
     <div class="vf-bases-conta__h">${logoMarketplace(mp)}
       <div class="vf-bases-conta__id">
@@ -666,9 +640,105 @@ function cartaoContaHtml(cli, { mp, conta, base }) {
       </div>
       ${renderMenuBase(base)}
     </div>
-    ${coberturaHtml(getCoberturaBase(base))}
-    <div class="vf-bases-conta__rodape"><span class="vf-bases-conta__base" title="Nome da base">${escapeHTML(base.nome || base.slug || "—")}</span>${inativa}${statusIdadeHtml(base)}</div>
+    ${temCoberturaAnuncios(cli, { mp, conta, base }) ? coberturaAnunciosHtml(cli, conta) : ""}
+    <div class="vf-bases-conta__rodape"><span class="vf-bases-conta__base" title="Nome da base">${escapeHTML(base.nome || base.slug || "—")}${itensTxt}</span>${inativa}${statusIdadeHtml(base)}</div>
   </div>`;
+}
+
+// ─── Cobertura de custo dos anúncios (Mercado Livre) ───
+// MLBs sincronizados da conta × MLBs com custo na base que o Motor usa para
+// ela. Vem de GET /anuncios-meli/resumo (total + semCusto): os mesmos números
+// do card "Sem custo" de Anúncios ML, então as duas telas sempre batem.
+// Shopee e TikTok não têm anúncios sincronizados no VenForce — sem barra.
+const COBERTURA_ANUNCIOS = new Map(); // "<clienteSlug>|<contaId>" → { estado, total, semCusto, motivo }
+
+function chaveCobertura(cli, conta) {
+  return `${cli.slug}|${conta.id}`;
+}
+
+function temCoberturaAnuncios(cli, { mp, conta, base }) {
+  return mp === "meli" && !!conta && !!base && !!cli.slug;
+}
+
+// Arredonda para baixo enquanto faltar anúncio: 99,6% nunca vira 100%.
+function barraCoberturaHtml(com, total, rotulo) {
+  const pct = total ? com / total : 0;
+  const pctTxt = `${com < total ? Math.floor(pct * 100) : 100}%`;
+  const cls = pct >= 1 ? "is-ok" : pct >= 0.9 ? "is-warning" : "is-danger";
+  return `<div class="vf-bases-cov__topo"><b>${pctTxt}</b><span>${fmtInt(com)} de ${fmtInt(total)} ${rotulo}</span></div>
+    <div class="vf-bases-cov__barra"><i class="${cls}" style="width:${(pct * 100).toFixed(1)}%"></i></div>`;
+}
+
+function coberturaAnunciosHtml(cli, conta) {
+  const chave = escapeHTML(chaveCobertura(cli, conta));
+  const c = COBERTURA_ANUNCIOS.get(chaveCobertura(cli, conta));
+  const vazio = (msg) => `<div class="vf-bases-cov is-vazio" data-cov-chave="${chave}"><span>${escapeHTML(msg)}</span></div>`;
+  if (!c || c.estado === "carregando") return vazio("Cruzando com os anúncios da conta…");
+  if (c.estado === "erro") return vazio("Não foi possível ler os anúncios desta conta.");
+  if (c.semCusto == null) return vazio(c.motivo || "A base desta conta não foi resolvida.");
+  if (!c.total) return vazio("Nenhum anúncio sincronizado nesta conta.");
+  const com = Math.max(0, c.total - c.semCusto);
+  const link = `anuncios-meli.html?cliente=${encodeURIComponent(cli.slug)}&conta=${encodeURIComponent(String(conta.id))}`;
+  const falta = c.semCusto
+    ? `<a class="vf-bases-cov__link" href="${escapeHTML(link)}">${fmtInt(c.semCusto)} sem custo · ver em Anúncios ML</a>`
+    : "";
+  return `<div class="vf-bases-cov" data-cov-chave="${chave}" title="Anúncios (MLB) da conta com custo na base">
+    ${barraCoberturaHtml(com, c.total, "anúncios com custo")}
+    ${falta}
+  </div>`;
+}
+
+// Soma das contas Mercado Livre do cliente já lidas, para o cabeçalho.
+function coberturaClienteHtml(cli) {
+  let total = 0, semCusto = 0, lidas = 0;
+  cli.cartoes.filter((c) => temCoberturaAnuncios(cli, c)).forEach(({ conta }) => {
+    const c = COBERTURA_ANUNCIOS.get(chaveCobertura(cli, conta));
+    if (!c || c.estado !== "ok" || c.semCusto == null || !c.total) return;
+    lidas += 1;
+    total += c.total;
+    semCusto += c.semCusto;
+  });
+  if (!lidas) return "";
+  return `<div class="vf-bases-cov" title="Anúncios Mercado Livre do cliente com custo na base">
+    ${barraCoberturaHtml(Math.max(0, total - semCusto), total, "anúncios ML com custo")}
+  </div>`;
+}
+
+function atualizarCoberturaNaTela(cli) {
+  if (CLI_SEL !== cli.key) return;
+  cli.cartoes.filter((c) => temCoberturaAnuncios(cli, c)).forEach(({ conta }) => {
+    const sel = `[data-cov-chave="${CSS.escape(chaveCobertura(cli, conta))}"]`;
+    const el = document.querySelector(`#bases-contas ${sel}`);
+    if (el) el.outerHTML = coberturaAnunciosHtml(cli, conta);
+  });
+  const head = document.getElementById("bases-painel-cov");
+  if (head) head.innerHTML = coberturaClienteHtml(cli);
+}
+
+async function carregarCoberturaAnuncios(cli) {
+  const alvos = cli.cartoes.filter((c) => temCoberturaAnuncios(cli, c) && !COBERTURA_ANUNCIOS.has(chaveCobertura(cli, c.conta)));
+  if (!alvos.length || !TOKEN) return;
+  alvos.forEach(({ conta }) => COBERTURA_ANUNCIOS.set(chaveCobertura(cli, conta), { estado: "carregando" }));
+  await Promise.all(alvos.map(async ({ conta }) => {
+    const chave = chaveCobertura(cli, conta);
+    try {
+      const qs = `clienteSlug=${encodeURIComponent(cli.slug)}&clienteContaId=${encodeURIComponent(String(conta.id))}`;
+      const res = await fetch(`${API_BASE}/anuncios-meli/resumo?${qs}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+      if (res.status === 401) { clearSession(); return; }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false || !data.resumo) throw new Error(data.motivo || `HTTP ${res.status}`);
+      const r = data.resumo;
+      COBERTURA_ANUNCIOS.set(chave, {
+        estado: "ok",
+        total: Number(r.total) || 0,
+        semCusto: r.semCusto == null ? null : Number(r.semCusto),
+        motivo: r.semCustoMotivo || null,
+      });
+    } catch (err) {
+      COBERTURA_ANUNCIOS.set(chave, { estado: "erro" });
+    }
+  }));
+  atualizarCoberturaNaTela(cli);
 }
 
 function renderPainelCliente() {
@@ -700,13 +770,14 @@ function renderPainelCliente() {
     <div class="vf-bases-painel__id">${avatarCliente(cli, true)}
       <div><h2 class="vf-bases-painel__titulo" id="bases-painel-titulo">${escapeHTML(cli.nome)}</h2><p class="vf-bases-painel__desc">${descricao}</p></div>
     </div>
-    ${bases.length ? `<div class="vf-bases-painel__cov">${coberturaHtml(somarCobertura(bases))}</div>` : ""}`;
+    <div class="vf-bases-painel__cov" id="bases-painel-cov">${coberturaClienteHtml(cli)}</div>`;
 
   if (!bases.some((b) => String(b.slug) === String(BASE_SEL))) BASE_SEL = bases[0]?.slug || null;
   contasEl.innerHTML = cli.cartoes.length
     ? cli.cartoes.map((c) => cartaoContaHtml(cli, c)).join("")
     : `<p class="vf-bases-clientes__vazio">Este cliente ainda não tem conta conectada nem base.</p>`;
   bindBaseRowActions(contasEl);
+  carregarCoberturaAnuncios(cli);
 
   if (!BASE_SEL) {
     if (itens) itens.hidden = true;
@@ -762,6 +833,8 @@ function renderBasesTela() {
 async function loadBases() {
   if (!TOKEN) return;
   if (!BASES_CARREGADAS) showLoading();
+  // Custo salvo/importado muda a cobertura: relê os anúncios do cliente aberto.
+  COBERTURA_ANUNCIOS.clear();
 
   let basesPrincipais = [];
   try {

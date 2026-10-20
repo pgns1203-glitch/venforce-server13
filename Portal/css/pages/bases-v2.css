@@ -326,8 +326,12 @@
 }
 
 .vf-page-bases .vf-bases-painel__cov {
-  flex: 0 1 240px;
-  min-width: 200px;
+  flex: 0 1 260px;
+  min-width: 220px;
+}
+
+.vf-page-bases .vf-bases-painel__cov:empty {
+  display: none;
 }
 
 .vf-page-bases .is-warning {
@@ -444,14 +448,18 @@
 
 .vf-page-bases .vf-bases-conta__rodape {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--vf-sp-2);
+  justify-content: space-between;
+  gap: var(--vf-sp-1) var(--vf-sp-2);
   min-width: 0;
 }
 
+/* Nome da base + itens nunca são cortados para caber o status: se não
+   couber na mesma linha, o status desce. */
 .vf-page-bases .vf-bases-conta__base {
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: min(100%, max-content);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -460,7 +468,7 @@
   color: var(--vf-text-muted);
 }
 
-/* Barra de cobertura: itens com custo sobre o total */
+/* Barra de cobertura: anúncios (MLB) da conta com custo na base */
 .vf-page-bases .vf-bases-cov {
   display: flex;
   flex-direction: column;
@@ -503,6 +511,21 @@
 .vf-page-bases .vf-bases-cov.is-vazio {
   font-size: var(--vf-fs-xs);
   color: var(--vf-text-muted);
+}
+
+/* Fica acima do clique esticado do cartão (.vf-bases-conta__abrir::after). */
+.vf-page-bases .vf-bases-cov__link {
+  position: relative;
+  z-index: 1;
+  align-self: flex-start;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-warning-strong);
+  text-decoration: none;
+}
+
+.vf-page-bases .vf-bases-cov__link:hover {
+  text-decoration: underline;
 }
 
 /* Itens da base escolhida (era o drawer "Base de custos") */

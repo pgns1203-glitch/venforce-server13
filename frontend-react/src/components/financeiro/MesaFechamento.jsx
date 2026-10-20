@@ -231,6 +231,13 @@ export function MesaFechamento({
     f.processar();
   }
 
+  // "+ Custo" na lista grava na base vinculada da conta — só quando é ela
+  // que o fechamento usa (sem processamento nesta sessão, a base vinculada
+  // é a que o próximo processamento vai usar).
+  const baseVinculada = f.base.status === "encontrada" ? f.base.base : null;
+  const baseParaCustoRapido =
+    baseVinculada && (!p || (p.costsSource === "base" && p.costsBase?.slug === baseVinculada.slug)) ? baseVinculada : null;
+
   function verPendencias() {
     if (p) {
       setDrawer("pendencias");
@@ -579,6 +586,10 @@ export function MesaFechamento({
           clienteSlug={clienteSlug}
           clienteContaId={clienteContaId}
           marketplace={f.marketplace}
+          baseDeCustos={baseParaCustoRapido}
+          onAbrirPendencias={p ? () => setDrawer("pendencias") : null}
+          onReprocessar={p ? f.reprocessar : null}
+          reprocessando={processando}
         />}
 
       {/* ── Drawers ────────────────────────────────────────────────── */}

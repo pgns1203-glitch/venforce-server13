@@ -163,3 +163,125 @@ describe("ProdutosMesa · foto do anúncio (Mercado Livre)", () => {
     expect(rede.requisitar).not.toHaveBeenCalled();
   });
 });
+
+describe("ProdutosMesa · + Custo (base vinculada)", () => {
+  const BASE = { id: 900, slug: "base-zenite", nome: "Base Zenite" };
+  const baseCom = (dados = {}) => ({ ok: true, dados });
+  // GET /bases/:slug → itens; POST upsert → ok; o resto (miniaturas) → vazio.
+  function redeDaBase(dados = {}) {
+    rede.requisitar.mockImplementation(async (caminho, opcoes = {}) => {
+      if (caminho === "/bases/base-zenite") return baseCom(dados);
+      if (caminho === "/bases/base-zenite/custos/upsert") return { ok: true };
+      return { ok: true, miniaturas: {} };
+    });
+  }
+  const upserts = () => rede.requisitar.mock.calls.filter(([c]) => c.endsWith("/custos/upsert"));
+  const props = { linhas: linhasMeli, clienteSlug: "zenite", clienteContaId: 42, marketplace: "meli", baseDeCustos: BASE };
+
+  it("só a linha sem custo ganha '+ Custo'", async () => {
+    redeDaBase();
+    render(<ProdutosMesa {...props} />);
+    expect(await within(linhaDe("Saia")).findByRole("button", { name: "+ Custo" })).toBeInTheDocument();
+    expect(within(linhaDe("Calça")).queryByRole("button", { name: "+ Custo" })).not.toBeInTheDocument();
+    expect(within(linhaDe("Blusa")).queryByRole("button", { name: "+ Custo" })).not.toBeInTheDocument();
+  });
+
+  it("sem base vinculada: nada de '+ Custo' (e a base nem é lida)", () => {
+    redeDaBase();
+    render(<ProdutosMesa {...props} baseDeCustos={null} />);
+    expect(screen.queryByRole("button", { name: "+ Custo" })).not.toBeInTheDocument();
+    expect(rede.requisitar.mock.calls.some(([c]) => c.startsWith("/bases/"))).toBe(false);
+  });
+
+  it("Enter grava na base pelo MLB, sem imposto (o servidor mantém/usa o padrão), e avisa para reprocessar", async () => {
+    redeDaBase();
+    const onReprocessar = vi.fn();
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa {...props} onReprocessar={onReprocessar} />);
+    await usuario.click(await within(linhaDe("Saia")).findByRole("button", { name: "+ Custo" }));
+    const campo = screen.getByRole("textbox", { name: /Custo do produto/ });
+    expect(campo).toHaveFocus();
+    await usuario.type(campo, "42,90{Enter}");
+    await waitFor(() => expect(upserts()).toHaveLength(1));
+    expect(upserts()[0][1].body).toEqual({ produto_id: "MLB3", custo_produto: 42.9, produto_nome: "Saia" });
+    expect(await within(linhaDe("Saia")).findByText("na base")).toBeInTheDocument();
+    expect(within(linhaDe("Saia")).getByText("R$ 42,90")).toBeInTheDocument();
+    expect(screen.getByText(/1 custo foi salvo/)).toBeInTheDocument();
+    await usuario.click(screen.getByRole("button", { name: "Reprocessar fechamento" }));
+    expect(onReprocessar).toHaveBeenCalled();
+  });
+
+  it("clicar no '+ Custo' e digitar não expande a linha", async () => {
+    redeDaBase();
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa {...props} />);
+    await usuario.click(await within(linhaDe("Saia")).findByRole("button", { name: "+ Custo" }));
+    await usuario.type(screen.getByRole("textbox", { name: /Custo do produto/ }), "1 ");
+    expect(linhaDe("Saia")).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("Esc cancela sem gravar; valor inválido não grava", async () => {
+    redeDaBase();
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa {...props} />);
+    await usuario.click(await within(linhaDe("Saia")).findByRole("button", { name: "+ Custo" }));
+    await usuario.type(screen.getByRole("textbox", { name: /Custo do produto/ }), "0{Enter}");
+    expect(screen.getByRole("alert")).toHaveTextContent("maior que zero");
+    await usuario.keyboard("{Escape}");
+    expect(within(linhaDe("Saia")).getByRole("button", { name: "+ Custo" })).toBeInTheDocument();
+    expect(upserts()).toHaveLength(0);
+  });
+
+  it("erro do servidor fica na célula e não marca como salvo", async () => {
+    rede.requisitar.mockImplementation(async (caminho) => {
+      if (caminho === "/bases/base-zenite") return baseCom();
+      if (caminho.endsWith("/custos/upsert")) throw new Error("Sem permissão nesta base.");
+      return { ok: true, miniaturas: {} };
+    });
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa {...props} />);
+    await usuario.click(await within(linhaDe("Saia")).findByRole("button", { name: "+ Custo" }));
+    await usuario.type(screen.getByRole("textbox", { name: /Custo do produto/ }), "10{Enter}");
+    expect(await screen.findByRole("alert")).toHaveTextContent("Sem permissão nesta base.");
+    expect(screen.queryByText("na base")).not.toBeInTheDocument();
+  });
+
+  it("base com 2 registros do mesmo MLB: '+ Custo' leva às Pendências em vez de abrir o campo", async () => {
+    redeDaBase({
+      a: { produto_id: "MLB3", sku: "S-1", custo_produto: 10 },
+      b: { produto_id: "MLB3", sku: "S-2", custo_produto: 12 },
+    });
+    const onAbrirPendencias = vi.fn();
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa {...props} onAbrirPendencias={onAbrirPendencias} />);
+    await usuario.click(await within(linhaDe("Saia")).findByRole("button", { name: "+ Custo" }));
+    expect(onAbrirPendencias).toHaveBeenCalled();
+    expect(screen.queryByRole("textbox", { name: /Custo do produto/ })).not.toBeInTheDocument();
+  });
+
+  it("sem Pendências disponíveis (fechamento salvo): o '+ Custo' bloqueado explica o motivo na linha", async () => {
+    redeDaBase({
+      a: { produto_id: "MLB3", sku: "S-1", custo_produto: 10 },
+      b: { produto_id: "MLB3", sku: "S-2", custo_produto: 12 },
+    });
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa {...props} />);
+    await usuario.click(await within(linhaDe("Saia")).findByRole("button", { name: "+ Custo" }));
+    expect(screen.getByText(/Custo não pode ser cadastrado por aqui/)).toBeInTheDocument();
+    expect(screen.getByText(/2 registros para MLB3/)).toBeInTheDocument();
+  });
+
+  it("Shopee: grava Item + Model da venda", async () => {
+    const linhasShopee = normalizarLinhas([
+      { ID: "123", "ID Model": "456", "Nome do Produto": "Perfume", "Vendas (Pedido pago) (BRL)": 50, "Cobertura de custo": "sem custo", LC: null, MC: null },
+    ]);
+    redeDaBase();
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa {...props} linhas={linhasShopee} marketplace="shopee" />);
+    const linha = (await screen.findAllByRole("button", { name: "+ Custo" }))[0];
+    await usuario.click(linha);
+    await usuario.type(screen.getByRole("textbox", { name: /Custo do produto/ }), "20{Enter}");
+    await waitFor(() => expect(upserts()).toHaveLength(1));
+    expect(upserts()[0][1].body).toMatchObject({ produto_id: "123", id_model: "456", custo_produto: 20 });
+  });
+});

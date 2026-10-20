@@ -13,7 +13,7 @@
   <!-- 2. Fundação Global V2 (tokens → componentes → página) -->
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
-  <link rel="stylesheet" href="css/pages/bases-v2.css">
+  <link rel="stylesheet" href="css/pages/bases-v2.css?v=20261020-1">
   <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
 </head>
@@ -33,54 +33,22 @@
             <div class="vf-page-header__main">
               <p class="vf-page-header__eyebrow">Operação</p>
               <h1 class="vf-page-header__title">Bases de Custo</h1>
-              <p class="vf-page-header__description">Gerencie custos por cliente, marketplace e produto.</p>
+              <p class="vf-page-header__description">Custo, imposto e taxa por produto de cada conta conectada.</p>
             </div>
             <div class="vf-page-header__actions">
               <!-- Ajuste manual direto ainda não implementado — oculto até a próxima rodada.
                    display:none inline vence o .vf-btn{display:inline-flex} (o atributo hidden não). -->
               <button type="button" class="vf-btn vf-btn--secondary" id="btn-ajuste-manual" disabled
                       style="display:none;" title="Ajuste manual direto chega na próxima rodada">Ajuste manual</button>
+              <button type="button" class="vf-btn vf-btn--secondary vf-btn--icon" id="bases-refresh" title="Atualizar" aria-label="Atualizar">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+              </button>
               <button type="button" class="vf-btn vf-btn--primary" id="btn-abrir-importar">Importar nova base</button>
             </div>
           </header>
 
           <!-- Feedback de página (preserva id) -->
           <div id="bases-feedback" class="vf-banner" role="status" style="display:none;" aria-live="polite"></div>
-
-          <!-- 3. KPIs -->
-          <section class="vf-section" aria-label="Resumo das bases">
-            <p class="vf-page-header__eyebrow vf-bases-kpi-scope"><span id="bases-kpi-scope">Totais gerais</span></p>
-            <div class="vf-kpi-grid" id="bases-summary"></div>
-          </section>
-
-          <!-- 4. TOOLBAR -->
-          <section class="vf-toolbar">
-            <div class="vf-toolbar__filters">
-              <input type="text" id="bases-busca" class="vf-input vf-search" placeholder="Buscar por base, cliente, conta ou ID externo…" autocomplete="off">
-              <button type="button" class="vf-btn vf-btn--secondary vf-btn--icon" id="bases-refresh" title="Atualizar lista" aria-label="Atualizar lista">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <polyline points="23 4 23 10 17 10"/>
-                  <polyline points="1 20 1 14 7 14"/>
-                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                </svg>
-              </button>
-            </div>
-            <div class="vf-toolbar__actions">
-              <label class="vf-filter-group">
-                <span class="vf-filter-group__label">Ordenar</span>
-                <select class="vf-select vf-select--sm" id="bases-sort">
-                  <option value="attention">Atenção primeiro</option>
-                  <option value="oldest">Mais antigas</option>
-                  <option value="newest">Mais recentes</option>
-                  <option value="az">A-Z</option>
-                </select>
-              </label>
-              <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" id="bases-limpar-filtros" style="display:none;">Limpar filtros</button>
-            </div>
-          </section>
-
-          <!-- Chips de filtros ativos -->
-          <div class="vf-active-filters" id="bases-chips"></div>
 
           <!-- 5+6. CONTEÚDO / SEÇÕES -->
           <div id="bases-content">
@@ -90,85 +58,106 @@
             </div>
 
             <div id="state-sections" style="display:none;">
+              <!-- Modelo B (Clientes e Contas): lista de clientes à esquerda e, à
+                   direita, um cartão por conta conectada com a base vinculada. Conta
+                   conectada sem base aparece tracejada — é onde a margem não calcula.
+                   Os itens da base escolhida abrem logo abaixo, no mesmo painel. -->
+              <div class="vf-bases-layout">
+                <aside class="vf-bases-clientes" aria-label="Clientes">
+                  <div class="vf-bases-clientes__topo">
+                    <input type="search" id="bases-busca" class="vf-input vf-search" placeholder="Buscar cliente, conta ou base…" autocomplete="off" aria-label="Buscar cliente, conta ou base">
+                    <div class="vf-bases-seg" role="group" aria-label="Filtrar clientes">
+                      <button type="button" data-cli-filtro="" aria-pressed="true">Todos <span class="vf-bases-seg__n" id="bases-n-todos">0</span></button>
+                      <button type="button" data-cli-filtro="pendencia" aria-pressed="false">Com pendência <span class="vf-bases-seg__n" id="bases-n-pendencia">0</span></button>
+                    </div>
+                  </div>
+                  <div class="vf-bases-clientes__lista" id="bases-clientes-lista" role="listbox" aria-label="Clientes"></div>
+                </aside>
 
-              <div class="vf-bases-market-grid">
-                <!-- MERCADO LIVRE -->
-                <section class="vf-section vf-bases-mp">
-                  <div class="vf-section__header">
-                    <h2 class="vf-section__title vf-bases-mp__title">
-                      <span class="vf-bases-mp__dot vf-bases-mp__dot--meli"></span>Mercado Livre
-                    </h2>
-                    <span class="vf-bases-mp__count"><span id="count-meli">0</span> bases</span>
-                  </div>
-                  <div class="vf-table-wrap" id="wrap-meli">
-                    <table class="vf-table vf-table--compact">
-                      <thead>
-                        <tr>
-                          <th>Cliente / Conta</th>
-                          <th>Base oficial</th>
-                          <th>Status</th>
-                          <th><span class="vf-visually-hidden">Ações</span></th>
-                        </tr>
-                      </thead>
-                      <tbody id="bases-tbody-meli"></tbody>
-                    </table>
-                  </div>
-                  <div id="empty-meli" class="vf-bases-empty-msg" style="display:none;">Nenhuma base de Mercado Livre para os filtros atuais.</div>
+                <section class="vf-bases-painel" id="bases-painel" aria-labelledby="bases-painel-titulo">
+                  <div class="vf-bases-painel__head" id="bases-painel-head"></div>
+                  <div class="vf-bases-contas" id="bases-contas"></div>
+
+                  <!-- Itens da base escolhida (era o drawer "Base de custos"). Os ids
+                       ficaram os mesmos: edição, adicionar item e planilha seguem iguais. -->
+                  <section class="vf-bases-itens" id="bases-drawer" aria-labelledby="bases-drawer-title" hidden>
+                    <div class="vf-bases-itens__head">
+                      <div class="vf-bases-itens__id">
+                        <span id="bases-drawer-logo"></span>
+                        <div>
+                          <p class="vf-page-header__eyebrow">Itens da base</p>
+                          <h3 class="vf-bases-itens__title" id="bases-drawer-title">—</h3>
+                          <div class="vf-bases-drawer-meta" id="bases-drawer-meta"></div>
+                        </div>
+                      </div>
+                      <div class="vf-bases-drawer-actions">
+                        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" id="bases-drawer-planilha">Atualizar por planilha</button>
+                        <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" id="bases-drawer-add">+ Adicionar item</button>
+                      </div>
+                    </div>
+
+                    <!-- Painel de edição/adição de item ou atualização por planilha (render via JS) -->
+                    <div class="vf-bases-cost-panel" id="bases-cost-panel" style="display:none;"></div>
+
+                    <div class="vf-bases-itens__body" id="bases-drawer-body">
+                      <!-- Cabeçalho estático (sempre no DOM) — os filtros ficam nos próprios headers, estilo Excel -->
+                      <table class="vf-table vf-table--compact vf-bases-costs-table" id="bases-costs-table" style="display:none;">
+                        <thead>
+                          <tr>
+                            <th>
+                              <div class="b-th-filter-inline" id="cost-filter-wrap-produto">
+                                <span id="bases-costs-th-produto-label">Produto</span>
+                                <input type="search" id="cost-filter-produto" class="vf-input vf-input--sm" placeholder="Buscar..." autocomplete="off">
+                              </div>
+                            </th>
+                            <th id="bases-costs-th-idmodel" style="display:none;">ID Model</th>
+                            <!-- TikTok: a 1ª coluna passa a ser "ID" (product_id) e esta é o
+                                 "ID DO SKU" (sku_id da variação) — a chave do custo. -->
+                            <th id="bases-costs-th-sku" style="display:none;">ID DO SKU</th>
+                            <th class="num">
+                              <div class="b-th-filter-inline" id="cost-filter-wrap-custo">
+                                <span>Custo</span>
+                                <select id="cost-filter-custo" class="vf-select vf-select--sm">
+                                  <option value="todos">Todos</option>
+                                  <option value="zerado">Zerado</option>
+                                  <option value="preenchido">Preenchido</option>
+                                </select>
+                              </div>
+                            </th>
+                            <th class="num">
+                              <div class="b-th-filter-inline" id="cost-filter-wrap-imposto">
+                                <span>Imposto</span>
+                                <select id="cost-filter-imposto" class="vf-select vf-select--sm">
+                                  <option value="todos">Todos</option>
+                                  <option value="zerado">Zerado</option>
+                                  <option value="preenchido">Preenchido</option>
+                                </select>
+                              </div>
+                            </th>
+                            <th class="num" id="bases-costs-th-taxa">
+                              <div class="b-th-filter-inline" id="cost-filter-wrap-taxa">
+                                <span>Taxa fixa</span>
+                                <select id="cost-filter-taxa" class="vf-select vf-select--sm">
+                                  <option value="todos">Todos</option>
+                                  <option value="zerado">Zerada</option>
+                                  <option value="preenchido">Preenchida</option>
+                                </select>
+                              </div>
+                            </th>
+                            <th id="bases-costs-th-atualizacao" style="display:none;">Atualização</th>
+                            <th class="vf-bases-cost-actions"><span class="vf-visually-hidden">Ações</span></th>
+                          </tr>
+                        </thead>
+                        <tbody id="bases-costs-tbody"></tbody>
+                      </table>
+                      <div id="bases-drawer-state" style="display:none;text-align:center;padding:var(--vf-sp-8) var(--vf-sp-4);color:var(--vf-text-secondary);"></div>
+                    </div>
+                    <div class="vf-bases-drawer-footer">
+                      <span id="bases-drawer-count">—</span>
+                      <span class="vf-bases-hint" id="bases-drawer-hint">Clique no lápis de um item para editar, ou use “Adicionar item”.</span>
+                    </div>
+                  </section>
                 </section>
-
-                <!-- SHOPEE -->
-                <section class="vf-section vf-bases-mp">
-                  <div class="vf-section__header">
-                    <h2 class="vf-section__title vf-bases-mp__title">
-                      <span class="vf-bases-mp__dot vf-bases-mp__dot--shopee"></span>Shopee
-                    </h2>
-                    <span class="vf-bases-mp__count"><span id="count-shopee">0</span> bases</span>
-                  </div>
-                  <div class="vf-table-wrap" id="wrap-shopee">
-                    <table class="vf-table vf-table--compact">
-                      <thead>
-                        <tr>
-                          <th>Base</th>
-                          <th>Cliente / Conta</th>
-                          <th>Status</th>
-                          <th><span class="vf-visually-hidden">Ações</span></th>
-                        </tr>
-                      </thead>
-                      <tbody id="bases-tbody-shopee"></tbody>
-                    </table>
-                  </div>
-                  <div id="empty-shopee" class="vf-bases-empty-msg" style="display:none;">Nenhuma base de Shopee para os filtros atuais.</div>
-                </section>
-
-                <!-- TIKTOK SHOP -->
-                <section class="vf-section vf-bases-mp vf-bases-mp--tiktok">
-                  <div class="vf-section__header">
-                    <h2 class="vf-section__title vf-bases-mp__title">
-                      <span class="vf-bases-mp__dot vf-bases-mp__dot--tiktok"></span>TikTok Shop
-                    </h2>
-                    <span class="vf-bases-mp__count"><span id="count-tiktok">0</span> bases</span>
-                  </div>
-                  <div class="vf-table-wrap" id="wrap-tiktok">
-                    <table class="vf-table vf-table--compact">
-                      <thead>
-                        <tr>
-                          <th>Cliente</th>
-                          <th>Base oficial</th>
-                          <th>Status</th>
-                          <th><span class="vf-visually-hidden">Ações</span></th>
-                        </tr>
-                      </thead>
-                      <tbody id="bases-tbody-tiktok"></tbody>
-                    </table>
-                  </div>
-                  <div id="empty-tiktok" class="vf-bases-empty-msg" style="display:none;">Nenhuma base de TikTok Shop para os filtros atuais.</div>
-                </section>
-              </div>
-
-              <!-- Rodapé/status -->
-              <div class="vf-bases-datastate">
-                <span id="bases-count-footer"></span>
-                <span id="bases-count" class="vf-badge" style="display:none;">0</span>
               </div>
             </div>
 
@@ -350,85 +339,6 @@
     </div>
   </div>
 
-  <!-- ── DRAWER "BASE DE CUSTOS" (visualizar + editar/adicionar/planilha) ── -->
-  <div class="vf-drawer-backdrop" id="bases-drawer-backdrop"></div>
-  <aside class="vf-drawer" id="bases-drawer" role="dialog" aria-modal="true" aria-labelledby="bases-drawer-title">
-    <div class="vf-drawer__header">
-      <div>
-        <p class="vf-page-header__eyebrow">Base de custos</p>
-        <h3 class="vf-drawer__title" id="bases-drawer-title">—</h3>
-        <div class="vf-bases-drawer-meta" id="bases-drawer-meta"></div>
-      </div>
-      <button type="button" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" id="bases-drawer-close" aria-label="Fechar">✕</button>
-    </div>
-    <div class="vf-bases-drawer-toolbar">
-      <div class="vf-bases-drawer-actions">
-        <button type="button" class="vf-btn vf-btn--sm vf-btn--primary" id="bases-drawer-add">+ Adicionar item</button>
-        <button type="button" class="vf-btn vf-btn--sm vf-btn--secondary" id="bases-drawer-planilha">Atualizar por planilha</button>
-      </div>
-    </div>
-
-    <!-- Painel de edição/adição de item ou atualização por planilha (render via JS) -->
-    <div class="vf-bases-cost-panel" id="bases-cost-panel" style="display:none;"></div>
-
-    <div class="vf-drawer__body" id="bases-drawer-body">
-      <!-- Cabeçalho estático (sempre no DOM) — os filtros ficam nos próprios headers, estilo Excel -->
-      <table class="vf-table vf-table--compact vf-bases-costs-table" id="bases-costs-table" style="display:none;">
-        <thead>
-          <tr>
-            <th>
-              <div class="b-th-filter-inline" id="cost-filter-wrap-produto">
-                <span id="bases-costs-th-produto-label">Produto</span>
-                <input type="search" id="cost-filter-produto" class="vf-input vf-input--sm" placeholder="Buscar..." autocomplete="off">
-              </div>
-            </th>
-            <th id="bases-costs-th-idmodel" style="display:none;">ID Model</th>
-            <!-- TikTok: a 1ª coluna passa a ser "ID" (product_id) e esta é o
-                 "ID DO SKU" (sku_id da variação) — a chave do custo. -->
-            <th id="bases-costs-th-sku" style="display:none;">ID DO SKU</th>
-            <th class="num">
-              <div class="b-th-filter-inline" id="cost-filter-wrap-custo">
-                <span>Custo</span>
-                <select id="cost-filter-custo" class="vf-select vf-select--sm">
-                  <option value="todos">Todos</option>
-                  <option value="zerado">Zerado</option>
-                  <option value="preenchido">Preenchido</option>
-                </select>
-              </div>
-            </th>
-            <th class="num">
-              <div class="b-th-filter-inline" id="cost-filter-wrap-imposto">
-                <span>Imposto</span>
-                <select id="cost-filter-imposto" class="vf-select vf-select--sm">
-                  <option value="todos">Todos</option>
-                  <option value="zerado">Zerado</option>
-                  <option value="preenchido">Preenchido</option>
-                </select>
-              </div>
-            </th>
-            <th class="num" id="bases-costs-th-taxa">
-              <div class="b-th-filter-inline" id="cost-filter-wrap-taxa">
-                <span>Taxa fixa</span>
-                <select id="cost-filter-taxa" class="vf-select vf-select--sm">
-                  <option value="todos">Todos</option>
-                  <option value="zerado">Zerada</option>
-                  <option value="preenchido">Preenchida</option>
-                </select>
-              </div>
-            </th>
-            <th id="bases-costs-th-atualizacao" style="display:none;">Atualização</th>
-            <th class="vf-bases-cost-actions"><span class="vf-visually-hidden">Ações</span></th>
-          </tr>
-        </thead>
-        <tbody id="bases-costs-tbody"></tbody>
-      </table>
-      <div id="bases-drawer-state" style="display:none;text-align:center;padding:var(--vf-sp-8) var(--vf-sp-4);color:var(--vf-text-secondary);"></div>
-    </div>
-    <div class="vf-drawer__footer vf-bases-drawer-footer">
-      <span id="bases-drawer-count">—</span>
-      <span class="vf-bases-hint" id="bases-drawer-hint">Clique no lápis de um item para editar, ou use “Adicionar item”.</span>
-    </div>
-  </aside>
 
   <!-- ── MODAL PREVIEW (preservado) ── -->
   <div id="preview-overlay" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.45);align-items:center;justify-content:center;padding:1.5rem;">
@@ -533,6 +443,6 @@
   <script>window.initLayout = window.initLayout || function () {};</script>
   <!-- Confirmação e toast da Fundação V2 (VF.confirm / VF.toast) -->
   <script src="vf-ui.js"></script>
-  <script src="bases.js"></script>
+  <script src="bases.js?v=20261020-1"></script>
 </body>
 </html>

@@ -88,18 +88,17 @@ const stateLoading  = document.getElementById("state-loading");
 const stateSections = document.getElementById("state-sections");
 const stateEmpty    = document.getElementById("state-empty");
 const stateError    = document.getElementById("state-error");
-const basesCount    = document.getElementById("bases-count");
-const basesTbodyMeli   = document.getElementById("bases-tbody-meli");
-const basesTbodyShopee = document.getElementById("bases-tbody-shopee");
-const basesTbodyTiktok = document.getElementById("bases-tbody-tiktok");
 
 // ─── Estado (filtros frontend) ───
 let TODAS_BASES = [];
 let BASES_BUSCA = "";
-let BASES_FILTRO_MP = "";      // "", "meli", "shopee", "tiktok"
-let BASES_FILTRO_ATUAL = "";   // "", "atualizada", "desatualizada"
-let BASES_SORT = "attention";  // "attention", "oldest", "newest", "az"
-const BASES_ALERTAS_IGNORADOS = new Set(); // slugs com alerta de desatualização ignorado (visual/local, não persiste)
+let BASES_FILTRO_CLI = "";     // "" (todos) | "pendencia"
+let PORTFOLIO = [];            // GET /me/portfolio → clientes com contas
+let CARTEIRA = [];             // clientes montados (contas × bases) para a tela
+const IMAGENS_CLIENTE = new Map(); // clienteId → imagem (GET /cliente-imagens)
+let CLI_SEL = null;            // chave do cliente aberto no painel
+let BASE_SEL = null;           // slug da base com os itens abertos
+let BASES_CARREGADAS = false;  // depois da 1ª carga, recarregar não pisca o loading
 let CLIENTES_DISPONIVEIS = [];
 let CLIENTES_CARREGADOS = false;
 // Vincular/trocar conta da base é admin-only no backend (POST/DELETE
@@ -232,161 +231,6 @@ function formatarIdadeBase(base) {
   return `${dias} dias`;
 }
 
-function ordenarBases(bases) {
-  const arr = Array.isArray(bases) ? [...bases] : [];
-  const nomeOf = (b) => String(b?.nome || b?.slug || "").toLowerCase();
-  const tsOf = (b) => {
-    const t = getBaseTimestamp(b);
-    return t == null ? -Infinity : t;
-  };
-  const emAtencao = (b) => isBaseDesatualizada(b) && !BASES_ALERTAS_IGNORADOS.has(b?.slug || "");
-
-  switch (BASES_SORT) {
-    case "oldest":
-      return arr.sort((a, b) => tsOf(a) - tsOf(b));
-    case "newest":
-      return arr.sort((a, b) => tsOf(b) - tsOf(a));
-    case "az":
-      return arr.sort((a, b) => nomeOf(a).localeCompare(nomeOf(b)));
-    case "attention":
-    default:
-      return arr.sort((a, b) => {
-        const ea = emAtencao(a), eb = emAtencao(b);
-        if (ea !== eb) return ea ? -1 : 1;
-        return tsOf(a) - tsOf(b);
-      });
-  }
-}
-
-function hasFiltrosAtivos() {
-  return !!(String(BASES_BUSCA || "").trim() || BASES_FILTRO_MP || BASES_FILTRO_ATUAL);
-}
-
-function getBasesFiltradas() {
-  const termo = String(BASES_BUSCA || "").toLowerCase().trim();
-  return (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).filter((b) => {
-    if (BASES_FILTRO_MP && getBaseMarketplaceKey(b) !== BASES_FILTRO_MP) return false;
-    if (BASES_FILTRO_ATUAL === "atualizada" && isBaseDesatualizada(b)) return false;
-    if (BASES_FILTRO_ATUAL === "desatualizada" && !isBaseDesatualizada(b)) return false;
-    if (termo) {
-      const hay = `${b?.nome || ""} ${b?.slug || ""} ${getClienteTexto(b)}`.toLowerCase();
-      if (!hay.includes(termo)) return false;
-    }
-    return true;
-  });
-}
-
-function renderBasesSummary() {
-  const el = document.getElementById("bases-summary");
-  if (!el) return;
-  // Sem filtros: KPIs globais ("Totais gerais"). Com filtro ativo (busca,
-  // marketplace ou atualização), os seis KPIs refletem o conjunto filtrado
-  // — decisão pós-auditoria (achado P2 "KPIs permanecem globais e o escopo
-  // nunca muda"). O rótulo acompanha o mesmo estado.
-  const filtrosAtivos = hasFiltrosAtivos();
-  const scopeEl = document.getElementById("bases-kpi-scope");
-  if (scopeEl) scopeEl.textContent = filtrosAtivos ? "Refletindo filtros" : "Totais gerais";
-  const bases = filtrosAtivos ? getBasesFiltradas() : (Array.isArray(TODAS_BASES) ? TODAS_BASES : []);
-  const total = bases.length;
-  const meli = bases.filter((b) => getBaseMarketplaceKey(b) === "meli").length;
-  const shopee = bases.filter((b) => getBaseMarketplaceKey(b) === "shopee").length;
-  const tiktok = bases.filter((b) => getBaseMarketplaceKey(b) === "tiktok").length;
-  const desatualizadas = bases.filter((b) => isBaseDesatualizada(b)).length;
-  const atualizadas = total - desatualizadas;
-
-  const cards = [
-    { label: "Total de bases", value: String(total) },
-    { label: "Mercado Livre", value: String(meli), filtro: { tipo: "mp", valor: "meli" } },
-    { label: "Shopee", value: String(shopee), filtro: { tipo: "mp", valor: "shopee" } },
-    { label: "TikTok Shop", value: String(tiktok), filtro: { tipo: "mp", valor: "tiktok" } },
-    { label: "Atualizadas", value: String(atualizadas), filtro: { tipo: "at", valor: "atualizada" } },
-    { label: "Desatualizadas +30d", value: String(desatualizadas), warning: true, filtro: { tipo: "at", valor: "desatualizada" } },
-  ];
-
-  el.innerHTML = cards.map((c) => {
-    const isAction = !!c.filtro;
-    const active = isAction && (
-      (c.filtro.tipo === "mp" && BASES_FILTRO_MP === c.filtro.valor) ||
-      (c.filtro.tipo === "at" && BASES_FILTRO_ATUAL === c.filtro.valor)
-    );
-    const cls = ["vf-kpi"];
-    if (c.warning) cls.push("vf-kpi--warning");
-    if (isAction) cls.push("vf-kpi--interactive");
-    if (active) cls.push("is-active");
-    const foot = c.foot ? `<span class="vf-kpi__foot">${escapeHTML(c.foot)}</span>` : "";
-    const inner = `
-      <span class="vf-kpi__label">${escapeHTML(c.label)}</span>
-      <span class="vf-kpi__value">${escapeHTML(c.value)}</span>
-      ${foot}`;
-    // KPIs clicáveis são <button> reais (teclado nativo); os demais, <div>.
-    return isAction
-      ? `<button type="button" class="${cls.join(" ")}" data-kpi-tipo="${c.filtro.tipo}" data-kpi-valor="${c.filtro.valor}">${inner}</button>`
-      : `<div class="${cls.join(" ")}">${inner}</div>`;
-  }).join("");
-}
-
-function renderChipsFiltros() {
-  const el = document.getElementById("bases-chips");
-  if (!el) return;
-  const chips = [];
-  if (BASES_FILTRO_MP) chips.push({ label: `Marketplace: ${marketplaceLabel(BASES_FILTRO_MP)}`, tipo: "mp" });
-  if (BASES_FILTRO_ATUAL) chips.push({ label: BASES_FILTRO_ATUAL === "desatualizada" ? "Desatualizadas +30d" : "Atualizadas", tipo: "at" });
-  const termo = String(BASES_BUSCA || "").trim();
-  if (termo) chips.push({ label: `Busca: "${termo}"`, tipo: "busca" });
-
-  el.innerHTML = chips.map((c) =>
-    `<span class="vf-active-filter">${escapeHTML(c.label)} <button type="button" class="vf-active-filter__remove" data-chip-remove="${c.tipo}" aria-label="Remover filtro">✕</button></span>`
-  ).join("");
-
-  el.querySelectorAll("[data-chip-remove]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const t = btn.dataset.chipRemove;
-      if (t === "mp") BASES_FILTRO_MP = "";
-      else if (t === "at") BASES_FILTRO_ATUAL = "";
-      else if (t === "busca") { BASES_BUSCA = ""; const bi = document.getElementById("bases-busca"); if (bi) bi.value = ""; }
-      aplicarFiltros();
-    });
-  });
-}
-
-function sincronizarControlesFiltro() {
-  const mpSel = document.getElementById("bases-filtro-marketplace");
-  const atSel = document.getElementById("bases-filtro-atualizacao");
-  if (mpSel && mpSel.value !== BASES_FILTRO_MP) mpSel.value = BASES_FILTRO_MP;
-  if (atSel && atSel.value !== BASES_FILTRO_ATUAL) atSel.value = BASES_FILTRO_ATUAL;
-  const sortSel = document.getElementById("bases-sort");
-  if (sortSel && sortSel.value !== BASES_SORT) sortSel.value = BASES_SORT;
-  const limpar = document.getElementById("bases-limpar-filtros");
-  if (limpar) limpar.style.display = hasFiltrosAtivos() ? "" : "none";
-}
-
-function aplicarFiltros() {
-  renderBasesTela();
-}
-
-function limparFiltros() {
-  BASES_BUSCA = "";
-  BASES_FILTRO_MP = "";
-  BASES_FILTRO_ATUAL = "";
-  const busca = document.getElementById("bases-busca");
-  if (busca) busca.value = "";
-  aplicarFiltros();
-}
-
-function aplicarKpiFiltro(tipo, valor) {
-  if (tipo === "mp") BASES_FILTRO_MP = (BASES_FILTRO_MP === valor) ? "" : valor;
-  else if (tipo === "at") BASES_FILTRO_ATUAL = (BASES_FILTRO_ATUAL === valor) ? "" : valor;
-  aplicarFiltros();
-}
-
-function atualizarRodape(exibidas, total) {
-  const el = document.getElementById("bases-count-footer");
-  if (!el) return;
-  if (!total) { el.textContent = ""; return; }
-  const filtro = hasFiltrosAtivos() ? " · filtros ativos" : "";
-  el.textContent = `Exibindo ${exibidas} de ${total} base${total !== 1 ? "s" : ""}${filtro}`;
-}
-
 function abrirModalExcluirBase({ slug, nome, btn }) {
   const modal = document.getElementById("vf-excluir-base-modal");
   const sub = document.getElementById("vf-excluir-base-subtitle");
@@ -451,7 +295,6 @@ function showSections() {
 function showEmpty() {
   stateEmpty.style.display    = "block";
   stateLoading.style.display  = stateSections.style.display = stateError.style.display = "none";
-  basesCount.style.display    = "none";
 }
 function showError(msg) {
   stateError.style.display    = "block";
@@ -563,28 +406,376 @@ async function carregarVinculosComplementares() {
   return Array.isArray(data?.bases) ? data.bases : [];
 }
 
+// ─── Carteira (cliente → contas → base) ───
+// A tela é organizada por cliente, como Clientes e Contas: à esquerda a
+// lista de clientes; à direita, um cartão por conta conectada com a base
+// vinculada a ela. Conta conectada sem base vira cartão tracejado — é onde
+// a margem dos anúncios não calcula. Bases sem vínculo ficam juntas em
+// "Bases sem cliente", para nunca sumirem da tela.
+const MP_LOGOS = {
+  meli: "assets/marketplaces/mercado-livre.svg",
+  shopee: "assets/marketplaces/shopee.svg",
+  tiktok: "assets/marketplaces/tiktok-shop.svg",
+};
+const MP_ORDEM = { meli: 0, shopee: 1, tiktok: 2 };
+const CHAVE_SEM_CLIENTE = "sem-cliente";
+
+function logoMarketplace(mp, tamanho = "md") {
+  const key = normalizarMarketplaceKey(mp);
+  const label = escapeHTML(marketplaceLabel(key));
+  const src = MP_LOGOS[key];
+  if (!src) return `<span class="vf-bases-logo vf-bases-logo--${tamanho} is-outro" title="${label}" aria-hidden="true">?</span>`;
+  return `<span class="vf-bases-logo vf-bases-logo--${tamanho}" title="${label}"><img src="${src}" alt="${label}"></span>`;
+}
+
+function iniciaisCliente(nome) {
+  const partes = String(nome || "").trim().split(/\s+/).filter(Boolean);
+  if (!partes.length) return "?";
+  const a = partes[0][0] || "";
+  const b = partes.length > 1 ? partes[partes.length - 1][0] : (partes[0][1] || "");
+  return (a + b).toUpperCase();
+}
+
+function avatarCliente(cli, grande = false) {
+  const cls = `vf-bases-avatar${grande ? " vf-bases-avatar--lg" : ""}`;
+  if (cli.semCliente) {
+    return `<span class="${cls} is-vazio" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg></span>`;
+  }
+  const img = cli.id != null ? IMAGENS_CLIENTE.get(Number(cli.id)) : null;
+  return img
+    ? `<span class="${cls} is-imagem" aria-hidden="true"><img src="${escapeHTML(img)}" alt=""></span>`
+    : `<span class="${cls}" aria-hidden="true">${escapeHTML(iniciaisCliente(cli.nome))}</span>`;
+}
+
+function fmtInt(n) {
+  return Number(n || 0).toLocaleString("pt-BR");
+}
+
+// Barra de cobertura: itens com custo sobre o total da base. Arredonda para
+// baixo enquanto faltar item, para 99,6% nunca aparecer como 100%.
+function coberturaHtml(cob) {
+  if (!cob) return `<div class="vf-bases-cov is-vazio"><span>Cobertura indisponível</span></div>`;
+  const pct = cob.total ? cob.comCusto / cob.total : 0;
+  const pctTxt = !cob.total ? "—" : `${cob.semCusto ? Math.floor(pct * 100) : 100}%`;
+  const cls = !cob.total ? "" : pct >= 0.95 ? "is-ok" : pct >= 0.8 ? "is-warning" : "is-danger";
+  return `<div class="vf-bases-cov">
+    <div class="vf-bases-cov__topo"><b>${pctTxt}</b><span>${fmtInt(cob.comCusto)} de ${fmtInt(cob.total)} com custo</span></div>
+    <div class="vf-bases-cov__barra"><i class="${cls}" style="width:${(pct * 100).toFixed(1)}%"></i></div>
+  </div>`;
+}
+
+function somarCobertura(bases) {
+  let total = 0, comCusto = 0, alguma = false;
+  bases.forEach((b) => {
+    const cob = getCoberturaBase(b);
+    if (!cob) return;
+    alguma = true;
+    total += cob.total;
+    comCusto += cob.comCusto;
+  });
+  return alguma ? { total, comCusto, semCusto: Math.max(0, total - comCusto) } : null;
+}
+
+function statusIdadeHtml(base) {
+  const dias = diasDesdeAtualizacao(base);
+  const texto = dias == null ? "Sem data" : dias === 0 ? "Atualizada hoje" : `Atualizada há ${dias} ${dias === 1 ? "dia" : "dias"}`;
+  return `<span class="vf-status ${isBaseDesatualizada(base) ? "is-warning" : "is-success"}">${escapeHTML(texto)}</span>`;
+}
+
+async function carregarPortfolio() {
+  try {
+    const res = await fetch(`${API_BASE}/me/portfolio`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    if (res.status === 401) { clearSession(); return; }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    PORTFOLIO = Array.isArray(data.clientes) ? data.clientes : [];
+  } catch (err) {
+    // Sem carteira a tela ainda funciona: os clientes vêm dos vínculos das
+    // bases. Só os cartões de "conta sem base" deixam de aparecer.
+    PORTFOLIO = [];
+  }
+}
+
+// Mesma rota de Clientes e Contas. Sem a rota (404) ou sem imagem, fica a sigla.
+async function carregarImagensClientes() {
+  try {
+    const res = await fetch(`${API_BASE}/cliente-imagens`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+    if (!res.ok) return;
+    const data = await res.json().catch(() => ({}));
+    IMAGENS_CLIENTE.clear();
+    (Array.isArray(data.imagens) ? data.imagens : []).forEach((i) => {
+      if (i && i.clienteId && i.imagem) IMAGENS_CLIENTE.set(Number(i.clienteId), i.imagem);
+    });
+  } catch (err) {
+    // Só identificação visual; sem imagem a sigla resolve.
+  }
+}
+
+// Casa contas e bases do cliente. Ordem: vínculo explícito da base com a
+// conta (cliente_conta_id) → base vinculada informada pela própria conta →
+// marketplace sem Fundação de Contas (TikTok), em que a base é do cliente.
+// Base que sobra vira cartão próprio ("Conta não definida"), nunca some.
+function montarCartoesCliente(cli) {
+  const restantes = [...cli.bases];
+  const tirar = (pred) => {
+    const i = restantes.findIndex(pred);
+    return i >= 0 ? restantes.splice(i, 1)[0] : null;
+  };
+  const cartoes = cli.contas.map((conta) => {
+    const mp = normalizarMarketplaceKey(conta.marketplace);
+    let base = tirar((b) => b?.vinculo?.cliente_conta_id != null && String(b.vinculo.cliente_conta_id) === String(conta.id));
+    if (!base && conta?.baseVinculada?.id != null) base = tirar((b) => String(b.id) === String(conta.baseVinculada.id));
+    if (!base && !marketplaceTemConta(mp)) base = tirar((b) => getBaseMarketplaceKey(b) === mp && !b?.vinculo?.cliente_conta_id);
+    return { mp, conta, base };
+  });
+  restantes.forEach((b) => cartoes.push({ mp: getBaseMarketplaceKey(b), conta: null, base: b }));
+  cartoes.sort((a, b) => (MP_ORDEM[a.mp] ?? 9) - (MP_ORDEM[b.mp] ?? 9));
+  const semBase = cartoes.filter((c) => c.conta && !c.base).length;
+  const desatualizadas = cartoes.filter((c) => c.base && isBaseDesatualizada(c.base)).length;
+  return {
+    ...cli,
+    cartoes,
+    semBase,
+    desatualizadas,
+    pendencia: !!cli.semCliente || semBase > 0 || desatualizadas > 0,
+  };
+}
+
+function montarCarteira() {
+  const clientes = new Map();
+  const chave = (id) => `c:${id}`;
+  (Array.isArray(PORTFOLIO) ? PORTFOLIO : []).forEach((c) => {
+    clientes.set(chave(c.id), {
+      key: chave(c.id),
+      id: c.id,
+      nome: c.nome || c.slug || "Cliente",
+      slug: c.slug || "",
+      squad: c.squad?.nome || null,
+      contas: (Array.isArray(c.contas) ? c.contas : []).filter((ct) => ct && ct.ativo !== false),
+      bases: [],
+    });
+  });
+  const semCliente = { key: CHAVE_SEM_CLIENTE, id: null, nome: "Bases sem cliente", slug: "", semCliente: true, squad: null, contas: [], bases: [] };
+  (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).forEach((b) => {
+    const cid = b?.vinculo?.cliente_id;
+    if (cid == null) { semCliente.bases.push(b); return; }
+    const k = chave(cid);
+    if (!clientes.has(k)) {
+      clientes.set(k, {
+        key: k,
+        id: cid,
+        nome: b.vinculo.cliente_nome || b.vinculo.cliente_slug || "Cliente",
+        slug: b.vinculo.cliente_slug || "",
+        squad: null,
+        contas: [],
+        bases: [],
+      });
+    }
+    clientes.get(k).bases.push(b);
+  });
+  const lista = [...clientes.values()]
+    .filter((c) => c.bases.length || c.contas.length)
+    .map(montarCartoesCliente)
+    .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  // Por último: é fila de pendência do admin, não um cliente.
+  if (semCliente.bases.length) lista.push(montarCartoesCliente(semCliente));
+  return lista;
+}
+
+function clientePassaBusca(cli, termo) {
+  if (!termo) return true;
+  const partes = [cli.nome, cli.slug];
+  cli.cartoes.forEach(({ conta, base }) => {
+    if (conta) partes.push(conta.nome, conta.external_account_id, conta.externalAccountLabel);
+    if (base) partes.push(base.nome, base.slug, getClienteTexto(base));
+  });
+  return partes.filter(Boolean).join(" ").toLowerCase().includes(termo);
+}
+
+function renderListaClientes() {
+  const el = document.getElementById("bases-clientes-lista");
+  if (!el) return [];
+  const termo = String(BASES_BUSCA || "").toLowerCase().trim();
+  const nTodos = document.getElementById("bases-n-todos");
+  const nPend = document.getElementById("bases-n-pendencia");
+  if (nTodos) nTodos.textContent = String(CARTEIRA.length);
+  if (nPend) nPend.textContent = String(CARTEIRA.filter((c) => c.pendencia).length);
+  document.querySelectorAll("[data-cli-filtro]").forEach((b) => {
+    b.setAttribute("aria-pressed", String((b.dataset.cliFiltro || "") === BASES_FILTRO_CLI));
+  });
+
+  const visiveis = CARTEIRA.filter((c) => clientePassaBusca(c, termo) && (!BASES_FILTRO_CLI || c.pendencia));
+  if (!visiveis.some((c) => c.key === CLI_SEL)) CLI_SEL = visiveis[0]?.key || null;
+
+  if (!visiveis.length) {
+    el.innerHTML = `<p class="vf-bases-clientes__vazio">Nenhum cliente para essa busca.</p>`;
+    return visiveis;
+  }
+  el.innerHTML = visiveis.map((c) => {
+    const mps = [...new Set(c.cartoes.map((x) => x.mp))].sort((a, b) => (MP_ORDEM[a] ?? 9) - (MP_ORDEM[b] ?? 9));
+    const nBases = c.cartoes.filter((x) => x.base).length;
+    const alertas = [];
+    if (c.semBase) alertas.push(`${c.semBase} ${c.semBase > 1 ? "contas" : "conta"} sem base`);
+    if (c.desatualizadas) alertas.push(`${c.desatualizadas} desatualizada${c.desatualizadas > 1 ? "s" : ""}`);
+    const sel = c.key === CLI_SEL;
+    return `<button type="button" class="vf-bases-cli${c.semCliente ? " is-sem-cliente" : ""}" role="option" aria-selected="${sel}" tabindex="${sel ? 0 : -1}" data-cli-key="${escapeHTML(c.key)}">
+      ${avatarCliente(c)}
+      <span class="vf-bases-cli__txt">
+        <span class="vf-bases-cli__nome">${escapeHTML(c.nome)}</span>
+        <span class="vf-bases-cli__meta">${mps.map((m) => logoMarketplace(m, "xs")).join("")}<span>${nBases} ${nBases === 1 ? "base" : "bases"}</span></span>
+      </span>
+      ${c.pendencia ? `<span class="vf-bases-cli__alerta" title="${escapeHTML(alertas.join(" · ") || "Bases sem cliente vinculado")}"><span class="vf-visually-hidden">Precisa de atenção</span></span>` : ""}
+    </button>`;
+  }).join("");
+  return visiveis;
+}
+
+function cartaoContaHtml(cli, { mp, conta, base }) {
+  const idConta = conta?.external_account_id ? ` · ID ${escapeHTML(String(conta.external_account_id))}` : "";
+  if (!base) {
+    return `<div class="vf-bases-conta is-vazia">
+      <div class="vf-bases-conta__h">${logoMarketplace(mp)}
+        <div class="vf-bases-conta__id"><b>${escapeHTML(conta.nome || "Conta")}</b><span>${escapeHTML(marketplaceLabel(mp))}${idConta}</span></div>
+      </div>
+      <p class="vf-bases-conta__aviso">Conta conectada sem base de custo. A margem dos anúncios desta conta não é calculada.</p>
+      <div><button type="button" class="vf-btn vf-btn--sm vf-btn--primary" data-import-mp="${escapeHTML(mp)}" data-import-cliente="${escapeHTML(String(cli.id ?? ""))}" data-import-conta="${escapeHTML(String(conta.id ?? ""))}">Importar planilha</button></div>
+    </div>`;
+  }
+  const v = base.vinculo || null;
+  let titulo, sub;
+  if (conta) {
+    titulo = conta.nome || v?.conta_nome || base.nome;
+    sub = `${escapeHTML(marketplaceLabel(mp))}${idConta}`;
+  } else if (v?.cliente_conta_id && v?.conta_nome) {
+    titulo = v.conta_nome;
+    sub = `${escapeHTML(marketplaceLabel(mp))}${v.external_account_id ? ` · ID ${escapeHTML(String(v.external_account_id))}` : ""}`;
+  } else if (cli.semCliente || !marketplaceTemConta(mp)) {
+    titulo = base.nome || base.slug;
+    sub = escapeHTML(marketplaceLabel(mp));
+  } else {
+    titulo = base.nome || base.slug;
+    sub = `${escapeHTML(marketplaceLabel(mp))} · <span class="is-warning">conta não definida</span>`;
+  }
+  const sel = String(base.slug) === String(BASE_SEL);
+  const inativa = base.ativo === false ? `<span class="vf-tag">Inativa</span>` : "";
+  return `<div class="vf-bases-conta${sel ? " is-selected" : ""}">
+    <div class="vf-bases-conta__h">${logoMarketplace(mp)}
+      <div class="vf-bases-conta__id">
+        <button type="button" class="vf-bases-conta__abrir" data-base-slug="${escapeHTML(base.slug || "")}" aria-pressed="${sel}">${escapeHTML(titulo)}</button>
+        <span>${sub}</span>
+      </div>
+      ${renderMenuBase(base)}
+    </div>
+    ${coberturaHtml(getCoberturaBase(base))}
+    <div class="vf-bases-conta__rodape"><span class="vf-bases-conta__base" title="Nome da base">${escapeHTML(base.nome || base.slug || "—")}</span>${inativa}${statusIdadeHtml(base)}</div>
+  </div>`;
+}
+
+function renderPainelCliente() {
+  const head = document.getElementById("bases-painel-head");
+  const contasEl = document.getElementById("bases-contas");
+  const itens = document.getElementById("bases-drawer");
+  if (!head || !contasEl) return;
+  const cli = CARTEIRA.find((c) => c.key === CLI_SEL);
+  if (!cli) {
+    head.innerHTML = "";
+    contasEl.innerHTML = `<p class="vf-bases-clientes__vazio">Escolha um cliente na lista.</p>`;
+    if (itens) itens.hidden = true;
+    DRAWER_SLUG = "";
+    return;
+  }
+
+  const bases = cli.cartoes.filter((c) => c.base).map((c) => c.base);
+  const partes = [];
+  if (cli.squad) partes.push(escapeHTML(cli.squad));
+  partes.push(`${bases.length} ${bases.length === 1 ? "base" : "bases"}`);
+  if (cli.semBase) partes.push(`<span class="is-warning">${cli.semBase} ${cli.semBase > 1 ? "contas" : "conta"} sem base</span>`);
+  else if (cli.contas.length) partes.push("todas as contas com base");
+  const descricao = cli.semCliente
+    ? (VINCULOS_EDITAVEIS
+        ? "Bases que ainda não estão ligadas a um cliente. Use ⋯ → Definir cliente/vínculo."
+        : "Bases que ainda não estão ligadas a um cliente. Peça a um admin para vincular.")
+    : partes.join(" · ");
+  head.innerHTML = `
+    <div class="vf-bases-painel__id">${avatarCliente(cli, true)}
+      <div><h2 class="vf-bases-painel__titulo" id="bases-painel-titulo">${escapeHTML(cli.nome)}</h2><p class="vf-bases-painel__desc">${descricao}</p></div>
+    </div>
+    ${bases.length ? `<div class="vf-bases-painel__cov">${coberturaHtml(somarCobertura(bases))}</div>` : ""}`;
+
+  if (!bases.some((b) => String(b.slug) === String(BASE_SEL))) BASE_SEL = bases[0]?.slug || null;
+  contasEl.innerHTML = cli.cartoes.length
+    ? cli.cartoes.map((c) => cartaoContaHtml(cli, c)).join("")
+    : `<p class="vf-bases-clientes__vazio">Este cliente ainda não tem conta conectada nem base.</p>`;
+  bindBaseRowActions(contasEl);
+
+  if (!BASE_SEL) {
+    if (itens) itens.hidden = true;
+    DRAWER_SLUG = "";
+    return;
+  }
+  if (String(DRAWER_SLUG) !== String(BASE_SEL) || (itens && itens.hidden)) {
+    const base = bases.find((b) => String(b.slug) === String(BASE_SEL));
+    abrirDrawerCustos(BASE_SEL, getBaseMarketplaceKey(base));
+  }
+}
+
+// ?cliente=<slug> abre direto no cliente (links de outras telas) e a URL
+// acompanha a escolha, para recarregar no mesmo lugar.
+function lerClienteDaUrl() {
+  try {
+    const slug = new URLSearchParams(location.search).get("cliente");
+    if (!slug) return;
+    const cli = CARTEIRA.find((c) => c.slug && c.slug === slug);
+    if (cli) CLI_SEL = cli.key;
+  } catch (err) { /* URL inválida: segue no primeiro cliente */ }
+}
+
+function gravarClienteNaUrl() {
+  try {
+    const cli = CARTEIRA.find((c) => c.key === CLI_SEL);
+    const url = new URL(location.href);
+    if (cli?.slug) url.searchParams.set("cliente", cli.slug);
+    else url.searchParams.delete("cliente");
+    history.replaceState(null, "", url);
+  } catch (err) { /* sem history: ignora */ }
+}
+
+function selecionarCliente(key) {
+  if (!key || key === CLI_SEL) return;
+  CLI_SEL = key;
+  BASE_SEL = null;
+  gravarClienteNaUrl();
+  renderBasesTela();
+}
+
 function renderBasesTela() {
-  sincronizarControlesFiltro();
-  renderChipsFiltros();
-  renderBasesSummary();
-  renderBases(ordenarBases(getBasesFiltradas()));
+  if (!(Array.isArray(TODAS_BASES) && TODAS_BASES.length) && !PORTFOLIO.length) {
+    showEmpty();
+    return;
+  }
+  CARTEIRA = montarCarteira();
+  renderListaClientes();
+  renderPainelCliente();
+  showSections();
 }
 
 async function loadBases() {
   if (!TOKEN) return;
-  showLoading();
+  if (!BASES_CARREGADAS) showLoading();
 
   let basesPrincipais = [];
   try {
-    basesPrincipais = await carregarBasesPrincipais();
-    if (!basesPrincipais) return;
-    TODAS_BASES = basesPrincipais;
-    renderBasesTela();
+    const [bases] = await Promise.all([carregarBasesPrincipais(), carregarPortfolio(), carregarImagensClientes()]);
+    if (!bases) return;
+    basesPrincipais = bases;
   } catch (err) {
     showError("Não foi possível carregar as bases. Tente novamente.");
     return;
   }
 
+  // O cliente de cada base vem dos vínculos: sem eles a tela agruparia tudo
+  // em "Bases sem cliente". Por isso desenha uma vez só, depois dos vínculos.
+  TODAS_BASES = basesPrincipais;
   try {
     const basesComVinculos = await carregarVinculosComplementares();
     if (!basesComVinculos) return;
@@ -593,40 +784,23 @@ async function loadBases() {
       setDashboardFeedback("");
       VINCULOS_AVISO_ATIVO = false;
     }
-    await carregarClientesParaVinculos(true);
-    renderBasesTela();
+    carregarClientesParaVinculos(true);
   } catch (err) {
     VINCULOS_AVISO_ATIVO = true;
-    setDashboardFeedback("Vínculos indisponíveis no momento. As bases continuam listadas normalmente.", "neutral");
+    setDashboardFeedback("Vínculos indisponíveis no momento. As bases aparecem em “Bases sem cliente” até recarregar.", "neutral");
   }
+  if (!BASES_CARREGADAS) {
+    CARTEIRA = montarCarteira();
+    lerClienteDaUrl();
+  }
+  BASES_CARREGADAS = true;
+  renderBasesTela();
 }
 
 // ─── Status de atualização (idade + alerta) ───
 const B_EDIT_SVG = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
 // Lápis compacto para editar item dentro do drawer de custos
 const B_EDIT_SM_SVG = `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
-
-function renderStatusTag(base) {
-  const idade = escapeHTML(formatarIdadeBase(base));
-  const slug = escapeHTML(base.slug || "");
-
-  if (!isBaseDesatualizada(base)) {
-    return `<div class="vf-bases-status">
-      <span class="vf-status is-success">${idade}</span>
-    </div>`;
-  }
-
-  const ignorada = BASES_ALERTAS_IGNORADOS.has(base.slug || "");
-  const statusCls = ignorada ? "is-neutral" : "is-warning";
-  const checked = ignorada ? "checked" : "";
-  return `<div class="vf-bases-status">
-    <span class="vf-status ${statusCls}">${idade}</span>
-    <label class="vf-check vf-bases-ignore">
-      <input type="checkbox" class="b-ignore-alert" data-slug="${slug}" ${checked}>
-      <span>Ignorar</span>
-    </label>
-  </div>`;
-}
 
 // ─── Menu "⋯" de ações secundárias ───
 function renderMenuBase(base) {
@@ -656,99 +830,6 @@ function renderMenuBase(base) {
         ${excluirItem}
       </div>
     </div>`;
-}
-
-// ─── Linha: Mercado Livre (Cliente/Conta → Base oficial) ───
-// Identidade Cliente → Conta na tabela: "Cliente X / ML 2" nunca é igual a
-// "Cliente X / ML 1" — achado P2 da auditoria (duas contas do mesmo cliente
-// ficavam visualmente indistinguíveis). Vínculo legado sem cliente_conta_id
-// (marketplace com Fundação de Contas) aparece como "Conta não definida",
-// nunca fingindo ser a conta certa.
-function identidadeVinculoCell(v, marketplace) {
-  if (!v) return `<div class="vf-bases-muted">Sem cliente vinculado</div>`;
-  const clienteNome = v.cliente_nome || v.cliente_slug || "—";
-  if (!marketplaceTemConta(marketplace)) {
-    return `<div class="vf-bases-cliente"><strong>${escapeHTML(clienteNome)}</strong></div>`;
-  }
-  if (v.cliente_conta_id && v.conta_nome) {
-    const externo = v.external_account_id
-      ? `<div class="vf-bases-muted" style="font-size:.78rem;">ID: ${escapeHTML(String(v.external_account_id))}</div>`
-      : "";
-    return `<div class="vf-bases-cliente"><strong>${escapeHTML(clienteNome)} / ${escapeHTML(v.conta_nome)}</strong></div>${externo}`;
-  }
-  return `<div class="vf-bases-cliente"><strong>${escapeHTML(clienteNome)}</strong></div><div class="vf-bases-muted" style="font-size:.78rem;">Conta não definida</div>`;
-}
-
-function buildMeliRow(base) {
-  const tr = document.createElement("tr");
-  const v = base?.vinculo;
-  const clienteCell = identidadeVinculoCell(v, "meli");
-  tr.innerHTML = `
-    <td>${clienteCell}</td>
-    <td>
-      <div class="vf-bases-basename"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
-    </td>
-    <td>${renderStatusTag(base)}</td>
-    <td>
-      <div class="vf-bases-row-actions">
-        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="meli" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
-        ${renderMenuBase(base)}
-      </div>
-    </td>`;
-  return tr;
-}
-
-// ─── Linha: TikTok Shop (Cliente → Base oficial + cobertura) ───
-function buildTiktokRow(base) {
-  const tr = document.createElement("tr");
-  const v = base?.vinculo;
-  const clienteCell = v
-    ? `<div class="vf-bases-cliente"><strong>${escapeHTML(v.cliente_nome || v.cliente_slug || "—")}</strong></div>`
-    : `<div class="vf-bases-muted">Sem cliente vinculado</div>`;
-
-  // Cobertura: total de SKUs / com custo / sem custo (custo explícito 0 conta
-  // como preenchido; "sem custo" é custo ausente).
-  const cob = getCoberturaBase(base);
-  const coberturaCell = cob
-    ? `<div class="vf-bases-muted vf-bases-cobertura">${cob.total} SKU${cob.total !== 1 ? "s" : ""} · ${cob.comCusto} com custo${cob.semCusto ? ` · ${cob.semCusto} sem custo` : ""}</div>`
-    : "";
-
-  tr.innerHTML = `
-    <td>${clienteCell}</td>
-    <td>
-      <div class="vf-bases-basename"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
-      ${coberturaCell}
-    </td>
-    <td>${renderStatusTag(base)}</td>
-    <td>
-      <div class="vf-bases-row-actions">
-        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="tiktok" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
-        ${renderMenuBase(base)}
-      </div>
-    </td>`;
-  return tr;
-}
-
-// ─── Linha: Shopee (Base + Loja/apelido) ───
-function buildShopeeRow(base) {
-  const tr = document.createElement("tr");
-  const v = base?.vinculo;
-  // A célula mostra a cliente_conta (identidade real da loja Shopee), não
-  // o nome do cliente disfarçado de "Loja/apelido" (achado P2 da auditoria).
-  const lojaCell = v ? identidadeVinculoCell(v, "shopee") : `<span class="vf-bases-muted">—</span>`;
-  tr.innerHTML = `
-    <td>
-      <div class="vf-bases-basename"><span class="name-text">${escapeHTML(base.nome || "—")}</span></div>
-    </td>
-    <td>${lojaCell}</td>
-    <td>${renderStatusTag(base)}</td>
-    <td>
-      <div class="vf-bases-row-actions">
-        <button class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm b-btn-editar-base" data-slug="${escapeHTML(base.slug || "")}" data-mp="shopee" title="Abrir e editar custos" aria-label="Abrir e editar custos">${B_EDIT_SVG}</button>
-        ${renderMenuBase(base)}
-      </div>
-    </td>`;
-  return tr;
 }
 
 // ─── Menu dropdown "⋯" (ações secundárias) ───
@@ -781,68 +862,12 @@ function bindBaseRowActions(tbody) {
   tbody.querySelectorAll(".vf-btn-remover-vinculo").forEach(btn => {
     btn.addEventListener("click", () => removerVinculoBase(btn.dataset.baseId, btn));
   });
-  tbody.querySelectorAll(".b-btn-editar-base").forEach(btn => {
-    btn.addEventListener("click", () => abrirDrawerCustos(btn.dataset.slug, btn.dataset.mp, btn));
-  });
   tbody.querySelectorAll(".b-menu-trigger").forEach(btn => {
     btn.addEventListener("click", (e) => { e.stopPropagation(); toggleRowMenu(btn); });
   });
   tbody.querySelectorAll(".vf-menu__item").forEach(item => {
     item.addEventListener("click", () => fecharTodosMenus());
   });
-  tbody.querySelectorAll(".b-ignore-alert").forEach((input) => {
-    input.addEventListener("change", () => {
-      const slug = input.dataset.slug;
-      if (!slug) return;
-      if (input.checked) BASES_ALERTAS_IGNORADOS.add(slug);
-      else BASES_ALERTAS_IGNORADOS.delete(slug);
-      renderBasesTela();
-    });
-  });
-}
-
-function renderBases(bases) {
-  basesTbodyMeli.innerHTML   = "";
-  basesTbodyShopee.innerHTML = "";
-  if (basesTbodyTiktok) basesTbodyTiktok.innerHTML = "";
-
-  // Sem nenhuma base cadastrada (primeiro uso) → estado vazio dedicado
-  if (!(Array.isArray(TODAS_BASES) && TODAS_BASES.length)) {
-    atualizarRodape(0, 0);
-    showEmpty();
-    return;
-  }
-
-  const meli   = bases.filter((b) => getBaseMarketplaceKey(b) === "meli");
-  const shopee = bases.filter((b) => getBaseMarketplaceKey(b) === "shopee");
-  const tiktok = bases.filter((b) => getBaseMarketplaceKey(b) === "tiktok");
-
-  meli.forEach((base)   => basesTbodyMeli.appendChild(buildMeliRow(base)));
-  shopee.forEach((base) => basesTbodyShopee.appendChild(buildShopeeRow(base)));
-  if (basesTbodyTiktok) tiktok.forEach((base) => basesTbodyTiktok.appendChild(buildTiktokRow(base)));
-
-  document.getElementById("count-meli").textContent    = String(meli.length);
-  document.getElementById("count-shopee").textContent  = String(shopee.length);
-  document.getElementById("wrap-meli").style.display    = meli.length   ? "" : "none";
-  document.getElementById("wrap-shopee").style.display  = shopee.length ? "" : "none";
-  document.getElementById("empty-meli").style.display   = meli.length   ? "none" : "block";
-  document.getElementById("empty-shopee").style.display = shopee.length ? "none" : "block";
-
-  const countTiktok = document.getElementById("count-tiktok");
-  const wrapTiktok  = document.getElementById("wrap-tiktok");
-  const emptyTiktok = document.getElementById("empty-tiktok");
-  if (countTiktok) countTiktok.textContent = String(tiktok.length);
-  if (wrapTiktok)  wrapTiktok.style.display  = tiktok.length ? "" : "none";
-  if (emptyTiktok) emptyTiktok.style.display = tiktok.length ? "none" : "block";
-
-  basesCount.textContent = String(bases.length);
-
-  bindBaseRowActions(basesTbodyMeli);
-  bindBaseRowActions(basesTbodyShopee);
-  if (basesTbodyTiktok) bindBaseRowActions(basesTbodyTiktok);
-
-  atualizarRodape(bases.length, TODAS_BASES.length);
-  showSections();
 }
 
 async function deleteBase(slug, btn) {
@@ -1143,7 +1168,9 @@ document.getElementById("import-arquivo").addEventListener("change", (e) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // ─── MODAL "IMPORTAR NOVA BASE" ────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
-function abrirModalImportar(mp, nomePrefill) {
+// opts.clienteId / opts.contaId: atalho do cartão "conta sem base" — já
+// chega com cliente e conta escolhidos (o usuário ainda vê e pode trocar).
+function abrirModalImportar(mp, nomePrefill, opts = {}) {
   const backdrop = document.getElementById("bases-import-backdrop");
   if (!backdrop) return;
   const collapse = document.getElementById("bases-assist-collapse");
@@ -1158,7 +1185,15 @@ function abrirModalImportar(mp, nomePrefill) {
     if (nomeEl) nomeEl.value = nomePrefill;
   }
   onImportMarketplaceChange();
-  popularClientesImport().then(() => popularContasImport());
+  popularClientesImport().then(() => {
+    const cliSel = document.getElementById("import-cliente");
+    if (cliSel && opts.clienteId) cliSel.value = String(opts.clienteId);
+    return popularContasImport();
+  }).then(() => {
+    const contaSel = document.getElementById("import-conta");
+    if (contaSel && opts.contaId) contaSel.value = String(opts.contaId);
+    atualizarBotaoImportarDisabled();
+  });
   backdrop.classList.add("is-open");
 }
 
@@ -1548,7 +1583,6 @@ let DRAWER_FILTROS = { produto: "", custo: "todos", imposto: "todos", taxa: "tod
 // Chave única do marketplace da base aberta ("meli" | "shopee" | "tiktok").
 // Substitui as flags booleanas por marketplace.
 let DRAWER_MARKETPLACE = "meli";
-let DRAWER_BTN_ORIGEM = null;
 let DRAWER_SLUG = "";
 let DRAWER_BASE_ATUAL = null;       // objeto da base aberta no drawer
 let DRAWER_ITEM_EDITANDO = null;    // item em edição (null = adicionar/planilha)
@@ -1558,16 +1592,10 @@ let PLANILHA_STATE = null;
 const DRAWER_LIMITE = 500;
 const PLANILHA_PREVIEW_LIMITE = 300;
 
+// Os itens da base escolhida moram no painel do cliente (era um drawer).
 function abrirDrawer() {
-  document.getElementById("bases-drawer-backdrop")?.classList.add("is-open");
-  document.getElementById("bases-drawer")?.classList.add("is-open");
-}
-function fecharDrawer() {
-  fecharPainelCusto();
-  document.getElementById("bases-drawer-backdrop")?.classList.remove("is-open");
-  document.getElementById("bases-drawer")?.classList.remove("is-open");
-  if (DRAWER_BTN_ORIGEM && typeof DRAWER_BTN_ORIGEM.focus === "function") DRAWER_BTN_ORIGEM.focus();
-  DRAWER_BTN_ORIGEM = null;
+  const el = document.getElementById("bases-drawer");
+  if (el) el.hidden = false;
 }
 
 function setDrawerHint(msg, tipo) {
@@ -1581,10 +1609,9 @@ function setDrawerHint(msg, tipo) {
 function drawerEhShopee() { return DRAWER_MARKETPLACE === "shopee"; }
 function drawerEhTiktok() { return DRAWER_MARKETPLACE === "tiktok"; }
 
-function abrirDrawerCustos(slug, mp, btnOrigem) {
+function abrirDrawerCustos(slug, mp) {
   DRAWER_SLUG = slug || "";
   DRAWER_MARKETPLACE = normalizarMarketplaceKey(mp);
-  DRAWER_BTN_ORIGEM = btnOrigem || null;
   DRAWER_ITENS = [];
   resetarFiltrosDrawer();
   fecharPainelCusto();
@@ -1593,6 +1620,8 @@ function abrirDrawerCustos(slug, mp, btnOrigem) {
   const base = (Array.isArray(TODAS_BASES) ? TODAS_BASES : []).find((b) => String(b.slug) === String(slug));
   DRAWER_BASE_ATUAL = base || null;
   document.getElementById("bases-drawer-title").textContent = base?.nome || slug || "Base";
+  const logoEl = document.getElementById("bases-drawer-logo");
+  if (logoEl) logoEl.innerHTML = logoMarketplace(DRAWER_MARKETPLACE, "lg");
   const meta = document.getElementById("bases-drawer-meta");
   const mpLabel = marketplaceLabel(DRAWER_MARKETPLACE);
   const donoLabel = drawerEhTiktok() ? "Cliente" : "Cliente / Conta";
@@ -2417,38 +2446,52 @@ async function confirmarPlanilhaDrawer() {
 // ─── WIRING (toolbar, KPIs, chips, modal importar, drawer, menus) ─────────────
 // ══════════════════════════════════════════════════════════════════════════════
 
-// Busca
+// Busca: filtra a lista de clientes (cliente, conta ou base)
 const basesBuscaInput = document.getElementById("bases-busca");
 if (basesBuscaInput) {
   basesBuscaInput.addEventListener("input", (e) => {
     BASES_BUSCA = e.target.value || "";
-    aplicarFiltros();
+    renderBasesTela();
   });
 }
-
-// Filtros de toolbar (selects legados — mantidos como fallback caso reintroduzidos)
-document.getElementById("bases-filtro-marketplace")?.addEventListener("change", (e) => { BASES_FILTRO_MP = e.target.value || ""; aplicarFiltros(); });
-document.getElementById("bases-filtro-atualizacao")?.addEventListener("change", (e) => { BASES_FILTRO_ATUAL = e.target.value || ""; aplicarFiltros(); });
-document.getElementById("bases-sort")?.addEventListener("change", (e) => { BASES_SORT = e.target.value || "attention"; renderBasesTela(); });
-document.getElementById("bases-limpar-filtros")?.addEventListener("click", limparFiltros);
+document.querySelectorAll("[data-cli-filtro]").forEach((b) => b.addEventListener("click", () => {
+  BASES_FILTRO_CLI = b.dataset.cliFiltro || "";
+  renderBasesTela();
+}));
 document.getElementById("bases-refresh")?.addEventListener("click", loadBases);
 
-// KPIs clicáveis (marketplace / atualização)
-const kpiGrid = document.getElementById("bases-summary");
-if (kpiGrid) {
-  kpiGrid.addEventListener("click", (e) => {
-    const card = e.target.closest("[data-kpi-tipo]");
-    if (!card) return;
-    aplicarKpiFiltro(card.dataset.kpiTipo, card.dataset.kpiValor);
+// Lista de clientes: clique e setas (listbox)
+const listaClientesEl = document.getElementById("bases-clientes-lista");
+if (listaClientesEl) {
+  listaClientesEl.addEventListener("click", (e) => {
+    const item = e.target.closest("[data-cli-key]");
+    if (item) selecionarCliente(item.dataset.cliKey);
   });
-  kpiGrid.addEventListener("keydown", (e) => {
-    if (e.key !== "Enter" && e.key !== " ") return;
-    const card = e.target.closest("[data-kpi-tipo]");
-    if (!card) return;
+  listaClientesEl.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const itens = [...listaClientesEl.querySelectorAll("[data-cli-key]")];
+    const i = itens.indexOf(document.activeElement);
+    const prox = itens[i + (e.key === "ArrowDown" ? 1 : -1)];
+    if (!prox) return;
     e.preventDefault();
-    aplicarKpiFiltro(card.dataset.kpiTipo, card.dataset.kpiValor);
+    selecionarCliente(prox.dataset.cliKey);
+    listaClientesEl.querySelector(`[data-cli-key="${CSS.escape(prox.dataset.cliKey)}"]`)?.focus();
   });
 }
+
+// Cartões de conta: abrir itens da base / importar para conta sem base
+document.getElementById("bases-contas")?.addEventListener("click", (e) => {
+  const abrir = e.target.closest("[data-base-slug]");
+  if (abrir) {
+    if (String(abrir.dataset.baseSlug) === String(BASE_SEL)) return;
+    BASE_SEL = abrir.dataset.baseSlug;
+    renderPainelCliente();
+    document.getElementById("bases-drawer")?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    return;
+  }
+  const imp = e.target.closest("[data-import-conta]");
+  if (imp) abrirModalImportar(imp.dataset.importMp, null, { clienteId: imp.dataset.importCliente, contaId: imp.dataset.importConta });
+});
 
 // Abrir modal de importação
 document.getElementById("btn-abrir-importar")?.addEventListener("click", () => abrirModalImportar());
@@ -2466,10 +2509,7 @@ document.getElementById("bases-assist-toggle")?.addEventListener("click", () => 
   if (c) c.classList.toggle("is-open");
 });
 
-// Drawer "Base de custos"
-document.getElementById("bases-drawer-close")?.addEventListener("click", fecharDrawer);
-document.getElementById("bases-drawer-backdrop")?.addEventListener("click", fecharDrawer);
-// Ações do drawer: adicionar item / atualizar por planilha (dentro do drawer)
+// Ações da seção de itens: adicionar item / atualizar por planilha (dentro do drawer)
 document.getElementById("bases-drawer-add")?.addEventListener("click", () => abrirFormularioItem(null));
 document.getElementById("bases-drawer-planilha")?.addEventListener("click", abrirPainelPlanilha);
 
@@ -2484,8 +2524,6 @@ document.addEventListener("keydown", (e) => {
   // Se um painel de edição/planilha está aberto no drawer, Esc fecha só o painel.
   const panel = document.getElementById("bases-cost-panel");
   if (panel && panel.style.display !== "none" && panel.innerHTML.trim()) { fecharPainelCusto(); return; }
-  const drawer = document.getElementById("bases-drawer");
-  if (drawer && drawer.classList.contains("is-open")) { fecharDrawer(); return; }
   const importBackdrop = document.getElementById("bases-import-backdrop");
   if (importBackdrop && importBackdrop.classList.contains("is-open")) fecharModalImportar();
 });

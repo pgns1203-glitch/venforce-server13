@@ -1,0 +1,42 @@
+# /etc/systemd/system/shopee-gateway.service
+# Exemplo versionado: SEM segredo. As variáveis ficam em
+# /etc/shopee-gateway/gateway.env (root:shopee-gw, modo 0640), fora do repo.
+[Unit]
+Description=VenForce Shopee fixed-IP gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shopee-gw
+Group=shopee-gw
+WorkingDirectory=/opt/shopee-gateway/current
+EnvironmentFile=/etc/shopee-gateway/gateway.env
+ExecStart=/usr/bin/node src/server.js
+Restart=always
+RestartSec=3
+# Limites razoáveis para um processo pequeno.
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=4096
+# Endurecimento.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+# Só loopback + saída IPv4/IPv6 por socket; o próprio gateway força IPv4.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shopee-gateway
+
+[Install]
+WantedBy=multi-user.target

@@ -35,6 +35,7 @@ Module._load = function loadWithMlFetchStub(request, parent, isMain) {
           metodo: options.method || "GET",
           mlUserId: options.mlUserId,
           body: options.body ? JSON.parse(options.body) : null,
+          bigIntFields: options.bigIntFields || null,
         };
         mlChamadas.push(chamada);
         return mlHandler ? mlHandler(chamada) : { ok: true, status: 200, data: {} };
@@ -77,10 +78,12 @@ function anuncioFixture(over = {}) {
 }
 
 class MockDb {
-  constructor({ contas = [], grants = [], anuncios = [] } = {}) {
+  constructor({ contas = [], grants = [], anuncios = [], familias = [] } = {}) {
     this.contas = contas;
     this.grants = grants;
     this.anuncios = anuncios;
+    // meli_user_products: { user_product_id, family_id, family_name }
+    this.familias = familias;
   }
 
   async connect() {
@@ -123,6 +126,30 @@ class MockDb {
     if (q.startsWith("SELECT * FROM meli_anuncios WHERE cliente_id = $1 AND item_id = $2")) {
       const row = this.anuncios.find((a) => a.cliente_id === params[0] && a.item_id === String(params[1]));
       return { rows: row ? [row] : [] };
+    }
+
+    if (q.includes("-- FAMILIA_DO_ANUNCIO")) {
+      const up = this.familias.find((f) => f.user_product_id === params[1] && f.family_id != null);
+      if (!up) return { rows: [] };
+      const ups = this.familias.filter((f) => f.family_id === up.family_id).map((f) => f.user_product_id);
+      const total = this.anuncios.filter((a) => a.cliente_id === params[0] && ups.includes(a.user_product_id)).length;
+      return { rows: [{ family_id: up.family_id, family_name: up.family_name, total_itens: total }] };
+    }
+    if (q.startsWith("UPDATE meli_user_products SET family_name")) {
+      this.familias.filter((f) => f.family_id === params[1]).forEach((f) => { f.family_name = params[2]; });
+      return { rows: [], rowCount: 0 };
+    }
+    if (q.includes("-- FAMILIA_NOME_CONFIRMADO")) {
+      const [clienteId, familyId, novo, antigo] = params;
+      const ups = this.familias.filter((f) => f.family_id === familyId).map((f) => f.user_product_id);
+      const alvo = this.anuncios.filter((a) => a.cliente_id === clienteId && ups.includes(a.user_product_id));
+      for (const a of alvo) {
+        a.family_name = novo;
+        if (antigo && a.titulo && a.titulo.slice(0, antigo.length).toLowerCase() === antigo.toLowerCase()) {
+          a.titulo = novo + a.titulo.slice(antigo.length);
+        }
+      }
+      return { rows: [], rowCount: alvo.length };
     }
 
     if (q.startsWith("UPDATE meli_anuncios SET")) {
@@ -693,6 +720,131 @@ async function run() {
     assert.strictEqual(db.anuncios[0].titulo, "Título novo");
     ok("recusa do ML no modelo: código/mensagem/corpo reais preservados, título do mesmo salvar segue");
   }
+
+  // ── Nome do produto (family_name) de MLB dentro de família ───────────────
+  // O título desses MLBs é family_name + variação, composto pelo ML. O que se
+  // edita é o family_name, por PUT /user-products-families/{family_id}.
+  const FAM_ID = "4467961684492434"; // acima de 2^53: precisa seguir como texto
+  const NOME_ANTIGO = "Camisa Camiseta Proteção Solar Uv50 Brasil Branca Feminina";
+  function cenarioFamilia(over = {}) {
+    return {
+      ...UMA_CONTA,
+      anuncios: [
+        anuncioFixture({ item_id: "MLB5275422175", user_product_id: "MLBU1", family_name: NOME_ANTIGO,
+          titulo: NOME_ANTIGO + " Branco M", ...over }),
+        anuncioFixture({ id: 8, item_id: "MLB5275447381", user_product_id: "MLBU2", family_name: NOME_ANTIGO,
+          titulo: NOME_ANTIGO + " Branco P" }),
+        anuncioFixture({ id: 9, item_id: "MLB999", user_product_id: "MLBU3", family_name: NOME_ANTIGO,
+          titulo: "Título legado fora da composição" }),
+        anuncioFixture({ id: 10, item_id: "MLB-OUTRA", user_product_id: "MLBU-X", family_name: "Outra família",
+          titulo: "Outra família Azul" }),
+      ],
+      familias: [
+        { user_product_id: "MLBU1", family_id: FAM_ID, family_name: NOME_ANTIGO },
+        { user_product_id: "MLBU2", family_id: FAM_ID, family_name: NOME_ANTIGO },
+        { user_product_id: "MLBU3", family_id: FAM_ID, family_name: NOME_ANTIGO },
+        { user_product_id: "MLBU-X", family_id: "1", family_name: "Outra família" },
+      ],
+    };
+  }
+
+  await withMockDb(cenarioFamilia(), async (db) => {
+    mlChamadas = [];
+    mlHandler = () => ({ ok: true, status: 201, data: { family_id: FAM_ID, family_name: "Camiseta UV50 Brasil Feminina" } });
+
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB5275422175" },
+      body: { clienteSlug: "cliente-a", nomeFamilia: "  Camiseta UV50 Brasil Feminina  " },
+    }, res);
+
+    assert.strictEqual(res.corpo.ok, true, JSON.stringify(res.corpo));
+    assert.deepStrictEqual(res.corpo.resultados, { nomeFamilia: { ok: true } });
+    const puts = mlChamadas.filter((c) => c.metodo === "PUT");
+    assert.strictEqual(puts.length, 1);
+    assert.strictEqual(puts[0].path, "/user-products-families/" + FAM_ID);
+    assert.deepStrictEqual(puts[0].body, { family_name: "Camiseta UV50 Brasil Feminina" });
+    assert.strictEqual(puts[0].mlUserId, "111");
+    assert.deepStrictEqual(puts[0].bigIntFields, ["family_id"]);
+
+    const [m, p, legado, outra] = db.anuncios;
+    assert.strictEqual(m.titulo, "Camiseta UV50 Brasil Feminina Branco M", "título projetado: nome novo + variação");
+    assert.strictEqual(p.titulo, "Camiseta UV50 Brasil Feminina Branco P", "a família inteira acompanha, não só o MLB aberto");
+    assert.strictEqual(legado.titulo, "Título legado fora da composição", "título fora da composição não é adivinhado");
+    assert.strictEqual(m.family_name, "Camiseta UV50 Brasil Feminina");
+    assert.strictEqual(outra.titulo, "Outra família Azul", "outra família não se move");
+    assert.strictEqual(outra.family_name, "Outra família");
+    assert.strictEqual(db.familias[0].family_name, "Camiseta UV50 Brasil Feminina");
+    assert.strictEqual(res.corpo.familia.family_name, "Camiseta UV50 Brasil Feminina");
+    assert.strictEqual(res.corpo.familia.family_id, FAM_ID);
+    assert.strictEqual(res.corpo.anuncio.titulo, "Camiseta UV50 Brasil Feminina Branco M");
+    ok("MLB em família: nome do produto vai por PUT /user-products-families/{id} e a família inteira acompanha");
+  });
+
+  await withMockDb(cenarioFamilia(), async (db) => {
+    mlChamadas = [];
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB5275422175" },
+      body: { clienteSlug: "cliente-a", nomeFamilia: "x".repeat(61) },
+    }, res);
+    assert.strictEqual(res.corpo.resultados.nomeFamilia.codigo, "NOME_FAMILIA_LONGO");
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "PUT").length, 0);
+    assert.strictEqual(db.anuncios[0].family_name, NOME_ANTIGO);
+    ok("nome do produto acima de 60 caracteres é recusado localmente, sem chamada ao Mercado Livre");
+  });
+
+  await withMockDb(cenarioFamilia(), async (db) => {
+    mlChamadas = [];
+    mlHandler = () => ({ ok: false, status: 409, data: { message: "family locked", error: "conflict", status: 409, cause: [] } });
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB5275422175" },
+      body: { clienteSlug: "cliente-a", nomeFamilia: "Camiseta UV50 Brasil Feminina" },
+    }, res);
+    const r = res.corpo.resultados.nomeFamilia;
+    assert.strictEqual(r.ok, false);
+    assert.strictEqual(r.motivo, "family locked");
+    assert.strictEqual(r.detalhesMl.status, 409);
+    assert.strictEqual(db.anuncios[0].titulo, NOME_ANTIGO + " Branco M", "recusa não pode virar salvo local");
+    assert.strictEqual(db.familias[0].family_name, NOME_ANTIGO);
+    ok("recusa do ML no nome do produto: motivo real preservado, snapshot da família não se move");
+  });
+
+  await withMockDb(cenarioFamilia({ catalog_listing: true }), async () => {
+    mlChamadas = [];
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB5275422175" },
+      body: { clienteSlug: "cliente-a", nomeFamilia: "Camiseta UV50" },
+    }, res);
+    assert.strictEqual(res.corpo.resultados.nomeFamilia.codigo, "TITLE_LOCKED_BY_CATALOG");
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "PUT").length, 0);
+    ok("publicação de catálogo: nome do produto segue travado, sem chamar o ML");
+  });
+
+  await withMockDb({ ...UMA_CONTA, anuncios: [anuncioFixture()] }, async () => {
+    mlChamadas = [];
+    const res = fakeRes();
+    await ctrl.atualizarConteudo({
+      params: { itemId: "MLB123" },
+      body: { clienteSlug: "cliente-a", nomeFamilia: "Qualquer" },
+    }, res);
+    assert.strictEqual(res.corpo.resultados.nomeFamilia.codigo, "SEM_FAMILIA");
+    assert.strictEqual(mlChamadas.filter((c) => c.metodo === "PUT").length, 0);
+    ok("MLB fora de família não tem nome de produto para editar: SEM_FAMILIA, sem chamada");
+  });
+
+  await withMockDb(cenarioFamilia(), async () => {
+    mlHandler = () => ({ ok: true, status: 200, data: {} });
+    const res = fakeRes();
+    await ctrl.detalhe({ params: { itemId: "MLB5275422175" }, query: { clienteSlug: "cliente-a" } }, res);
+    assert.deepStrictEqual(res.corpo.familia, { family_id: FAM_ID, family_name: NOME_ANTIGO, total_itens: 3 });
+    const resSolto = fakeRes();
+    await ctrl.detalhe({ params: { itemId: "MLB-OUTRA" }, query: { clienteSlug: "cliente-a" } }, resSolto);
+    assert.strictEqual(resSolto.corpo.familia.total_itens, 1);
+    ok("detalhe devolve a família do anúncio (family_id em texto, nome e alcance)");
+  });
 
   console.log(`\n✓ ${checks} verificações de edição de conteúdo de anúncio ML`);
 }

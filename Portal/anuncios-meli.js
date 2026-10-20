@@ -218,6 +218,37 @@
     return !!(a && (a.catalog_listing === true || a.family_name));
   }
 
+  // MLB dentro de família (User Products): o título é COMPOSTO pelo ML —
+  // family_name + a variação ("... Branca Feminina" + "Branco M") — e o PUT
+  // de title é recusado. O que se edita no detalhe é o family_name (até 60),
+  // que o ML aplica a todas as variações. Publicação de catálogo fica fora:
+  // o nome dela é do produto do catálogo. Sem família (MLB avulso), o título
+  // continua editável direto.
+  function editaNomeDaFamilia(a, familia) {
+    return !!(a && a.catalog_listing !== true && familia && familia.family_id);
+  }
+
+  // Trava do campo de título NO DETALHE: a de catálogo/família, menos quando
+  // o campo passou a ser o nome da família.
+  function tituloTravadoNoDetalhe() {
+    return !!(DET && !DET.modoFamilia && tituloTravadoPorCatalogo(DET.anuncio));
+  }
+
+  // Nota sob o nome do produto: a quem ele vale e o título que o ML publica
+  // hoje (nome + variação) — é o que explica um título de 67 caracteres.
+  function nomeFamiliaNotaHtml(a) {
+    var n = DET && DET.familia ? Number(DET.familia.total_itens) || 0 : 0;
+    var alcance = n > 1 ? "vale para os " + n + " anúncios da família" : "vale para a família inteira";
+    return '<span class="am-det-title__locknote" id="am-det-title-familia" title="' +
+        escapeAttr("O Mercado Livre monta o título de cada variação como nome do produto + variação. " +
+          "Título publicado hoje: " + (a.titulo || "—")) + '">' +
+        "Nome do produto · " + alcance + " · o Mercado Livre acrescenta a variação</span>";
+  }
+
+  function rotuloCampo(c) {
+    return c.chave === "titulo" && DET && DET.modoFamilia ? "Nome do produto" : c.rotulo;
+  }
+
   // Badges de status do anúncio (Catálogo/Full/fotos/Sem SKU/Revisado) —
   // compartilhado entre o card legado (rowAnuncioHtml) e o card do MLB
   // dentro de agrupador/família (rowMlbCompactaHtml). Os dois representam o
@@ -6215,8 +6246,10 @@
         (r.data.descricao ? "ok" : "sem_descricao");
       DET.descricaoErro = r.data.descricaoErro || null;
       DET.categoriaNome = r.data.categoriaNome || null;
+      DET.familia = r.data.familia || null;
+      DET.modoFamilia = editaNomeDaFamilia(a, DET.familia);
       DET.original = {
-        titulo: a.titulo || "",
+        titulo: DET.modoFamilia ? (DET.familia.family_name || "") : (a.titulo || ""),
         modelo: a.modelo || "",
         descricao: r.data.descricao || "",
       };
@@ -6341,7 +6374,7 @@
     // ehCatalogoOficial/tituloTravadoPorCatalogo. A tag só acende com
     // catalog_listing===true; o título pode ficar travado sem ela (família).
     var catalogoTag = ehCatalogoOficial(a);
-    var tituloTravado = tituloTravadoPorCatalogo(a);
+    var tituloTravado = tituloTravadoNoDetalhe();
 
     var thumb = a.thumbnail
       ? '<img src="' + escapeHtml(a.thumbnail) + '" alt="" loading="lazy" />'
@@ -6354,7 +6387,8 @@
           '<div class="am-det-title__row">' +
             '<input class="am-det-title__input" id="am-det-titulo" maxlength="60" size="56" ' +
               (tituloTravado ? 'readonly aria-readonly="true" ' : '') +
-              'aria-label="Título do anúncio" value="' + escapeAttr(DET.rascunho.titulo) + '" />' +
+              'aria-label="' + (DET.modoFamilia ? "Nome do produto (família)" : "Título do anúncio") +
+              '" value="' + escapeAttr(DET.rascunho.titulo) + '" />' +
             '<button type="button" class="am-det-revert" data-acao="reverter" data-campo="titulo" ' +
               'id="am-det-revert-titulo" title="Descartar alteração no título" ' +
               'aria-label="Descartar alteração no título">' + icDesfazer() + "</button>" +
@@ -6364,6 +6398,8 @@
             '<span class="am-det-title__count" id="am-det-count-titulo"></span>' +
             (tituloTravado
               ? '<span class="am-det-title__locknote">Gerenciado pelo Mercado Livre</span>'
+              : DET.modoFamilia
+              ? nomeFamiliaNotaHtml(a)
               : (Number(a.vendidos) > 0
                 // Aviso, NÃO bloqueio: o ML é a autoridade final e decide no
                 // PUT. Só antecipa a regra dele (título muda até a 1ª venda).
@@ -6494,7 +6530,9 @@
   // sintoma (`score_motivo`); agora mostra a decomposição inteira.
   function criteriosQualidade(a, pics, attrs) {
     var itens = [];
-    var titulo = String(DET.rascunho.titulo || "").trim();
+    // Na família o campo editado é o nome do produto; o critério mede o
+    // título que o ML publica (nome + variação).
+    var titulo = String((DET.modoFamilia ? a.titulo : DET.rascunho.titulo) || "").trim();
     if (!titulo) itens.push({ estado: "bad", texto: "Sem título" });
     else if (titulo.length < 20) itens.push({ estado: "bad", texto: "Título muito curto (" + titulo.length + " caracteres; o ideal é de 20 a 60)" });
     else if (titulo.length > 60) itens.push({ estado: "warn", texto: "Título acima de 60 caracteres (" + titulo.length + ")" });
@@ -7676,7 +7714,7 @@
   // do produto (PARENT_PK em todas as categorias reais — auditoria F4.1), não
   // superfície de SEO. Só edição manual, salva pelo mesmo PATCH /conteudo.
   function tituloEModeloHtml(a) {
-    var tituloTravado = tituloTravadoPorCatalogo(a);
+    var tituloTravado = tituloTravadoNoDetalhe();
     return '<div class="am-det-section">' +
       '<div class="am-det-subhead">' +
         "<h4>Título</h4>" +
@@ -7685,7 +7723,9 @@
       '<div class="am-det-compare am-det-compare--compacto" id="am-det-compare-titulo">' +
         '<div class="am-det-compare__col">' +
           '<div class="am-det-compare__label"><span>' +
-            (tituloTravado ? "Atual · gerenciado pelo Mercado Livre" : "Atual · editável aqui ou no cabeçalho") +
+            (tituloTravado ? "Atual · gerenciado pelo Mercado Livre"
+              : DET.modoFamilia ? "Nome do produto · vale para todas as variações"
+              : "Atual · editável aqui ou no cabeçalho") +
           "</span></div>" +
           '<input class="vf-input vf-input--sm am-det-compare__input" id="am-det-espelho-titulo" maxlength="60" ' +
             (tituloTravado ? 'readonly aria-readonly="true" ' : "") +
@@ -7749,6 +7789,9 @@
   function sugestaoTitulosHtml() {
     var cabeca = '<div class="am-det-compare__label"><span>' + icIa() + "Sugestões da IA</span></div>";
     if (DET.iaBloqueada) return cabeca + vazioIaHtml("Gerar títulos", "titulos");
+    if (DET.modoFamilia) {
+      return cabeca + '<p class="am-det-vazio">Este anúncio faz parte de uma família: o título é o nome do produto mais a variação, e as sugestões da IA ainda não cobrem o nome do produto.</p>';
+    }
     if (tituloTravadoPorCatalogo(DET.anuncio)) {
       return cabeca + '<p class="am-det-vazio">O título é gerenciado pelo Mercado Livre — não há sugestões de título para este anúncio.</p>';
     }
@@ -7789,6 +7832,7 @@
 
   function chipTitulos() {
     if (DET.iaBloqueada) return '<span class="vf-status is-empty">IA restrita a administradores</span>';
+    if (DET.modoFamilia) return '<span class="vf-status is-empty">Nome do produto da família</span>';
     if (tituloTravadoPorCatalogo(DET.anuncio)) return '<span class="vf-status is-empty">Gerenciado pelo Mercado Livre</span>';
     var T = DET.titulosSeo;
     if (T.estado === "carregando") return '<span class="vf-status is-info">Gerando títulos…</span>';
@@ -9519,7 +9563,7 @@
         '<div class="am-det-savebar is-perigo" id="am-det-savebar" role="alert">' +
           '<span class="am-det-savebar__msg"><span class="am-det-dot"></span>' +
             "Fechar e descartar " + sujos.length + " alteraç" + (sujos.length === 1 ? "ão" : "ões") +
-            " — " + sujos.map(function (c) { return c.rotulo; }).join(", ") + "?</span>" +
+            " — " + sujos.map(rotuloCampo).join(", ") + "?</span>" +
           '<span class="am-det-savebar__actions">' +
             '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="cancelar-saida">Continuar editando</button>' +
             '<button type="button" class="vf-btn vf-btn--danger vf-btn--sm" data-acao="descartar-e-fechar">Descartar e fechar</button>' +
@@ -9561,7 +9605,7 @@
       '<div class="am-det-savebar" id="am-det-savebar" aria-live="polite">' +
         '<span class="am-det-savebar__msg"><span class="am-det-dot"></span>' +
           sujos.length + " alteraç" + (sujos.length === 1 ? "ão não salva" : "ões não salvas") +
-          " — " + sujos.map(function (c) { return c.rotulo; }).join(", ") + "</span>" +
+          " — " + sujos.map(rotuloCampo).join(", ") + "</span>" +
         '<span class="am-det-savebar__actions">' +
           '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-acao="descartar">Descartar tudo</button>' +
           '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-acao="salvar">Salvar alterações</button>' +
@@ -9698,7 +9742,9 @@
   // código que o ML mandou. A mensagem crua do ML nunca é descartada — é ela
   // que permite conferir o motivo sem adivinhar.
   function mensagemFalhaCampo(c, res) {
-    var artigo = c.chave === "descricao" ? "da descrição" : (c.chave === "modelo" ? "do modelo" : "do título");
+    var artigo = c.chave === "descricao" ? "da descrição"
+      : c.chave === "modelo" ? "do modelo"
+      : DET && DET.modoFamilia ? "do nome do produto" : "do título";
     var det = res.detalhesMl || null;
     var original = det ? (det.causas && det.causas.length && det.causas[0].message) || det.error || det.message : null;
     // O formato atípico do título manda o código genérico em `message` e a
@@ -9719,6 +9765,11 @@
   // ---------------------------------------------------------------------------
   // Salvar — Portal → backend → ClienteConta → grant → API do ML → confirmação
   // ---------------------------------------------------------------------------
+  // Na família, o rascunho "titulo" é o family_name e vai como nomeFamilia.
+  function chaveApi(c) {
+    return c.chave === "titulo" && DET && DET.modoFamilia ? "nomeFamilia" : c.chave;
+  }
+
   function salvarAlteracoes() {
     if (!DET || DET.salvando) return;
     var sujos = camposSujos();
@@ -9726,7 +9777,7 @@
 
     var corpo = { clienteSlug: AM.clienteAtual.slug };
     if (AM.contaMlId) corpo.clienteContaId = AM.contaMlId;
-    sujos.forEach(function (c) { corpo[c.chave] = DET.rascunho[c.chave]; });
+    sujos.forEach(function (c) { corpo[chaveApi(c)] = DET.rascunho[c.chave]; });
 
     DET.salvando = true;
     DET.erros = {};
@@ -9753,7 +9804,7 @@
       // Só o que o Mercado Livre CONFIRMOU vira "salvo".
       var falhas = [];
       CAMPOS_EDITAVEIS.forEach(function (c) {
-        var res = d.resultados[c.chave];
+        var res = d.resultados[chaveApi(c)];
         if (!res) return;
         if (res.ok) {
           DET.original[c.chave] = DET.rascunho[c.chave];
@@ -9773,11 +9824,14 @@
         DET.anuncio = d.anuncio;
         AM.detalheAtual = { anuncio: d.anuncio, descricao: DET.descricao };
       }
+      if (d.familia) DET.familia = d.familia;
 
       renderDetalhe();
 
       if (!falhas.length) {
-        toast("Alterações salvas no anúncio do Mercado Livre.", "is-success");
+        toast(d.resultados.nomeFamilia
+          ? "Nome do produto salvo. O Mercado Livre atualiza o título de cada variação em instantes."
+          : "Alterações salvas no anúncio do Mercado Livre.", "is-success");
         carregarAnuncios(); // o título/modelo mudou: a listagem atrás precisa refletir
       } else {
         toast(falhas[0], "is-danger");

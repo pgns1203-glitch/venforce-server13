@@ -87,8 +87,9 @@ function anuncio(conta) {
     revisado: false, cliente_conta_id: a.cliente_conta_id, ml_user_id: a.ml_user_id,
     last_synced_at: new Date(Date.now() - 2 * 3600 * 1000).toISOString(),
     catalog_listing: catalogoModo === "catalog_listing" || catalogoModo === "ambos",
-    family_name: (catalogoModo === "family_name" || catalogoModo === "ambos" || catalogoModo === "produto") ? "Serum Ácido Salicílico" : null,
-    user_product_id: catalogoModo === "produto" ? "MLBU77" : null,
+    family_name: (catalogoModo === "family_name" || catalogoModo === "ambos" || catalogoModo === "produto" || catalogoModo === "familia")
+      ? "Serum Ácido Salicílico" : null,
+    user_product_id: catalogoModo === "produto" ? "MLBU77" : catalogoModo === "familia" ? "MLBU88" : null,
   };
 }
 
@@ -769,6 +770,12 @@ function wireInterception(cdp) {
       });
       // Espelha o contrato real: a descrição só volta quando ela mudou.
       const resposta = { ok: true, resultados, anuncio: base };
+      if (body && body.nomeFamilia !== undefined) {
+        resultados.nomeFamilia = { ok: true };
+        base.family_name = body.nomeFamilia;
+        base.titulo = body.nomeFamilia + " 30ml";
+        resposta.familia = { family_id: "4467961684492434", family_name: body.nomeFamilia, total_itens: 4 };
+      }
       if (body && body.descricao !== undefined) {
         resposta.descricao = body.descricao;
         resposta.descricaoEstado = "ok";
@@ -982,6 +989,12 @@ function wireInterception(cdp) {
         descricaoErro: descricaoEstado === "erro" ? "O Mercado Livre não devolveu a descrição (HTTP 500)." : null,
         categoriaNome: categoriaNomeResposta,
       };
+      // "familia": MLB dentro de agrupador — o detalhe devolve a família e o
+      // título é composto pelo ML (nome do produto + variação).
+      if (catalogoModo === "familia") {
+        base.titulo = "Serum Ácido Salicílico 30ml";
+        resposta.familia = { family_id: "4467961684492434", family_name: "Serum Ácido Salicílico", total_itens: 4 };
+      }
       await corpo(resposta);
       return;
     }
@@ -1251,6 +1264,38 @@ async function run() {
         modelo: document.getElementById('am-det-espelho-modelo').readOnly })`);
       assert.ok(colunaAtual.titulo, "a coluna 'Atual' da comparação com a IA obedece à MESMA trava do título");
       assert.ok(!colunaAtual.modelo, "o modelo continua editável também na comparação com a IA");
+    });
+
+    await check("7b2 — MLB em família: edita o NOME DO PRODUTO (sem a variação) e salva como nomeFamilia", async () => {
+      await abrirComModo("familia");
+      await abrirPrimeiroAnuncio(cdp);
+      const info = await cdp.evaluate(`(function(){ var e = document.getElementById('am-det-titulo');
+        var c = document.getElementById('am-det-espelho-titulo');
+        return { readonly: e.readOnly, valor: e.value, espelho: c.value, espelhoRo: c.readOnly,
+          conta: document.getElementById('am-det-count-titulo').textContent,
+          nota: (document.getElementById('am-det-title-familia') || {}).textContent || '' }; })()`);
+      assert.ok(!info.readonly, "o nome do produto deveria ser editável");
+      assert.strictEqual(info.valor, "Serum Ácido Salicílico", "o campo mostra o family_name, não o título com a variação");
+      assert.strictEqual(info.espelho, "Serum Ácido Salicílico");
+      assert.ok(!info.espelhoRo, "a coluna 'Atual' segue a mesma regra");
+      assert.ok(/^22\/60/.test(info.conta), "o contador mede o nome do produto: " + info.conta);
+      assert.ok(/Nome do produto/.test(info.nota) && /4 anúncios/.test(info.nota), "nota explica o alcance: " + info.nota);
+      const texto = await textoModal(cdp);
+      assert.ok(!/Gerenciado pelo Mercado Livre/.test(texto.split("Sugestões da IA")[0]), "o cabeçalho não pode dizer que está travado");
+
+      corpos.length = 0;
+      const antes = pedidos.length;
+      await digitar(cdp, "#am-det-titulo", "Serum Facial Ácido Salicílico");
+      await waitFor(cdp, "/Nome do produto/.test((document.getElementById('am-det-savebar') || {}).textContent || '')",
+        "a barra de salvar deveria nomear o campo como Nome do produto");
+      await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antes, "não saiu PATCH de conteúdo");
+      const envio = corpos.find((c) => /\/conteudo/.test(c.url));
+      assert.strictEqual(envio.body.nomeFamilia, "Serum Facial Ácido Salicílico");
+      assert.strictEqual(envio.body.titulo, undefined, "título não vai: o ML recusaria o PUT de title");
+      await waitFor(cdp, "!document.getElementById('am-det-savebar')", "a confirmação do ML deveria limpar a pendência");
+      const depois = await cdp.evaluate("document.getElementById('am-det-titulo').value");
+      assert.strictEqual(depois, "Serum Facial Ácido Salicílico");
     });
 
     await check("7c — sem catalog_listing e sem family_name: anúncio tradicional, nada travado", async () => {
@@ -2069,11 +2114,12 @@ async function run() {
 
     await check("10 — salvar usa o clienteSlug e a ClienteConta do contexto", async () => {
       corpos.length = 0;
+      const antes = pedidos.length; // 7b2 já salvou um nome de família antes deste
       await digitar(cdp, "#am-det-titulo", "Fone TWS Prime X200 ANC 30h Bateria Preto");
       await digitar(cdp, "#am-det-modelo", "X200 Pro");
       await waitFor(cdp, "document.getElementById('am-det-savebar')", "a barra não apareceu");
       await clicar(cdp, '.am-det-modal [data-acao="salvar"]');
-      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, 0, "não saiu PATCH de conteúdo");
+      await esperarPedido(/\/anuncios-meli\/MLB-A1\/conteudo/, antes, "não saiu PATCH de conteúdo");
       const envio = corpos.find((c) => /\/conteudo/.test(c.url));
       assert.ok(envio, "o corpo do PATCH não foi capturado");
       assert.strictEqual(envio.metodo, "PATCH");

@@ -677,6 +677,65 @@ async function obterFamiliaDetalhe({ clienteId, familyId, clienteContaId = null,
   };
 }
 
+// Família de UM anúncio, pelo user_product_id dele — o que o detalhe (modal)
+// precisa para editar o nome do produto: family_id (endereço do PUT no ML),
+// family_name atual e quantos MLBs o nome atinge. null quando o anúncio não
+// está numa família (legado, sem UP, ou UP sem family_id).
+async function obterFamiliaDoAnuncio({ clienteId, userProductId }) {
+  if (!userProductId) return null;
+  await ensureSchema();
+  const { rows } = await db.query(
+    `-- FAMILIA_DO_ANUNCIO
+     SELECT up.family_id, up.family_name,
+            (SELECT COUNT(*)::int
+               FROM meli_anuncios a
+               JOIN meli_user_products u2
+                 ON u2.cliente_id = a.cliente_id AND u2.user_product_id = a.user_product_id
+              WHERE a.cliente_id = up.cliente_id AND u2.family_id = up.family_id) AS total_itens
+       FROM meli_user_products up
+      WHERE up.cliente_id = $1 AND up.user_product_id = $2 AND up.family_id IS NOT NULL
+      LIMIT 1;`,
+    [clienteId, String(userProductId)]
+  );
+  if (!rows.length) return null;
+  const r = rows[0];
+  return { family_id: String(r.family_id), family_name: r.family_name || null, total_itens: r.total_itens || 0 };
+}
+
+// Snapshot local depois que o ML CONFIRMOU o novo family_name (PUT
+// /user-products-families/{id} respondeu 201). O ML recalcula o título de
+// cada item como family_name + variação, de forma assíncrona; aqui o título é
+// projetado pela MESMA regra — só onde ele começa pelo nome antigo, trocando
+// esse prefixo. Título que não segue a composição fica como está, e a próxima
+// sincronização traz o valor final do ML de qualquer forma.
+async function registrarNomeFamiliaConfirmado({ clienteId, familyId, nomeAntigo, nomeNovo }) {
+  await ensureSchema();
+  await db.query(
+    `UPDATE meli_user_products SET family_name = $3, updated_at = NOW()
+      WHERE cliente_id = $1 AND family_id = $2;`,
+    [clienteId, String(familyId), nomeNovo]
+  );
+  const { rowCount } = await db.query(
+    `-- FAMILIA_NOME_CONFIRMADO
+     UPDATE meli_anuncios a
+        SET family_name = $3,
+            titulo = CASE
+              WHEN $4::text <> '' AND a.titulo IS NOT NULL
+                   AND lower(left(a.titulo, length($4::text))) = lower($4::text)
+                THEN $3::text || substr(a.titulo, length($4::text) + 1)
+              ELSE a.titulo
+            END,
+            updated_at = NOW()
+       FROM meli_user_products up
+      WHERE up.cliente_id = a.cliente_id
+        AND up.user_product_id = a.user_product_id
+        AND a.cliente_id = $1
+        AND up.family_id = $2;`,
+    [clienteId, String(familyId), nomeNovo, String(nomeAntigo || "")]
+  );
+  return rowCount || 0;
+}
+
 // Resolução BULK de família -> [item_id] — o chamador manda só os family_id
 // (nunca os MLBs filhos: o front não é dono dessa lista, e mandar item_ids
 // soltos exigiria o front já ter expandido toda família da página antes de
@@ -868,6 +927,8 @@ module.exports = {
   registrarUserProducts,
   listarAgrupado,
   obterFamiliaDetalhe,
+  obterFamiliaDoAnuncio,
+  registrarNomeFamiliaConfirmado,
   resolverItensDeFamilias,
   construirFiltroBase,
   normalizarFiltros,

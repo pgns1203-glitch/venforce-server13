@@ -97,6 +97,39 @@ export default function FullReposicaoAba({ inventories, cabecalho, clienteSlug, 
 
   return (
     <div className="full-layout">
+      <aside className="vf-card full-lateral full-lateral--resumo" aria-labelledby="full-resumo-titulo">
+        <div className="full-lateral__cabeca">
+          <p className="full-eyebrow">Novo envio</p>
+          <h2 className="full-lateral__titulo" id="full-resumo-titulo">Resumo do envio</h2>
+        </div>
+        <dl className="full-resumo">
+          <div><dt>Produtos</dt><dd>{formatarNumero(resumo.produtos)}</dd></div>
+          <div><dt>Unidades</dt><dd>{formatarNumero(resumo.unidades)}</dd></div>
+          <div><dt>Custo da mercadoria</dt><dd>{formatarMoeda(resumo.custo)}</dd></div>
+          <div><dt>Cobertura alvo</dt><dd>{dias} dias</dd></div>
+          <div><dt>Sem estoque resolvidos</dt><dd>{formatarNumero(resumo.rupturasResolvidas)}</dd></div>
+        </dl>
+        {custosDisponiveis && resumo.semCusto > 0 ? (
+          <p className="full-alerta" role="status">
+            {resumo.semCusto === 1 ? "1 produto sem custo" : `${formatarNumero(resumo.semCusto)} produtos sem custo`} na Base: o custo do
+            envio fica incompleto. <a href="bases.html">Cadastrar custo</a>
+          </p>
+        ) : null}
+        <div className="full-lateral__pe">
+          <button
+            type="button"
+            className="vf-btn vf-btn--primary full-largura"
+            disabled={resumo.produtos === 0}
+            onClick={() => baixarArquivo(gerarCsvConferencia(selecionadas), nomeDoArquivo(clienteSlug))}
+          >
+            Baixar lista de conferência
+          </button>
+          <p className="full-lateral__nota">
+            O envio é criado no Seller Center do Mercado Livre. Use a lista para separar e conferir a mercadoria.
+          </p>
+        </div>
+      </aside>
+
       <section className="vf-card full-principal">
         {cabecalho}
         <div className="full-toolbar">
@@ -212,39 +245,6 @@ export default function FullReposicaoAba({ inventories, cabecalho, clienteSlug, 
           ) : null}
         </div>
       </section>
-
-      <aside className="vf-card full-lateral full-lateral--resumo" aria-labelledby="full-resumo-titulo">
-        <div className="full-lateral__cabeca">
-          <p className="full-eyebrow">Novo envio</p>
-          <h2 className="full-lateral__titulo" id="full-resumo-titulo">Resumo do envio</h2>
-        </div>
-        <dl className="full-resumo">
-          <div><dt>Produtos</dt><dd>{formatarNumero(resumo.produtos)}</dd></div>
-          <div><dt>Unidades</dt><dd>{formatarNumero(resumo.unidades)}</dd></div>
-          <div><dt>Custo da mercadoria</dt><dd>{formatarMoeda(resumo.custo)}</dd></div>
-          <div><dt>Cobertura alvo</dt><dd>{dias} dias</dd></div>
-          <div><dt>Sem estoque resolvidos</dt><dd>{formatarNumero(resumo.rupturasResolvidas)}</dd></div>
-        </dl>
-        {custosDisponiveis && resumo.semCusto > 0 ? (
-          <p className="full-alerta" role="status">
-            {resumo.semCusto === 1 ? "1 produto sem custo" : `${formatarNumero(resumo.semCusto)} produtos sem custo`} na Base: o custo do
-            envio fica incompleto. <a href="bases.html">Cadastrar custo</a>
-          </p>
-        ) : null}
-        <div className="full-lateral__pe">
-          <button
-            type="button"
-            className="vf-btn vf-btn--primary full-largura"
-            disabled={resumo.produtos === 0}
-            onClick={() => baixarArquivo(gerarCsvConferencia(selecionadas), nomeDoArquivo(clienteSlug))}
-          >
-            Baixar lista de conferência
-          </button>
-          <p className="full-lateral__nota">
-            O envio é criado no Seller Center do Mercado Livre. Use a lista para separar e conferir a mercadoria.
-          </p>
-        </div>
-      </aside>
     </div>
   );
 }

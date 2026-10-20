@@ -189,6 +189,13 @@ export default function FullGestaoPage() {
               </VFEmpty>
             ) : aba === "estoque" ? (
               <div className="full-layout">
+                <FullAtencaoPainel
+                  resumo={resumo}
+                  kpisAtivos={kpisAtivos}
+                  onFiltrar={filtrarPeloPainel}
+                  onPlanejar={() => setAba("reposicao")}
+                  custosDisponiveis={custosDisponiveis}
+                />
                 <section className="vf-card full-principal">
                   {abas}
                   <div className="full-toolbar">
@@ -237,13 +244,6 @@ export default function FullGestaoPage() {
                     onDetalhar={setInventoryIdSelecionado}
                   />
                 </section>
-                <FullAtencaoPainel
-                  resumo={resumo}
-                  kpisAtivos={kpisAtivos}
-                  onFiltrar={filtrarPeloPainel}
-                  onPlanejar={() => setAba("reposicao")}
-                  custosDisponiveis={custosDisponiveis}
-                />
               </div>
             ) : (
               <FullReposicaoAba

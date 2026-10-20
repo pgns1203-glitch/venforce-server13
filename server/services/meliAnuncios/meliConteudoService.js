@@ -24,6 +24,15 @@
 //   titulo     → PUT /items/{id}                { title }
 //   modelo     → PUT /items/{id}                { attributes: [{ id:"MODEL" }] }
 //   descricao  → PUT /items/{id}/description    { plain_text }
+//   nomeFamilia → PUT /user-products-families/{family_id}  { family_name }
+//
+// Título de MLB dentro de família (User Products): o ML recusa o PUT de title
+// ("You cannot modify the title if the item has a family_name") porque o
+// título é COMPOSTO por ele — family_name + valores da variação ("... Branco
+// M"). O que se edita ali é o family_name, e o ML recalcula o título de todas
+// as variações (documentacao_api_meli/preco-variacao.md, "Atualizar
+// Família"). O limite de 60 vale para o nome que se digita; a variação que o
+// ML acrescenta é dele.
 // -----------------------------------------------------------------------------
 
 const { mlFetch } = require("../../utils/mlClient");
@@ -191,6 +200,42 @@ async function atualizarTitulo({ clienteId, itemId, titulo, mlUserId, catalogoTr
   return r;
 }
 
+// PUT /user-products-families/{family_id} — só o family_name. Mantém o
+// family_id e a estrutura (é o "Atualizar Família" da doc, não o Editor de
+// família por tasks). A resposta traz family_id acima de 2^53: bigIntFields.
+async function atualizarNomeFamilia({ clienteId, familyId, nome, mlUserId }) {
+  const valor = String(nome == null ? "" : nome).trim();
+  if (!valor) return falha("NOME_FAMILIA_VAZIO", "O nome do produto não pode ficar vazio.");
+  if (valor.length > TITULO_MAX) {
+    return falha(
+      "NOME_FAMILIA_LONGO",
+      `O nome do produto tem ${valor.length} caracteres — o Mercado Livre aceita até ${TITULO_MAX}.`
+    );
+  }
+  if (!familyId) {
+    return falha("SEM_FAMILIA", "Este anúncio não está numa família do Mercado Livre. Sincronize os anúncios.");
+  }
+
+  const resp = await mlFetch(
+    clienteId,
+    `/user-products-families/${encodeURIComponent(String(familyId))}`,
+    { method: "PUT", body: JSON.stringify({ family_name: valor }), mlUserId, bigIntFields: ["family_id"] }
+  );
+  if (resp && resp.ok) return { ok: true, valor };
+  const f = falha(
+    codigoDoErroMl(resp && resp.data, resp && resp.status),
+    motivoDoErroMl(resp && resp.data, resp && resp.status)
+  );
+  f.detalhesMl = detalhesDoErroMl(resp && resp.data, resp && resp.status);
+  f.explicacao = explicacaoTitulo(f.detalhesMl);
+  console.warn(
+    `[anuncios-meli] ML recusou PUT /user-products-families/${familyId} (family_name):`,
+    resp && resp.status,
+    JSON.stringify((resp && resp.data) || null).slice(0, 1000)
+  );
+  return f;
+}
+
 async function atualizarModelo({ clienteId, itemId, modelo, mlUserId }) {
   const valor = String(modelo == null ? "" : modelo).trim();
   if (!valor) {
@@ -229,7 +274,7 @@ async function atualizarDescricao({ clienteId, itemId, descricao, mlUserId }) {
 // título → modelo → descrição, e devolve um resultado POR CAMPO. Um campo que
 // falha não impede os outros — e não deixa o snapshot local mentir sobre ele.
 // ---------------------------------------------------------------------------
-async function aplicarConteudo({ clienteId, itemId, mlUserId, campos, anuncio }) {
+async function aplicarConteudo({ clienteId, itemId, mlUserId, campos, anuncio, familia = null }) {
   const resultados = {};
   const aplicados = {};
 
@@ -240,6 +285,11 @@ async function aplicarConteudo({ clienteId, itemId, mlUserId, campos, anuncio })
 
   const executores = [
     ["titulo", () => atualizarTitulo({ clienteId, itemId, titulo: campos.titulo, mlUserId, catalogoTravado })],
+    // Publicação de catálogo: o nome vem do produto do catálogo, não da
+    // família do vendedor — continua travado.
+    ["nomeFamilia", () => anuncio && anuncio.catalog_listing === true ? falhaCatalogo() : atualizarNomeFamilia({
+      clienteId, familyId: familia && familia.family_id, nome: campos.nomeFamilia, mlUserId,
+    })],
     ["modelo", () => atualizarModelo({ clienteId, itemId, modelo: campos.modelo, mlUserId })],
     ["descricao", () => atualizarDescricao({ clienteId, itemId, descricao: campos.descricao, mlUserId })],
   ];
@@ -275,6 +325,7 @@ async function aplicarConteudo({ clienteId, itemId, mlUserId, campos, anuncio })
 module.exports = {
   aplicarConteudo,
   atualizarTitulo,
+  atualizarNomeFamilia,
   atualizarModelo,
   atualizarDescricao,
   TITULO_MAX,

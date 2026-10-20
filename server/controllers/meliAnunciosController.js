@@ -1908,9 +1908,10 @@ async function detalhe(req, res) {
 
     // Descrição e nome da categoria buscados sob demanda, em paralelo — nenhum
     // dos dois é salvo na sincronização em massa.
-    const [desc, categoriaNome] = await Promise.all([
+    const [desc, categoriaNome, familia] = await Promise.all([
       carregarDescricao(cliente.id, itemId, mlUserId),
       carregarNomeCategoria(cliente.id, anuncio.category_id, mlUserId),
+      familiaService.obterFamiliaDoAnuncio({ clienteId: cliente.id, userProductId: anuncio.user_product_id }),
     ]);
 
     return res.json({
@@ -1926,6 +1927,9 @@ async function detalhe(req, res) {
       // null quando a chamada ao ML falhou ou o anúncio não tem categoria —
       // o front cai para `anuncio.category_id` nesse caso, nunca quebra.
       categoriaNome,
+      // { family_id, family_name, total_itens } | null. Com família, o que se
+      // edita no lugar do título é o family_name (ver meliConteudoService).
+      familia,
     });
   } catch (err) {
     if (err.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") return responderAmbiguidade(res, err);
@@ -2456,12 +2460,13 @@ async function atualizarConteudo(req, res) {
 
     const campos = {};
     if (body.titulo !== undefined) campos.titulo = body.titulo;
+    if (body.nomeFamilia !== undefined) campos.nomeFamilia = body.nomeFamilia;
     if (body.modelo !== undefined) campos.modelo = body.modelo;
     if (body.descricao !== undefined) campos.descricao = body.descricao;
     if (!Object.keys(campos).length) {
       return res.status(400).json({
         ok: false,
-        motivo: "Informe ao menos um campo (titulo, modelo ou descricao).",
+        motivo: "Informe ao menos um campo (titulo, nomeFamilia, modelo ou descricao).",
       });
     }
 
@@ -2489,13 +2494,32 @@ async function atualizarConteudo(req, res) {
       mlUserId = contexto.mlUserId;
     }
 
+    // A família só é lida quando o nome dela é o que vai mudar.
+    const familia = campos.nomeFamilia !== undefined
+      ? await familiaService.obterFamiliaDoAnuncio({ clienteId: cliente.id, userProductId: anuncio.user_product_id })
+      : null;
+
     const { resultados, aplicados } = await conteudoService.aplicarConteudo({
       clienteId: cliente.id,
       itemId,
       mlUserId,
       campos,
       anuncio,
+      familia,
     });
+
+    // Nome da família confirmado pelo ML: snapshot da família inteira (todos
+    // os MLBs dela), não só deste anúncio.
+    let familiaAtual = familia;
+    if (aplicados.nomeFamilia !== undefined && familia) {
+      await familiaService.registrarNomeFamiliaConfirmado({
+        clienteId: cliente.id,
+        familyId: familia.family_id,
+        nomeAntigo: familia.family_name,
+        nomeNovo: aplicados.nomeFamilia,
+      });
+      familiaAtual = { ...familia, family_name: aplicados.nomeFamilia };
+    }
 
     // Snapshot local só do que o ML confirmou.
     const confirmados = {};
@@ -2507,7 +2531,9 @@ async function atualizarConteudo(req, res) {
         aplicados.modelo
       );
     }
-    let atualizado = anuncio;
+    let atualizado = aplicados.nomeFamilia !== undefined
+      ? (await anunciosService.obterAnuncio(cliente.id, itemId)) || anuncio
+      : anuncio;
     if (Object.keys(confirmados).length) {
       atualizado =
         (await anunciosService.atualizarCamposConfirmados(
@@ -2522,6 +2548,7 @@ async function atualizarConteudo(req, res) {
     // A descrição só volta aqui quando ELA foi o que mudou — reler do ML a
     // cada salvamento de título gastaria uma chamada externa por nada.
     const resposta = { ok: tudoOk, resultados, anuncio: atualizado };
+    if (familiaAtual) resposta.familia = familiaAtual;
     if (aplicados.descricao !== undefined) {
       resposta.descricao = aplicados.descricao;
       resposta.descricaoEstado = "ok";

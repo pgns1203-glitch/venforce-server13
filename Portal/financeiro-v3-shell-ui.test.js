@@ -468,33 +468,65 @@ async function run() {
       await waitFor(cdp, "window.VF && window.VF.context", "vf-context não montou");
     }
 
-    // ── Paridade operacional: as abas são Fechamento · Relatórios gerados ·
-    // Histórico. A aba Fechamento fica MONTADA (com `hidden`) quando outra
-    // está ativa, então toda leitura mira o painel VISÍVEL. ─────────────────
-    const ABAS_ESPERADAS = ["Fechamento", "Relatórios gerados", "Histórico"];
-    const PAINEL = ".vf-fin-painel:not([hidden])";
-    const textoDoPainel = () => cdp.evaluate(`document.querySelector(${JSON.stringify(PAINEL)}).innerText`);
+    // ── Modelo B: uma tela só (a mesa do fechamento), sem abas. Histórico,
+    // Relatórios, Preparar fechamento, Pendências, Detalhes e a Entrega
+    // abrem em DRAWER (um por vez, renderizado em <body>). ───────────────────
+    const MESA = ".vf-fin-mesa";
+    const ETAPAS = 'aside[aria-label="Etapas do fechamento"]';
+    const DRAWER = ".vf-drawer";
     const textoDe = (sel) => cdp.evaluate(`(function(){ var el = document.querySelector(${JSON.stringify(sel)}); return el ? el.innerText : null; })()`);
-    const acharAba = (rotulo) => `Array.prototype.find.call(document.querySelectorAll('.vf-tab'), function(b){ return b.textContent.trim() === ${JSON.stringify(rotulo)}; })`;
-    async function abrirAba(rotulo) {
-      const existe = await cdp.evaluate(`(function(){ var b = ${acharAba(rotulo)}; if (!b) return false; b.click(); return true; })()`);
-      assert.ok(existe, `a aba "${rotulo}" não existe`);
-      await waitFor(cdp, `(function(){ var b = ${acharAba(rotulo)}; return b && b.getAttribute('aria-selected') === 'true'; })()`, `a aba "${rotulo}" não ficou ativa`);
-      await waitFor(cdp, `document.querySelector(${JSON.stringify(PAINEL)}) !== null`, `o painel da aba "${rotulo}" não apareceu`);
-      await sleep(150);
-    }
     // Clica no botão de texto exato dentro de `escopo` (seletor CSS).
     const clicarBotao = (escopo, rotulo) => cdp.evaluate(`
       (function(){ var raiz = document.querySelector(${JSON.stringify(escopo)}); if (!raiz) return false;
         var b = Array.prototype.find.call(raiz.querySelectorAll('button'), function(x){ return x.textContent.trim() === ${JSON.stringify(rotulo)}; });
         if (!b) return false; b.click(); return true; })()
     `);
-    const botaoDesabilitado = (rotulo) => cdp.evaluate(`
-      (function(){ var b = Array.prototype.find.call(document.querySelectorAll('button'), function(x){ return x.textContent.trim() === ${JSON.stringify(rotulo)}; }); return b ? b.disabled : null; })()
+    // Botão cujo texto COMEÇA com o rótulo (os CTAs do painel têm linha de apoio).
+    const clicarBotaoQueComeca = (escopo, rotulo) => cdp.evaluate(`
+      (function(){ var raiz = document.querySelector(${JSON.stringify(escopo)}); if (!raiz) return false;
+        var b = Array.prototype.find.call(raiz.querySelectorAll('button'), function(x){ return x.textContent.trim().indexOf(${JSON.stringify(rotulo)}) === 0; });
+        if (!b) return false; b.click(); return true; })()
     `);
-    const RESULTADO = 'section[aria-label="Resultado do processamento"]';
-    const SALVO = 'section[aria-label="Fechamento salvo"]';
-    const ENTREGA = 'section[aria-label="Entrega para o cliente"]';
+    const botaoDesabilitado = (rotulo, escopo = "body") => cdp.evaluate(`
+      (function(){ var raiz = document.querySelector(${JSON.stringify(escopo)}); var b = raiz && Array.prototype.find.call(raiz.querySelectorAll('button'), function(x){ return x.textContent.trim() === ${JSON.stringify(rotulo)}; }); return b ? b.disabled : null; })()
+    `);
+    async function esperarDrawer(titulo) {
+      await waitFor(cdp, `(function(){ var d = document.querySelector(${JSON.stringify(DRAWER)}); return !!d && d.innerText.indexOf(${JSON.stringify(titulo)}) >= 0; })()`, `o drawer "${titulo}" não abriu`);
+      await sleep(150);
+    }
+    async function fecharDrawer() {
+      await cdp.evaluate(`(function(){ var b = document.querySelector(${JSON.stringify(`${DRAWER} button[aria-label="Fechar"]`)}); if (b) b.click(); })()`);
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(DRAWER)}) === null`, "o drawer não fechou");
+      await sleep(80);
+    }
+    async function abrirDoCabecalho(rotulo) {
+      assert.ok(await clicarBotao(".vf-fin-cabecalho-b__acoes", rotulo), `botão "${rotulo}" ausente no cabeçalho`);
+      await esperarDrawer(rotulo);
+    }
+    async function abrirPreparo() {
+      const ok = await cdp.evaluate(`(function(){ var b = document.querySelector(${JSON.stringify(`${ETAPAS} button[aria-label$=": Base de custos"]`)}); if (!b) return false; b.click(); return true; })()`);
+      assert.ok(ok, "a etapa Base de custos deveria abrir o preparo");
+      await esperarDrawer("Preparar fechamento");
+    }
+    async function subirArquivo(seletor, arquivo) {
+      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
+      const no = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: seletor });
+      assert.ok(no.nodeId, `campo de arquivo ausente: ${seletor}`);
+      await cdp.send("DOM.setFileInputFiles", { files: [arquivo], nodeId: no.nodeId });
+      await sleep(150);
+    }
+    async function processarNoPreparo() {
+      assert.ok(await clicarBotao(DRAWER, "Processar fechamento"), "botão Processar fechamento ausente no preparo");
+      await waitFor(cdp, `document.querySelector('[data-testid="kpis-processamento"]') !== null`, "o resultado do processamento não apareceu na mesa");
+      await semAnimacao();
+    }
+    // Medidas de layout só depois das animações de entrada (os cartões entram
+    // deslocados por transform e falseariam o alinhamento).
+    const semAnimacao = async () => {
+      await waitFor(cdp, "document.getAnimations().every(function(a){ return a.playState !== 'running'; })", "as animações de entrada não terminaram");
+      await sleep(80);
+    };
+    const ESPERA_MESA = `document.querySelector(${JSON.stringify(ETAPAS)}) !== null`;
 
     // O bundle que a página TEM que carregar é o que o build gravou em
     // financeiro-v3.html — o teste lê do disco, nunca de um hash fixo.
@@ -506,7 +538,7 @@ async function run() {
     financeiroPayload = payloadFeliz();
     await seedAndGoto("cliente=n97&conta=42");
     await waitFor(cdp, "window.VF.context.getState() === 'READY'", "n97/42 não chegou a READY");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas do Financeiro não renderizaram");
+    await waitFor(cdp, ESPERA_MESA, "a mesa do Financeiro não renderizou");
     await sleep(200);
 
     await check("F4.1 — Shell mostra Cliente/Operação corretos, item Financeiro ativo na sidebar", async () => {
@@ -538,93 +570,95 @@ async function run() {
       }
     });
 
-    await check("Paridade — as abas são Fechamento · Relatórios gerados · Histórico; Resultado e Conciliação não são mais abas", async () => {
-      const abas = await cdp.evaluate("Array.prototype.map.call(document.querySelectorAll('.vf-tab'), function(b){ return b.textContent.trim(); })");
-      assert.deepStrictEqual(abas, ABAS_ESPERADAS, `abas inesperadas: ${JSON.stringify(abas)}`);
-      assert.ok(!abas.includes("Resultado") && !abas.includes("Conciliação"), `abas antigas não podem voltar: ${JSON.stringify(abas)}`);
-      const ativa = await cdp.evaluate("(document.querySelector('.vf-tab[aria-selected=\"true\"]') || {}).textContent");
-      assert.strictEqual(ativa && ativa.trim(), "Fechamento", `a aba padrão deveria ser Fechamento: ${ativa}`);
-    });
-
-    await check("Paridade — Fechamento carrega a ilha: competência por extenso, status DESTA conta e formulário nativo", async () => {
+    await check("Modelo B — sem abas: cabeçalho com competência, status desta conta e os botões Histórico/Relatórios", async () => {
+      const abas = await cdp.evaluate("document.querySelectorAll('.vf-tab, [role=\"tab\"]').length");
+      assert.strictEqual(abas, 0, "o modelo B não tem abas");
       const competencia = await textoDe('[data-testid="competencia-extenso"]');
-      assert.strictEqual(competencia, "Agosto/2026", `competência em tela: ${competencia}`);
+      assert.ok(/Agosto\/2026/.test(competencia || ""), `competência em tela: ${competencia}`);
       const status = await textoDe('[data-testid="status-competencia"]');
       assert.strictEqual(status, "Publicado", `Agosto tem entrega publicada desta conta: ${status}`);
-      // Nome amigável vem da carteira do Shell (GET /me/context → snapshot.cliente), não do slug.
-      const contexto = await textoDe('[data-testid="contexto-fechamento"]');
-      assert.ok(/N97 Comercial/.test(contexto), `o cabeçalho deveria mostrar o nome do cliente: ${contexto}`);
-      await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "a base vinculada de MELI não foi reconhecida");
-      const texto = await textoDoPainel();
-      assert.ok(/Base de custos/i.test(texto) && /Processar fechamento/i.test(texto), `o formulário nativo deveria estar no Fechamento: ${texto.slice(0, 300)}`);
+      const botoes = await textoDe(".vf-fin-cabecalho-b__acoes");
+      assert.ok(/Histórico/.test(botoes) && /Relatórios/.test(botoes), `os botões do cabeçalho deveriam existir: ${botoes}`);
+      // Cliente e conta moram na sidebar do Shell: nada de barra de contexto.
+      assert.strictEqual(await textoDe('[data-testid="contexto-fechamento"]'), null, "a barra de contexto saiu da página");
     });
 
-    await check("Paridade — Fechamento salvo (antiga aba Resultado): composição renderiza, sem custo mostra '—', nunca R$0", async () => {
-      const texto = await textoDe(`${PAINEL} ${SALVO}`);
-      assert.ok(texto, "o bloco 'Fechamento salvo' deveria estar dentro do Fechamento");
+    await check("Modelo B — painel com as seis etapas; fechamento salvo marca as etapas de preparo como feitas", async () => {
+      const etapas = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${ETAPAS} [data-etapa]`)}), function(e){ return [e.dataset.etapa, e.dataset.estado]; })`);
+      assert.deepStrictEqual(etapas.map((e) => e[0]), ["base", "arquivos", "ajustes", "processar", "pendencias", "publicar"]);
+      assert.deepStrictEqual(etapas.find((e) => e[0] === "publicar"), ["publicar", "feita"], "Agosto publicado: a última etapa está feita");
+      const texto = await textoDe(ETAPAS);
+      assert.ok(/Fechamento de Agosto\/2026/.test(texto), `título do painel: ${texto.slice(0, 120)}`);
+    });
+
+    await check("Paridade — Fechamento salvo (legado, sem summary): composição renderiza, sem custo mostra '—', nunca R$0", async () => {
+      const texto = await textoDe(`${MESA} .vf-fin-mesa-vazio.is-legado`);
+      assert.ok(texto, "o cartão do fechamento salvo deveria estar na mesa");
       assert.ok(texto.includes("Faturamento bruto"), `composição ausente: ${texto}`);
       assert.ok(/Custo de produto[\s\S]*—/.test(texto), `custo ausente deveria mostrar '—', não R$0: ${texto}`);
       assert.ok(!texto.includes("R$ 0,00"), `nenhum valor ausente pode virar R$ 0,00: ${texto}`);
     });
 
-    await check("Paridade — conciliação Mercado Pago é um BLOCO dentro do Fechamento (MELI), com status e cobertura", async () => {
-      const abriu = await cdp.evaluate(`(function(){ var d = document.querySelector(${JSON.stringify(`${PAINEL} ${SALVO} details.vf-fin-disclosure`)}); if (!d) return false; d.open = true; return true; })()`);
-      assert.ok(abriu, "o bloco de conciliação Mercado Pago deveria existir no Fechamento salvo (MELI)");
+    await check("Paridade — conciliação Mercado Pago continua à vista na mesa (MELI), com status e cobertura", async () => {
+      const abriu = await cdp.evaluate(`(function(){ var d = document.querySelector(${JSON.stringify(`${MESA} details.vf-fin-disclosure`)}); if (!d) return false; d.open = true; return true; })()`);
+      assert.ok(abriu, "o bloco de conciliação Mercado Pago deveria existir na mesa (MELI)");
       await sleep(80);
-      const texto = await textoDe(`${PAINEL} ${SALVO} details.vf-fin-disclosure`);
+      const texto = await textoDe(`${MESA} details.vf-fin-disclosure`);
       assert.ok(/Conciliação Mercado Pago/.test(texto), `título do bloco ausente: ${texto}`);
       assert.ok(/Conciliação parcial/.test(texto), `status de conciliação ausente: ${texto}`);
       assert.ok(/93,8%|93.8%/.test(texto), `cobertura não encontrada: ${texto}`);
     });
 
-    await check("F4.2 — Entrega para o cliente age sobre o período EM TELA, com a competência nomeada", async () => {
-      const texto = await textoDe(`${PAINEL} ${ENTREGA}`);
-      assert.ok(texto, "o painel 'Entrega para o cliente' deveria aparecer para a entrega desta conta");
-      assert.ok(/Despublicar/.test(texto), `Agosto está publicado: o painel deveria oferecer Despublicar: ${texto}`);
-      const cliente = await cdp.evaluate(`(function(){ var dl = document.querySelector(${JSON.stringify(`${PAINEL} ${ENTREGA} [data-testid="identidade-entrega"]`)}); if (!dl) return null; var dt = Array.prototype.find.call(dl.querySelectorAll('dt'), function(d){ return /cliente/i.test(d.textContent); }); return dt && dt.nextElementSibling ? dt.nextElementSibling.textContent : null; })()`);
+    await check("F4.2 — entrega publicada: o painel oferece Copiar/Abrir link; a Entrega age sobre o período EM TELA, nomeado", async () => {
+      const painel = await textoDe(ETAPAS);
+      assert.ok(/Copiar link/.test(painel) && /Abrir link/.test(painel), `entrega publicada: o painel deveria oferecer o link: ${painel}`);
+      const href = await cdp.evaluate(`(function(){ var a = Array.prototype.find.call(document.querySelectorAll(${JSON.stringify(`${ETAPAS} a`)}), function(x){ return x.textContent.trim() === 'Abrir link'; }); return a ? a.getAttribute('href') : null; })()`);
+      assert.ok(href && href.includes("relatorio-publico.html?token=tok-agosto"), `link público: ${href}`);
+      assert.ok(await clicarBotao(ETAPAS, "Apresentação e link"), "botão 'Apresentação e link' ausente");
+      await esperarDrawer("Entrega para o cliente");
+      const cliente = await cdp.evaluate(`(function(){ var dl = document.querySelector(${JSON.stringify(`${DRAWER} [data-testid="identidade-entrega"]`)}); if (!dl) return null; var dt = Array.prototype.find.call(dl.querySelectorAll('dt'), function(d){ return /cliente/i.test(d.textContent); }); return dt && dt.nextElementSibling ? dt.nextElementSibling.textContent : null; })()`);
       assert.strictEqual(cliente, "N97 Comercial", `"Entrega para o cliente" deveria mostrar o nome do cliente: ${cliente}`);
-      // Entrega que já teve link abre com a apresentação RECOLHIDA e, aberta,
-      // em leitura (sem "Salvar alterações").
-      const apresentacao = await cdp.evaluate(`(function(){ var d = document.querySelector(${JSON.stringify(`${PAINEL} ${ENTREGA} details.vf-fin-disclosure`)}); if (!d) return null; var fechada = !d.open; d.open = true; return { fechada: fechada }; })()`);
+      // Entrega que já teve link abre com a apresentação RECOLHIDA e, aberta, em leitura.
+      const apresentacao = await cdp.evaluate(`(function(){ var d = document.querySelector(${JSON.stringify(`${DRAWER} details.vf-fin-disclosure`)}); if (!d) return null; var fechada = !d.open; d.open = true; return { fechada: fechada }; })()`);
       assert.ok(apresentacao && apresentacao.fechada, "a apresentação de uma entrega histórica deveria abrir recolhida");
-      await waitFor(cdp, `(document.querySelector(${JSON.stringify(`${PAINEL} ${ENTREGA}`)}) || {innerText:''}).innerText.indexOf('o conteúdo é histórico') >= 0`, "a entrega que já teve link deveria se declarar histórica (somente leitura)");
-      assert.strictEqual(await clicarBotao(`${PAINEL} ${ENTREGA}`, "Salvar alterações"), false, "entrega histórica não pode oferecer 'Salvar alterações'");
-      assert.ok(await clicarBotao(`${PAINEL} ${ENTREGA}`, "Despublicar"), "botão Despublicar ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(DRAWER)}) || {innerText:''}).innerText.indexOf('o conteúdo é histórico') >= 0`, "a entrega que já teve link deveria se declarar histórica (somente leitura)");
+      assert.strictEqual(await clicarBotao(DRAWER, "Salvar alterações"), false, "entrega histórica não pode oferecer 'Salvar alterações'");
+      assert.ok(await clicarBotao(DRAWER, "Despublicar"), "botão Despublicar ausente");
       await sleep(120);
-      const confirm = await textoDe(`${PAINEL} ${ENTREGA} .vf-fin-confirm`);
+      const confirm = await textoDe(`${DRAWER} .vf-fin-confirm`);
       assert.ok(/Agosto\/2026/.test(confirm), `a confirmação tem que nomear o período em tela (Agosto/2026): ${confirm}`);
-      assert.ok(await clicarBotao(`${PAINEL} ${ENTREGA} .vf-fin-confirm`, "Cancelar"), "botão Cancelar ausente");
+      assert.ok(await clicarBotao(`${DRAWER} .vf-fin-confirm`, "Cancelar"), "botão Cancelar ausente");
       await sleep(80);
       assert.strictEqual(entregasFake.find((e) => e.id === 801).publicado, true, "Cancelar não pode ter despublicado nada");
+      await fecharDrawer();
     });
 
-    await check("Paridade — troca para Relatórios gerados: lista desta conta + legada, cada linha identificada", async () => {
-      await abrirAba("Relatórios gerados");
+    await check("Paridade — Relatórios (drawer do cabeçalho): lista desta conta + legada, cada linha identificada", async () => {
+      await abrirDoCabecalho("Relatórios");
       assert.ok(/cliente_conta_id=42/.test(ultimaListaEntregasUrl || ""), `a lista deveria ser pedida pela conta em tela: ${ultimaListaEntregasUrl}`);
-      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr`)}).length`);
+      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${DRAWER} tbody tr`)}).length`);
       assert.strictEqual(linhas, 4, `esperado 3 entregas da conta + 1 legada, achei ${linhas}`);
-      const daConta = await textoDe(`${PAINEL} tbody tr[data-entrega="801"]`);
+      const daConta = await textoDe(`${DRAWER} tbody tr[data-entrega="801"]`);
       assert.ok(/Mercado Livre 1/.test(daConta), `entrega desta conta deveria nomear a conta: ${daConta}`);
-      const legada = await textoDe(`${PAINEL} tbody tr[data-entrega="804"]`);
+      const legada = await textoDe(`${DRAWER} tbody tr[data-entrega="804"]`);
       assert.ok(/Legado · operação não registrada/.test(legada), `a legada não pode ser atribuída à conta em tela: ${legada}`);
       assert.ok(!/Mercado Livre 1/.test(legada), `a legada não pode levar o nome da conta: ${legada}`);
-      const rascunho = await cdp.evaluate(`(function(){ var tr = document.querySelector(${JSON.stringify(`${PAINEL} tbody tr[data-entrega="803"]`)}); return { texto: tr.innerText, publicadoEm: tr.cells[6].innerText.trim() }; })()`);
+      const rascunho = await cdp.evaluate(`(function(){ var tr = document.querySelector(${JSON.stringify(`${DRAWER} tbody tr[data-entrega="803"]`)}); return { texto: tr.innerText, publicadoEm: tr.cells[6].innerText.trim() }; })()`);
       assert.ok(!/Abrir/.test(rascunho.texto), `rascunho não pode oferecer link público: ${rascunho.texto}`);
       assert.ok(/Publicar/.test(rascunho.texto), `rascunho deveria oferecer Publicar: ${rascunho.texto}`);
-      // Publicado nunca finge data de publicação; rascunho mostra ausência.
       assert.strictEqual(rascunho.publicadoEm, "—", `rascunho deveria mostrar '—' em "Publicado em": ${rascunho.publicadoEm}`);
     });
 
     await check("F4.2 — a linha da competência em tela é marcada", async () => {
-      const marcadas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr.is-destacada`)}).length`);
+      const marcadas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${DRAWER} tbody tr.is-destacada`)}).length`);
       assert.strictEqual(marcadas, 1, `esperado exatamente 1 linha marcada como período em tela, achei ${marcadas}`);
-      const texto = await textoDe(`${PAINEL} tbody tr.is-destacada`);
+      const texto = await textoDe(`${DRAWER} tbody tr.is-destacada`);
       assert.ok(/Agosto\/2026/.test(texto), `a linha marcada deveria ser a de Agosto/2026: ${texto}`);
-      const aviso = await textoDoPainel();
+      const aviso = await textoDe(DRAWER);
       assert.ok(/Entregas desta operação e as legadas do cliente/.test(aviso), `o escopo da lista deveria estar dito na tela: ${aviso.slice(0, 200)}`);
     });
 
-    const LINHA_JUNHO = `${PAINEL} tbody tr[data-entrega="803"]`;
+    const LINHA_JUNHO = `${DRAWER} tbody tr[data-entrega="803"]`;
     await check("F4.2 — um clique não publica: a confirmação aparece e NOMEIA a competência", async () => {
       const antes = entregasRequestCount;
       assert.ok(await clicarBotao(LINHA_JUNHO, "Publicar"), "botão Publicar ausente na linha de Junho");
@@ -656,11 +690,12 @@ async function run() {
       const alvo = entregasFake.find((e) => e.id === 803);
       assert.strictEqual(alvo.publicado, false);
       assert.strictEqual(alvo.token_publico, null, "o token público precisa ser revogado");
+      await fecharDrawer();
     });
 
-    await check("Paridade — troca para Histórico: 12 competências desta conta, mais recente primeiro, legada sinalizada à parte", async () => {
-      await abrirAba("Histórico");
-      const itens = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} .vf-fin-historico__item`)}), function(li){ return { m: li.getAttribute('data-competencia'), t: li.innerText }; })`);
+    await check("Paridade — Histórico (drawer do cabeçalho): 12 competências desta conta, mais recente primeiro, legada sinalizada à parte", async () => {
+      await abrirDoCabecalho("Histórico");
+      const itens = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${DRAWER} .vf-fin-historico__item`)}), function(li){ return { m: li.getAttribute('data-competencia'), t: li.innerText }; })`);
       assert.strictEqual(itens.length, 12, `esperadas 12 competências, achei ${itens.length}`);
       assert.strictEqual(itens[0].m, "2026-08", `histórico deveria começar por Agosto/2026 (mais recente): ${itens[0].m}`);
       assert.ok(/Agosto\/2026/.test(itens[0].t) && /Publicado/.test(itens[0].t), `Agosto: ${itens[0].t}`);
@@ -669,23 +704,21 @@ async function run() {
       const maio = itens.find((i) => i.m === "2026-05");
       assert.ok(maio && /Sem fechamento/.test(maio.t), `a legada não conta como fechamento desta conta: ${maio && maio.t}`);
       assert.ok(/existe fechamento legado \(sem conta\)/.test(maio.t), `a legada deveria ser sinalizada: ${maio.t}`);
+      await fecharDrawer();
     });
 
-    await check("Paridade — voltar para Fechamento: a ilha continua montada, na mesma competência", async () => {
-      await abrirAba("Fechamento");
+    await check("Paridade — abrir e fechar os drawers não muda a competência nem desmonta a mesa", async () => {
       const competencia = await textoDe('[data-testid="competencia-extenso"]');
-      assert.strictEqual(competencia, "Agosto/2026", `a competência não podia mudar com a troca de aba: ${competencia}`);
-      const texto = await textoDoPainel();
-      assert.ok(/Processar fechamento/i.test(texto), `o formulário do Fechamento deveria continuar lá: ${texto.slice(0, 200)}`);
-      const salvo = await textoDe(`${PAINEL} ${SALVO}`);
-      assert.ok(salvo && salvo.includes("Faturamento bruto"), "o Fechamento salvo deveria continuar lá");
+      assert.ok(/Agosto\/2026/.test(competencia || ""), `a competência não podia mudar: ${competencia}`);
+      const salvo = await textoDe(`${MESA} .vf-fin-mesa-vazio.is-legado`);
+      assert.ok(salvo && salvo.includes("Faturamento bruto"), "o Fechamento salvo deveria continuar na mesa");
     });
 
-    await check("Paridade — no Histórico, escolher um mês abre o Fechamento daquele mês", async () => {
-      await abrirAba("Histórico");
-      await cdp.evaluate(`(function(){ var li = document.querySelector(${JSON.stringify(`${PAINEL} .vf-fin-historico__item[data-competencia="2026-07"] .vf-fin-historico__periodo`)}); li.click(); })()`);
-      await waitFor(cdp, `(function(){ var b = ${acharAba("Fechamento")}; return b && b.getAttribute('aria-selected') === 'true'; })()`, "escolher Julho deveria abrir o Fechamento");
-      await waitFor(cdp, `(document.querySelector('[data-testid="competencia-extenso"]') || {}).innerText === 'Julho/2026'`, "a competência deveria ser Julho/2026");
+    await check("Paridade — no Histórico, escolher um mês troca a competência e fecha o drawer", async () => {
+      await abrirDoCabecalho("Histórico");
+      await cdp.evaluate(`(function(){ var li = document.querySelector(${JSON.stringify(`${DRAWER} .vf-fin-historico__item[data-competencia="2026-07"] .vf-fin-historico__periodo`)}); li.click(); })()`);
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(DRAWER)}) === null`, "escolher Julho deveria fechar o Histórico");
+      await waitFor(cdp, `/Julho\\/2026/.test((document.querySelector('[data-testid="competencia-extenso"]') || {}).innerText || '')`, "a competência deveria ser Julho/2026");
       await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Publicado'`, "Julho tem entrega publicada desta conta");
     });
 
@@ -693,25 +726,26 @@ async function run() {
     entregasFalham = true;
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=deg`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou");
     await sleep(200);
 
-    await check("F4.2 — /entregas-cliente fora do ar: Relatórios gerados continua em LEITURA, com motivo e retry, sem botão inerte", async () => {
-      await abrirAba("Relatórios gerados");
+    await check("F4.2 — /entregas-cliente fora do ar: Relatórios continua em LEITURA, com motivo e retry, sem botão inerte", async () => {
+      await abrirDoCabecalho("Relatórios");
       await sleep(100);
-      const texto = await textoDoPainel();
+      const texto = await textoDe(DRAWER);
       assert.ok(/Ações indisponíveis no momento/.test(texto), `deveria explicar por que as ações sumiram: ${texto}`);
       assert.ok(/Tentar novamente/.test(texto), "o modo degradado precisa oferecer retry");
       assert.ok(!/Publicar/.test(texto), `sem id não existe ação — nenhum botão Publicar podia aparecer: ${texto}`);
-      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr`)}).length`);
+      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${DRAWER} tbody tr`)}).length`);
       assert.strictEqual(linhas, 3, `a leitura do payload do Financeiro deveria sobreviver, achei ${linhas} linhas`);
+      await fecharDrawer();
     });
 
     entregasFalham = false;
     resetEntregas();
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=1b`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou");
     await sleep(300);
 
     const shot1 = path.join(SHOTS_DIR, "financeiro-v3-feliz.png");
@@ -724,25 +758,17 @@ async function run() {
     entregasFake = []; // nenhuma entrega desta conta (nem legada) no período
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&_r=2`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram após reload");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou após reload");
     await sleep(200);
 
-    await check("Conv#3 §10 — sem fechamento no período: status 'Sem fechamento', estado vazio honesto e o formulário NATIVO já disponível", async () => {
+    await check("Conv#3 §10 — sem fechamento no período: 'Sem fechamento', mesa vazia honesta e o próximo passo é a planilha", async () => {
       await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Sem fechamento'`, "o status da competência deveria ser 'Sem fechamento'");
-      try {
-        await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${SALVO}`)}) !== null`);
-      } catch (_) {
-        throw new Error(`o bloco 'Fechamento salvo' não apareceu: ${await cdp.evaluate("document.body.innerText")}`);
-      }
-      const salvo = await textoDe(`${PAINEL} ${SALVO}`);
-      assert.ok(/Nenhum fechamento salvo/i.test(salvo || ""), `estado vazio ausente: ${salvo}`);
-      assert.ok(!/R\$ 0,00/.test(salvo || ""), `sem fechamento não é R$ 0,00: ${salvo}`);
-      const entrega = await textoDe(`${PAINEL} ${ENTREGA}`);
-      assert.strictEqual(entrega, null, "sem entrega desta conta, o painel de entrega não aparece");
-      const texto = await textoDoPainel();
-      assert.ok(/Processar fechamento/i.test(texto), `o formulário nativo deveria estar no Fechamento: ${texto.slice(0, 200)}`);
-      assert.ok(/Base de custos/i.test(texto), `o formulário nativo começa pela base de custos: ${texto.slice(0, 200)}`);
-      // O legado segue existindo, mas como fallback (link do cabeçalho), não como CTA de gerar.
+      const vazio = await textoDe(`${MESA} .vf-fin-mesa-vazio`);
+      assert.ok(/Agosto\/2026 ainda não foi fechado/.test(vazio || ""), `estado vazio ausente: ${vazio}`);
+      assert.ok(!/R\$ 0,00/.test(await textoDe(MESA)), "sem fechamento não é R$ 0,00");
+      const painel = await textoDe(ETAPAS);
+      assert.ok(/Enviar planilha de vendas/.test(painel), `o painel deveria levar à planilha de vendas: ${painel}`);
+      assert.ok(!/Apresentação/.test(painel), "sem entrega desta conta, não existe atalho para a apresentação");
       const temFallback = await cdp.evaluate(`document.querySelector('.vf-page-header__description a[href*="financeiro.html"]') !== null`);
       assert.ok(temFallback, "o Financeiro legado deve continuar acessível como fallback");
     });
@@ -752,8 +778,9 @@ async function run() {
     fs.writeFileSync(shot2, Buffer.from(png2.data, "base64"));
     console.log(`   screenshot: ${shot2}`);
 
-    // ═══ 2b. Conv#3 §25 — E2E do fluxo NATIVO: upload → processar → resultado
-    // → salvar entrega, com a competência divergente pedindo confirmação ═══
+    // ═══ 2b. Conv#3 §25 — E2E do fluxo NATIVO: preparo → processar →
+    // resultado na mesa → salvar, com a competência divergente pedindo
+    // confirmação ═══
     const planilhaFake = path.join(SHOTS_DIR, "vendas-fake.xlsx");
     fs.writeFileSync(planilhaFake, "planilha-de-vendas-fake");
     competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-07", divergente: true, motivo: "As datas das vendas caem em julho/2026." };
@@ -762,56 +789,63 @@ async function run() {
     entregasFake = []; // agosto ainda não tem entrega
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=2b`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou");
     await sleep(200);
 
-    await check("Conv#3 §25 — MELI com base vinculada: só a planilha de vendas, processa e o resultado nasce no Fechamento", async () => {
-      // marketplace vem da operação (conta 42 = meli) — sem seletor na tela
+    await check("Conv#3 §25 — MELI com base vinculada: o preparo só pede a planilha de vendas, processa e o resultado nasce na mesa", async () => {
+      await abrirPreparo();
       await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "a base vinculada de MELI não foi reconhecida");
       const semUploadCustos = await cdp.evaluate(`document.querySelector('input[aria-label="Planilha de custos"]') === null`);
       assert.ok(semUploadCustos, "com base vinculada, MELI não pode pedir upload de custos");
-      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
-      const inputNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
-      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: inputNode.nodeId });
-      await sleep(150);
-      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente");
-      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "o resultado do processamento não apareceu no Fechamento");
+      await subirArquivo('input[aria-label^="Planilha de vendas"]', planilhaFake);
+      await processarNoPreparo();
       assert.strictEqual(fechamentoRequestCount, 1, "o processamento nativo deveria ter chamado o backend uma vez");
+      assert.strictEqual(await cdp.evaluate(`document.querySelector(${JSON.stringify(DRAWER)}) === null`), true, "processar fecha o preparo");
       await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Processado · não salvo'`, "o status deveria dizer que o processamento não foi salvo");
     });
 
-    await check("Paridade — o resultado processado sobrevive à troca de aba (Relatórios → Fechamento) sem reprocessar", async () => {
-      await abrirAba("Relatórios gerados");
-      await abrirAba("Fechamento");
-      const ainda = await cdp.evaluate(`document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`);
-      assert.ok(ainda, "voltar ao Fechamento não pode jogar fora o resultado processado");
-      assert.strictEqual(fechamentoRequestCount, 1, "trocar de aba não pode reprocessar");
+    await check("Paridade — o resultado processado sobrevive a abrir e fechar Relatórios, sem reprocessar", async () => {
+      await abrirDoCabecalho("Relatórios");
+      await fecharDrawer();
+      const ainda = await cdp.evaluate(`document.querySelector('[data-testid="kpis-processamento"]') !== null`);
+      assert.ok(ainda, "abrir Relatórios não pode jogar fora o resultado processado");
+      assert.strictEqual(fechamentoRequestCount, 1, "abrir um drawer não pode reprocessar");
     });
 
-    await check("Conv#3 §13 — competência divergente: 'Salvar entrega' fica travado até confirmação explícita", async () => {
-      const texto = await textoDe(".vf-fin-novo");
+    await check("Conv#3 §13 — competência divergente: salvar fica travado até confirmação explícita", async () => {
+      const texto = await textoDe(".vf-fin-mesa__principal");
       assert.ok(/não bate com o período em tela/.test(texto), `o aviso de divergência deveria aparecer: ${texto.slice(0, 200)}`);
       assert.ok(/julho\/2026/i.test(texto), "o aviso deve nomear a competência detectada");
-      assert.strictEqual(await botaoDesabilitado("Salvar entrega"), true, "Salvar não pode estar habilitado antes da confirmação");
-      await cdp.evaluate(`document.querySelector('.vf-fin-novo .vf-banner input[type=checkbox]').click()`);
+      assert.strictEqual(await botaoDesabilitado("Salvar como rascunho", ETAPAS), true, "Salvar não pode estar habilitado antes da confirmação");
+      await cdp.evaluate(`document.querySelector('.vf-fin-mesa__principal .vf-banner input[type=checkbox]').click()`);
       await sleep(80);
-      assert.strictEqual(await botaoDesabilitado("Salvar entrega"), false, "depois de confirmar, Salvar libera");
+      assert.strictEqual(await botaoDesabilitado("Salvar como rascunho", ETAPAS), false, "depois de confirmar, Salvar libera");
     });
 
-    await check("Conv#3 §16 — salvar cria a entrega e o painel 'Entrega para o cliente' passa a oferecer publicar (sem ida ao legado)", async () => {
-      assert.ok(await clicarBotao(".vf-fin-novo", "Salvar entrega"), "botão Salvar entrega ausente");
-      await waitFor(cdp, "document.querySelector('.vf-fin-novo').innerText.indexOf('Entrega salva') >= 0", "a confirmação de salvo não apareceu");
+    await check("Conv#3 §16 — salvar cria a entrega e o painel passa a oferecer Publicar (sem ida ao legado)", async () => {
+      assert.ok(await clicarBotao(ETAPAS, "Salvar como rascunho"), "botão Salvar como rascunho ausente");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(ETAPAS)}) || {innerText:''}).innerText.indexOf('Entrega salva como rascunho') >= 0`, "a confirmação de salvo não apareceu");
       assert.strictEqual(entregasFake.length, 1, "a entrega deveria ter sido criada no backend fake");
       assert.strictEqual(entregasFake[0].id, 900);
-      // a lista operacional foi relida e a entrega desta conta agora tem ação
-      await waitFor(cdp, `Array.prototype.some.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} ${ENTREGA} button`)}), function(b){ return b.textContent.trim() === 'Publicar'; })`, "a entrega recém-salva não virou publicável na tela");
+      await waitFor(cdp, `Array.prototype.some.call(document.querySelectorAll(${JSON.stringify(`${ETAPAS} button`)}), function(b){ return b.textContent.trim().indexOf('Publicar') === 0; })`, "a entrega recém-salva não virou publicável no painel");
       await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Rascunho salvo'`, "o status deveria passar a 'Rascunho salvo'");
+    });
+
+    await check("Modelo B — Publicar no painel confirma nomeando a competência e publica a entrega desta conta", async () => {
+      assert.ok(await clicarBotaoQueComeca(ETAPAS, "Publicar"), "CTA Publicar ausente no painel");
+      await sleep(120);
+      const confirm = await textoDe(`${ETAPAS} .vf-fin-mesa-confirmar`);
+      assert.ok(/Publicar Agosto\/2026\?/.test(confirm || ""), `a confirmação deveria nomear a competência: ${confirm}`);
+      assert.strictEqual(entregasFake[0].publicado, false, "um clique só não publica");
+      assert.ok(await clicarBotao(`${ETAPAS} .vf-fin-mesa-confirmar`, "Publicar"), "botão de confirmação ausente");
+      await waitFor(cdp, `(document.querySelector('[data-testid="status-competencia"]') || {}).innerText === 'Publicado'`, "o status deveria passar a 'Publicado'");
+      assert.strictEqual(entregasFake[0].publicado, true, "o servidor deveria ter registrado a publicação");
     });
     competenciaFake = { periodoSolicitado: "2026-08", periodoDetectado: "2026-08", divergente: false };
 
     // ═══ 2c. Missão Financeiro V3 — Shopee ganha a MESMA experiência do MELI:
     // com base vinculada, nada de upload de custos; sem base, o upload vira
-    // obrigatório e o formulário TRAVA até ele chegar. O marketplace é o da
+    // obrigatório e o preparo TRAVA até ele chegar. O marketplace é o da
     // operação (conta), não um seletor na tela. ═══
     fechamentoRequestCount = 0;
     resetEntregas();
@@ -821,35 +855,31 @@ async function run() {
     baseVinculosFake = []; // Shopee ainda SEM base vinculada
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (cenário Shopee)");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (cenário Shopee)");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou (cenário Shopee)");
     await sleep(200);
 
-    await check("Missão FV3 §15 — Shopee sem base vinculada: pede planilha de custos e 'Processar' fica travado com o motivo em tela", async () => {
+    await check("Missão FV3 §15 — Shopee sem base vinculada: o preparo pede planilha de custos e 'Processar' fica travado com o motivo", async () => {
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(ETAPAS)}) || {innerText:''}).innerText.indexOf('Sem base vinculada') >= 0`, "o painel deveria dizer que não há base vinculada");
+      await abrirPreparo();
       await waitFor(cdp, "document.querySelector('.vf-fin-base.is-ausente') !== null", "sem vínculo, a base de custos deveria aparecer como ausente");
-      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
-      const salesNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
-      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: salesNode.nodeId });
-      await sleep(150);
-      const texto = await textoDe(".vf-fin-novo");
+      await subirArquivo('input[aria-label^="Planilha de vendas"]', planilhaFake);
+      const texto = await textoDe(DRAWER);
       assert.ok(/Nenhuma base vinculada/.test(texto), `sem base, a tela precisa dizer isso: ${texto.slice(0, 300)}`);
+      assert.ok(/Planilha de custos necessária/.test(texto), `o motivo do bloqueio fica à vista: ${texto.slice(-300)}`);
       const temCardCustos = await cdp.evaluate(`document.querySelector('input[aria-label="Planilha de custos"]') !== null`);
       assert.ok(temCardCustos, "sem base, o card de upload de custos tem que aparecer");
-      assert.strictEqual(await botaoDesabilitado("Processar fechamento"), true, "sem a planilha de custos, Shopee não pode deixar processar");
+      assert.strictEqual(await botaoDesabilitado("Processar fechamento", DRAWER), true, "sem a planilha de custos, Shopee não pode deixar processar");
       assert.strictEqual(fechamentoRequestCount, 0, "nada podia ter sido enviado ao backend ainda");
     });
 
     await check("Missão FV3 §15 — Shopee com custos enviados: libera, processa e não mostra campos exclusivos de MELI", async () => {
-      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
-      const costsNode = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label="Planilha de custos"]' });
-      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: costsNode.nodeId });
-      await sleep(150);
-      assert.strictEqual(await botaoDesabilitado("Processar fechamento"), false, "com sales + costs, Shopee libera o processamento");
+      await subirArquivo('input[aria-label="Planilha de custos"]', planilhaFake);
+      assert.strictEqual(await botaoDesabilitado("Processar fechamento", DRAWER), false, "com sales + costs, Shopee libera o processamento");
       const semCamposMeli = await cdp.evaluate(
         "Array.prototype.every.call(document.querySelectorAll('.vf-fin-ajuste__label'), function(l){ return !/FULL|Custos adicionais/.test(l.textContent); })"
       );
       assert.ok(semCamposMeli, "campos exclusivos de MELI (FULL/custos adicionais) não podem aparecer no fluxo Shopee");
-      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente");
-      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "o resultado do fechamento Shopee não apareceu");
+      await processarNoPreparo();
       assert.strictEqual(fechamentoRequestCount, 1, "o processamento nativo do Shopee deveria ter chamado o backend uma vez");
     });
 
@@ -863,12 +893,15 @@ async function run() {
       ];
       await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee-base`);
       await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (Shopee c/ base)");
-      await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (Shopee c/ base)");
+      await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou (Shopee c/ base)");
+      await waitFor(cdp, `(document.querySelector(${JSON.stringify(ETAPAS)}) || {innerText:''}).innerText.indexOf('Comprou_chegou_shopee1 · vinculada') >= 0`, "o painel deveria nomear a base Shopee vinculada");
+      await abrirPreparo();
       await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "a base Shopee vinculada não foi reconhecida");
       const semUploadCustos = await cdp.evaluate(`document.querySelector('input[aria-label="Planilha de custos"]') === null`);
       assert.ok(semUploadCustos, "com base Shopee vinculada, não pode aparecer upload de custos");
-      const texto = await textoDe(".vf-fin-novo");
+      const texto = await textoDe(DRAWER);
       assert.ok(/Comprou_chegou_shopee1/.test(texto), `a tela precisa dizer qual base será usada: ${texto.slice(0, 300)}`);
+      await fecharDrawer();
     });
 
     // restaura o fixture para os blocos seguintes
@@ -879,9 +912,8 @@ async function run() {
     ];
 
     // ═══ 2d. Convergência #4 §10 — Shopee nas áreas de LEITURA: o mesmo
-    // Fechamento salvo / Relatórios gerados / Histórico do MELI, contra um
-    // payload marcado marketplace=shopee. A conciliação Mercado Pago é só do
-    // MELI e não pode aparecer aqui. ═══
+    // Fechamento salvo / Relatórios / Histórico do MELI, contra um payload
+    // marcado marketplace=shopee. A conciliação Mercado Pago é só do MELI. ═══
     N97_CONTAS[0].marketplace = "shopee";
     N97_CONTAS[0].nome = "Shopee 1";
     financeiroPayload = {
@@ -922,34 +954,36 @@ async function run() {
     ];
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=shopee-leitura`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (Shopee leitura)");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (Shopee leitura)");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou (Shopee leitura)");
     await sleep(200);
 
     await check("Convergência #4 §10 — Shopee: Fechamento salvo renderiza a composição da fixture, sem R$0 fabricado e sem conciliação MP", async () => {
-      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${SALVO}`)}) !== null`, "o Fechamento salvo Shopee não apareceu");
-      const texto = await textoDe(`${PAINEL} ${SALVO}`);
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${MESA} .vf-fin-mesa-vazio.is-legado`)}) !== null`, "o Fechamento salvo Shopee não apareceu");
+      const texto = await textoDe(`${MESA} .vf-fin-mesa-vazio.is-legado`);
       assert.ok(texto.includes("Faturamento bruto"), `composição Shopee ausente: ${texto}`);
       assert.ok(/Custo de produto[\s\S]*—/.test(texto), `custo ausente deveria mostrar '—' também no Shopee: ${texto}`);
       assert.ok(!texto.includes("R$ 0,00"), `nenhum valor ausente pode virar R$ 0,00 no Shopee: ${texto}`);
-      assert.ok(!/Conciliação Mercado Pago/.test(texto), `a conciliação Mercado Pago é só do MELI: ${texto}`);
+      assert.ok(!/Conciliação Mercado Pago/.test(await textoDe(MESA)), "a conciliação Mercado Pago é só do MELI");
     });
 
-    await check("Convergência #4 §10 — Shopee: Relatórios gerados lista a entrega Shopee e Histórico mostra o período", async () => {
-      await abrirAba("Relatórios gerados");
-      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} tbody tr`)}).length`);
+    await check("Convergência #4 §10 — Shopee: Relatórios lista a entrega Shopee e Histórico mostra o período", async () => {
+      await abrirDoCabecalho("Relatórios");
+      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${DRAWER} tbody tr`)}).length`);
       assert.strictEqual(linhas, 1, `esperada 1 entrega Shopee, achei ${linhas}`);
-      const linha = await textoDe(`${PAINEL} tbody tr`);
+      const linha = await textoDe(`${DRAWER} tbody tr`);
       assert.ok(/Shopee/.test(linha), `a linha deveria identificar o marketplace Shopee: ${linha}`);
       assert.ok(/Publicar/.test(linha), `rascunho Shopee deveria oferecer Publicar: ${linha}`);
+      await fecharDrawer();
 
-      await abrirAba("Histórico");
-      const periodo = await textoDe(`${PAINEL} .vf-fin-historico__item .vf-fin-historico__periodo`);
+      await abrirDoCabecalho("Histórico");
+      const periodo = await textoDe(`${DRAWER} .vf-fin-historico__item .vf-fin-historico__periodo`);
       assert.ok(/Agosto/i.test(periodo), `histórico Shopee deveria mostrar Agosto/2026: ${periodo}`);
+      await fecharDrawer();
     });
 
     await check("Convergência #4 §10 — Shopee: Publicar/Despublicar escrevem de verdade e a tela relê do servidor", async () => {
-      await abrirAba("Relatórios gerados");
-      const LINHA = `${PAINEL} tbody tr[data-entrega="950"]`;
+      await abrirDoCabecalho("Relatórios");
+      const LINHA = `${DRAWER} tbody tr[data-entrega="950"]`;
       assert.ok(await clicarBotao(LINHA, "Publicar"), "botão Publicar ausente na linha Shopee");
       await sleep(120);
       assert.ok(await clicarBotao(`${LINHA} .vf-fin-confirm`, "Publicar"), "confirmação de publicar ausente");
@@ -964,18 +998,15 @@ async function run() {
       const alvo = entregasFake.find((e) => e.id === 950);
       assert.strictEqual(alvo.publicado, false);
       assert.strictEqual(alvo.token_publico, null, "despublicar Shopee precisa revogar o token público também");
+      await fecharDrawer();
     });
     N97_CONTAS[0].marketplace = "meli";
     N97_CONTAS[0].nome = "Mercado Livre 1";
 
-    // ═══ 2d. UX pós-migração — a ORDEM da página é a ordem das perguntas de
-    // quem fecha o mês: quanto fechou → posso confiar → o que está errado →
-    // como se compõe → salvar → (só então) os milhares de produtos. ═══
-    // Processamento GRANDE (3.625 / 1.800 linhas): a tela pagina e nunca
-    // renderiza tudo. Larguras de notebook/desktop com o Shell ocupando a
-    // lateral: nada de scroll horizontal na PÁGINA (só dentro da tabela).
-    const ORDEM_COMPLETA = ["resultado", "leitura", "composicao", "cobertura", "pendencias", "acoes", "produtos"];
-    const secoesDaPagina = () => cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao]`)}), function(e){ return e.dataset.secao; })`);
+    // ═══ 2e. UX do modelo B com processamento GRANDE (3.625 / 1.800 linhas):
+    // a mesa (resultado + cascata | painel de etapas) e, embaixo, os produtos
+    // em largura total, paginados. Larguras de notebook/desktop com o Shell
+    // ocupando a lateral: nada de scroll horizontal na PÁGINA. ═══
     async function fotografar(nome, largura) {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: 1000, deviceScaleFactor: 1, mobile: false });
       await sleep(250);
@@ -989,6 +1020,11 @@ async function run() {
       return arquivo;
     }
     const semScrollHorizontalNaPagina = () => cdp.evaluate(`(function(){ var d = document.documentElement; return d.scrollWidth <= window.innerWidth + 1 && document.body.scrollWidth <= window.innerWidth + 1; })()`);
+    const PEND = `${DRAWER} [data-secao="pendencias"]`;
+    async function abrirPendencias() {
+      assert.ok(await clicarBotao(MESA, "Ver e corrigir"), "o aviso de pendências deveria oferecer 'Ver e corrigir'");
+      await esperarDrawer("Pendências de custo");
+    }
 
     resetEntregas();
     entregasFake = [];
@@ -1002,52 +1038,76 @@ async function run() {
     fechamentoRequestCount = 0;
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=ux-meli`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (UX MELI)");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (UX MELI)");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou (UX MELI)");
+    await abrirPreparo();
     await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "base vinculada MELI não reconhecida (UX MELI)");
-    {
-      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
-      const vendas = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
-      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: vendas.nodeId });
-      await sleep(150);
-      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente (UX MELI)");
-      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "resultado MELI grande não apareceu");
-      await sleep(300);
-    }
+    await subirArquivo('input[aria-label^="Planilha de vendas"]', planilhaFake);
+    await processarNoPreparo();
 
-    await check("UX — MELI: topo (KPIs + leitura) → composição → cobertura compacta → pendências → ações → entrega → produtos (produtos POR ÚLTIMO)", async () => {
-      assert.deepStrictEqual(await secoesDaPagina(), ORDEM_COMPLETA);
-      // o painel "Entrega para o cliente" fica entre as ações e os produtos
-      const posicoes = await cdp.evaluate(`(function(){
-        var raiz = document.querySelector(${JSON.stringify(PAINEL)});
-        var acoes = raiz.querySelector('[data-secao="acoes"]'), prod = raiz.querySelector('[data-secao="produtos"]'), ent = raiz.querySelector(${JSON.stringify(ENTREGA)});
-        var antes = function(a, b){ return !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING); };
-        return { entrega: !!ent, acoesAntesProdutos: antes(acoes, prod), entregaEntre: ent ? (antes(acoes, ent) && antes(ent, prod)) : null };
+    await check("UX — modelo B: destaque, aviso e cascata à esquerda; painel à direita terminando na borda da cascata; produtos depois, em largura total", async () => {
+      const m = await cdp.evaluate(`(function(){
+        var topo = document.querySelector('.vf-fin-mesa__topo').getBoundingClientRect();
+        var principal = document.querySelector('.vf-fin-mesa__principal');
+        var painel = document.querySelector(${JSON.stringify(ETAPAS)}).getBoundingClientRect();
+        var cascata = principal.querySelector('.vf-fin-mesa-cascata').getBoundingClientRect();
+        var destaque = principal.querySelector('[data-testid="kpis-processamento"]').getBoundingClientRect();
+        var aviso = principal.querySelector('[data-testid="aviso-pendencias"]');
+        var produtos = document.querySelector('.vf-fin-mesa-produtos').getBoundingClientRect();
+        return {
+          painelADireita: painel.left >= cascata.right - 1,
+          fundoAlinhado: Math.abs(painel.bottom - cascata.bottom),
+          ordem: destaque.bottom <= (aviso ? aviso.getBoundingClientRect().top : cascata.top) + 1 && cascata.top >= destaque.bottom - 1,
+          avisoUmaLinha: aviso ? (function(){ var t = aviso.querySelector('.vf-fin-mesa-aviso__texto'); return t.getBoundingClientRect().height <= parseFloat(getComputedStyle(t).lineHeight || '20') * 1.5 + 1; })() : null,
+          produtosDepois: produtos.top >= topo.bottom - 1,
+          produtosLarguraTotal: Math.abs(produtos.width - topo.width) <= 2,
+        };
       })()`);
-      assert.ok(posicoes.acoesAntesProdutos, "as ações vêm antes dos produtos");
-      if (posicoes.entrega) assert.ok(posicoes.entregaEntre, "a entrega deve ficar entre as ações e os produtos");
+      assert.ok(m.painelADireita, `o painel de etapas fica à direita: ${JSON.stringify(m)}`);
+      assert.ok(m.fundoAlinhado <= 2, `o painel termina na borda de baixo de "Da receita ao resultado": ${JSON.stringify(m)}`);
+      assert.ok(m.ordem, `destaque → aviso → cascata: ${JSON.stringify(m)}`);
+      assert.strictEqual(m.avisoUmaLinha, true, `o aviso de pendências ocupa uma linha só: ${JSON.stringify(m)}`);
+      assert.ok(m.produtosDepois && m.produtosLarguraTotal, `os produtos vêm depois da mesa, em largura total: ${JSON.stringify(m)}`);
     });
 
     await check("UX — MELI: 3.625 linhas mas só uma página renderizada (paginação real), com total e faixa visíveis", async () => {
-      const linhas = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="produtos"] tbody tr`)}).length`);
+      const linhas = await cdp.evaluate(`document.querySelectorAll('.vf-fin-mesa-produtos .vf-fin-mesa-lista__linha').length`);
       assert.strictEqual(linhas, 25, `esperadas 25 linhas na página, achei ${linhas}`);
-      const texto = await textoDe(`${PAINEL} [data-secao="produtos"]`);
+      const texto = await textoDe(".vf-fin-mesa-produtos");
       assert.ok(/3\.625 linhas/.test(texto), `o total de linhas deveria aparecer: ${texto.slice(0, 200)}`);
       assert.ok(/Página 1 de 145/.test(texto), "a paginação deveria dizer Página 1 de 145");
     });
 
-    await check("UX — MELI: KPIs como no legado — Resultado Final em destaque + receitas, LC e as DUAS MCs na grade; TACoS/TACoX menores", async () => {
+    await check("UX — MELI: busca à esquerda dos filtros; a lista não rola na horizontal (colunas secundárias saem pela largura)", async () => {
+      const m = await cdp.evaluate(`(function(){
+        var f = document.querySelector('.vf-fin-mesa-produtos__ferramentas');
+        var busca = f.querySelector('input[type=search]').getBoundingClientRect(), filtros = f.querySelector('[aria-label="Filtrar produtos"]').getBoundingClientRect();
+        var lista = document.querySelector('.vf-fin-mesa-lista');
+        return { buscaAntes: busca.left < filtros.left, semRolagem: lista.scrollWidth <= lista.clientWidth + 1 };
+      })()`);
+      assert.ok(m.buscaAntes, "a busca fica à esquerda dos filtros por status");
+      assert.ok(m.semRolagem, "a lista de produtos não pode rolar na horizontal");
+    });
+
+    await check("UX — MELI: destaque com o Resultado Final e seis números (receitas, LC, TACoS, TACoX, cobertura)", async () => {
       const kpi = await cdp.evaluate(`(function(){
         var r = document.querySelector('[data-testid="kpis-processamento"]');
-        var ids = function(sel){ return Array.prototype.map.call(r.querySelectorAll(sel), function(e){ return e.dataset.kpi; }); };
-        return { principais: ids('.vf-fin-resumo__principal [data-kpi]'), apoio: ids('.vf-fin-resumo__apoio [data-kpi]'), destaque: !!r.querySelector('[data-kpi="finalResult"].is-destaque') };
+        return { grade: Array.prototype.map.call(r.querySelectorAll('.vf-fin-mesa-destaque__grade [data-kpi]'), function(e){ return e.dataset.kpi; }), resultado: !!r.querySelector('.vf-fin-mesa-destaque__resultado[data-kpi="finalResult"]') };
       })()`);
-      assert.deepStrictEqual(kpi.principais, ["finalResult", "grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal", "mcCalculada", "finalMarginCalculated"]);
-      assert.deepStrictEqual(kpi.apoio, ["tacos", "tacox"]);
-      assert.ok(kpi.destaque, "Resultado Final deve ter o destaque");
+      assert.deepStrictEqual(kpi.grade, ["grossRevenueTotal", "paidRevenueTotal", "contributionProfitTotal", "tacos", "tacox", "calculatedCoveragePercent"]);
+      assert.ok(kpi.resultado, "Resultado Final deve ter o destaque");
+    });
+
+    await check("UX — MELI: poucas pendências → os 3 grupos com contagem (4 agora · 0 planilha · 0 bloqueadas), no drawer 'Ver e corrigir'", async () => {
+      await abrirPendencias();
+      const resumo = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} ul[aria-label="Resumo das pendências"] li`)}), function(li){ return [li.dataset.grupo, Number(li.querySelector('strong').textContent)]; })`);
+      assert.deepStrictEqual(resumo, [["agora", 4], ["planilha", 0], ["bloqueadas", 0]]);
+      const grupos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} .vf-fin-pend-grupo`)}), function(g){ return g.dataset.grupo; })`);
+      assert.deepStrictEqual(grupos, ["agora", "planilha", "bloqueadas"]);
+      const txt = await textoDe(`${PEND} [data-grupo="planilha"].vf-fin-pend-grupo`);
+      assert.ok(/Corrigir as 4 por planilha/.test(txt), `o grupo da planilha deveria oferecer o caminho: ${txt}`);
     });
 
     await check("UX — MELI: pendência corrigida NA LINHA (custo atual, novo custo, o que será gravado) e o fechamento NÃO é reprocessado sozinho", async () => {
-      const PEND = `${PAINEL} [data-secao="pendencias"]`;
       const cabecalhos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} table[aria-label="Pendências para corrigir agora"] th`)}), function(t){ return t.textContent; })`);
       assert.deepStrictEqual(cabecalhos, ["Produto", "Identificação", "Motivo", "Receita impactada", "Custo atual", "Novo custo", "Imposto %", "Ação"]);
       const antes = fechamentoRequestCount;
@@ -1067,44 +1127,30 @@ async function run() {
       assert.deepStrictEqual([upsertsFake[0].produto_id, upsertsFake[0].custo_produto, upsertsFake[0].imposto_percentual], ["MLB1000", 12.5, 0.08]); // imposto: padrão da base (fração), confirmado na tela
       assert.strictEqual(fechamentoRequestCount, antes, "corrigir custo não pode reprocessar sozinho");
       assert.ok(await clicarBotao(PEND, "Reprocessar fechamento"), "Reprocessar fechamento ausente");
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(DRAWER)}) === null`, "reprocessar fecha o drawer de pendências");
       await sleep(400);
       assert.strictEqual(fechamentoRequestCount, antes + 1, "Reprocessar deveria chamar o motor UMA vez");
     });
 
-    await check("UX — MELI: o resultado usa a largura útil (sem teto de 860px); os 6 KPIs não quebram valor; a Leitura fica ABAIXO dos KPIs (não os espreme)", async () => {
-      const medir = () => cdp.evaluate(`(function(){
-        var r = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="resultado"]`)});
-        var k = r.querySelector('[data-testid="kpis-processamento"]').getBoundingClientRect();
-        var l = r.querySelector('aside[data-secao="leitura"]').getBoundingClientRect();
-        var main = document.querySelector('.vf-shell__main').getBoundingClientRect();
-        var comp = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="composicao"]`)}).getBoundingClientRect();
-        var valores = Array.prototype.map.call(r.querySelectorAll('.vf-fin-resumo__principal .vf-fin-kpi__valor'), function(v){ return v.scrollWidth <= v.clientWidth + 1; });
-        return { largura: r.getBoundingClientRect().width, main: main.width, composicao: comp.width, abaixo: l.top >= k.bottom - 1, kpisLarguraToda: k.width >= r.getBoundingClientRect().width - 4, valoresInteiros: valores.every(Boolean) };
-      })()`);
+    await check("UX — MELI: nenhum valor do destaque é cortado e o painel acompanha a cascata em 1920, 1366 e 1200", async () => {
       for (const largura of [1920, 1366, 1200]) {
         await cdp.send("Emulation.setDeviceMetricsOverride", { width: largura, height: 1000, deviceScaleFactor: 1, mobile: false });
         await sleep(300);
-        const m = await medir();
-        assert.ok(m.largura > 900 || largura === 1200, `o resultado ficou com ${m.largura}px em ${largura}px`);
-        // largura útil = a do Shell (menos o respiro) até o teto do design system para telas largas (1560px)
-        assert.ok(m.composicao >= Math.min(m.main - 100, 1560) - 4, `a composição deveria ocupar a largura útil (${m.composicao} de ${m.main}) em ${largura}px`);
-        assert.ok(m.abaixo && m.kpisLarguraToda, `Leitura deveria vir ABAIXO e os KPIs ocupar a largura toda em ${largura}px: ${JSON.stringify(m)}`);
-        assert.ok(m.valoresInteiros, `algum valor de KPI foi cortado em ${largura}px: ${JSON.stringify(m)}`);
+        await semAnimacao();
+        const m = await cdp.evaluate(`(function(){
+          var r = document.querySelector('[data-testid="kpis-processamento"]');
+          var valores = Array.prototype.map.call(r.querySelectorAll('.vf-fin-mesa-kpi__valor, .vf-fin-mesa-destaque__valor'), function(v){ return v.scrollWidth <= v.clientWidth + 1; });
+          var painel = document.querySelector(${JSON.stringify(ETAPAS)}).getBoundingClientRect(), cascata = document.querySelector('.vf-fin-mesa-cascata').getBoundingClientRect();
+          var lado = painel.left >= cascata.right - 1;
+          return { valoresInteiros: valores.every(Boolean), lado: lado, fundo: lado ? Math.abs(painel.bottom - cascata.bottom) : 0 };
+        })()`);
+        assert.ok(m.valoresInteiros, `algum valor do destaque foi cortado em ${largura}px: ${JSON.stringify(m)}`);
+        assert.ok(m.fundo <= 2, `com o painel ao lado, ele termina na borda da cascata em ${largura}px: ${JSON.stringify(m)}`);
       }
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
     });
 
-    await check("UX — MELI: poucas pendências → os 3 grupos com contagem (4 agora · 0 planilha · 0 bloqueadas) e a planilha a um clique", async () => {
-      const PEND = `${PAINEL} [data-secao="pendencias"]`;
-      const resumo = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} ul[aria-label="Resumo das pendências"] li`)}), function(li){ return [li.dataset.grupo, Number(li.querySelector('strong').textContent)]; })`);
-      assert.deepStrictEqual(resumo, [["agora", 4], ["planilha", 0], ["bloqueadas", 0]]);
-      const grupos = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} .vf-fin-pend-grupo`)}), function(g){ return g.dataset.grupo; })`);
-      assert.deepStrictEqual(grupos, ["agora", "planilha", "bloqueadas"]);
-      const txt = await textoDe(`${PEND} [data-grupo="planilha"].vf-fin-pend-grupo`);
-      assert.ok(/Corrigir as 4 por planilha/.test(txt), `o grupo da planilha deveria oferecer o caminho: ${txt}`);
-    });
-
-    await check("UX — MELI: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200 (a tabela rola por dentro); screenshots gravadas", async () => {
+    await check("UX — MELI: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200; screenshots gravadas", async () => {
       for (const largura of [1920, 1366, 1200]) {
         const arquivo = await fotografar("financeiro-v3-meli", largura);
         assert.ok(fs.statSync(arquivo).size > 5000, `screenshot ${largura} vazia`);
@@ -1114,7 +1160,7 @@ async function run() {
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1200, deviceScaleFactor: 1, mobile: false });
     });
 
-    // Shopee com Order.all: a reconciliação vem ANTES da composição e dos produtos.
+    // Shopee com Order.all: a reconciliação abre o "Detalhes", antes da composição.
     N97_CONTAS[0].marketplace = "shopee";
     N97_CONTAS[0].nome = "Shopee 1";
     baseVinculosFake = [
@@ -1124,36 +1170,34 @@ async function run() {
     fechamentoRequestCount = 0;
     await navegar(`http://127.0.0.1:${serverPort}/financeiro-v3.html?cliente=n97&conta=42&periodo=2026-08&_r=ux-shopee`);
     await waitFor(cdp, "window.VF && window.VF.context && window.VF.context.getState() === 'READY'", "reload não voltou a READY (UX Shopee)");
-    await waitFor(cdp, "document.querySelector('.vf-tabs')", "abas não renderizaram (UX Shopee)");
+    await waitFor(cdp, ESPERA_MESA, "a mesa não renderizou (UX Shopee)");
+    await abrirPreparo();
     await waitFor(cdp, "document.querySelector('.vf-fin-base.is-encontrada') !== null", "base vinculada Shopee não reconhecida (UX Shopee)");
-    {
-      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
-      const vendas = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label^="Planilha de vendas"]' });
-      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: vendas.nodeId });
-      await sleep(150);
-      assert.ok(await clicarBotao(PAINEL, "Processar fechamento"), "botão Processar fechamento ausente (UX Shopee)");
-      await waitFor(cdp, `document.querySelector(${JSON.stringify(`${PAINEL} ${RESULTADO}`)}) !== null`, "resultado Shopee grande não apareceu");
-      await sleep(300);
-    }
+    await subirArquivo('input[aria-label^="Planilha de vendas"]', planilhaFake);
+    await processarNoPreparo();
 
-    await check("UX — Shopee: reconciliação logo depois do resultado, como no legado (Performance → Reconciliação + um cartão por status)", async () => {
-      assert.deepStrictEqual(await secoesDaPagina(), ["resultado", "leitura", "reconciliacao", "composicao", "cobertura", "pendencias", "acoes", "produtos"]);
-      const estados = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="reconciliacao"] [data-estado]`)}), function(e){ return e.dataset.estado; })`);
+    await check("UX — Shopee: em Detalhes, a reconciliação vem logo depois da leitura, como no legado (Performance → Reconciliação + um cartão por status)", async () => {
+      assert.ok(await clicarBotao(".vf-fin-mesa-cascata", "Detalhes"), "botão Detalhes ausente na cascata");
+      await esperarDrawer("Detalhes do fechamento");
+      const secoes = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${DRAWER} [data-secao]`)}), function(e){ return e.dataset.secao; })`);
+      assert.deepStrictEqual(secoes, ["leitura", "reconciliacao", "composicao", "cobertura"]);
+      const estados = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${DRAWER} [data-secao="reconciliacao"] [data-estado]`)}), function(e){ return e.dataset.estado; })`);
       assert.deepStrictEqual(estados, ["Concluídos", "Entregues", "Enviados", "Em atenção", "Cancelados confirmados", "Não pagos", "Devoluções / Reembolsos"]);
-      const texto = await textoDe(`${PAINEL} [data-secao="reconciliacao"]`);
+      const texto = await textoDe(`${DRAWER} [data-secao="reconciliacao"]`);
       assert.ok(/Performance \(pedidos pagos\)/i.test(texto) && /Reconciliação \(visão completa\)/i.test(texto), "o comparativo do legado deve aparecer");
       assert.ok(/R\$\s?180\.400,20/.test(texto) && /R\$\s?183\.900,00/.test(texto), `os dois totais do comparativo deveriam aparecer: ${texto.slice(0, 300)}`);
     });
 
     await check("UX — Shopee: cobertura financeira indisponível vira nota compacta (sem card vazio)", async () => {
-      const nota = await cdp.evaluate(`(function(){ var a = document.querySelector(${JSON.stringify(`${PAINEL} [data-secao="cobertura"] aside[data-eixo="financeiro"]`)}); return a ? a.getBoundingClientRect().height : null; })()`);
+      const nota = await cdp.evaluate(`(function(){ var a = document.querySelector(${JSON.stringify(`${DRAWER} [data-secao="cobertura"] aside[data-eixo="financeiro"]`)}); return a ? a.getBoundingClientRect().height : null; })()`);
       assert.ok(nota !== null && nota < 90, `a nota de cobertura financeira deveria ser compacta, altura ${nota}`);
-      const linhasCob = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PAINEL} [data-secao="cobertura"] .vf-fin-cob__linha`)}).length`);
+      const linhasCob = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${DRAWER} [data-secao="cobertura"] .vf-fin-cob__linha`)}).length`);
       assert.strictEqual(linhasCob, 1, "a cobertura compacta deveria ter só a linha de custos");
+      await fecharDrawer();
     });
 
     await check("UX — Shopee: 73 pendências → 0 agora · 72 por planilha · 1 bloqueada; o lote (5 passos) importa a planilha ali mesmo e atualiza a BASE", async () => {
-      const PEND = `${PAINEL} [data-secao="pendencias"]`;
+      await abrirPendencias();
       const resumo = await cdp.evaluate(`Array.prototype.map.call(document.querySelectorAll(${JSON.stringify(`${PEND} ul[aria-label="Resumo das pendências"] li`)}), function(li){ return [li.dataset.grupo, Number(li.querySelector('strong').textContent)]; })`);
       assert.deepStrictEqual(resumo, [["agora", 0], ["planilha", 72], ["bloqueadas", 1]]);
       const bloqueada = await textoDe(`${PEND} [data-grupo="bloqueadas"].vf-fin-pend-grupo`);
@@ -1173,9 +1217,7 @@ async function run() {
         resumo: { linhas_lidas: 72, linhas_ignoradas: 70 }, alertas: [],
       };
       upsertsFake = [];
-      const doc = await cdp.send("DOM.getDocument", { depth: -1 });
-      const entrada = await cdp.send("DOM.querySelector", { nodeId: doc.root.nodeId, selector: 'input[aria-label="Planilha de custos preenchida"]' });
-      await cdp.send("DOM.setFileInputFiles", { files: [planilhaFake], nodeId: entrada.nodeId });
+      await subirArquivo('input[aria-label="Planilha de custos preenchida"]', planilhaFake);
       await waitFor(cdp, `(document.querySelector(${JSON.stringify(`${PEND} [data-previa]`)}) || {innerText:''}).innerText.indexOf('2 para adicionar') >= 0`, "o resumo da planilha deveria aparecer antes de gravar");
       assert.strictEqual(upsertsFake.length, 0, "ler a planilha não pode gravar");
       assert.ok(await clicarBotao(PEND, "Importar e atualizar base"), "botão Importar e atualizar base ausente");
@@ -1184,16 +1226,18 @@ async function run() {
       assert.deepStrictEqual([upsertsFake[0].produto_id, upsertsFake[0].id_model, upsertsFake[0].custo_produto], ["169417000075", "555000000075", 9.9]);
       const antes = fechamentoRequestCount;
       assert.ok(await clicarBotao(PEND, "Reprocessar fechamento"), "Reprocessar fechamento ausente");
+      await waitFor(cdp, `document.querySelector(${JSON.stringify(DRAWER)}) === null`, "reprocessar fecha o drawer de pendências");
       await sleep(400);
       assert.strictEqual(fechamentoRequestCount, antes + 1, "só depois da base atualizada o operador reprocessa — e é um clique dele");
     });
 
     await check("UX — Shopee: no modo individual, Item que NÃO está na base é identidade SEGURA (campos de custo e imposto liberados)", async () => {
-      const PEND = `${PAINEL} [data-secao="pendencias"]`;
+      await abrirPendencias();
       assert.ok(await clicarBotao(PEND, "Corrigir as 72 aqui no portal mesmo assim"), "botão para levar as pendências ao portal ausente");
       await sleep(200);
       const campos = await cdp.evaluate(`document.querySelectorAll(${JSON.stringify(`${PEND} [data-grupo="agora"] tbody tr[data-identidade="segura"] input`)}).length`);
       assert.ok(campos >= 2, `deveria haver campos de custo/imposto nas linhas seguras, achei ${campos}`);
+      await fecharDrawer();
     });
 
     await check("UX — Shopee: sem scroll horizontal na PÁGINA em 1920, 1366 e 1200; screenshots gravadas", async () => {

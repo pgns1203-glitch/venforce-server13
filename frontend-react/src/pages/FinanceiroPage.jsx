@@ -1,47 +1,37 @@
 // frontend-react/src/pages/FinanceiroPage.jsx
 //
-// Financeiro V3 — mesa de trabalho do fechamento (MELI e Shopee).
+// Financeiro V3 — a mesa do fechamento (MELI e Shopee), no modelo B aprovado
+// em 20/10/2026, na linguagem de Anúncios ML.
 //
 // Paridade operacional com Portal/financeiro.html: o MESMO motor
 // (POST /fechamentos/financeiro) processa; esta tela só apresenta o que o
-// backend devolveu. Três áreas:
+// backend devolveu. Uma tela só, sem abas:
 //
-//   Fechamento         contexto → arquivos → ajustes → processar →
-//                      resultado do processamento → salvar → apresentação
-//                      para o cliente → publicar. É onde o trabalho acontece.
-//   Relatórios gerados as entregas (artefatos) desta operação — e as legadas
-//                      sem operação registrada, rotuladas como tal.
-//   Histórico          a sequência de competências desta operação.
+//   Cabeçalho   competência (seletor + status desta conta), e os botões
+//               Histórico e Relatórios — cada um abre um drawer.
+//   Mesa        resultado + cascata à esquerda, as seis etapas do fechamento
+//               à direita, produtos em largura total embaixo
+//               (components/financeiro/MesaFechamento.jsx).
 //
-// As antigas abas "Resultado" e "Conciliação" deixaram de ser processos à
-// parte: o resultado nasce logo abaixo de Processar, e o fechamento SALVO
-// da competência (com a conciliação Mercado Pago, quando MELI) aparece na
-// própria aba Fechamento.
+// Cliente, conta e marketplace vêm do Shell (vf-context, na sidebar).
+// Nenhum seletor próprio. A competência é o único controle de contexto desta
+// tela, e trocá-la com trabalho em andamento pede confirmação.
 //
-// Cliente, conta e marketplace vêm do Shell (vf-context). Nenhum seletor
-// próprio. A competência é o único controle de contexto desta tela, e trocá-la
-// com trabalho em andamento pede confirmação.
-//
-// TikTok Shop continua no Financeiro legado (fallback em NovoFechamento).
+// TikTok Shop continua no Financeiro legado (fallback em MesaFechamento).
 
 import { useEffect, useState } from "react";
 import { useOperacaoAtual } from "../hooks/useVfContext.js";
 import { useFinanceiro } from "../hooks/useFinanceiro.js";
 import { useEntregasFechamento, entregaDoPeriodo, entregaLegadaDoPeriodo } from "../hooks/useEntregasFechamento.js";
 import { rotularCompetencia } from "../utils/dates.js";
+import { MK_LABEL } from "../utils/financeiro/marketplace.js";
 import { statusDaCompetencia } from "../utils/financeiro/statusCompetencia.js";
-import { Tabs } from "../components/financeiro/Tabs.jsx";
-import { FechamentoTab } from "../components/financeiro/FechamentoTab.jsx";
+import { VFButton } from "../components/ui/VFButton/index.js";
+import { VFDrawer } from "../components/ui/VFDrawer/index.js";
+import { MesaFechamento } from "../components/financeiro/MesaFechamento.jsx";
 import { RelatoriosTab } from "../components/financeiro/RelatoriosTab.jsx";
 import { HistoricoTab } from "../components/financeiro/HistoricoTab.jsx";
-import { CompetenciaFechamento } from "../components/financeiro/fechamento/CompetenciaFechamento.jsx";
-import { FechamentoContextoBar } from "../components/financeiro/fechamento/FechamentoContextoBar.jsx";
-
-const ABAS = [
-  { id: "fechamento", label: "Fechamento" },
-  { id: "relatorios", label: "Relatórios gerados" },
-  { id: "historico", label: "Histórico" },
-];
+import { CompetenciaFechamento, AvisosCompetencia } from "../components/financeiro/fechamento/CompetenciaFechamento.jsx";
 
 const SEM_TRABALHO = { temTrabalho: false, processadoNaoSalvo: false };
 
@@ -51,7 +41,7 @@ export default function FinanceiroPage() {
   const contaRotuloExterno = snapshot?.meta?.externalAccountLabel ?? null;
   const { periodo, setPeriodo, dados, carregando, erro, recarregar: recarregarFinanceiro } = useFinanceiro({ clienteSlug, clienteContaId, pronta });
   const entregas = useEntregasFechamento({ clienteSlug, clienteContaId, habilitado: pronta });
-  const [abaAtiva, setAbaAtiva] = useState("fechamento");
+  const [painel, setPainel] = useState(null); // historico | relatorios
   const [trabalho, setTrabalho] = useState(SEM_TRABALHO);
   const [trocaPendente, setTrocaPendente] = useState(null);
 
@@ -59,6 +49,7 @@ export default function FinanceiroPage() {
   // operação anterior.
   useEffect(() => {
     setTrocaPendente(null);
+    setPainel(null);
   }, [clienteSlug, clienteContaId]);
 
   // Convergência #3 §14 — o backend virou fail-safe (conta não resolvida =
@@ -116,41 +107,43 @@ export default function FinanceiroPage() {
     if (nova) setPeriodo(nova);
   }
 
+  const canal = MK_LABEL[String(marketplace || "").toLowerCase()] || null;
+
   return (
     <div className="vf-page-shell">
-      <div className="vf-page-container vf-page-container--wide">
-        <header className="vf-page-header">
+      <div className="vf-page-container vf-page-container--wide vf-fin-pagina-b">
+        <header className="vf-page-header vf-fin-cabecalho-b">
           <div className="vf-page-header__main">
-            <p className="vf-page-header__eyebrow">Financeiro · V3</p>
+            <p className="vf-page-header__eyebrow">{canal ? `${canal} · Financeiro` : "Financeiro"}</p>
             <h1 className="vf-page-header__title">Fechamento financeiro</h1>
             <p className="vf-page-header__description">
-              Processe, confira, salve e publique o fechamento desta operação. O{" "}
-              <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro (legado) →</a>{" "}
-              segue disponível como fallback (e para TikTok Shop).
+              Processe, confira, salve e publique o fechamento desta operação.{" "}
+              <a href={`financeiro.html?cliente=${encodeURIComponent(clienteSlug)}`}>Financeiro (legado) →</a>
             </p>
+          </div>
+          <div className="vf-fin-cabecalho-b__acoes">
+            <CompetenciaFechamento periodo={periodo} status={status} onPedirTroca={pedirTroca} />
+            <div className="vf-cluster">
+              <VFButton variant="ghost" size="sm" onClick={() => setPainel("historico")}>
+                Histórico
+              </VFButton>
+              <VFButton variant="ghost" size="sm" onClick={() => setPainel("relatorios")}>
+                Relatórios
+              </VFButton>
+            </div>
           </div>
         </header>
 
-        <section className="vf-section vf-fin-cabecalho" aria-label="Contexto do fechamento">
-          <FechamentoContextoBar
-            clienteNome={clienteNome}
-            marketplace={marketplace}
-            contaNome={contaNome}
-            contaRotuloExterno={contaRotuloExterno}
-            clienteContaId={clienteContaId}
-          />
-          <CompetenciaFechamento
-            periodo={periodo}
-            status={status}
-            trocaPendente={trocaPendente}
-            onPedirTroca={pedirTroca}
-            onConfirmarTroca={confirmarTroca}
-            onCancelarTroca={() => setTrocaPendente(null)}
-          />
-        </section>
+        <AvisosCompetencia
+          periodo={periodo}
+          status={status}
+          trocaPendente={trocaPendente}
+          onConfirmarTroca={confirmarTroca}
+          onCancelarTroca={() => setTrocaPendente(null)}
+        />
 
         {erro && !dados && (
-          <div className="vf-banner is-danger" role="alert" style={{ marginTop: 16 }}>
+          <div className="vf-banner is-danger" role="alert">
             <div className="vf-banner__content">
               <p className="vf-banner__title">Não foi possível carregar o Financeiro</p>
               <p className="vf-banner__description">{erro.mensagem}</p>
@@ -158,58 +151,55 @@ export default function FinanceiroPage() {
           </div>
         )}
 
-        <section className={`vf-section${carregando ? " is-atualizando" : ""}`} style={{ marginTop: 16 }}>
-          <Tabs abas={ABAS} ativa={abaAtiva} onChange={setAbaAtiva} />
-          {/* A aba Fechamento fica MONTADA: trocar para Relatórios e voltar não
-              pode jogar fora arquivos escolhidos nem o resultado processado. */}
-          <div className="vf-fin-painel" hidden={abaAtiva !== "fechamento"}>
-            <FechamentoTab
-              resultado={dados?.resultado || null}
-              conciliacao={dados?.conciliacao || null}
-              carregandoLeitura={!dados && carregando}
-              clienteSlug={clienteSlug}
-              clienteNome={clienteNome}
-              clienteContaId={clienteContaId}
-              marketplace={marketplace}
-              contaNome={contaNome}
-              periodo={periodo}
-              periodoLabel={periodoLabel}
-              entregas={entregas}
-              entrega={entregaDaConta}
-              onSalvo={aoSalvarFechamento}
-              onTrabalho={setTrabalho}
-            />
-          </div>
-          {abaAtiva === "relatorios" && (
-            <div className="vf-fin-painel">
-              <RelatoriosTab
-                relatorios={dados?.relatorios || null}
-                entregas={entregas}
-                periodo={periodo}
-                clienteNome={clienteNome}
-                clienteContaId={clienteContaId}
-                marketplace={marketplace}
-                contaNome={contaNome}
-                contaRotuloExterno={contaRotuloExterno}
-              />
-            </div>
-          )}
-          {abaAtiva === "historico" && (
-            <div className="vf-fin-painel">
-              <HistoricoTab
-                relatorios={dados?.relatorios || null}
-                entregas={entregas}
-                periodo={periodo}
-                clienteContaId={clienteContaId}
-                onEscolherCompetencia={(p) => {
-                  pedirTroca(p);
-                  setAbaAtiva("fechamento");
-                }}
-              />
-            </div>
-          )}
+        <section className={`vf-fin-mesa-secao${carregando ? " is-atualizando" : ""}`} aria-label="Fechamento">
+          <MesaFechamento
+            clienteSlug={clienteSlug}
+            clienteNome={clienteNome}
+            clienteContaId={clienteContaId}
+            marketplace={marketplace}
+            contaNome={contaNome}
+            periodo={periodo}
+            periodoLabel={periodoLabel}
+            entrega={entregaDaConta}
+            entregas={entregas}
+            resultadoSalvo={dados?.resultado || null}
+            conciliacao={dados?.conciliacao || null}
+            carregandoLeitura={!dados && carregando}
+            onSalvo={aoSalvarFechamento}
+            onTrabalho={setTrabalho}
+          />
         </section>
       </div>
+
+      {painel === "historico" && (
+        <VFDrawer title="Histórico" subtitle="Competências desta operação, mês a mês" onClose={() => setPainel(null)}>
+          <HistoricoTab
+            relatorios={dados?.relatorios || null}
+            entregas={entregas}
+            periodo={periodo}
+            clienteContaId={clienteContaId}
+            onEscolherCompetencia={(p) => {
+              pedirTroca(p);
+              setPainel(null);
+            }}
+          />
+        </VFDrawer>
+      )}
+
+      {painel === "relatorios" && (
+        <VFDrawer title="Relatórios" subtitle="Entregas geradas para esta operação" size="lg" onClose={() => setPainel(null)}>
+          <RelatoriosTab
+            relatorios={dados?.relatorios || null}
+            entregas={entregas}
+            periodo={periodo}
+            clienteNome={clienteNome}
+            clienteContaId={clienteContaId}
+            marketplace={marketplace}
+            contaNome={contaNome}
+            contaRotuloExterno={contaRotuloExterno}
+          />
+        </VFDrawer>
+      )}
     </div>
   );
 }

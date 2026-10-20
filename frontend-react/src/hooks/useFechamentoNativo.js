@@ -275,6 +275,8 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         setDuplicidade(null);
         setEstado("salvo");
         onSalvo?.(entrega);
+        // "Salvar e publicar" precisa do id da entrega recém-gravada.
+        return entrega;
       } catch (err) {
         if (err?.name === "AbortError") return;
         if (err instanceof FechamentoApiError && err.codigo === "ENTREGA_JA_EXISTE") {

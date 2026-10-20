@@ -1,0 +1,355 @@
+/* frontend-react/src/styles/financeiro-mesa.css
+   MESA DO FECHAMENTO — modelo B (aprovado em artefato, 20/10/2026), na
+   linguagem de Anúncios ML: cartão claro com filete lateral no destaque,
+   lista em grade única, CTA grande no rodapé do painel. Só var(--vf-*) da
+   Fundação V2 (Portal/css/vf-tokens-v2.css), nenhum token novo. */
+
+.vf-fin-pagina-b { display: flex; flex-direction: column; gap: var(--vf-sp-4, 16px); }
+.vf-fin-cabecalho-b { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: var(--vf-sp-3, 12px); }
+.vf-fin-cabecalho-b__acoes { display: flex; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-2, 8px) var(--vf-sp-4, 16px); }
+.vf-fin-competencia { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: var(--vf-sp-3, 12px); min-width: 0; }
+.vf-fin-mesa-secao.is-atualizando { opacity: 0.6; transition: opacity 120ms ease; }
+
+.vf-fin-mesa { container: fin-mesa / inline-size; display: flex; flex-direction: column; gap: var(--vf-sp-4, 16px); min-width: 0; }
+.vf-fin-mesa__topo {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: var(--vf-sp-4, 16px);
+  align-items: stretch;
+}
+.vf-fin-mesa__principal { container: fin-principal / inline-size; display: flex; flex-direction: column; gap: var(--vf-sp-4, 16px); min-width: 0; }
+.vf-fin-mesa__principal.is-atualizando { opacity: 0.6; transition: opacity 120ms ease; }
+.vf-fin-mesa__titulo { margin: 0; font-family: var(--vf-font-display); font-size: var(--vf-fs-md, 1rem); font-weight: var(--vf-fw-extrabold, 800); color: var(--vf-text); }
+.vf-fin-mesa__descricao { margin: 2px 0 0; font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-secondary); }
+.vf-fin-mesa__rotulo-grupo {
+  margin: 0;
+  font-size: var(--vf-fs-2xs, 0.6875rem);
+  font-weight: var(--vf-fw-extrabold, 800);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+/* ── Destaque: Resultado final + 6 números ─────────────────────────── */
+.vf-fin-mesa-destaque { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1.6fr); overflow: hidden; padding: 0; }
+.vf-fin-mesa-destaque__resultado {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: var(--vf-sp-5, 20px);
+  border-right: 1px solid var(--vf-border);
+  box-shadow: inset 3px 0 0 var(--vf-success);
+}
+.vf-fin-mesa-destaque__resultado.is-negativo { box-shadow: inset 3px 0 0 var(--vf-danger); }
+.vf-fin-mesa-destaque__resultado.is-neutro { box-shadow: inset 3px 0 0 var(--vf-neutral); }
+.vf-fin-mesa-destaque__rotulo {
+  font-size: var(--vf-fs-2xs, 0.6875rem);
+  font-weight: var(--vf-fw-bold, 700);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+.vf-fin-mesa-destaque__valor {
+  font-family: var(--vf-font-display);
+  font-size: clamp(1.625rem, 2.4vw, 2.125rem);
+  font-weight: var(--vf-fw-extrabold, 800);
+  letter-spacing: -0.03em;
+  line-height: 1.05;
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text);
+}
+.vf-fin-mesa-destaque__resultado.is-positivo .vf-fin-mesa-destaque__valor { color: var(--vf-success-strong); }
+.vf-fin-mesa-destaque__resultado.is-negativo .vf-fin-mesa-destaque__valor { color: var(--vf-danger-strong); }
+.vf-fin-mesa-destaque__apoio { font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-secondary); }
+.vf-fin-mesa-destaque__apoio strong { color: var(--vf-text); font-weight: var(--vf-fw-bold, 700); }
+.vf-fin-mesa-destaque__origem { font-size: var(--vf-fs-2xs, 0.6875rem); color: var(--vf-text-muted); }
+.vf-fin-mesa-destaque__grade { container: fin-grade / inline-size; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--vf-border); }
+.vf-fin-mesa-kpi { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: var(--vf-sp-3, 12px); background: var(--vf-surface); }
+.vf-fin-mesa-kpi__rotulo {
+  font-size: 10.5px;
+  font-weight: var(--vf-fw-bold, 700);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.vf-fin-mesa-kpi__valor {
+  font-family: var(--vf-font-display);
+  /* Encolhe com a grade (coluna da esquerda estreita) em vez de cortar. */
+  font-size: clamp(14px, 4.4cqi, 19px);
+  font-weight: var(--vf-fw-extrabold, 800);
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--vf-text);
+}
+.vf-fin-mesa-kpi__apoio { font-size: 10.5px; font-weight: var(--vf-fw-semibold, 600); color: var(--vf-text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Aviso de pendências: uma linha só ─────────────────────────────── */
+.vf-fin-mesa-aviso {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-3, 12px);
+  padding: 10px 14px;
+  border: 1px solid var(--vf-warning-border);
+  border-radius: var(--vf-radius);
+  background: var(--vf-warning-bg);
+  color: var(--vf-warning-strong);
+  font-size: var(--vf-fs-sm, 0.8125rem);
+}
+.vf-fin-mesa-aviso__texto { flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vf-fin-mesa-aviso__texto strong { font-weight: var(--vf-fw-extrabold, 800); }
+.vf-fin-mesa-aviso .vf-btn { flex: none; }
+
+/* ── Da receita ao resultado ───────────────────────────────────────── */
+/* Ocupa o resto da coluna: a borda de baixo da cascata é a mesma do painel
+   de etapas ao lado (pedido explícito do modelo B). */
+.vf-fin-mesa-cascata { flex: 1 1 auto; padding: 14px 16px; }
+.vf-fin-mesa-cascata__cabecalho { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: var(--vf-sp-2, 8px); margin-bottom: var(--vf-sp-3, 12px); }
+.vf-fin-mesa-cascata__degraus { display: flex; flex-direction: column; gap: 6px; }
+.vf-fin-mesa-cascata__degrau {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr) 120px;
+  align-items: center;
+  gap: 10px;
+  font-size: var(--vf-fs-sm, 0.8125rem);
+}
+.vf-fin-mesa-cascata__degraus.is-compacta .vf-fin-mesa-cascata__degrau { grid-template-columns: 130px minmax(0, 1fr) 110px; font-size: var(--vf-fs-xs, 0.75rem); }
+.vf-fin-mesa-cascata__rotulo { color: var(--vf-text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vf-fin-mesa-cascata__degrau.is-soma .vf-fin-mesa-cascata__rotulo { color: var(--vf-text); font-weight: var(--vf-fw-bold, 700); }
+.vf-fin-mesa-cascata__trilho { position: relative; height: 14px; border-radius: 3px; background: var(--vf-bg-2); }
+.vf-fin-mesa-cascata__barra { position: absolute; top: 0; bottom: 0; border-radius: 3px; }
+.vf-fin-mesa-cascata__barra.is-total { background: var(--vf-primary-border); }
+.vf-fin-mesa-cascata__degrau.is-soma .vf-fin-mesa-cascata__barra.is-total { background: var(--vf-primary); }
+.vf-fin-mesa-cascata__barra.is-saida { background: var(--vf-danger-border); }
+.vf-fin-mesa-cascata__barra.is-final { background: var(--vf-success); }
+.vf-fin-mesa-cascata__barra.is-negativo { background: var(--vf-danger); }
+.vf-fin-mesa-cascata__valor { text-align: right; font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.vf-fin-mesa-cascata__degrau.is-soma .vf-fin-mesa-cascata__valor { font-weight: var(--vf-fw-extrabold, 800); }
+.vf-fin-mesa-cascata__valor.is-negativo { color: var(--vf-danger-strong); }
+.vf-fin-mesa-cascata__valor.is-positivo { color: var(--vf-success-strong); }
+
+/* ── Vazio / carregando ────────────────────────────────────────────── */
+.vf-fin-mesa-vazio { display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); padding: var(--vf-sp-8, 32px) var(--vf-sp-5, 20px); }
+.vf-fin-mesa-vazio:not(.is-legado) { flex: 1 1 auto; align-items: center; justify-content: center; text-align: center; }
+.vf-fin-mesa-vazio__titulo { margin: 0; font-family: var(--vf-font-display); font-size: var(--vf-fs-md, 1rem); font-weight: var(--vf-fw-extrabold, 800); }
+.vf-fin-mesa-vazio__texto { margin: 0; max-width: 52ch; font-size: var(--vf-fs-sm, 0.8125rem); color: var(--vf-text-secondary); }
+.vf-fin-mesa-checagem { margin-top: var(--vf-sp-2, 8px); align-items: center; }
+
+/* ── Painel de etapas ──────────────────────────────────────────────── */
+.vf-fin-mesa-painel { display: flex; flex-direction: column; overflow: hidden; min-width: 0; padding: 0; }
+.vf-fin-mesa-painel__cabecalho { padding: 14px 16px; border-bottom: 1px solid var(--vf-border); }
+.vf-fin-mesa-painel__etapas { display: flex; flex: 1 1 auto; flex-direction: column; justify-content: space-between; margin: 0; padding: 6px 0; list-style: none; }
+.vf-fin-mesa-etapa { position: relative; display: grid; grid-template-columns: 26px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 16px; }
+.vf-fin-mesa-etapa::after { content: ""; position: absolute; left: 28px; top: 36px; bottom: -6px; width: 2px; background: var(--vf-border); }
+.vf-fin-mesa-etapa:last-child::after { display: none; }
+.vf-fin-mesa-etapa__marca {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--vf-border-strong);
+  border-radius: 50%;
+  background: var(--vf-surface);
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs, 0.75rem);
+  font-weight: var(--vf-fw-extrabold, 800);
+}
+.vf-fin-mesa-etapa.is-feita .vf-fin-mesa-etapa__marca { border-color: var(--vf-success); background: var(--vf-success); color: var(--vf-text-on-primary); }
+.vf-fin-mesa-etapa.is-atual .vf-fin-mesa-etapa__marca { border-color: var(--vf-primary); color: var(--vf-primary); box-shadow: 0 0 0 4px var(--vf-primary-soft); }
+.vf-fin-mesa-etapa__texto { display: flex; flex-direction: column; min-width: 0; }
+.vf-fin-mesa-etapa__titulo { font-size: var(--vf-fs-sm, 0.8125rem); font-weight: var(--vf-fw-bold, 700); color: var(--vf-text); }
+.vf-fin-mesa-etapa__detalhe { margin-top: 1px; font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-secondary); overflow-wrap: anywhere; }
+.vf-fin-mesa-etapa__acao {
+  appearance: none;
+  padding: 4px 0 0;
+  border: 0;
+  background: none;
+  color: var(--vf-primary);
+  font: inherit;
+  font-size: var(--vf-fs-xs, 0.75rem);
+  font-weight: var(--vf-fw-bold, 700);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.vf-fin-mesa-etapa__acao:hover:not(:disabled) { color: var(--vf-primary-hover); text-decoration: underline; }
+.vf-fin-mesa-etapa__acao:disabled { color: var(--vf-text-disabled); cursor: not-allowed; }
+.vf-fin-mesa-etapa__acao:focus-visible { outline: 2px solid var(--vf-focus-color); outline-offset: 2px; border-radius: 2px; }
+.vf-fin-mesa-painel__rodape { display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); padding: 12px 16px 16px; border-top: 1px solid var(--vf-border); background: var(--vf-surface-2); }
+.vf-fin-mesa-painel__nota { margin: 0; font-size: var(--vf-fs-2xs, 0.6875rem); color: var(--vf-text-muted); text-align: center; }
+
+/* CTA do rodapé — mesma família do "Radar de subsídios" (Anúncios ML). */
+.vf-fin-mesa-cta {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 56px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-primary);
+  color: var(--vf-text-on-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--vf-duration-fast, 0.12s);
+}
+.vf-fin-mesa-cta:hover:not(:disabled) { background: var(--vf-primary-hover); }
+.vf-fin-mesa-cta.is-sucesso { background: var(--vf-success); }
+.vf-fin-mesa-cta.is-sucesso:hover:not(:disabled) { background: var(--vf-success-strong); }
+.vf-fin-mesa-cta:disabled { opacity: 0.55; cursor: not-allowed; }
+.vf-fin-mesa-cta:focus-visible { outline: 2px solid var(--vf-focus-color); outline-offset: 2px; }
+.vf-fin-mesa-cta__icone { display: grid; flex: none; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: rgba(255, 255, 255, 0.16); }
+.vf-fin-mesa-cta__texto { display: flex; flex-direction: column; line-height: 1.2; }
+.vf-fin-mesa-cta__titulo { font-size: var(--vf-fs-sm, 0.875rem); font-weight: var(--vf-fw-bold, 700); }
+.vf-fin-mesa-cta__apoio { font-size: 11.5px; opacity: 0.85; }
+.vf-fin-mesa-confirmar { display: flex; flex-direction: column; gap: var(--vf-sp-2, 8px); padding: 10px 12px; border: 1px solid var(--vf-primary-border); border-radius: var(--vf-radius-sm); background: var(--vf-primary-soft); }
+.vf-fin-mesa-confirmar__texto { margin: 0; font-size: var(--vf-fs-xs, 0.75rem); font-weight: var(--vf-fw-semibold, 600); color: var(--vf-primary-strong); }
+.vf-fin-mesa-drawer__motivo { margin-right: auto; }
+
+/* ── Produtos (largura total) ──────────────────────────────────────── */
+.vf-fin-mesa-produtos { display: flex; flex-direction: column; gap: var(--vf-sp-3, 12px); min-width: 0; scroll-margin-top: 72px; }
+.vf-fin-mesa-produtos__ferramentas { display: flex; align-items: flex-start; gap: 10px; }
+.vf-fin-mesa-produtos__busca { flex: none; width: 280px; max-width: 100%; }
+.vf-fin-mesa-filtros { display: inline-flex; flex-wrap: wrap; min-width: 0; overflow: hidden; border: 1px solid var(--vf-border-strong); border-radius: var(--vf-radius-sm); background: var(--vf-surface); }
+.vf-fin-mesa-filtros__item {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 0;
+  border-left: 1px solid var(--vf-border);
+  background: transparent;
+  color: var(--vf-text-secondary);
+  font: inherit;
+  font-size: var(--vf-fs-xs, 0.78rem);
+  font-weight: var(--vf-fw-semibold, 600);
+  cursor: pointer;
+}
+.vf-fin-mesa-filtros__item:first-child { border-left: 0; }
+.vf-fin-mesa-filtros__item:hover { background: var(--vf-surface-hover); }
+.vf-fin-mesa-filtros__item[aria-pressed="true"] { background: var(--vf-primary-soft); color: var(--vf-primary-strong); }
+.vf-fin-mesa-filtros__item:focus-visible { outline: 2px solid var(--vf-focus-color); outline-offset: -2px; }
+.vf-fin-mesa-filtros__contagem { padding: 0 6px; border-radius: var(--vf-radius-pill); background: var(--vf-bg-2); color: var(--vf-text-secondary); font-size: 11px; font-weight: var(--vf-fw-bold, 700); font-variant-numeric: tabular-nums; }
+.vf-fin-mesa-filtros__contagem.is-criticos,
+.vf-fin-mesa-filtros__contagem.is-sem_custo { background: var(--vf-danger-bg); color: var(--vf-danger-strong); }
+.vf-fin-mesa-filtros__contagem.is-atencao,
+.vf-fin-mesa-filtros__contagem.is-custo_ambiguo { background: var(--vf-warning-bg); color: var(--vf-warning-strong); }
+
+/* Uma grade para cabeçalho e linhas. Sem rolagem horizontal: as colunas
+   secundárias saem pela largura da PRÓPRIA lista (a sidebar abre e fecha),
+   e continuam na linha expandida. */
+.vf-fin-mesa-lista { container: fin-lista / inline-size; overflow: hidden; border: 1px solid var(--vf-border); border-radius: var(--vf-radius); background: var(--vf-surface); }
+.vf-fin-mesa-lista__cabecalho,
+.vf-fin-mesa-lista__linha {
+  display: grid;
+  grid-template-columns: 40px minmax(200px, 3fr) 110px 36px repeat(5, minmax(92px, 1fr)) 60px 16px;
+  gap: 14px;
+  align-items: center;
+  padding: 0 16px;
+}
+.vf-fin-mesa-lista__cabecalho > *,
+.vf-fin-mesa-lista__linha > * { min-width: 0; }
+.vf-fin-mesa-lista__cabecalho {
+  height: 38px;
+  border-bottom: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+  font-size: 10.5px;
+  font-weight: var(--vf-fw-bold, 700);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+  white-space: nowrap;
+}
+.vf-fin-mesa-lista .is-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.vf-fin-mesa-lista .is-forte { font-weight: var(--vf-fw-bold, 700); }
+.vf-fin-mesa-lista__linha { padding-block: 10px; border-bottom: 1px solid var(--vf-border); font-size: var(--vf-fs-sm, 0.8125rem); cursor: pointer; }
+.vf-fin-mesa-lista__linha:hover { background: var(--vf-surface-hover); }
+.vf-fin-mesa-lista__linha:focus-visible { outline: 2px solid var(--vf-focus-color); outline-offset: -2px; }
+.vf-fin-mesa-produto.is-aberta .vf-fin-mesa-lista__linha { background: var(--vf-surface-2); }
+.vf-fin-mesa-produto__sigla {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-2);
+  color: var(--vf-primary-strong);
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-xs, 0.75rem);
+  font-weight: var(--vf-fw-extrabold, 800);
+}
+.vf-fin-mesa-produto__principal { display: flex; flex-direction: column; min-width: 0; }
+.vf-fin-mesa-produto__titulo { font-weight: var(--vf-fw-semibold, 600); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vf-fin-mesa-produto__ids { display: flex; flex-wrap: wrap; gap: 2px 10px; margin-top: 2px; font-size: 11.5px; color: var(--vf-text-muted); }
+.vf-fin-mesa-produto__mc { font-weight: var(--vf-fw-bold, 700); }
+.vf-fin-mesa-produto__mc.is-saudavel { color: var(--vf-success); }
+.vf-fin-mesa-produto__mc.is-atencao { color: var(--vf-warning); }
+.vf-fin-mesa-produto__mc.is-critico { color: var(--vf-danger); }
+.vf-fin-mesa-produto__mc.is-neutro { color: var(--vf-text-muted); }
+.vf-fin-mesa-produto__chevron { display: grid; place-items: center; color: var(--vf-text-muted); transition: transform var(--vf-duration-fast, 0.15s); }
+.vf-fin-mesa-produto.is-aberta .vf-fin-mesa-produto__chevron { transform: rotate(90deg); }
+.vf-fin-mesa-produto__detalhe {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: var(--vf-sp-6, 24px);
+  padding: 14px 16px 16px 70px;
+  border-bottom: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+}
+.vf-fin-mesa-produto__detalhe .vf-fin-mesa__rotulo-grupo { margin-bottom: var(--vf-sp-2, 8px); }
+.vf-fin-mesa-produto__dados { display: grid; grid-template-columns: auto auto; gap: 6px 16px; align-content: start; margin: 0; font-size: var(--vf-fs-xs, 0.78rem); }
+.vf-fin-mesa-produto__dados > div { display: contents; }
+.vf-fin-mesa-produto__dados dt { color: var(--vf-text-secondary); }
+.vf-fin-mesa-produto__dados dd { margin: 0; text-align: right; font-weight: var(--vf-fw-semibold, 600); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.vf-fin-mesa-lista__rodape { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: var(--vf-sp-2, 8px); padding: 10px 16px; background: var(--vf-surface-2); font-size: var(--vf-fs-xs, 0.75rem); color: var(--vf-text-secondary); }
+
+@container fin-lista (max-width: 1120px) {
+  .vf-fin-mesa-lista__cabecalho,
+  .vf-fin-mesa-lista__linha { grid-template-columns: 40px minmax(180px, 3fr) 110px repeat(3, minmax(92px, 1fr)) 60px 16px; }
+  .vf-fin-mesa-lista__cabecalho > :nth-child(4), .vf-fin-mesa-lista__linha > :nth-child(4),
+  .vf-fin-mesa-lista__cabecalho > :nth-child(6), .vf-fin-mesa-lista__linha > :nth-child(6),
+  .vf-fin-mesa-lista__cabecalho > :nth-child(8), .vf-fin-mesa-lista__linha > :nth-child(8) { display: none; }
+}
+@container fin-lista (max-width: 820px) {
+  .vf-fin-mesa-lista__cabecalho,
+  .vf-fin-mesa-lista__linha { grid-template-columns: minmax(0, 1fr) 96px 60px 16px; gap: 12px; padding-inline: 12px; }
+  .vf-fin-mesa-lista__cabecalho > :nth-child(1), .vf-fin-mesa-lista__linha > :nth-child(1),
+  .vf-fin-mesa-lista__cabecalho > :nth-child(3), .vf-fin-mesa-lista__linha > :nth-child(3),
+  .vf-fin-mesa-lista__cabecalho > :nth-child(5), .vf-fin-mesa-lista__linha > :nth-child(5),
+  .vf-fin-mesa-lista__cabecalho > :nth-child(7), .vf-fin-mesa-lista__linha > :nth-child(7) { display: none; }
+  .vf-fin-mesa-produto__detalhe { grid-template-columns: minmax(0, 1fr); padding-left: 12px; }
+}
+
+/* Responsivo pela LARGURA DA MESA, não da viewport: a sidebar do Shell abre
+   e fecha, e é a mesa que precisa caber. */
+@container fin-mesa (max-width: 900px) {
+  .vf-fin-mesa__topo { grid-template-columns: minmax(0, 1fr); }
+}
+@container fin-principal (max-width: 820px) {
+  .vf-fin-mesa-destaque { grid-template-columns: minmax(0, 1fr); }
+  .vf-fin-mesa-destaque__resultado { border-right: 0; border-bottom: 1px solid var(--vf-border); }
+}
+@container fin-principal (max-width: 480px) {
+  .vf-fin-mesa-destaque__grade { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vf-fin-mesa-cascata__degrau { grid-template-columns: 96px minmax(0, 1fr) 96px; }
+}
+@media (max-width: 560px) {
+  .vf-fin-mesa-produtos__ferramentas { flex-wrap: wrap; }
+  .vf-fin-mesa-produtos__busca { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vf-fin-mesa-produto__chevron,
+  .vf-fin-mesa-cta { transition: none; }
+}
+.vf-fin-mesa-lista__rodape label { display: inline-flex; align-items: center; gap: var(--vf-sp-2, 8px); }
+.vf-fin-mesa-lista__rodape select { width: auto; }

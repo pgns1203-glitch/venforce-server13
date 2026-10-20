@@ -107,7 +107,6 @@ export default function FullReposicaoAba({ inventories, cabecalho, clienteSlug, 
           <div><dt>Unidades</dt><dd>{formatarNumero(resumo.unidades)}</dd></div>
           <div><dt>Custo da mercadoria</dt><dd>{formatarMoeda(resumo.custo)}</dd></div>
           <div><dt>Cobertura alvo</dt><dd>{dias} dias</dd></div>
-          <div><dt>Sem estoque resolvidos</dt><dd>{formatarNumero(resumo.rupturasResolvidas)}</dd></div>
         </dl>
         {custosDisponiveis && resumo.semCusto > 0 ? (
           <p className="full-alerta" role="status">

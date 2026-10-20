@@ -297,6 +297,20 @@ function run() {
     console.log("  ✓ reposicao com estoque insuficiente calcula sendQuantity=100");
   }
 
+  // Reposicao: sem estoque disponivel no Full nao recebe sugestao
+  {
+    const replenishment = calculateBaseReplenishment({
+      dailyTurnover: 5,
+      turnoverStatus: "ok",
+      availableStock: 0,
+      stockStatus: "ok",
+      targetCoverageDays: 30,
+    });
+    assert.strictEqual(replenishment.sendQuantity, 0);
+    assert.strictEqual(replenishment.reason, "no_full_stock");
+    console.log("  ✓ reposicao so sugere para anuncio com estoque disponivel no Full");
+  }
+
   // Reposicao: input invalido (dado necessario ausente) nunca inventa valor
   {
     const semGiro = calculateBaseReplenishment({

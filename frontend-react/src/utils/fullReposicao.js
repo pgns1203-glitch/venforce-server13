@@ -11,10 +11,12 @@ function numero(valor) {
 }
 
 // Quanto enviar para cobrir `dias` no ritmo atual. Sem giro ou sem estoque
-// conhecido → null (não dá para sugerir), nunca 0 inventado.
+// conhecido → null (não dá para sugerir), nunca 0 inventado. Só sugere para
+// anúncio que JÁ tem estoque disponível no Full: vender não basta.
 export function quantidadeSugerida(inv, dias) {
   if (inv.sales?.status !== "ok" || !numero(inv.dailyTurnover) || inv.dailyTurnover < 0) return null;
   if (inv.stock?.status !== "ok" || !numero(inv.stock?.available) || inv.stock.available < 0) return null;
+  if (inv.stock.available === 0) return 0;
   return Math.max(0, Math.ceil(inv.dailyTurnover * dias - inv.stock.available));
 }
 
@@ -28,14 +30,13 @@ export function coberturaApos(inv, quantidade) {
  * @param {Array<{ inv: object, quantidade: number }>} linhas  só as selecionadas
  */
 export function resumirEnvio(linhas) {
-  const resumo = { produtos: 0, unidades: 0, custo: null, semCusto: 0, rupturasResolvidas: 0 };
+  const resumo = { produtos: 0, unidades: 0, custo: null, semCusto: 0 };
   for (const { inv, quantidade } of linhas) {
     if (!(quantidade > 0)) continue;
     resumo.produtos += 1;
     resumo.unidades += quantidade;
     if (numero(inv.unitCost)) resumo.custo = (resumo.custo ?? 0) + inv.unitCost * quantidade;
     else resumo.semCusto += 1;
-    if (inv.operationalStatus === "RUPTURA") resumo.rupturasResolvidas += 1;
   }
   if (resumo.custo !== null) resumo.custo = Math.round(resumo.custo * 100) / 100;
   return resumo;

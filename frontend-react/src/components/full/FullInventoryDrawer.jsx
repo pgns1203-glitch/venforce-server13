@@ -4,6 +4,13 @@ import { formatarNumero, ehAusente, AUSENTE } from "../../utils/numbers.js";
 import { formatarDataHora } from "../../utils/dates.js";
 import { STATUS_LABEL, STATUS_TONE } from "../../utils/fullOperationalStatus.js";
 
+// Motivo de não haver sugestão de envio, em português para o usuário.
+const MOTIVO_REPOSICAO = {
+  no_full_stock: "sem estoque no Full: fora da sugestão",
+  sales_unavailable: "vendas indisponíveis",
+  stock_unavailable: "estoque indisponível",
+};
+
 // Product360 operacional: identidade, estoque, condições, cálculo e
 // movimentos de um único inventory_id. Casca, foco, ESC, clique fora e
 // devolução do foco vêm do VFDrawer (Fundação V2 + Radix Dialog).
@@ -86,7 +93,9 @@ export default function FullInventoryDrawer({ clienteContaId, inventoryId, onFec
                 <span className="vf-field__label">Enviar</span>
                 <span className="num">
                   {formatarNumero(detalhe.sendQuantity)}
-                  {detalhe.replenishmentReason ? ` (${detalhe.replenishmentReason})` : ""}
+                  {detalhe.replenishmentReason
+                    ? ` (${MOTIVO_REPOSICAO[detalhe.replenishmentReason] || detalhe.replenishmentReason})`
+                    : ""}
                 </span>
               </div>
             </div>

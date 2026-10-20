@@ -244,6 +244,24 @@ describe("Central do Full · KPIs, painel e lista", () => {
     expect(screen.getByText("Produto 3")).toBeInTheDocument();
   });
 
+  it("ordena por padrão pelo maior disponível no Full", async () => {
+    mocks.obterSnapshotFull.mockResolvedValue(
+      snapshotBase({
+        inventories: [
+          inv({ inventoryId: "INV-A", references: [{ mlb: "MLBA", title: "Pouco" }], stock: { available: 2, total: 2, status: "ok" } }),
+          inv({ inventoryId: "INV-B", references: [{ mlb: "MLBB", title: "Muito" }], stock: { available: 50, total: 50, status: "ok" } }),
+          inv({ inventoryId: "INV-C", references: [{ mlb: "MLBC", title: "Médio" }], stock: { available: 9, total: 9, status: "ok" } }),
+        ],
+      })
+    );
+    render(<FullGestaoPage />);
+    await screen.findByText("Muito");
+
+    expect(screen.getByLabelText("Ordenar por")).toHaveValue("disponivel");
+    const titulos = screen.getAllByText(/^(Pouco|Muito|Médio)$/).map((el) => el.textContent);
+    expect(titulos).toEqual(["Muito", "Médio", "Pouco"]);
+  });
+
   it("busca local não dispara nova chamada à API", async () => {
     mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
     render(<FullGestaoPage />);

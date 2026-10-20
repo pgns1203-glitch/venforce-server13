@@ -12,5 +12,7 @@ const router = express.Router();
 
 // Autorização real por carteira (V3 S4).
 router.get("/:cliente", authMiddleware, requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.financeiro);
+// Campo ADS do Fechamento — investimento do Mercado Ads da conta na competência.
+router.get("/:cliente/ads", authMiddleware, requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.ads);
 
 module.exports = router;

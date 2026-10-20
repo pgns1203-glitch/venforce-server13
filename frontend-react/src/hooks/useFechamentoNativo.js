@@ -24,6 +24,7 @@ import { processarFechamento, salvarEntregaFechamento, FechamentoApiError } from
 import { montarPayloadFechamento } from "../utils/fechamentoPayload.js";
 import { buscarEntrega } from "../services/entregasApi.js";
 import { useBaseVinculada } from "./useBaseVinculada.js";
+import { useAdsMercadoAds, origemDoAds } from "./useAdsMercadoAds.js";
 
 const AJUSTES_INICIAIS = { ads: "", venforce: "", affiliates: "", fullCost: "", additionalCosts: "" };
 const ARQUIVOS_INICIAIS = { sales: null, costs: null, ordersAll: null };
@@ -63,6 +64,33 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
     // Os deps do hook não mudam com o `estado`, então não há nova leitura.
     habilitado: marketplaceSuportado,
   });
+
+  // Campo ADS (modelo B): o investimento do Mercado Ads entra sozinho no
+  // campo. Só substitui o campo quando ele está vazio ou ainda tem o valor
+  // que a API pôs antes (troca de conta/período, ↻) — nunca por cima do que
+  // a pessoa digitou.
+  const ads = useAdsMercadoAds({
+    clienteSlug,
+    clienteContaId,
+    periodo,
+    habilitado: mkt === "meli",
+  });
+  const ultimoAdsDaApiRef = useRef(null);
+  useEffect(() => {
+    if (ads.status !== "ok" || ads.valorCampo === null) return;
+    const anterior = ultimoAdsDaApiRef.current;
+    const novo = ads.valorCampo;
+    ultimoAdsDaApiRef.current = novo;
+    setAjustes((a) => {
+      const atual = String(a.ads ?? "").trim();
+      if (atual === "" || (anterior !== null && atual === anterior)) return { ...a, ads: novo };
+      return a;
+    });
+  }, [ads.status, ads.valorCampo]);
+  const usarAdsDaApi = useCallback(() => {
+    if (ads.valorCampo !== null) setAjustes((a) => ({ ...a, ads: ads.valorCampo }));
+  }, [ads.valorCampo]);
+  const adsOrigem = origemDoAds(ajustes.ads, ads);
 
   const abortRef = useRef(null);
   const contextoDoProcessamentoRef = useRef(null);
@@ -240,6 +268,9 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         periodo,
         marketplace: mkt,
         ajustes,
+        adsOrigem: adsOrigem === "mercado_ads"
+          ? { origem: "mercado_ads", consultadoEm: ads.dados?.consultadoEm || null }
+          : adsOrigem === "manual" ? { origem: "manual" } : null,
       });
 
       // Substituir NÃO pode apagar a apresentação (destaques/prioridades) que
@@ -288,7 +319,7 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
         setEstado("preview");
       }
     },
-    [processamento, divergente, confirmouDivergencia, clienteSlug, clienteNome, clienteContaId, periodo, mkt, ajustes, onSalvo, duplicidade]
+    [processamento, divergente, confirmouDivergencia, clienteSlug, clienteNome, clienteContaId, periodo, mkt, ajustes, onSalvo, duplicidade, adsOrigem, ads.dados]
   );
 
   const substituir = useCallback(() => salvar({ substituir: true }), [salvar]);
@@ -296,7 +327,11 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
   // Há trabalho que uma troca de competência jogaria fora? Arquivos
   // escolhidos, ajustes digitados ou um resultado processado.
   const temArquivo = !!(arquivos.sales || arquivos.costs || arquivos.ordersAll);
-  const temAjuste = Object.values(ajustes).some((v) => String(v ?? "").trim() !== "");
+  // O ADS que o Mercado Ads preencheu sozinho não é trabalho da pessoa: a
+  // troca de competência traz o do mês novo.
+  const temAjuste = Object.entries(ajustes).some(
+    ([campo, v]) => String(v ?? "").trim() !== "" && !(campo === "ads" && adsOrigem === "mercado_ads")
+  );
   const temResultado = !!processamento && estado !== "form" && estado !== "processando";
   const trabalho = useMemo(
     () => ({
@@ -326,6 +361,7 @@ export function useFechamentoNativo({ clienteSlug, clienteNome, clienteContaId, 
     marketplaceSuportado,
     arquivos, setArquivo,
     ajustes, setAjuste,
+    ads, adsOrigem, usarAdsDaApi,
     base,
     baseCobreCustos,
     custosObrigatorios,

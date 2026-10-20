@@ -12,3 +12,13 @@ export function obterFinanceiro(clienteSlug, { clienteContaId, periodo, signal }
     signal,
   });
 }
+
+// GET /financeiro/:cliente/ads?conta=&periodo=YYYY-MM[&atualizar=1] — o
+// investimento do Mercado Ads da conta na competência, para o campo ADS do
+// Fechamento. Ver server/services/financeiroAdsService.js.
+export function obterAdsFechamento(clienteSlug, { clienteContaId, periodo, atualizar = false, signal } = {}) {
+  return requisitar(`/financeiro/${encodeURIComponent(clienteSlug)}/ads`, {
+    params: { conta: clienteContaId, periodo, atualizar: atualizar ? 1 : undefined },
+    signal,
+  });
+}

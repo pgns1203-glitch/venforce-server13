@@ -641,7 +641,14 @@ export function MesaFechamento({
             </section>
             <section className="vf-stack vf-stack--sm">
               <h4 className="vf-fin-mesa__rotulo-grupo">Ajustes do período</h4>
-              <FechamentoAjustes marketplace={f.marketplace} ajustes={f.ajustes} onAjuste={f.setAjuste} />
+              <FechamentoAjustes
+                marketplace={f.marketplace}
+                ajustes={f.ajustes}
+                onAjuste={f.setAjuste}
+                ads={f.ads}
+                adsOrigem={f.adsOrigem}
+                onUsarAdsDaApi={f.usarAdsDaApi}
+              />
             </section>
             <p className="vf-field__hint">
               Processar pelo motor antigo continua possível no <a href={legado}>Financeiro (legado) →</a>

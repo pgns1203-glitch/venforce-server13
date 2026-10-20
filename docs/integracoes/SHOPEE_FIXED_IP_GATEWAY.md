@@ -231,7 +231,7 @@ JSON.parse(r.body);
 | Replay | timestamp ±60 s + nonce obrigatório em cache com TTL e teto |
 | Timing attack | `timingSafeEqual` em buffers de tamanho fixo |
 | Vazamento de segredo | segredo só em env; nunca encaminhado (headers de saída são fixos: `accept`, `user-agent`, `content-type`, `content-length`); erros com mensagem genérica |
-| Vazamento em log | log JSON só com `request_id`, método, rota conhecida, path já aprovado (sem query), status, duração, `error_code`. Nunca query, corpo, `code`, token, assinatura. Caddy de exemplo apaga query e `X-VF-*` do access log |
+| Vazamento em log | log JSON só com `request_id`, método, rota conhecida, path já aprovado (sem query), status, duração, `error_code`. Nunca query, corpo, `code`, token, assinatura. Caddy de exemplo apaga a URI e os `X-VF-*` do access log |
 | Header injection | headers do caller descartados; `Host`, `Connection`, `Transfer-Encoding`, `X-Forwarded-*` são do Node, não do caller; path com CR/LF rejeitado |
 | Payload abuse / DoS básico | corpo ≤ 64 KiB (Caddy corta em 128 KB antes), resposta ≤ 1 MiB, query ≤ 4096, cabeçalho ≤ 8 KiB e ≤ 64 headers, `headersTimeout`/`requestTimeout`, `MAX_INFLIGHT` |
 | Rede / DNS pendurado | `AbortController` cobre DNS + conexão + resposta + corpo |
@@ -242,6 +242,10 @@ Fora do escopo v1: múltiplas instâncias (nonce compartilhado), rotação de
 segredo com dois segredos válidos ao mesmo tempo, mTLS, rate limit por chave.
 
 ## 8. Deploy na VPS (DigitalOcean) — NÃO feito ainda
+
+> Procedimento executável (comandos exatos, scripts `deploy/bootstrap-ubuntu.sh` e
+> `deploy/release.sh`, região, DNS, diagnóstico): [`SHOPEE_GATEWAY_RUNBOOK_VPS.md`](SHOPEE_GATEWAY_RUNBOOK_VPS.md).
+> A lista abaixo é o resumo conceitual.
 
 Valores de exemplo: domínio `gateway.exemplo.com`, usuário `deploy`, usuário de
 serviço `shopee-gw`. Nenhum é real.

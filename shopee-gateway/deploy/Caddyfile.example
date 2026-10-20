@@ -9,8 +9,8 @@ gateway.exemplo.com {
 
 	reverse_proxy 127.0.0.1:8787
 
-	# Log de acesso do Caddy: sem query string (o gateway não usa query, mas
-	# qualquer coisa que um scanner mandar não vai para o disco).
+	# Log de acesso do Caddy: sem URI (o gateway já loga a rota; query que um
+	# scanner mandar não vai para o disco) e sem os headers X-VF-*.
 	log {
 		output file /var/log/caddy/shopee-gateway.log {
 			roll_size 10MiB
@@ -19,9 +19,7 @@ gateway.exemplo.com {
 		format filter {
 			wrap json
 			fields {
-				request>uri query {
-					delete *
-				}
+				request>uri delete
 				request>headers>X-Vf-Signature delete
 				request>headers>X-Vf-Nonce delete
 			}

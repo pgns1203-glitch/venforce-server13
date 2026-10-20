@@ -141,3 +141,11 @@ Nada foi chamado na Shopee, na DigitalOcean ou em serviço de IP real.
   - Rotação de segredo sem janela dupla (há uma breve indisponibilidade durante a troca).
   - A sintaxe do filtro de log do `Caddyfile.example` precisa de `caddy validate` na versão instalada.
 - Ambiente: `server/node_modules` foi instalado neste worktree (`npm ci`) para rodar os testes; ele é ignorado pelo git.
+
+## 11. Atualização pós-merge (2026-10-20)
+
+- Branch mergeada em `main` pelo PR #338 (merge commit `418ffe0`). Backend de produção monitorado por cerca de 8 min depois do merge: `/`, `/health`, `/health/schema` e `/shopee/callback` em 200, rota protegida em 401, sem queda. O Render não publica status de deploy no GitHub e não há marcador de versão no `/health`, então a conclusão do deploy só aparece no painel do Render.
+- Fase A preparada em [`SHOPEE_GATEWAY_RUNBOOK_VPS.md`](SHOPEE_GATEWAY_RUNBOOK_VPS.md), com `deploy/bootstrap-ubuntu.sh` e `deploy/release.sh` (deploy atômico com testes no Droplet e rollback automático).
+- Região: Render em **Oregon**, inferida pelo host do Postgres de produção. Droplet em **SFO3**.
+- O próximo passo depende de acesso externo: conta DigitalOcean (Droplet) e DNS de um domínio.
+

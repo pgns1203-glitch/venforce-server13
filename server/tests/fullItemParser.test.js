@@ -192,6 +192,50 @@ function run() {
     console.log("  ✓ item sem id de MLB nao gera identidade nem referencia inventada");
   }
 
+  // Central do Full (modelo C): preco, foto e status saem do mesmo body do multiget
+  {
+    const simples = parseItem(
+      {
+        id: "MLB900",
+        title: "Com preco",
+        inventory_id: "INV-900",
+        price: 79.9,
+        original_price: 99.9,
+        thumbnail: "http://http2.mlstatic.com/D_900-I.jpg",
+        status: "active",
+      },
+      CONTA
+    ).identities[0].references[0];
+    assert.strictEqual(simples.price, 79.9);
+    assert.strictEqual(simples.originalPrice, 99.9);
+    assert.strictEqual(simples.thumbnail, "https://http2.mlstatic.com/D_900-I.jpg", "miniatura sempre em https");
+    assert.strictEqual(simples.listingStatus, "active");
+
+    const refs = parseItem(
+      {
+        id: "MLB901",
+        title: "Variado",
+        price: 50,
+        secure_thumbnail: "https://x/item.jpg",
+        pictures: [{ id: "P-AZUL", secure_url: "https://x/azul.jpg" }],
+        variations: [
+          { id: 1, inventory_id: "INV-A", price: 55, picture_ids: ["P-AZUL"] },
+          { id: 2, inventory_id: "INV-B", picture_ids: ["P-INEXISTENTE"] },
+        ],
+      },
+      CONTA
+    ).identities.map((i) => i.references[0]);
+    assert.strictEqual(refs[0].price, 55, "variacao usa o proprio preco");
+    assert.strictEqual(refs[0].thumbnail, "https://x/azul.jpg", "variacao usa a propria foto");
+    assert.strictEqual(refs[1].price, 50, "sem preco proprio, herda o do item");
+    assert.strictEqual(refs[1].thumbnail, "https://x/item.jpg", "foto da variacao ausente cai na do item");
+
+    const semPreco = parseItem({ id: "MLB902", inventory_id: "INV-902", price: 0 }, CONTA).identities[0].references[0];
+    assert.strictEqual(semPreco.price, null, "preco zero/ausente nunca vira preco");
+    assert.strictEqual(semPreco.thumbnail, null);
+    console.log("  ✓ preco, foto (https) e status do anuncio vem do body do multiget, variacao com os proprios");
+  }
+
   console.log("fullItemParser.test.js passed");
 }
 

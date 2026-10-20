@@ -74,7 +74,8 @@ const PAGINAS = [
   // carregavam (Central Full abria com a sidebar antiga). Mesma transformação
   // mecânica, todas em escopo global (cada uma tem seletor próprio). Nas
   // ilhas React a marca é o #root já renderizado, não só o nó vazio.
-  { arquivo: "full-gestao.html", modulo: "central-full", marca: "#root > *" },
+  // Central Full: módulo de CONTA desde o modelo C (lê o contexto do Shell).
+  { arquivo: "full-gestao.html", modulo: "central-full", marca: "#root > *", escopo: "account", query: "?cliente=n97&conta=42" },
   { arquivo: "fechamento.html", modulo: "curva-abc", marca: "#fc-wrap" },
   { arquivo: "cliente-operacao.html", modulo: "cliente-operacao", marca: "#vfop-client-select" },
   { arquivo: "promocoes-retorno.html", modulo: "promocoes-ml", marca: "#promo-cliente-search" },

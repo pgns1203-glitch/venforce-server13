@@ -1,10 +1,11 @@
-// Testes de render da Central de Gestão Full (React Testing Library + Vitest).
+// Testes de render da Central do Full — modelo C (React Testing Library + Vitest).
 //
-// Cobrem os estados que não podem regredir: sem conta na URL · loading ·
-// erro sem dado anterior · erro mantendo o último dado bom · dados parciais
-// avisados · zero exibido como "0" vs ausência como "—" · filtro local sem
-// nova chamada à API · abrir/fechar o drawer Product360 (Escape) · troca
-// rápida de inventory cancela a busca anterior.
+// Cobrem o que não pode regredir: cliente/conta vêm do Shell (sem seletor
+// próprio) · loading · erro sem dado anterior · erro/stale mantendo o último
+// dado bom · leitura parcial avisada · zero exibido como "0" vs ausência "—" ·
+// KPIs e painel de atenção filtram a lista sem nova chamada · custo sem Base
+// aparece como ausente · aba Reposição (cobertura, edição, lista de
+// conferência) · drawer do inventário (Escape, troca rápida cancela a busca).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, screen, within, waitFor } from "@testing-library/react";
@@ -15,20 +16,80 @@ const mocks = vi.hoisted(() => ({
   obterSnapshotFull: vi.fn(),
   obterInventoryDetail: vi.fn(),
   obterInventoryMovements: vi.fn(),
-  obterClientesDisponiveis: vi.fn(),
-  obterContasMeliDoCliente: vi.fn(),
 }));
 
+const contexto = vi.hoisted(() => ({ atual: null }));
+
 vi.mock("../../services/fullApi.js", () => mocks);
+
+vi.mock("../../hooks/useVfContext.js", () => ({
+  useOperacaoAtual: () => contexto.atual,
+}));
 
 vi.mock("../../services/apiClient.js", async () => {
   const real = await vi.importActual("../../services/apiClient.js");
   return { ...real, getToken: () => "token-de-teste", irParaLogin: vi.fn() };
 });
 
-function irParaUrl(query) {
-  window.history.replaceState({}, "", `/full-gestao.html${query}`);
+function operacao(overrides = {}) {
+  return {
+    pronta: true,
+    clienteId: 1,
+    clienteSlug: "cliente-a",
+    clienteNome: "Cliente A",
+    clienteContaId: 123,
+    marketplace: "meli",
+    snapshot: {
+      meta: { nome: "Loja Principal", marketplace: "meli", externalAccountLabel: "LOJA_A", status: { label: "Conectado", tone: "success" } },
+    },
+    ...overrides,
+  };
 }
+
+function inv(overrides = {}) {
+  return {
+    inventoryId: "INV-1",
+    references: [{ mlb: "MLB1", sellerSku: "SKU-1", title: "Produto 1", variationId: null }],
+    stock: { available: 10, notAvailable: 0, total: 10, status: "ok" },
+    sales: { previous7d: 5, current7d: 9, total14d: 14, status: "ok" },
+    trend: { deltaUnits: 4, variationPct: 80, variationKind: "comparable" },
+    dailyTurnover: 1,
+    coverageDays: 10,
+    coverageState: "numeric",
+    operationalStatus: "REPOR",
+    sendQuantity: 20,
+    replenishmentReason: null,
+    price: 50,
+    thumbnail: null,
+    listingStatus: "active",
+    unitCost: 12,
+    stockCost: 120,
+    forecast30dUnits: 10,
+    forecast30dRevenue: 500,
+    ...overrides,
+  };
+}
+
+const SEM_DADO = {
+  inventoryId: "INV-2",
+  references: [{ mlb: "MLB2", sellerSku: "SKU-2", title: "Produto 2", variationId: null }],
+  stock: { available: null, notAvailable: null, total: null, status: "unavailable" },
+  sales: { previous7d: null, current7d: null, total14d: null, status: "unavailable" },
+  trend: null,
+  dailyTurnover: null,
+  coverageDays: null,
+  coverageState: "stock_unavailable",
+  operationalStatus: "SEM_DADO",
+  sendQuantity: null,
+  replenishmentReason: "stock_unavailable",
+  price: null,
+  thumbnail: null,
+  listingStatus: "active",
+  unitCost: null,
+  stockCost: null,
+  forecast30dUnits: null,
+  forecast30dRevenue: null,
+};
 
 function snapshotBase(overrides = {}) {
   return {
@@ -36,61 +97,19 @@ function snapshotBase(overrides = {}) {
     account: { clienteContaId: 123, clienteId: 1, sellerIdMasked: "***4657", marketplace: "meli" },
     period: { from: "2026-08-04", to: "2026-08-17" },
     cache: { hit: false, stale: false, generatedAt: "2026-08-18T10:00:00.000Z", expiresAt: null, retryAt: null },
-    quality: { status: "complete", sources: {} },
-    inventories: [
-      {
-        inventoryId: "INV-1",
-        references: [{ mlb: "MLB1", sellerSku: "SKU-1", title: "Produto 1", variationId: null }],
-        stock: { available: 10, notAvailable: 0, total: 10, status: "ok" },
-        sales: { previous7d: 5, current7d: 9, total14d: 14, status: "ok" },
-        trend: { deltaUnits: 4, variationPct: 80, variationKind: "comparable" },
-        dailyTurnover: 1,
-        coverageDays: 10,
-        coverageState: "numeric",
-        operationalStatus: "REPOR",
-        sendQuantity: 20,
-        replenishmentReason: null,
-      },
-      {
-        inventoryId: "INV-2",
-        references: [{ mlb: "MLB2", sellerSku: "SKU-2", title: "Produto 2", variationId: null }],
-        stock: { available: null, notAvailable: null, total: null, status: "unavailable" },
-        sales: { previous7d: null, current7d: null, total14d: null, status: "unavailable" },
-        trend: null,
-        dailyTurnover: null,
-        coverageDays: null,
-        coverageState: "stock_unavailable",
-        operationalStatus: "SEM_DADO",
-        sendQuantity: null,
-        replenishmentReason: "stock_unavailable",
-      },
-    ],
+    quality: { status: "complete", sources: { costs: { status: "ok", reason: null, base: { slug: "base-a", nome: "Base A" } } } },
+    inventories: [inv(), SEM_DADO],
     unresolvedReferences: [],
     ...overrides,
   };
 }
 
-function clienteMock(overrides = {}) {
-  return { id: 1, nome: "Cliente A", slug: "cliente-a", ativo: true, ...overrides };
-}
-
-function contaMock(overrides = {}) {
-  return {
-    id: 501,
-    cliente_id: 1,
-    marketplace: "meli",
-    nome: "Loja Principal",
-    slug: "cliente-a-meli",
-    ativo: true,
-    is_primary: true,
-    grant: { id: 9, ml_user_id: "384324657", token_status: "valid", is_primary: true },
-    base: null,
-    ...overrides,
-  };
+function linhaDe(texto) {
+  return screen.getByText(texto).closest('[role="row"]');
 }
 
 beforeEach(() => {
-  irParaUrl("?clienteContaId=123");
+  contexto.atual = operacao();
   vi.clearAllMocks();
 });
 
@@ -98,124 +117,36 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Central de Gestão Full · seletor Cliente → Conta ML", () => {
-  it("sem clienteContaId na URL, mostra o seletor de cliente/conta e nunca chama a API", async () => {
-    irParaUrl("");
-    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
-
-    render(<FullGestaoPage />);
-    expect(await screen.findByLabelText(/^cliente$/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/conta mercado livre/i)).toBeInTheDocument();
+describe("Central do Full · contexto do Shell", () => {
+  it("sem Cliente+Operação prontos no Shell, não renderiza nada nem chama a API", () => {
+    contexto.atual = operacao({ pronta: false, clienteContaId: null });
+    const { container } = render(<FullGestaoPage />);
+    expect(container).toBeEmptyDOMElement();
     expect(mocks.obterSnapshotFull).not.toHaveBeenCalled();
   });
 
-  it("cliente com 1 conta ML: seleciona automaticamente e carrega o snapshot dessa conta", async () => {
-    irParaUrl("");
-    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
-    mocks.obterContasMeliDoCliente.mockResolvedValue({ ok: true, contas: [contaMock()] });
-    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
-
+  it("conta que não é do Mercado Livre explica e não chama a API", () => {
+    contexto.atual = operacao({ marketplace: "shopee" });
     render(<FullGestaoPage />);
-    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
-
-    await waitFor(() => expect(mocks.obterContasMeliDoCliente).toHaveBeenCalledWith("1", expect.anything()));
-    await screen.findByText("Produto 1");
-    expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(501, expect.anything());
-  });
-
-  it("cliente com 2+ contas ML: nunca escolhe sozinho, exige seleção manual", async () => {
-    irParaUrl("");
-    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
-    mocks.obterContasMeliDoCliente.mockResolvedValue({
-      ok: true,
-      contas: [contaMock({ id: 501, nome: "Loja 1" }), contaMock({ id: 502, nome: "Loja 2" })],
-    });
-
-    render(<FullGestaoPage />);
-    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
-
-    expect(await screen.findByText(/mais de uma conta mercado livre/i)).toBeInTheDocument();
-    expect(mocks.obterSnapshotFull).not.toHaveBeenCalled();
-
-    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
-    await userEvent.selectOptions(screen.getByLabelText(/conta mercado livre/i), "502");
-    await waitFor(() => expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(502, expect.anything()));
-  });
-
-  it("conta sem grant: aparece como aguardando grant/pendente e nunca dispara a coleta Full", async () => {
-    irParaUrl("");
-    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
-    mocks.obterContasMeliDoCliente.mockResolvedValue({ ok: true, contas: [contaMock({ grant: null })] });
-
-    render(<FullGestaoPage />);
-    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
-
-    expect(await screen.findByRole("status")).toHaveTextContent(/aguardando grant/i);
+    expect(screen.getByText(/central do full é do mercado livre/i)).toBeInTheDocument();
     expect(mocks.obterSnapshotFull).not.toHaveBeenCalled();
   });
 
-  it("conta com grant válido: ao selecionar entre várias, carrega o snapshot da conta certa", async () => {
-    irParaUrl("");
-    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
-    mocks.obterContasMeliDoCliente.mockResolvedValue({
-      ok: true,
-      contas: [
-        contaMock({ id: 501, nome: "Loja sem grant", grant: null }),
-        contaMock({ id: 502, nome: "Loja conectada", grant: { id: 9, ml_user_id: "1", token_status: "valid" } }),
-      ],
-    });
-    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
-
-    render(<FullGestaoPage />);
-    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
-    await userEvent.selectOptions(await screen.findByLabelText(/conta mercado livre/i), "502");
-
-    await screen.findByText("Produto 1");
-    expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(502, expect.anything());
-    expect(mocks.obterSnapshotFull).not.toHaveBeenCalledWith(501, expect.anything());
-  });
-
-  it("conta duplicada na resposta (mesma cliente_conta_id 2x) conta como UMA conta, não como ambiguidade", async () => {
-    // Regressão de um caso real de produção: /clientes/:id/contas pode
-    // devolver a mesma cliente_conta_id 2x quando ela tem 2+ vínculos de
-    // base ativos (fan-out de JOIN no backend). O seletor precisa tratar
-    // isso como uma única conta, nunca como "2 contas" exigindo escolha.
-    irParaUrl("");
-    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [clienteMock()] });
-    mocks.obterContasMeliDoCliente.mockResolvedValue({
-      ok: true,
-      contas: [contaMock({ id: 21 }), contaMock({ id: 21 })],
-    });
-    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
-
-    render(<FullGestaoPage />);
-    await userEvent.selectOptions(await screen.findByLabelText(/^cliente$/i), "1");
-
-    await screen.findByText("Produto 1");
-    expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(21, expect.anything());
-    expect(screen.getAllByRole("option", { name: /loja principal/i })).toHaveLength(1);
-  });
-
-  it("deep-link por clienteContaId ignora o seletor, carrega direto e permite trocar de conta", async () => {
+  it("lê o snapshot da conta do contexto e mostra o cliente no cartão", async () => {
     mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
     render(<FullGestaoPage />);
-
-    await screen.findByText("Produto 1");
+    expect(await screen.findByRole("heading", { name: "Cliente A" })).toBeInTheDocument();
     expect(mocks.obterSnapshotFull).toHaveBeenCalledWith(123, expect.anything());
-    expect(screen.queryByLabelText(/^cliente$/i)).not.toBeInTheDocument();
-    expect(mocks.obterClientesDisponiveis).not.toHaveBeenCalled();
-
-    mocks.obterClientesDisponiveis.mockResolvedValue({ ok: true, clientes: [] });
-    await userEvent.click(screen.getByRole("button", { name: /trocar cliente\/conta/i }));
-    expect(await screen.findByLabelText(/^cliente$/i)).toBeInTheDocument();
+    expect(screen.getByText(/Conta ML: LOJA_A/)).toBeInTheDocument();
+    expect(screen.getByText(/Base de custo:\s*Base A/)).toBeInTheDocument();
   });
 });
 
-describe("Central de Gestão Full · estados", () => {
+describe("Central do Full · estados", () => {
   it("mostra loading enquanto o snapshot não chega", async () => {
     mocks.obterSnapshotFull.mockReturnValue(new Promise(() => {}));
     render(<FullGestaoPage />);
-    expect(await screen.findByText(/coletando invent/i)).toBeInTheDocument();
+    expect(await screen.findByText(/lendo o estoque full/i)).toBeInTheDocument();
   });
 
   it("erro sem nenhum dado anterior mostra ErrorState com ação de tentar de novo", async () => {
@@ -230,57 +161,180 @@ describe("Central de Gestão Full · estados", () => {
     expect(mocks.obterSnapshotFull).toHaveBeenCalledTimes(2);
   });
 
-  it("renderiza KPIs e tabela com dados completos", async () => {
-    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
-    render(<FullGestaoPage />);
-
-    expect(await screen.findByText("Produto 1")).toBeInTheDocument();
-    expect(screen.getByText("Produto 2")).toBeInTheDocument();
-
-    const linhaProduto1 = screen.getByText("Produto 1").closest("tr");
-    expect(within(linhaProduto1).getByText("10")).toBeInTheDocument(); // estoque disponivel = 10 (zero real seria exibido como 0)
-    expect(within(linhaProduto1).getByText("REPOR".length ? "Repor" : "Repor")).toBeInTheDocument();
-  });
-
   it("zero real aparece como '0', ausência aparece como '—' (nunca confundidos)", async () => {
-    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
+    mocks.obterSnapshotFull.mockResolvedValue(
+      snapshotBase({ inventories: [inv({ stock: { available: 0, notAvailable: 0, total: 0, status: "ok" }, operationalStatus: "RUPTURA", coverageDays: 0 }), SEM_DADO] })
+    );
     render(<FullGestaoPage />);
     await screen.findByText("Produto 1");
 
-    const linhaIndisponivel = screen.getByText("Produto 1").closest("tr");
-    expect(within(linhaIndisponivel).getByText("0")).toBeInTheDocument(); // notAvailable=0 (zero real)
-
-    const linhaSemDado = screen.getByText("Produto 2").closest("tr");
-    expect(within(linhaSemDado).getAllByText("—").length).toBeGreaterThan(0); // estoque/vendas ausentes
+    expect(within(linhaDe("Produto 1")).getAllByText("0").length).toBeGreaterThan(0);
+    expect(within(linhaDe("Produto 2")).getAllByText("—").length).toBeGreaterThan(0);
   });
 
-  it("dados parciais (quality.status=partial) mostram aviso explícito", async () => {
+  it("leitura parcial (quality.status=partial) mostra aviso explícito", async () => {
     mocks.obterSnapshotFull.mockResolvedValue(snapshotBase({ quality: { status: "partial", sources: {} } }));
     render(<FullGestaoPage />);
-    expect(await screen.findByText(/coleta parcial/i)).toBeInTheDocument();
+    expect(await screen.findByText(/leitura parcial/i)).toBeInTheDocument();
   });
 
-  it("cache stale mostra aviso de dados desatualizados sem apagar a tabela", async () => {
+  it("cache stale avisa sem apagar a lista", async () => {
     mocks.obterSnapshotFull.mockResolvedValue(
       snapshotBase({ cache: { hit: true, stale: true, generatedAt: "2026-08-18T10:00:00.000Z", expiresAt: null, retryAt: null } })
     );
     render(<FullGestaoPage />);
-    expect((await screen.findAllByText(/dados desatualizados/i)).length).toBeGreaterThan(0);
+    expect(await screen.findByText(/dados desatualizados/i)).toBeInTheDocument();
     expect(screen.getByText("Produto 1")).toBeInTheDocument();
   });
+});
 
-  it("filtro de busca local não dispara nova chamada à API", async () => {
+describe("Central do Full · KPIs, painel e lista", () => {
+  const TRES = () =>
+    snapshotBase({
+      inventories: [
+        inv(),
+        inv({
+          inventoryId: "INV-3",
+          references: [{ mlb: "MLB3", sellerSku: "SKU-3", title: "Produto 3" }],
+          stock: { available: 0, notAvailable: 0, total: 0, status: "ok" },
+          operationalStatus: "RUPTURA",
+          coverageDays: 0,
+          dailyTurnover: 2,
+          stockCost: 0,
+        }),
+        SEM_DADO,
+      ],
+    });
+
+  it("KPIs somam custo e previsão conhecidos e contam por status", async () => {
+    mocks.obterSnapshotFull.mockResolvedValue(TRES());
+    render(<FullGestaoPage />);
+    await screen.findByText("Produto 1");
+
+    const kpis = screen.getByRole("group", { name: /resumo do full/i });
+    expect(within(kpis).getByRole("button", { name: /^Sem estoque\s*1/ })).toBeInTheDocument();
+    expect(within(kpis).getByRole("button", { name: /^Custo no Full\s*R\$ 120/ })).toBeInTheDocument();
+    expect(within(kpis).getByText("R$ 1.000")).toBeInTheDocument(); // previsão 500 + 500
+  });
+
+  it("clicar num KPI filtra a lista localmente, sem nova chamada à API", async () => {
+    mocks.obterSnapshotFull.mockResolvedValue(TRES());
+    render(<FullGestaoPage />);
+    await screen.findByText("Produto 1");
+
+    await userEvent.click(screen.getByRole("button", { name: /^Sem estoque\s*1/ }));
+    expect(screen.queryByText("Produto 1")).not.toBeInTheDocument();
+    expect(screen.getByText("Produto 3")).toBeInTheDocument();
+    expect(screen.getByText(/Filtros: Sem estoque/)).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "Limpar" }));
+    expect(screen.getByText("Produto 1")).toBeInTheDocument();
+    expect(mocks.obterSnapshotFull).toHaveBeenCalledTimes(1);
+  });
+
+  it("o painel de atenção aplica o mesmo filtro e mostra o giro perdido", async () => {
+    mocks.obterSnapshotFull.mockResolvedValue(TRES());
+    render(<FullGestaoPage />);
+    await screen.findByText("Produto 1");
+
+    const item = screen.getByRole("button", { name: /1 sem estoque/i });
+    expect(item).toHaveTextContent("Vendiam 2,0 un/dia somados");
+    await userEvent.click(item);
+    expect(screen.queryByText("Produto 1")).not.toBeInTheDocument();
+    expect(screen.getByText("Produto 3")).toBeInTheDocument();
+  });
+
+  it("busca local não dispara nova chamada à API", async () => {
     mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
     render(<FullGestaoPage />);
     await screen.findByText("Produto 1");
 
-    await userEvent.type(screen.getByLabelText(/buscar invent/i), "Produto 2");
+    await userEvent.type(screen.getByLabelText(/buscar produtos/i), "Produto 2");
     expect(screen.queryByText("Produto 1")).not.toBeInTheDocument();
     expect(screen.getByText("Produto 2")).toBeInTheDocument();
     expect(mocks.obterSnapshotFull).toHaveBeenCalledTimes(1);
   });
 
-  it("abre o drawer Product360, busca detalhe/movimentos e fecha com Escape", async () => {
+  it("conta sem Base de custo: custo aparece como ausente, nunca R$ 0", async () => {
+    mocks.obterSnapshotFull.mockResolvedValue(
+      snapshotBase({
+        quality: { status: "complete", sources: { costs: { status: "unavailable", reason: "SEM_BASE", base: null } } },
+        inventories: [inv({ unitCost: null, stockCost: null })],
+      })
+    );
+    render(<FullGestaoPage />);
+    await screen.findByText("Produto 1");
+
+    const custo = screen.getByRole("button", { name: /^Custo no Full/ });
+    expect(custo).toHaveTextContent("sem Base de custo");
+    expect(custo).toBeDisabled();
+    expect(screen.getByRole("link", { name: "não vinculada" })).toHaveAttribute("href", "bases.html");
+  });
+});
+
+describe("Central do Full · Reposição sugerida", () => {
+  async function abrirReposicao() {
+    mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
+    render(<FullGestaoPage />);
+    await screen.findByText("Produto 1");
+    await userEvent.click(screen.getByRole("button", { name: "Planejar novo envio" }));
+    await screen.findByRole("table", { name: "Reposição sugerida" });
+  }
+
+  it("sugere pela cobertura escolhida e recalcula ao trocar 30 → 15 dias", async () => {
+    await abrirReposicao();
+    const entrada = screen.getByRole("spinbutton", { name: /quantidade a enviar de produto 1/i });
+    expect(entrada).toHaveValue(20); // 1/dia × 30 − 10 disponíveis
+    expect(screen.queryByText("Produto 2")).not.toBeInTheDocument(); // sem giro conhecido não entra
+
+    await userEvent.click(screen.getByRole("button", { name: "15 dias" }));
+    expect(screen.getByRole("spinbutton", { name: /quantidade a enviar de produto 1/i })).toHaveValue(5);
+  });
+
+  it("editar a quantidade marca 'editado' e atualiza o resumo do envio", async () => {
+    await abrirReposicao();
+    const entrada = screen.getByRole("spinbutton", { name: /quantidade a enviar de produto 1/i });
+    await userEvent.clear(entrada);
+    await userEvent.type(entrada, "30");
+
+    expect(within(linhaDe("Produto 1")).getByText("editado")).toBeInTheDocument();
+    const resumo = screen.getByRole("complementary", { name: "Resumo do envio" });
+    expect(within(resumo).getByText("Unidades").nextSibling).toHaveTextContent("30");
+    expect(within(resumo).getByText("Custo da mercadoria").nextSibling).toHaveTextContent("R$ 360,00");
+  });
+
+  it("desmarcar tira do envio; a lista de conferência sai só com os marcados", async () => {
+    await abrirReposicao();
+    const baixar = screen.getByRole("button", { name: "Baixar lista de conferência" });
+    expect(baixar).toBeEnabled();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /incluir produto 1/i }));
+    expect(baixar).toBeDisabled();
+    await userEvent.click(screen.getByRole("checkbox", { name: /incluir produto 1/i }));
+
+    const blobs = [];
+    const criar = vi.fn((blob) => {
+      blobs.push(blob);
+      return "blob:lista";
+    });
+    vi.stubGlobal("URL", { createObjectURL: criar, revokeObjectURL: vi.fn() });
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    await userEvent.click(baixar);
+
+    expect(criar).toHaveBeenCalledTimes(1);
+    const csv = await new Promise((resolve) => {
+      const leitor = new FileReader();
+      leitor.onload = () => resolve(leitor.result);
+      leitor.readAsText(blobs[0]);
+    });
+    expect(csv).toContain("Produto;MLB;Variação;SKU;Inventory ID;Quantidade;Conferido");
+    expect(csv).toContain("Produto 1;MLB1;;SKU-1;INV-1;20;");
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("Central do Full · drawer do inventário", () => {
+  it("abre o detalhe, busca detalhe/movimentos e fecha com Escape", async () => {
     mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
     mocks.obterInventoryDetail.mockResolvedValue({
       inventoryId: "INV-1",
@@ -303,7 +357,7 @@ describe("Central de Gestão Full · estados", () => {
     render(<FullGestaoPage />);
     await screen.findByText("Produto 1");
 
-    await userEvent.click(screen.getAllByRole("button", { name: /detalhar/i })[0]);
+    await userEvent.click(screen.getByRole("button", { name: /ver detalhe de produto 1/i }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
     await waitFor(() => expect(mocks.obterInventoryDetail).toHaveBeenCalledWith(123, "INV-1", expect.anything()));
     expect(mocks.obterInventoryMovements).toHaveBeenCalledWith(123, "INV-1", expect.anything());
@@ -312,13 +366,11 @@ describe("Central de Gestão Full · estados", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
-  it("troca rápida de inventory cancela a busca anterior (nunca mostra o detalhe errado)", async () => {
+  it("troca rápida de inventário cancela a busca anterior (nunca mostra o detalhe errado)", async () => {
     mocks.obterSnapshotFull.mockResolvedValue(snapshotBase());
 
     let resolverPrimeiro;
-    mocks.obterInventoryDetail.mockImplementationOnce(
-      () => new Promise((resolve) => { resolverPrimeiro = resolve; })
-    );
+    mocks.obterInventoryDetail.mockImplementationOnce(() => new Promise((resolve) => { resolverPrimeiro = resolve; }));
     mocks.obterInventoryDetail.mockResolvedValueOnce({
       inventoryId: "INV-2",
       references: [{ mlb: "MLB2", sellerSku: "SKU-2", title: "Produto 2" }],
@@ -331,12 +383,11 @@ describe("Central de Gestão Full · estados", () => {
     render(<FullGestaoPage />);
     await screen.findByText("Produto 1");
 
-    const botoes = screen.getAllByRole("button", { name: /detalhar/i });
-    await userEvent.click(botoes[0]); // abre INV-1 (fica pendente)
-    // O drawer é modal (VFDrawer/Radix): a tabela atrás não recebe clique,
-    // então a troca real é fechar e abrir outro — com o INV-1 ainda pendente.
+    await userEvent.click(screen.getByRole("button", { name: /ver detalhe de produto 1/i }));
+    // O drawer é modal: a lista atrás não recebe clique, então a troca real é
+    // fechar e abrir outro — com o INV-1 ainda pendente.
     await userEvent.keyboard("{Escape}");
-    await userEvent.click(botoes[1]); // abre INV-2 antes do INV-1 responder
+    await userEvent.click(screen.getByRole("button", { name: /ver detalhe de produto 2/i }));
 
     await screen.findByText("INV-2");
     resolverPrimeiro?.({ inventoryId: "INV-1", references: [], stock: {}, operationalStatus: "REPOR", sales: { status: "ok" } });

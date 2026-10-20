@@ -7,7 +7,7 @@
 // tudo bem (success). Sem entrada = sem-dado, tom neutro (default do
 // .vf-status, sem modificador is-*).
 export const STATUS_LABEL = {
-  RUPTURA: "Ruptura",
+  RUPTURA: "Sem estoque",
   CRITICO: "Crítico",
   REPOR: "Repor",
   SAUDAVEL: "Saudável",

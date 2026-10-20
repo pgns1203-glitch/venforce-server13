@@ -1,164 +1,750 @@
-/* Estilos da Central de Gestão Full — bundle isolado (assets/full-gestao).
-   Usa os tokens da Fundação Global V2 (Portal/css/vf-tokens-v2.css) com
-   fallback explícito, para nunca depender silenciosamente de um nome de
-   variável não confirmado. Nenhuma regra global é sobrescrita aqui. */
+/* Estilos da Central do Full — bundle isolado (assets/full-gestao).
+   Modelo C na linguagem da página Anúncios ML (Portal/css/pages/
+   anuncios-meli-v2.css): cartão do cliente com trilho de ações, faixa de
+   KPIs segmentada, lista em grade com miniatura. Só tokens da Fundação V2
+   (var(--vf-*)); nenhuma cor, raio ou espaço novo. Nenhuma regra global é
+   sobrescrita: tudo vive sob .full-page. */
 
 .full-page {
-  color: var(--vf-text, #1a1a1a);
+  color: var(--vf-text);
 }
 
-.full-header {
+.full-pilha {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--vf-sp-4, 12px);
-  margin-bottom: var(--vf-sp-6, 20px);
+  flex-direction: column;
+  gap: var(--vf-sp-4);
 }
 
-.full-header h1 {
-  font-family: var(--vf-font-display, inherit);
-  font-size: var(--vf-fs-2xl, 1.5rem);
+.full-page .full-eyebrow {
+  margin: 0 0 var(--vf-sp-1);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+.full-page .full-largura {
+  width: 100%;
+}
+
+.full-page .vf-alert {
   margin: 0;
 }
 
-.full-header-meta {
-  color: var(--vf-text-muted, #6b7280);
-  font-size: var(--vf-fs-2xs, 0.8rem);
+/* ---- Cartão do cliente (= .am-cliente-contexto) ---------------------- */
+
+.full-page .full-cliente {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+  padding: 0;
+  overflow: hidden;
 }
 
-.full-aviso {
-  background: var(--vf-warning-bg, #fff7e6);
-  border: 1px solid var(--vf-warning-border, #f0c36d);
-  color: var(--vf-warning-strong, #8a5a00);
-  border-radius: var(--vf-radius, 8px);
-  padding: var(--vf-sp-3, 10px) var(--vf-sp-4, 12px);
-  margin-bottom: var(--vf-sp-4, 12px);
+.full-page .full-cliente__info {
+  padding: var(--vf-sp-5);
 }
 
-.full-aviso--erro {
-  background: var(--vf-danger-bg, #fdecec);
-  border-color: var(--vf-danger-border, #f0a3a3);
-  color: var(--vf-danger-strong, #8a1c1c);
+.full-page .full-cliente__titulo {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--vf-sp-4);
 }
 
-/* KPIs e status usam os componentes reais da Fundação V2 (.vf-kpi-grid,
-   .vf-status — ver FullSummaryKpis.jsx e FullInventoryTable.jsx) em vez de
-   reinventar cartão/badge aqui; isso mantém a página no mesmo espaçamento
-   de fim de bloco que o resto do sistema. */
-.vf-kpi-grid {
-  margin-bottom: var(--vf-sp-6, 20px);
+.full-page .full-cliente h2 {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-lg);
+  color: var(--vf-text);
 }
 
-.full-account-picker {
+.full-page .full-cliente__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-5);
+  margin-top: var(--vf-sp-3);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.full-page .full-cliente__acoes {
+  display: grid;
+  align-content: center;
+  padding: var(--vf-sp-2) var(--vf-sp-5);
+  border-left: 1px solid var(--vf-border);
+  background: var(--vf-surface-2);
+}
+
+.full-page .full-cliente__acao {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-4);
+  padding: var(--vf-sp-2) 0;
+}
+
+.full-page .full-cliente__acao-titulo {
+  margin: 0;
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.full-page .full-cliente__acao-texto {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+@media (max-width: 760px) {
+  .full-page .full-cliente {
+    grid-template-columns: 1fr;
+  }
+
+  .full-page .full-cliente__acoes {
+    border-left: 0;
+    border-top: 1px solid var(--vf-border);
+  }
+}
+
+/* ---- Faixa de KPIs (= .am-resumo) ------------------------------------ */
+/* Filetes de 1px entre cards = gap sobre o fundo de borda (o card é que
+   tem a superfície): funciona com qualquer número de colunas. */
+
+.full-page .full-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 1px;
+  overflow: hidden;
+  background: var(--vf-border);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+  box-shadow: var(--vf-shadow-xs);
+}
+
+.full-page .full-kpi {
+  appearance: none;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 0;
+  background: var(--vf-surface);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+}
+
+.full-page button.full-kpi {
+  cursor: pointer;
+  transition: background-color 0.12s;
+}
+
+.full-page button.full-kpi:hover:not(:disabled) {
+  background: var(--vf-surface-hover);
+}
+
+.full-page button.full-kpi:disabled {
+  cursor: default;
+}
+
+.full-page button.full-kpi:focus-visible {
+  outline: 2px solid var(--vf-focus-color, var(--vf-primary));
+  outline-offset: -2px;
+}
+
+.full-page .full-kpi.is-active {
+  background: var(--vf-primary-soft);
+}
+
+.full-page .full-kpi.is-active .vf-metric__label {
+  color: var(--vf-primary-strong);
+}
+
+.full-page .full-kpi.is-danger { box-shadow: inset 3px 0 0 var(--vf-danger); }
+.full-page .full-kpi.is-warning { box-shadow: inset 3px 0 0 var(--vf-warning); }
+.full-page .full-kpi.is-info { box-shadow: inset 3px 0 0 var(--vf-info); }
+
+.full-page .full-kpi .vf-metric__label {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+}
+
+.full-page .full-kpi .vf-metric__value {
+  font-size: 19px;
+  letter-spacing: -0.02em;
+}
+
+.full-page .full-kpi .vf-metric__foot {
+  font-size: 10.5px;
+  font-weight: var(--vf-fw-semibold);
+}
+
+.full-page .full-kpi .vf-metric__foot.is-success { color: var(--vf-success-strong); }
+.full-page .full-kpi .vf-metric__foot.is-warning { color: var(--vf-warning-strong); }
+.full-page .full-kpi .vf-metric__foot.is-danger { color: var(--vf-danger-strong); }
+.full-page .full-kpi .vf-metric__foot.is-neutral { color: var(--vf-text-muted); }
+
+/* ---- Layout: card principal + painel lateral ------------------------- */
+
+.full-page .full-layout {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--vf-sp-4);
+}
+
+.full-page .full-principal {
+  flex: 999 1 720px;
+  min-width: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.full-page .full-abas {
+  padding: 0 var(--vf-sp-4);
+}
+
+.full-page .full-abas .vf-tabs {
+  border-bottom: 0;
+}
+
+.full-page .full-abas .vf-tab {
+  padding-top: var(--vf-sp-3);
+}
+
+.full-page .full-toolbar {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-end;
-  gap: var(--vf-sp-4, 12px);
-  margin-bottom: var(--vf-sp-4, 12px);
-  padding: var(--vf-sp-4, 12px);
-  background: var(--vf-surface, #fff);
-  border: 1px solid var(--vf-border, #e5e7eb);
-  border-radius: var(--vf-radius, 8px);
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
 }
 
-.full-account-picker-field {
+.full-page .full-toolbar__filtros {
   display: flex;
-  flex-direction: column;
-  gap: var(--vf-sp-1, 4px);
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: var(--vf-sp-3);
+}
+
+.full-page .full-toolbar__filtros .vf-input,
+.full-page .full-toolbar__filtros .vf-select {
   min-width: 220px;
 }
 
-.full-account-picker-field label {
-  font-size: var(--vf-fs-2xs, 0.8rem);
-  color: var(--vf-text-muted, #6b7280);
-  font-weight: 600;
-}
-
-.full-account-picker-hint {
-  flex-basis: 100%;
-  margin: 0;
-  color: var(--vf-text-muted, #6b7280);
-  font-size: var(--vf-fs-2xs, 0.85rem);
-}
-
-.full-filters {
+.full-page .full-toolbar__ativos {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--vf-sp-3, 10px);
   align-items: center;
-  margin-bottom: var(--vf-sp-4, 12px);
+  gap: var(--vf-sp-2);
 }
 
-.full-filters-checkbox {
+.full-page .full-check {
   display: inline-flex;
   align-items: center;
-  gap: var(--vf-sp-2, 6px);
-  font-size: var(--vf-fs-2xs, 0.85rem);
+  gap: var(--vf-sp-2);
+  min-height: 36px;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
 }
 
-/* Casca da tabela (scroll, header sticky, hover de linha, alinhamento
-   numérico) vem de .vf-table-wrap / .vf-table / .num na Fundação V2 — ver
-   FullInventoryTable.jsx. Só a célula de produto (título + referências
-   empilhados) é local, sem equivalente genérico no sistema. */
-.full-table-produto {
+/* Cobertura 15/30/45/60: grupo segmentado (sem equivalente na Fundação). */
+.full-page .full-segmentos {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--vf-border-strong);
+  border-radius: var(--vf-radius-sm);
+}
+
+.full-page .full-segmento {
+  min-height: 36px;
+  padding: 0 var(--vf-sp-3);
+  border: 0;
+  border-left: 1px solid var(--vf-border-strong);
+  background: var(--vf-surface);
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  cursor: pointer;
+}
+
+.full-page .full-segmento:first-child {
+  border-left: 0;
+}
+
+.full-page .full-segmento:hover {
+  background: var(--vf-surface-hover);
+}
+
+.full-page .full-segmento.is-active {
+  background: var(--vf-primary-soft);
+  color: var(--vf-primary-strong);
+}
+
+.full-page .full-segmento:focus-visible {
+  outline: 2px solid var(--vf-primary);
+  outline-offset: -2px;
+}
+
+/* ---- Lista em grade (= .am-listagem) --------------------------------- */
+/* Cabeçalho e linhas usam a MESMA grade; abaixo da soma dos mínimos a lista
+   rola dentro do card (nunca overflow:hidden cortando coluna). */
+
+.full-page .full-lista {
+  overflow-x: auto;
+  border-top: 1px solid var(--vf-border);
+}
+
+.full-page .full-lista--estoque {
+  --full-cols: 44px minmax(220px, 3fr) minmax(96px, 0.8fr) minmax(76px, 0.6fr) minmax(104px, 0.8fr)
+    minmax(150px, 1.1fr) minmax(104px, 0.8fr) minmax(56px, 0.5fr) 32px;
+  --full-min: 1040px;
+}
+
+.full-page .full-lista--reposicao {
+  --full-cols: 20px 44px minmax(200px, 3fr) minmax(96px, 0.8fr) minmax(60px, 0.5fr) minmax(60px, 0.5fr)
+    minmax(128px, 1fr) minmax(64px, 0.5fr) 84px minmax(96px, 0.8fr);
+  --full-min: 1040px;
+}
+
+.full-page .full-lista__cabeca,
+.full-page .full-linha {
+  display: grid;
+  grid-template-columns: var(--full-cols);
+  align-items: center;
+  gap: var(--vf-sp-3);
+  min-width: var(--full-min);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  box-sizing: border-box;
+}
+
+.full-page .full-lista__cabeca {
+  padding-top: var(--vf-sp-2);
+  padding-bottom: var(--vf-sp-2);
+  background: var(--vf-surface-2);
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.full-page .full-lista__cabeca > span {
+  white-space: nowrap;
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
+  text-transform: uppercase;
+  color: var(--vf-text-muted);
+}
+
+/* "Produto" começa na borda da foto: o rótulo ocupa miniatura + produto. */
+.full-page .full-lista--estoque .full-lista__col-produto {
+  grid-column: 1 / span 2;
+}
+
+.full-page .full-lista--reposicao .full-lista__col-produto {
+  grid-column: 2 / span 2;
+}
+
+.full-page .full-linha {
+  border-bottom: 1px solid var(--vf-border);
+}
+
+.full-page .full-linha:last-child {
+  border-bottom: 0;
+}
+
+.full-page .full-lista--estoque .full-linha {
+  cursor: pointer;
+}
+
+.full-page .full-linha:hover {
+  background: var(--vf-surface-hover);
+}
+
+.full-page .full-linha.is-selecionada {
+  background: var(--vf-surface-2);
+}
+
+.full-page .full-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-surface-2);
+  font-family: var(--vf-font-display);
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-text-placeholder);
+}
+
+.full-page .full-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.full-page .full-linha__produto {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+}
+
+.full-page .full-produto {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px var(--vf-sp-3);
+  min-width: 0;
+  padding-right: var(--vf-sp-4);
+}
+
+.full-page .full-produto__titulo {
+  flex: 1 0 100%;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.full-page .full-produto__ids {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--vf-sp-3);
+  min-width: 0;
+  font-size: var(--vf-fs-2xs);
+  color: var(--vf-text-muted);
+}
+
+.full-page .full-produto__ids > * {
+  white-space: nowrap;
+}
+
+.full-page .full-produto__sem-sku {
+  color: var(--vf-danger-strong);
+}
+
+.full-page .full-editado {
+  flex: none;
+}
+
+.full-page .full-num {
+  font-variant-numeric: tabular-nums;
+  font-size: var(--vf-fs-sm);
+  white-space: nowrap;
+}
+
+.full-page .full-num--destaque {
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-primary-strong);
+}
+
+.full-page .full-num--fraco {
+  color: var(--vf-text-muted);
+}
+
+.full-page .full-tendencia {
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-muted);
+}
+
+.full-page .full-tendencia.is-up { color: var(--vf-success-strong); }
+.full-page .full-tendencia.is-down { color: var(--vf-danger-strong); }
+
+.full-page .full-cobertura {
+  display: flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+}
+
+.full-page .full-cobertura__trilho {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--vf-radius-pill);
+  background: var(--vf-bg-2);
+}
+
+.full-page .full-cobertura__barra {
+  display: block;
+  height: 100%;
+  background: var(--vf-neutral);
+}
+
+.full-page .full-cobertura__barra.is-danger { background: var(--vf-danger); }
+.full-page .full-cobertura__barra.is-warning { background: var(--vf-warning); }
+.full-page .full-cobertura__barra.is-success { background: var(--vf-success); }
+
+.full-page .full-cobertura__dias {
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
+}
+
+.full-page .full-cobertura__dias.is-danger {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-danger-strong);
+}
+
+.full-page .full-antes-depois {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
+}
+
+.full-page .full-antes-depois strong.is-success {
+  color: var(--vf-success-strong);
+}
+
+.full-page .full-qtd {
+  width: 84px;
+  min-height: 32px;
+  text-align: right;
+  font-family: var(--vf-font-mono);
+  font-weight: var(--vf-fw-semibold);
+}
+
+.full-page .full-qtd.is-editada {
+  border-color: var(--vf-primary);
+}
+
+.full-page .full-linha__abrir {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--vf-radius-sm);
+  background: none;
+  color: var(--vf-text-muted);
+  cursor: pointer;
+}
+
+.full-page .full-linha__abrir:hover {
+  background: var(--vf-bg-2);
+  color: var(--vf-text);
+}
+
+.full-page .full-linha__abrir:focus-visible {
+  outline: 2px solid var(--vf-primary);
+  outline-offset: 1px;
+}
+
+.full-page .full-lista__rodape {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
+}
+
+.full-page .full-vazio {
+  margin: 0;
+  padding: var(--vf-sp-6) var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
+  text-align: center;
+  color: var(--vf-text-muted);
+}
+
+/* ---- Painel lateral (atenção / resumo do envio) ---------------------- */
+
+.full-page .full-lateral {
+  flex: 1 1 300px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.full-page .full-lateral__cabeca {
+  padding: var(--vf-sp-4);
+}
+
+.full-page .full-lateral__sub {
+  margin: 2px 0 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.full-page .full-lateral__titulo {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-lg);
+}
+
+.full-page .full-lateral__pe {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  white-space: normal;
-  min-width: 200px;
+  gap: var(--vf-sp-2);
+  padding: var(--vf-sp-4);
+  border-top: 1px solid var(--vf-border);
 }
 
-.full-table-refs {
-  color: var(--vf-text-muted, #6b7280);
-  font-size: var(--vf-fs-2xs, 0.75rem);
+.full-page .full-lateral__nota {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-muted);
 }
 
-.full-table-vazio {
-  padding: var(--vf-sp-6, 20px);
-  text-align: center;
-  color: var(--vf-text-muted, #6b7280);
+.full-page .full-atencao {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-/* Casca do drawer (overlay, header, corpo, transição) vem de .vf-drawer /
-   .vf-drawer-backdrop na Fundação V2 — ver FullInventoryDrawer.jsx. Só o
-   conteúdo interno (listas, grade de campos) é local, porque o formato dos
-   dados do Product360 Full não tem equivalente genérico no sistema. */
+.full-page .full-atencao__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--vf-sp-3);
+  width: 100%;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border: 0;
+  border-top: 1px solid var(--vf-border);
+  background: var(--vf-surface);
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.full-page .full-atencao__item:hover {
+  background: var(--vf-surface-hover);
+}
+
+.full-page .full-atencao__item.is-active {
+  background: var(--vf-primary-soft);
+}
+
+.full-page .full-atencao__item:focus-visible {
+  outline: 2px solid var(--vf-primary);
+  outline-offset: -2px;
+}
+
+.full-page .full-atencao__icone {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--vf-radius-sm);
+}
+
+.full-page .full-atencao__icone.is-danger { background: var(--vf-danger-bg); color: var(--vf-danger); }
+.full-page .full-atencao__icone.is-warning { background: var(--vf-warning-bg); color: var(--vf-warning-strong); }
+.full-page .full-atencao__icone.is-info { background: var(--vf-info-bg); color: var(--vf-info); }
+
+.full-page .full-atencao__titulo {
+  display: block;
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-bold);
+}
+
+.full-page .full-atencao__texto {
+  display: block;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.full-page .full-resumo {
+  margin: 0;
+  padding: 0 var(--vf-sp-4) var(--vf-sp-2);
+}
+
+.full-page .full-resumo > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--vf-sp-3);
+  padding: 9px 0;
+  border-bottom: 1px solid var(--vf-border);
+  font-size: var(--vf-fs-sm);
+}
+
+.full-page .full-resumo > div:last-child {
+  border-bottom: 0;
+}
+
+.full-page .full-resumo dt {
+  color: var(--vf-text-secondary);
+}
+
+.full-page .full-resumo dd {
+  margin: 0;
+  font-weight: var(--vf-fw-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.full-page .full-alerta {
+  margin: 0 var(--vf-sp-4) var(--vf-sp-4);
+  padding: 10px 12px;
+  border-radius: var(--vf-radius-sm);
+  background: var(--vf-warning-bg);
+  color: var(--vf-warning-strong);
+  font-size: var(--vf-fs-xs);
+}
+
+.full-page .full-alerta a {
+  color: inherit;
+  font-weight: var(--vf-fw-semibold);
+}
+
+/* ---- Drawer do inventário (Product360) ------------------------------- */
+/* Casca (overlay, header, corpo, transição) vem de .vf-drawer na Fundação
+   V2 — ver FullInventoryDrawer.jsx. Só o conteúdo interno é local. */
 .full-drawer-section-title {
-  margin: 0 0 var(--vf-sp-2, 6px);
-  font-size: var(--vf-fs-2xs, 0.75rem);
-  font-weight: var(--vf-fw-semibold, 600);
-  letter-spacing: var(--vf-ls-caps, 0.05em);
+  margin: 0 0 var(--vf-sp-2);
+  font-size: var(--vf-fs-2xs);
+  font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-caps);
   text-transform: uppercase;
-  color: var(--vf-text-muted, #6b7280);
+  color: var(--vf-text-muted);
 }
 
 .full-drawer-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--vf-sp-4, 12px) var(--vf-sp-5, 16px);
+  gap: var(--vf-sp-4) var(--vf-sp-5);
 }
 
 .full-drawer-hint {
   margin: 0;
-  color: var(--vf-text-muted, #6b7280);
+  color: var(--vf-text-muted);
 }
 
 .full-drawer-refs,
 .full-drawer-movs {
   display: flex;
   flex-direction: column;
-  gap: var(--vf-sp-2, 6px);
+  gap: var(--vf-sp-2);
   margin: 0;
   padding: 0;
   list-style: none;
-  font-size: var(--vf-fs-sm, 0.9375rem);
+  font-size: var(--vf-fs-sm);
 }
 
 .full-drawer-movs li {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--vf-sp-3, 10px);
+  gap: var(--vf-sp-3);
 }
 
 @media (max-width: 420px) {

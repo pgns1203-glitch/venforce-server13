@@ -52,8 +52,44 @@ function extractSellerSku(itemLevelAttributes, itemLevelSellerCustomField, varia
   return normalizeId(itemLevelSellerCustomField);
 }
 
-function buildReference({ mlb, variationId, userProductId, sellerSku, title }) {
-  return { mlb, variationId, userProductId, sellerSku, title: isNonEmptyString(title) ? title : null };
+function priceOrNull(value) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function httpsUrl(value) {
+  return isNonEmptyString(value) ? value.replace(/^http:\/\//, "https://") : null;
+}
+
+// Dados de exibicao que o multiget /items ja traz (preco, foto, status do
+// anuncio): a Central mostra miniatura e preco sem nenhuma chamada extra ao
+// ML. Variacao usa o proprio preco e a primeira foto dela; sem isso, os do item.
+function commercialFields(itemBody, variation) {
+  const pictures = Array.isArray(itemBody.pictures) ? itemBody.pictures : [];
+  let thumbnail = httpsUrl(itemBody.secure_thumbnail) || httpsUrl(itemBody.thumbnail);
+  if (variation && Array.isArray(variation.picture_ids) && variation.picture_ids.length > 0) {
+    const picture = pictures.find((p) => p && String(p.id) === String(variation.picture_ids[0]));
+    if (picture) thumbnail = httpsUrl(picture.secure_url) || httpsUrl(picture.url) || thumbnail;
+  }
+  return {
+    price: priceOrNull(variation && variation.price) ?? priceOrNull(itemBody.price),
+    originalPrice: priceOrNull(itemBody.original_price),
+    thumbnail,
+    listingStatus: isNonEmptyString(itemBody.status) ? itemBody.status : null,
+  };
+}
+
+function buildReference({ mlb, variationId, userProductId, sellerSku, title, commercial = {} }) {
+  return {
+    mlb,
+    variationId,
+    userProductId,
+    sellerSku,
+    title: isNonEmptyString(title) ? title : null,
+    price: commercial.price ?? null,
+    originalPrice: commercial.originalPrice ?? null,
+    thumbnail: commercial.thumbnail ?? null,
+    listingStatus: commercial.listingStatus ?? null,
+  };
 }
 
 /**
@@ -80,7 +116,14 @@ function parseItem(itemBody, { clienteContaId, sellerId }) {
     const inventoryId = normalizeId(itemBody.inventory_id);
     const userProductId = normalizeId(itemBody.user_product_id);
     const sellerSku = extractSellerSku(itemAttributes, itemBody.seller_custom_field, undefined);
-    const reference = buildReference({ mlb, variationId: null, userProductId, sellerSku, title: itemBody.title });
+    const reference = buildReference({
+      mlb,
+      variationId: null,
+      userProductId,
+      sellerSku,
+      title: itemBody.title,
+      commercial: commercialFields(itemBody, null),
+    });
 
     if (inventoryId) {
       identities.push({ clienteContaId, sellerId, inventoryId, references: [reference] });
@@ -104,7 +147,14 @@ function parseItem(itemBody, { clienteContaId, sellerId }) {
       ? variation.attribute_combinations
       : [];
     const sellerSku = extractSellerSku(itemAttributes, itemBody.seller_custom_field, variationAttributes);
-    const reference = buildReference({ mlb, variationId, userProductId, sellerSku, title: itemBody.title });
+    const reference = buildReference({
+      mlb,
+      variationId,
+      userProductId,
+      sellerSku,
+      title: itemBody.title,
+      commercial: commercialFields(itemBody, variation),
+    });
 
     if (!variationId) {
       unresolvedReferences.push({ ...reference, reason: "variation_id_ausente" });

@@ -21,6 +21,7 @@ const { dedupeInventories } = require("./fullIdentity");
 const { createConcurrencyLimiter } = require("./fullRetry");
 const { createFullCache } = require("./fullCache");
 const { createFullCommercialAdapter } = require("./fullCommercialAdapter");
+const { createFullCostProvider } = require("./fullCostProvider");
 const {
   buildCompletedDayWindow,
   splitFourteenDayWindow,
@@ -215,6 +216,44 @@ function buildInventoryRow({ inv, stock, sales, config }) {
   };
 }
 
+const FORECAST_DAYS = 30;
+
+function roundCents(value) {
+  return Math.round(value * 100) / 100;
+}
+
+/**
+ * Valores em R$ e de exibicao de uma linha (Central do Full, modelo C).
+ * Ausencia nunca vira zero: sem custo, sem preco ou sem giro o campo e null.
+ *  - stockCost: estoque TOTAL no Full (inclui indisponivel) x custo;
+ *  - forecast30d: venda dos proximos 30 dias no ritmo atual, LIMITADA ao
+ *    estoque disponivel no Full (nao da para vender o que nao esta la).
+ */
+function buildCommercialFields(row, costsByItemId) {
+  const principal = (Array.isArray(row.references) && row.references[0]) || {};
+  const price = typeof principal.price === "number" ? principal.price : null;
+  const unitCost = principal.mlb && costsByItemId.has(principal.mlb) ? costsByItemId.get(principal.mlb) : null;
+  const total = row.stock.status === "ok" ? row.stock.total : null;
+  const available = row.stock.status === "ok" ? row.stock.available : null;
+
+  const stockCost = typeof total === "number" && unitCost !== null ? roundCents(total * unitCost) : null;
+  const forecast30dUnits =
+    typeof row.dailyTurnover === "number" && typeof available === "number"
+      ? Math.min(available, row.dailyTurnover * FORECAST_DAYS)
+      : null;
+  const forecast30dRevenue = forecast30dUnits !== null && price !== null ? roundCents(forecast30dUnits * price) : null;
+
+  return {
+    price,
+    thumbnail: principal.thumbnail ?? null,
+    listingStatus: principal.listingStatus ?? null,
+    unitCost,
+    stockCost,
+    forecast30dUnits: forecast30dUnits === null ? null : Math.round(forecast30dUnits * 10) / 10,
+    forecast30dRevenue,
+  };
+}
+
 /**
  * `mlGateway` (PR2) e `resolveAccountContext` (clienteContaService, real
  * por padrao) sao sempre injetaveis — nenhum teste deste arquivo faz rede
@@ -227,6 +266,7 @@ function createFullService({
   nowFn = () => Date.now(),
   config = DEFAULT_CONFIG,
   commercialAdapter = createFullCommercialAdapter(),
+  costProvider = createFullCostProvider(),
 } = {}) {
   if (typeof mlGateway !== "object" || mlGateway === null) {
     throw new TypeError("mlGateway e obrigatorio");
@@ -451,10 +491,31 @@ function createFullService({
       commercialResult = { account: { status: "unavailable", reason: "commercial_adapter_error" }, byInventoryId: new Map() };
     }
 
+    // Custo da Base da conta: uma leitura em lote, nunca por inventory. Por
+    // contrato nunca rejeita; o try/catch e a mesma defesa em profundidade do
+    // enriquecimento comercial acima.
+    const itemIds = Array.from(
+      new Set(itemsResult.inventories.flatMap((inv) => (inv.references || []).map((ref) => ref.mlb)).filter(Boolean))
+    );
+    let costsResult;
+    try {
+      costsResult = await costProvider.fetchCosts({
+        clienteSlug: (account.cliente && account.cliente.slug) || clienteSlug || null,
+        clienteContaId,
+        itemIds,
+      });
+    } catch {
+      costsResult = { status: "unavailable", reason: "cost_provider_error", base: null, costsByItemId: new Map() };
+    }
+
     const inventoryRows = itemsResult.inventories.map((inv) => {
       const sales = operationsResult.degradedInventoryIds.has(inv.inventoryId) ? null : salesById.get(inv.inventoryId);
       const row = buildInventoryRow({ inv, stock: stockResult.stockById.get(inv.inventoryId), sales, config });
-      return { ...row, commercial: commercialResult.byInventoryId.get(inv.inventoryId) || commercialResult.account };
+      return {
+        ...row,
+        ...buildCommercialFields(row, costsResult.costsByItemId),
+        commercial: commercialResult.byInventoryId.get(inv.inventoryId) || commercialResult.account,
+      };
     });
 
     const movementsByInventory = buildMovementsByInventory(operationsResult.operations, operationsResult.degradedInventoryIds);
@@ -473,6 +534,7 @@ function createFullService({
           stock: stockResult.quality,
           operations: operationsResult.quality,
           commercial: commercialResult.account,
+          costs: { status: costsResult.status, reason: costsResult.reason || null, base: costsResult.base || null },
         },
       },
       inventories: inventoryRows,
@@ -550,4 +612,4 @@ function createFullService({
   };
 }
 
-module.exports = { createFullService, DEFAULT_CONFIG };
+module.exports = { createFullService, buildCommercialFields, DEFAULT_CONFIG };

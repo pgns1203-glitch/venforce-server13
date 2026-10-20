@@ -1,0 +1,3 @@
+# Scripts e unidades rodam no Ubuntu: LF sempre, mesmo em checkout Windows.
+*.sh text eol=lf
+deploy/* text eol=lf

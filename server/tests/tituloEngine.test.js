@@ -374,6 +374,16 @@ const okIa = (titulos, extra = {}) => ({ ok: true, provider: "anthropic", model:
     assert.strictEqual(engine.recortarAoLimite("Cortina Blackout Liso 2 x 3 m", 25), "Cortina Blackout Liso");
   });
 
+  await check("toda palavra da sugestão começa com maiúscula, sem mexer no resto da palavra", async () => {
+    const p = providerCom(okIa(["tênis infantil masculino molekinho de cadarço azul"]));
+    const r = await engine.gerarTitulos({ fatos: FATOS, aiProvider: p });
+    assert.strictEqual(r.ok, true, JSON.stringify(r));
+    for (const s of r.sugestoes) {
+      assert.ok(s.titulo.startsWith("Tênis Infantil Masculino Molekinho De Cadarço Azul"), s.titulo);
+      for (const w of s.titulo.split(" ")) assert.ok(!/^\p{Ll}/u.test(w), "palavra minúscula: " + w);
+    }
+  });
+
   await check("recorte em gerarTitulos: longo vira sugestão válida (conta em 'recortados'), nunca acrescenta palavra", async () => {
     const longo = "Tênis Infantil Masculino Molekinho 2103 Casual Escolar Cadarço Azul Borracha";
     const p = providerCom(okIa([longo]));

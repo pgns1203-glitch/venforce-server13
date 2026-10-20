@@ -43,7 +43,9 @@ const domain = createService({
     ...repo,
     audit: async () => {},
     readSnapshot: async () => {
-      const s = fixture();
+      const s = mode.identity
+        ? require("../server/tests/helpers/clientesUnificacaoIdentityFixture").identityFixture()
+        : fixture();
       s.tables.clientes[0].nome = '<img src=x onerror="window.XSS=1"> Canônico';
       s.tables.bases[0].nome = "Base Matriz";
       s.tables.bases[1].nome = "Base Legado";
@@ -62,6 +64,13 @@ const domain = createService({
         name: "manual_pkey",
         columns: ["id"],
       });
+      if (mode.identity) {
+        s.tables.painel_contas_lancamentos_manuais = [];
+        if (mode.identityCritical)
+          s.tables.fechamento_incidentes = [
+            { id: 99, cliente_id: 1, cliente_conta_id: 72, status: "aberto" },
+          ];
+      }
       if (mode.warning) s.tables.base_cliente_vinculos = [];
       return s;
     },
@@ -565,13 +574,13 @@ async function main() {
       );
     });
     await check(
-      "preview envia manifesto v1 e renderiza identidades, contas, Grant, Base, blocker e info",
+      "preview envia manifesto v2 e renderiza identidades, contas, Grant, Base, blocker e info",
       async () => {
         await initialPreview();
         const request = calls.filter((r) => r.route === "/preview").at(-1).body;
         assert.deepEqual(request.manifest.clientesLegadosIds, [2]);
         assert.equal(request.manifest.clienteCanonicoId, 1);
-        assert.equal(request.manifest.schemaVersion, 1);
+        assert.equal(request.manifest.schemaVersion, 2);
         const txt = await c.text("cu-review");
         for (const v of [
           "Conta #11",
@@ -949,6 +958,71 @@ async function main() {
       );
       assert.equal(await c.eval("document.activeElement.id"), "cu-tab-history");
     });
+    await check(
+      "identidade v2: decisões explícitas, superseded, hash invalidado e EXECUTE OFF",
+      async () => {
+        reset();
+        mode.identity = true;
+        config.executeEnabled = false;
+        config.rollbackEnabled = false;
+        await goto();
+        await ready();
+        await select();
+        await initialPreview();
+        await c.wait(
+          "document.querySelector('[data-decision=seller-account]')",
+        );
+        assert.ok((await c.text("cu-review")).includes("Resolver identidade"));
+        assert.equal(
+          await c.eval(
+            "document.querySelector('[data-decision=seller-account]:checked')",
+          ),
+          null,
+        );
+        assert.equal(
+          await c.eval(
+            "document.querySelector('[data-decision=canonical-grant]:checked')",
+          ),
+          null,
+        );
+        const old = previewHash;
+        for (const selector of [
+          "[data-decision=seller-account][value='65']",
+          "[data-decision=canonical-grant][value='51']",
+          "[data-decision=deactivate-empty][value='72']",
+        ]) {
+          await c.eval(
+            `{const i=document.querySelector(${JSON.stringify(selector)});i.checked=true;i.dispatchEvent(new Event('change',{bubbles:true}));}`,
+          );
+        }
+        await sleep(750);
+        await c.wait(
+          "document.getElementById('cu-review').textContent.includes('superseded por #51')",
+        );
+        assert.notEqual(old, previewHash);
+        const d = calls.filter((r) => r.route === "/preview").at(-1).body
+          .manifest.decisoes;
+        assert.deepEqual(d.sellerAccounts, { 111: 65 });
+        assert.deepEqual(d.canonicalGrantsBySeller, { 111: 51 });
+        assert.deepEqual(d.deactivateEmptyAccountIds, [72]);
+        assert.equal(
+          await c.eval("document.getElementById('cu-execute').disabled"),
+          true,
+        );
+        assert.equal(
+          calls.some((r) => r.route === "/execute"),
+          false,
+        );
+        mode.identityCritical = true;
+        await c.click("cu-preview");
+        await c.wait(
+          "document.getElementById('cu-review').textContent.includes('EMPTY_ACCOUNT_NOT_SAFE')",
+        );
+        assert.ok(
+          (await c.text("cu-review")).includes("fechamento_incidentes"),
+        );
+      },
+    );
     console.log(
       `\n${count} cenários UI/contratos/segurança passaram em Chrome.`,
     );

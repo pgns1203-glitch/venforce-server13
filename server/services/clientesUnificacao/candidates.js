@@ -1,3 +1,4 @@
+const { isCurrentGrant } = require("../mlGrantIdentity");
 // Triagem explicável de #254, compartilhada com inventory.py. Nunca aprova
 // empresa/canônico. Entrada e saída são dados locais; nenhuma conexão/API.
 function stem(value) {
@@ -67,7 +68,7 @@ function similarity(a, b) {
 function candidatePairs(tables) {
   const clients = tables.clientes || [],
     accounts = tables.cliente_contas || [],
-    grants = tables.ml_tokens || [],
+    grants = (tables.ml_tokens || []).filter(isCurrentGrant),
     history = tables.cliente_squad_history || [];
   const squad = (cid) =>
     history

@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("./mlGrantIdentity");
 const defaultPool = require("../config/database");
 const { ensureCliente360Tables } = require("./cliente360/cliente360Repository");
 
@@ -290,7 +291,7 @@ async function loadProductionData(pool, { clients, fromDate, toDate }) {
               AND (t.expires_at IS NULL OR t.expires_at > NOW())
             ) AS connected
               FROM ml_tokens t
-             WHERE t.cliente_id = c.id
+             WHERE t.cliente_id = c.id AND ${currentGrantSql("t")}
           ) grant ON true
           LEFT JOIN LATERAL (
             SELECT true AS has_diagnosis

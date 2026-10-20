@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("../services/mlGrantIdentity");
 const express = require("express");
 const router = express.Router();
 
@@ -308,7 +309,7 @@ router.get("/clientes-ml", requireExternalApiKey, async (req, res) => {
          t.updated_at,
          t.token_status
        FROM clientes c
-       INNER JOIN ml_tokens t ON t.cliente_id = c.id
+       INNER JOIN ml_tokens t ON t.cliente_id = c.id AND ${currentGrantSql("t")}
        WHERE c.ativo = true
        ORDER BY c.nome ASC`
     );

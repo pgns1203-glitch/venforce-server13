@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("../mlGrantIdentity");
 // Invariantes de identidade compartilhados; somente SELECT, sem refresh/sync.
 // A resolução continua em clienteContaService. O modo estrito é opt-in:
 // Central de Vendas mantém o contrato padrão sem consultas novas.
@@ -17,8 +18,8 @@ function validarIdentidade({ cliente, conta, grant = null, base = null, eligible
     mlUserId: grant?.ml_user_id, strict: true, eligibleAccountCount });
 }
 
-// Projeções de identidade, sem credenciais. Inclui Grants históricos: um
-// status inválido não é prova de titularidade comercial diferente.
+// Projeções sem credenciais. Um status inválido ainda participa da titularidade;
+// somente a substituição explícita e auditável retira um Grant da operação.
 async function validarTitularidadeSeller(cliente, conta, queryable = pool) {
   const seller = conta.external_account_id;
   if (!seller || conta.marketplace !== "meli") return;
@@ -27,7 +28,7 @@ async function validarTitularidadeSeller(cliente, conta, queryable = pool) {
     [String(seller)]
   );
   const grants = await queryable.query(
-    "SELECT id, cliente_id, cliente_conta_id, ml_user_id FROM ml_tokens WHERE ml_user_id = $1",
+    `SELECT id, cliente_id, cliente_conta_id, ml_user_id FROM ml_tokens WHERE ml_user_id = $1 AND ${currentGrantSql()}`,
     [String(seller)]
   );
   if (contas.rows.some((c) => Number(c.cliente_id) !== Number(cliente.id)) ||

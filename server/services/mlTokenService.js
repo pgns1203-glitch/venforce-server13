@@ -1,3 +1,4 @@
+const { currentGrantSql, isCurrentGrant } = require("./mlGrantIdentity");
 const pool = require("../config/database");
 
 const ML_CLIENT_ID = process.env.ML_CLIENT_ID || "";
@@ -57,7 +58,7 @@ function refreshAttemptIsDue(grant, now = new Date()) {
 }
 
 function isGrantUsable(grant, now = new Date()) {
-  if (!grant || !hasCredentials(grant) || PERMANENT_STATUSES.has(statusOf(grant))) return false;
+  if (!isCurrentGrant(grant) || !hasCredentials(grant) || PERMANENT_STATUSES.has(statusOf(grant))) return false;
   if (grantNeedsRefresh(grant, now) && !refreshAttemptIsDue(grant, now)) return false;
   return true;
 }
@@ -73,6 +74,9 @@ function sanitizedGrant(grant) {
     updated_at: grant.updated_at,
     token_status: statusOf(grant),
     is_primary: grant.is_primary === true,
+    superseded_by_grant_id: grant.superseded_by_grant_id ?? null,
+    superseded_at: grant.superseded_at ?? null,
+    superseded_reason: grant.superseded_reason ?? null,
     refresh_failures: Number(grant.refresh_failures || 0),
     last_refresh_error_at: grant.last_refresh_error_at || null,
     next_refresh_attempt_at: grant.next_refresh_attempt_at || null,
@@ -276,7 +280,7 @@ function createService({
     const result = await queryable.query(
       `SELECT ${GRANT_PROJECTION}
          FROM ml_tokens t
-        WHERE t.id = $1
+        WHERE t.id = $1 AND ${currentGrantSql("t")}
         LIMIT 1`,
       [grantId]
     );
@@ -287,7 +291,7 @@ function createService({
     const result = await queryable.query(
       `SELECT ${GRANT_PROJECTION}
          FROM ml_tokens t
-        WHERE t.cliente_id = $1
+        WHERE t.cliente_id = $1 AND ${currentGrantSql("t")}
         ORDER BY ${PRIMARY_ORDER}`,
       [clienteId]
     );
@@ -304,7 +308,7 @@ function createService({
       await client.query("BEGIN");
       const found = await client.query(
         `SELECT id, cliente_id, (to_jsonb(ml_tokens) ? 'is_primary') AS has_is_primary
-           FROM ml_tokens WHERE id = $1`,
+           FROM ml_tokens WHERE id = $1 AND ${currentGrantSql()}`,
         [tokenId]
       );
       const initialGrant = found.rows[0];
@@ -320,7 +324,7 @@ function createService({
       }
       await client.query(`SELECT pg_advisory_xact_lock($1, $2)`, [ADVISORY_CLIENT_LOCK_NAMESPACE, Number(initialGrant.cliente_id)]);
       const locked = await client.query(
-        `SELECT id, cliente_id FROM ml_tokens WHERE id = $1 FOR UPDATE`,
+        `SELECT id, cliente_id FROM ml_tokens WHERE id = $1 AND ${currentGrantSql()} FOR UPDATE`,
         [tokenId]
       );
       const grant = locked.rows[0];
@@ -334,7 +338,7 @@ function createService({
         [grant.cliente_id, tokenId]
       );
       await client.query(
-        `UPDATE ml_tokens SET is_primary = true, updated_at = NOW() WHERE id = $1`,
+        `UPDATE ml_tokens SET is_primary = true, updated_at = NOW() WHERE id = $1 AND ${currentGrantSql()}`,
         [tokenId]
       );
       const rows = await summariesForCliente(grant.cliente_id, client);
@@ -354,7 +358,7 @@ function createService({
       const result = await db.query(
         `SELECT ${GRANT_PROJECTION}
            FROM ml_tokens t
-          WHERE t.cliente_id = $1 AND t.ml_user_id = $2
+          WHERE t.cliente_id = $1 AND t.ml_user_id = $2 AND ${currentGrantSql("t")}
           ORDER BY t.updated_at DESC NULLS LAST, t.id DESC
           LIMIT 1`,
         [clienteId, String(mlUserId)]
@@ -427,12 +431,12 @@ function createService({
               SET token_status = 'revoked', last_refresh_error = $2,
                   last_refresh_error_at = NOW(), next_refresh_attempt_at = NULL,
                   updated_at = NOW()
-            WHERE id = $1`,
+            WHERE id = $1 AND ${currentGrantSql()}`,
           [grant.id, sanitized]
         );
       } else {
         await db.query(
-          `UPDATE ml_tokens SET token_status = 'revoked', updated_at = NOW() WHERE id = $1`,
+          `UPDATE ml_tokens SET token_status = 'revoked', updated_at = NOW() WHERE id = $1 AND ${currentGrantSql()}`,
           [grant.id]
         );
       }
@@ -450,12 +454,12 @@ function createService({
             SET token_status = 'error', last_refresh_error = $2,
                 last_refresh_error_at = NOW(), refresh_failures = $3,
                 next_refresh_attempt_at = $4, updated_at = NOW()
-          WHERE id = $1`,
+          WHERE id = $1 AND ${currentGrantSql()}`,
         [grant.id, sanitized, failures, nextAttemptAt]
       );
     } else {
       await db.query(
-        `UPDATE ml_tokens SET token_status = 'error', updated_at = NOW() WHERE id = $1`,
+        `UPDATE ml_tokens SET token_status = 'error', updated_at = NOW() WHERE id = $1 AND ${currentGrantSql()}`,
         [grant.id]
       );
       legacyBackoffByGrantId.set(Number(grant.id), nextAttemptAt.getTime());
@@ -473,11 +477,11 @@ function createService({
             SET token_status = 'valid', refresh_failures = 0,
                 last_refresh_error = NULL, last_refresh_error_at = NULL,
                 next_refresh_attempt_at = NULL, updated_at = NOW()
-          WHERE id = $1`,
+          WHERE id = $1 AND ${currentGrantSql()}`,
         [grantId]
       );
     } else {
-      await db.query(`UPDATE ml_tokens SET token_status = 'valid', updated_at = NOW() WHERE id = $1`, [grantId]);
+      await db.query(`UPDATE ml_tokens SET token_status = 'valid', updated_at = NOW() WHERE id = $1 AND ${currentGrantSql()}`, [grantId]);
     }
     legacyBackoffByGrantId.delete(Number(grantId));
     legacyFailureCountByGrantId.delete(Number(grantId));
@@ -491,11 +495,11 @@ function createService({
         `UPDATE ml_tokens
             SET token_status = 'error', last_refresh_error = $2,
                 last_refresh_error_at = NOW(), updated_at = NOW()
-          WHERE id = $1`,
+          WHERE id = $1 AND ${currentGrantSql()}`,
         [grantId, sanitizeErrorMessage(message, [grant.access_token, grant.refresh_token])]
       );
     } else {
-      await db.query(`UPDATE ml_tokens SET token_status = 'error', updated_at = NOW() WHERE id = $1`, [grantId]);
+      await db.query(`UPDATE ml_tokens SET token_status = 'error', updated_at = NOW() WHERE id = $1 AND ${currentGrantSql()}`, [grantId]);
     }
   }
 
@@ -527,7 +531,7 @@ function createService({
         err.code = "ML_GRANT_NOT_FOUND";
         throw err;
       }
-      if (PERMANENT_STATUSES.has(statusOf(grant))) {
+      if (!isCurrentGrant(grant) || PERMANENT_STATUSES.has(statusOf(grant))) {
         const err = new Error("Grant Mercado Livre revogado; reconexão necessária.");
         err.code = "ML_GRANT_REVOKED";
         throw err;
@@ -574,7 +578,7 @@ function createService({
                   token_status = 'valid', refresh_failures = 0,
                   last_refresh_error = NULL, last_refresh_error_at = NULL,
                   next_refresh_attempt_at = NULL, updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND ${currentGrantSql()}
             RETURNING *`,
           [grant.id, data.access_token, refreshToken, expiresAt]
         )
@@ -582,7 +586,7 @@ function createService({
           `UPDATE ml_tokens
               SET access_token = $2, refresh_token = $3, expires_at = $4,
                   token_status = 'valid', updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND ${currentGrantSql()}
             RETURNING *`,
           [grant.id, data.access_token, refreshToken, expiresAt]
         );
@@ -638,19 +642,21 @@ function createService({
             SELECT 1 FROM information_schema.columns
              WHERE table_schema = current_schema()
                AND table_name = 'ml_tokens' AND column_name = 'refresh_failures'
-          ) AS has_refresh_metadata
+          ) AS has_refresh_metadata,
+          EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='ml_tokens' AND column_name='superseded_by_grant_id') AS has_supersession
       `);
+      const conflictPredicate = capabilities.rows[0]?.has_supersession === true ? " WHERE superseded_by_grant_id IS NULL" : "";
       const hasPrimary = capabilities.rows[0]?.has_is_primary === true;
       const hasMetadata = capabilities.rows[0]?.has_refresh_metadata === true;
       const principal = hasPrimary
         ? await client.query(
-          `SELECT id FROM ml_tokens WHERE cliente_id = $1 AND is_primary = true LIMIT 1`,
+          `SELECT id FROM ml_tokens WHERE cliente_id = $1 AND is_primary = true AND ${currentGrantSql()} LIMIT 1`,
           [clienteId]
         )
         : { rows: [] };
       const shouldBePrimary = hasPrimary && principal.rows.length === 0;
       const existing = await client.query(
-        `SELECT id FROM ml_tokens WHERE cliente_id = $1 AND ml_user_id = $2 LIMIT 1`,
+        `SELECT id FROM ml_tokens WHERE cliente_id = $1 AND ml_user_id = $2 AND ${currentGrantSql()} LIMIT 1`,
         [clienteId, String(mlUserId)]
       );
       if (existing.rows[0]?.id != null) {
@@ -665,7 +671,7 @@ function createService({
              last_refresh_error_at, next_refresh_attempt_at, updated_at
            )
            VALUES ($1, $2, $3, $4, $5, $6, 'valid', 0, NULL, NULL, NULL, NOW())
-           ON CONFLICT (cliente_id, ml_user_id) DO UPDATE SET
+           ON CONFLICT (cliente_id, ml_user_id)${conflictPredicate} DO UPDATE SET
              access_token = EXCLUDED.access_token,
              refresh_token = EXCLUDED.refresh_token,
              expires_at = EXCLUDED.expires_at,
@@ -683,7 +689,7 @@ function createService({
              token_status, updated_at
            )
            VALUES ($1, $2, $3, $4, $5, 'valid', NOW())
-           ON CONFLICT (cliente_id, ml_user_id) DO UPDATE SET
+           ON CONFLICT (cliente_id, ml_user_id)${conflictPredicate} DO UPDATE SET
              access_token = EXCLUDED.access_token,
              refresh_token = EXCLUDED.refresh_token,
              expires_at = EXCLUDED.expires_at,
@@ -709,7 +715,7 @@ function createService({
               COALESCE(NULLIF(to_jsonb(t)->>'token_status', ''), 'valid') AS token_status,
               NULLIF(to_jsonb(t)->>'next_refresh_attempt_at', '')::timestamp AS next_refresh_attempt_at
          FROM ml_tokens t
-        WHERE t.expires_at <= NOW() + ($1 || ' seconds')::INTERVAL
+        WHERE ${currentGrantSql("t")} AND t.expires_at <= NOW() + ($1 || ' seconds')::INTERVAL
           AND COALESCE(NULLIF(to_jsonb(t)->>'token_status', ''), 'valid') IN ('valid', 'error')
           AND t.refresh_token IS NOT NULL
           AND (

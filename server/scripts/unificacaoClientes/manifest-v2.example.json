@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 2,
+  "clienteCanonicoId": 1,
+  "clientesLegadosIds": [2],
+  "decisoes": {
+    "sellerAccounts": { "111": 65 },
+    "canonicalGrantsBySeller": { "111": 51 },
+    "deactivateEmptyAccountIds": [72],
+    "primaryAccounts": { "meli": 65 },
+    "primaryGrantId": 51,
+    "referencias": {}
+  },
+  "aprovacao": {
+    "aprovada": false,
+    "aprovadorUserId": null,
+    "evidencia": null
+  }
+}

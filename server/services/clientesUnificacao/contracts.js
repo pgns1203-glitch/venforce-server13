@@ -38,7 +38,7 @@ function normalizeManifest(input) {
     "decisoes",
     "aprovacao",
   ]);
-  if (input.schemaVersion !== 1)
+  if (![1, 2].includes(input.schemaVersion))
     throw fail("MANIFEST_VERSION_UNSUPPORTED", 422);
   if (!id(input.clienteCanonicoId)) throw fail("TARGET_INVALID", 422);
   const ids = input.clientesLegadosIds;
@@ -53,7 +53,37 @@ function normalizeManifest(input) {
   if (ids.includes(input.clienteCanonicoId))
     throw fail("ORIGIN_EQUALS_TARGET", 422);
   const decisions = input.decisoes || {};
-  keys(decisions, ["primaryAccounts", "primaryGrantId", "referencias"]);
+  keys(decisions, [
+    "primaryAccounts",
+    "primaryGrantId",
+    "referencias",
+    ...(input.schemaVersion === 2
+      ? [
+          "sellerAccounts",
+          "canonicalGrantsBySeller",
+          "deactivateEmptyAccountIds",
+        ]
+      : []),
+  ]);
+  if (input.schemaVersion === 2) {
+    for (const field of ["sellerAccounts", "canonicalGrantsBySeller"]) {
+      const values = decisions[field] || {};
+      keys(
+        values,
+        Object.keys(values).filter((k) => /^[1-9][0-9]{0,29}$/.test(k)),
+      );
+      if (Object.keys(values).length > 100 || !Object.values(values).every(id))
+        throw fail("IDENTITY_DECISION_INVALID", 422);
+    }
+    const deactivated = decisions.deactivateEmptyAccountIds || [];
+    if (
+      !Array.isArray(deactivated) ||
+      deactivated.length > 100 ||
+      !deactivated.every(id) ||
+      new Set(deactivated).size !== deactivated.length
+    )
+      throw fail("IDENTITY_DECISION_INVALID", 422);
+  }
   keys(decisions.primaryAccounts || {}, ["meli", "shopee", "tiktok"]);
   if (
     Object.values(decisions.primaryAccounts || {}).some((x) => !id(x)) ||
@@ -94,13 +124,22 @@ function normalizeManifest(input) {
   if (approval.aprovadorUserId != null && !id(approval.aprovadorUserId))
     throw fail("MANIFEST_INVALID", 422);
   return canonical({
-    schemaVersion: 1,
+    schemaVersion: input.schemaVersion,
     clienteCanonicoId: input.clienteCanonicoId,
     clientesLegadosIds: [...ids].sort((a, b) => a - b),
     decisoes: {
       primaryAccounts: decisions.primaryAccounts || {},
       primaryGrantId: decisions.primaryGrantId ?? null,
       referencias: decisions.referencias || {},
+      ...(input.schemaVersion === 2
+        ? {
+            sellerAccounts: decisions.sellerAccounts || {},
+            canonicalGrantsBySeller: decisions.canonicalGrantsBySeller || {},
+            deactivateEmptyAccountIds: [
+              ...(decisions.deactivateEmptyAccountIds || []),
+            ].sort((a, b) => a - b),
+          }
+        : {}),
     },
     aprovacao: {
       aprovada: approval.aprovada === true,

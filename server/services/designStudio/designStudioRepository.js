@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("../mlGrantIdentity");
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
@@ -86,7 +87,7 @@ async function listAccounts(clienteId, db = pool) {
                'Mercado Livre · ' || t.ml_user_id::text AS display_name,
                'grant' AS source,
                CASE WHEN t.expires_at > NOW() AND COALESCE(t.token_status, 'valid') <> 'invalid' THEN 'connected' ELSE 'attention' END AS status
-          FROM ml_tokens t WHERE t.cliente_id = $1
+          FROM ml_tokens t WHERE t.cliente_id = $1 AND ${currentGrantSql("t")}
         UNION ALL
         SELECT v.marketplace || ':base:' || b.id AS account_ref,
                COALESCE(NULLIF(v.marketplace, ''), COALESCE(NULLIF(b.marketplace, ''), 'outro')) AS marketplace,

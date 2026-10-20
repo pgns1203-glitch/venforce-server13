@@ -1,3 +1,4 @@
+const { currentGrantSql } = require("./mlGrantIdentity");
 const pool = require("../config/database");
 const clienteContaService = require("./clienteContas/clienteContaService");
 
@@ -195,7 +196,7 @@ async function listarBasesComVinculos({ marketplace } = {}) {
       LEFT JOIN LATERAL (
         SELECT t.id, t.ml_user_id, COALESCE(NULLIF(to_jsonb(t)->>'token_status', ''), 'valid') AS token_status
           FROM ml_tokens t
-         WHERE t.cliente_conta_id = cc.id
+         WHERE t.cliente_conta_id = cc.id AND ${currentGrantSql("t")}
          ORDER BY t.updated_at DESC NULLS LAST, t.id DESC
          LIMIT 1
       ) g ON cc.id IS NOT NULL

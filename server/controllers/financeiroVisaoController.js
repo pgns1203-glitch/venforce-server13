@@ -4,6 +4,7 @@
 // processamento, intocado, montado em /fechamentos).
 const { obterFinanceiro } = require("../services/financeiroVisaoService");
 const { obterAdsDoFechamento } = require("../services/financeiroAdsService");
+const { obterMiniaturas } = require("../services/financeiroMiniaturasService");
 
 function responderErro(res, err) {
   const statusCode = Number.isFinite(Number(err?.statusCode)) && Number(err.statusCode) >= 400 ? Number(err.statusCode) : 500;
@@ -45,4 +46,19 @@ async function ads(req, res) {
   }
 }
 
-module.exports = { financeiro, ads };
+// GET /financeiro/:cliente/miniaturas?conta=&itens=MLB1,MLB2 — foto dos
+// produtos da lista. Ver services/financeiroMiniaturasService.js.
+async function miniaturas(req, res) {
+  try {
+    const dados = await obterMiniaturas({
+      clienteSlugRaw: req.params.cliente,
+      clienteContaIdRaw: req.query.conta,
+      itensRaw: req.query.itens,
+    });
+    return res.json({ ok: true, ...dados });
+  } catch (err) {
+    return responderErro(res, err);
+  }
+}
+
+module.exports = { financeiro, ads, miniaturas };

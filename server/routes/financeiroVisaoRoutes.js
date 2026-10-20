@@ -14,5 +14,7 @@ const router = express.Router();
 router.get("/:cliente", authMiddleware, requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.financeiro);
 // Campo ADS do Fechamento — investimento do Mercado Ads da conta na competência.
 router.get("/:cliente/ads", authMiddleware, requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.ads);
+// Foto dos produtos da lista (Mercado Livre), lida da base do sync de Anúncios ML.
+router.get("/:cliente/miniaturas", authMiddleware, requireAutomacoesAccess, requireClienteNaCarteira("cliente"), controller.miniaturas);
 
 module.exports = router;

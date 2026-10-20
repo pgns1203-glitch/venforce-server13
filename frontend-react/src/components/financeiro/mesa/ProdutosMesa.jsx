@@ -6,11 +6,20 @@
 // do produto. As linhas são as COMPLETAS do processamento em memória —
 // milhares no Order.all —, então a lista é paginada.
 //
+// Mercado Livre: a sigla dá lugar à foto do anúncio (a mesma da tela de
+// Anúncios ML), pedida só para a página visível. Sem foto, fica a sigla.
+//
+// Produto sem custo ganha o "+ Custo" (como em Anúncios ML): grava na base
+// vinculada da conta; o fechamento reflete ao reprocessar. Ver CustoRapido.
+//
 // Sem rolagem horizontal: as colunas secundárias (Un., Repasse, Imposto)
 // saem conforme a largura da lista (container query em financeiro.css) e
 // continuam visíveis na linha expandida.
 
 import { useMemo, useState } from "react";
+import { useMiniaturasProdutos } from "../../../hooks/useMiniaturasProdutos.js";
+import { useCustoRapido } from "../../../hooks/useCustoRapido.js";
+import { CustoRapido } from "./CustoRapido.jsx";
 import { contarPorFiltro, filtrarLinhas, FILTROS_PRODUTO } from "../../../utils/financeiro/produtos.js";
 import { numOuNull } from "../../../utils/financeiro/resumoFechamento.js";
 import { formatarValor } from "../shared/ValorFinanceiro.jsx";
@@ -49,6 +58,17 @@ function sigla(l) {
   const base = l.sku || l.titulo || l.itemId || "";
   const limpo = String(base).replace(/[^0-9A-Za-zÀ-ú]/g, "");
   return limpo.slice(0, 3).toUpperCase() || "—";
+}
+
+// Foto do anúncio; se a URL falhar ao carregar, volta para a sigla.
+function Miniatura({ linha, url }) {
+  const [falhou, setFalhou] = useState(false);
+  if (!url || falhou) return <span className="vf-fin-mesa-produto__sigla" aria-hidden="true">{sigla(linha)}</span>;
+  return (
+    <span className="vf-fin-mesa-produto__sigla vf-fin-mesa-produto__foto" aria-hidden="true">
+      <img src={url} alt="" loading="lazy" decoding="async" onError={() => setFalhou(true)} />
+    </span>
+  );
 }
 
 // Custo da coluna: o total da linha; sem total, o unitário (dito como /un).
@@ -119,7 +139,7 @@ function ComposicaoDoProduto({ l }) {
   );
 }
 
-function LinhaExpandida({ l }) {
+function LinhaExpandida({ l, motivoCusto = null }) {
   const itens = DETALHES.filter(([k]) => l[k] !== null && l[k] !== undefined && l[k] !== "");
   return (
     <div className="vf-fin-mesa-produto__detalhe">
@@ -127,6 +147,12 @@ function LinhaExpandida({ l }) {
         <p className="vf-fin-mesa__rotulo-grupo">Composição do produto</p>
         <ComposicaoDoProduto l={l} />
         {l.statusPedido && <p className="vf-field__hint">Status do pedido: {l.statusPedido}</p>}
+        {motivoCusto && (
+          <p className="vf-field__hint vf-fin-custo-rapido__motivo">
+            <strong>Custo não pode ser cadastrado por aqui:</strong> {motivoCusto}{" "}
+            <a href="bases.html" target="_blank" rel="noopener noreferrer">Abrir Bases de Custo ↗</a>
+          </p>
+        )}
       </div>
       <dl className="vf-fin-mesa-produto__dados">
         {itens.map(([k, rotulo, tipo]) => (
@@ -142,7 +168,19 @@ function LinhaExpandida({ l }) {
 
 // `pedido` = { filtro, seq }: o aviso de pendências pede um recorte de fora
 // ("Sem custo"); cada novo `seq` reaplica, mesmo que o filtro seja o mesmo.
-export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "produtos" }) {
+export function ProdutosMesa({
+  linhas,
+  pedido = null,
+  amostra = false,
+  id = "produtos",
+  clienteSlug = null,
+  clienteContaId = null,
+  marketplace = null,
+  baseDeCustos = null,
+  onAbrirPendencias = null,
+  onReprocessar = null,
+  reprocessando = false,
+}) {
   const [filtro, setFiltro] = useState(pedido?.filtro || "todos");
   const [busca, setBusca] = useState("");
   const [pagina, setPagina] = useState(0);
@@ -163,11 +201,25 @@ export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "pro
     setAberta(null);
   }
 
-  if (!linhas.length) return null;
-
   const totalPaginas = Math.max(1, Math.ceil(filtradas.length / porPagina));
   const paginaAtual = Math.min(pagina, totalPaginas - 1);
   const visiveis = filtradas.slice(paginaAtual * porPagina, (paginaAtual + 1) * porPagina);
+  const ehMeli = marketplace === "meli";
+  const miniaturas = useMiniaturasProdutos({
+    clienteSlug,
+    clienteContaId,
+    habilitado: ehMeli,
+    itemIds: ehMeli ? visiveis.map((l) => l.itemId) : [],
+  });
+
+  const temSemCusto = (contagem.sem_custo ?? 0) > 0;
+  const custoRapido = useCustoRapido({
+    base: baseDeCustos,
+    marketplace,
+    habilitado: temSemCusto && (marketplace === "meli" || marketplace === "shopee"),
+  });
+
+  if (!linhas.length) return null;
   const mudar = (fn) => (v) => { fn(v); setPagina(0); setAberta(null); };
 
   return (
@@ -180,6 +232,22 @@ export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "pro
             : "Ordenados por receita. Clique numa linha para ver a composição."}
         </p>
       </header>
+
+      {custoRapido.quantidadeSalva > 0 && (
+        <div className="vf-banner is-success vf-banner--compact vf-fin-custo-rapido__aviso" role="status">
+          <div className="vf-banner__content">
+            <p className="vf-banner__description">
+              {custoRapido.quantidadeSalva === 1 ? "1 custo foi salvo" : `${custoRapido.quantidadeSalva} custos foram salvos`} na base. O LC e a MC só mudam ao{" "}
+              <strong>reprocessar</strong> o fechamento.
+            </p>
+          </div>
+          {onReprocessar && (
+            <button type="button" className="vf-btn vf-btn--primary vf-btn--sm" disabled={reprocessando} onClick={onReprocessar}>
+              {reprocessando ? "Reprocessando…" : "Reprocessar fechamento"}
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="vf-fin-mesa-produtos__ferramentas">
         <input
@@ -244,7 +312,7 @@ export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "pro
                     }
                   }}
                 >
-                  <span className="vf-fin-mesa-produto__sigla" aria-hidden="true">{sigla(l)}</span>
+                  <Miniatura key={l.itemId || chave} linha={l} url={l.itemId ? miniaturas[l.itemId] : null} />
                   <span className="vf-fin-mesa-produto__principal">
                     <span className="vf-fin-mesa-produto__titulo" title={l.titulo || undefined}>{l.titulo || "—"}</span>
                     {ids.length > 0 && (
@@ -257,13 +325,32 @@ export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "pro
                   <span className="is-num">{formatarValor(l.unidades, "numero")}</span>
                   <span className="is-num">{formatarValor(l.receita, "moeda")}</span>
                   <span className="is-num">{formatarValor(l.repasse, "moeda")}</span>
-                  <span className="is-num">{custo(l)}</span>
+                  <span className="is-num">
+                    {custoRapido.ativo && l.statusCusto === "sem_custo" ? (
+                      <CustoRapido
+                        linha={l}
+                        custoRapido={custoRapido}
+                        onAbrirPendencias={onAbrirPendencias}
+                        onVerMotivo={() => setAberta(chave)}
+                      />
+                    ) : (
+                      custo(l)
+                    )}
+                  </span>
                   <span className="is-num">{imposto(l)}</span>
                   <span className="is-num is-forte">{formatarValor(l.lc, "moeda")}</span>
                   <span className={`is-num vf-fin-mesa-produto__mc is-${tomDaMc(l.mc)}`}>{formatarValor(l.mc, "pontos")}</span>
                   <span className="vf-fin-mesa-produto__chevron" aria-hidden="true">{CHEVRON}</span>
                 </div>
-                {expandida && <LinhaExpandida l={l} />}
+                {expandida && (
+                  <LinhaExpandida
+                    l={l}
+                    motivoCusto={(() => {
+                      const ident = custoRapido.identidade(l);
+                      return ident && ident.classe !== "segura" ? ident.motivo : null;
+                    })()}
+                  />
+                )}
               </div>
             );
           })

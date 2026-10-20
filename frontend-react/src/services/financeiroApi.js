@@ -22,3 +22,12 @@ export function obterAdsFechamento(clienteSlug, { clienteContaId, periodo, atual
     signal,
   });
 }
+
+// GET /financeiro/:cliente/miniaturas?conta=&itens=MLB1,MLB2 — foto dos
+// produtos da lista (Mercado Livre). Ver server/services/financeiroMiniaturasService.js.
+export function obterMiniaturasProdutos(clienteSlug, { clienteContaId, itens, signal } = {}) {
+  return requisitar(`/financeiro/${encodeURIComponent(clienteSlug)}/miniaturas`, {
+    params: { conta: clienteContaId, itens: itens.join(",") },
+    signal,
+  });
+}

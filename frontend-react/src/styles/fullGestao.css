@@ -6,6 +6,7 @@
    sobrescrita: tudo vive sob .full-page. */
 
 .full-page {
+  container-type: inline-size;
   color: var(--vf-text);
 }
 
@@ -113,7 +114,9 @@
 
 .full-page .full-kpis {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  /* Oito cards numa linha só; quando não cabem, quebra em 4+4 ou 2×4 —
+     nunca uma linha com sobra vazia (auto-fill deixava 7+1). */
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
   background: var(--vf-border);
@@ -288,9 +291,23 @@
   outline-offset: -2px;
 }
 
+@container (max-width: 1080px) {
+  .full-page .full-kpis {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 560px) {
+  .full-page .full-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 /* ---- Lista em grade (= .am-listagem) --------------------------------- */
-/* Cabeçalho e linhas usam a MESMA grade; abaixo da soma dos mínimos a lista
-   rola dentro do card (nunca overflow:hidden cortando coluna). */
+/* Cabeçalho e linhas usam a MESMA grade e ocupam a largura do card: os
+   mínimos são enxutos para caber ao lado do painel de atenção sem rolar.
+   Só abaixo da soma dos mínimos (tela estreita) a lista rola dentro do card
+   (nunca overflow:hidden cortando coluna). */
 
 .full-page .full-lista {
   overflow-x: auto;
@@ -298,15 +315,13 @@
 }
 
 .full-page .full-lista--estoque {
-  --full-cols: 44px minmax(220px, 3fr) minmax(96px, 0.8fr) minmax(76px, 0.6fr) minmax(104px, 0.8fr)
-    minmax(150px, 1.1fr) minmax(104px, 0.8fr) minmax(56px, 0.5fr) 32px;
-  --full-min: 1040px;
+  --full-cols: 44px minmax(120px, 3fr) minmax(80px, 0.8fr) minmax(68px, 0.5fr) minmax(64px, 0.6fr)
+    minmax(96px, 1.1fr) minmax(64px, 0.7fr) minmax(44px, 0.4fr) 24px;
 }
 
 .full-page .full-lista--reposicao {
-  --full-cols: 20px 44px minmax(200px, 3fr) minmax(96px, 0.8fr) minmax(60px, 0.5fr) minmax(60px, 0.5fr)
-    minmax(128px, 1fr) minmax(64px, 0.5fr) 84px minmax(96px, 0.8fr);
-  --full-min: 1040px;
+  --full-cols: 20px 44px minmax(120px, 3fr) minmax(76px, 0.8fr) minmax(52px, 0.5fr) minmax(56px, 0.5fr)
+    minmax(80px, 1fr) minmax(64px, 0.5fr) 60px minmax(64px, 0.8fr);
 }
 
 .full-page .full-lista__cabeca,
@@ -314,9 +329,9 @@
   display: grid;
   grid-template-columns: var(--full-cols);
   align-items: center;
-  gap: var(--vf-sp-3);
-  min-width: var(--full-min);
-  padding: var(--vf-sp-3) var(--vf-sp-4);
+  gap: 6px;
+  min-width: min-content;
+  padding: var(--vf-sp-3);
   box-sizing: border-box;
 }
 
@@ -328,7 +343,7 @@
 }
 
 .full-page .full-lista__cabeca > span {
-  white-space: nowrap;
+  line-height: 1.25;
   font-size: var(--vf-fs-2xs);
   font-weight: var(--vf-fw-semibold);
   letter-spacing: var(--vf-ls-caps);
@@ -347,6 +362,11 @@
 
 .full-page .full-linha {
   border-bottom: 1px solid var(--vf-border);
+}
+
+/* Na largura mínima o status quebra em 2 linhas em vez de invadir a coluna ao lado. */
+.full-page .full-linha .vf-status {
+  white-space: normal;
 }
 
 .full-page .full-linha:last-child {
@@ -499,6 +519,7 @@
 
 .full-page .full-antes-depois {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 6px;
   font-size: var(--vf-fs-xs);
@@ -512,7 +533,7 @@
 }
 
 .full-page .full-qtd {
-  width: 84px;
+  width: 60px;
   min-height: 32px;
   text-align: right;
   font-family: var(--vf-font-mono);

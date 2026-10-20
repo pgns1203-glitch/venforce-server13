@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { formatarNumero, ehAusente, AUSENTE } from "../../utils/numbers.js";
 import { formatarMoeda } from "../../utils/currency.js";
+import { diasInteiros } from "../../utils/fullSummary.js";
 import { FullACaminho, FullProdutoInfo, FullStatus, FullThumb } from "./FullProduto.jsx";
 
 const PAGINA = 50;
@@ -44,7 +45,7 @@ export function Cobertura({ inv }) {
         <span className={`full-cobertura__barra ${COR_BARRA[inv.operationalStatus] || ""}`} style={{ width: `${largura}%` }} />
       </span>
       <span className={`full-cobertura__dias ${COR_BARRA[inv.operationalStatus] === "is-danger" ? "is-danger" : ""}`}>
-        {formatarNumero(inv.coverageDays, 1)} dias
+        {formatarNumero(diasInteiros(inv.coverageDays))} dias
       </span>
     </span>
   );

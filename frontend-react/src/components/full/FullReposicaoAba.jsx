@@ -8,7 +8,7 @@
 import { useMemo, useState } from "react";
 import { formatarNumero, AUSENTE } from "../../utils/numbers.js";
 import { formatarMoeda } from "../../utils/currency.js";
-import { ordenarPorUrgencia } from "../../utils/fullSummary.js";
+import { diasInteiros, ordenarPorUrgencia } from "../../utils/fullSummary.js";
 import {
   COBERTURAS,
   quantidadeSugerida,
@@ -211,10 +211,10 @@ export default function FullReposicaoAba({ inventories, cabecalho, clienteSlug, 
                   </span>
                   <span role="cell" className="full-num">{formatarNumero(inv.dailyTurnover, 2)}</span>
                   <span role="cell" className="full-antes-depois">
-                    <span>{formatarNumero(inv.coverageDays, 1)}</span>
+                    <span>{formatarNumero(diasInteiros(inv.coverageDays))}</span>
                     <span aria-hidden="true">→</span>
                     <strong className={depois !== null && depois >= dias ? "is-success" : ""}>
-                      {depois === null ? AUSENTE : `${formatarNumero(depois, 0)} dias`}
+                      {depois === null ? AUSENTE : `${formatarNumero(diasInteiros(depois))} dias`}
                     </strong>
                   </span>
                   <span role="cell" className="full-num full-num--fraco">{sugerida === null ? AUSENTE : formatarNumero(sugerida)}</span>

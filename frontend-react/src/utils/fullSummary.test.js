@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeFullSummary, filterInventories, ordenarPorUrgencia } from "./fullSummary.js";
+import { computeFullSummary, diasInteiros, filterInventories, ordenarPorUrgencia } from "./fullSummary.js";
 
 function inv(overrides = {}) {
   return {
@@ -142,5 +142,14 @@ describe("ordenarPorUrgencia", () => {
       inv({ inventoryId: "ruptura-rapida", operationalStatus: "RUPTURA", coverageDays: 0, dailyTurnover: 5 }),
     ]).map((i) => i.inventoryId);
     expect(ordem).toEqual(["ruptura-rapida", "ruptura-lenta", "repor-8", "repor-12", "saudavel", "sem-dado"]);
+  });
+});
+
+describe("diasInteiros", () => {
+  it("arredonda a cobertura para baixo (bate com o status) e mantém ausência", () => {
+    expect(diasInteiros(6.9)).toBe(6);
+    expect(diasInteiros(19.5)).toBe(19);
+    expect(diasInteiros(0)).toBe(0);
+    expect(diasInteiros(null)).toBe(null);
   });
 });

@@ -19,7 +19,7 @@ import { useEffect } from "react";
 import { formatarDataHora } from "../../../utils/dates.js";
 import { useEntregaApresentacao } from "../../../hooks/useEntregaApresentacao.js";
 import { EntregaAcoes } from "../EntregaAcoes.jsx";
-import { MK_LABEL } from "../fechamento/FechamentoContextoBar.jsx";
+import { MK_LABEL } from "../../../utils/financeiro/marketplace.js";
 import { EntregaEditor } from "./EntregaEditor.jsx";
 
 export function EntregaPainel({ entrega, entregas, clienteNome, marketplace, contaNome, clienteContaId, periodo, periodoLabel, onAlterado }) {

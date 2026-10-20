@@ -1,38 +1,44 @@
 // frontend-react/src/components/financeiro/fechamento/CompetenciaFechamento.jsx
 //
-// Competência do fechamento — o mês que esta tela fecha, sempre por extenso
-// ("Outubro/2026"), com o estado DESTA conta ao lado. Internamente o valor
-// continua `AAAA-MM`.
+// Competência do fechamento — o mês que esta tela fecha, com o estado DESTA
+// conta ao lado. Mora no cabeçalho da página (modelo B): seletor + status.
+// Internamente o valor continua `AAAA-MM`.
 //
 // Trocar de mês com trabalho em andamento (arquivos escolhidos, resultado
 // processado, apresentação não salva) NÃO acontece em silêncio: a troca fica
-// pendente numa confirmação inline que nomeia os dois meses. Nunca
-// `window.confirm` — o diálogo do navegador congela a página e não diz de
-// qual competência se trata.
+// pendente numa confirmação inline que nomeia os dois meses
+// (`AvisosCompetencia`, logo abaixo do cabeçalho). Nunca `window.confirm` — o
+// diálogo do navegador congela a página e não diz de qual competência se
+// trata.
 
 import { VFMonthYearSelector } from "../../ui/VFMonthYearSelector/index.js";
 import { rotularCompetencia } from "../../../utils/dates.js";
 
-export function CompetenciaFechamento({ periodo, status, trocaPendente, onPedirTroca, onConfirmarTroca, onCancelarTroca }) {
-  const atual = rotularCompetencia(periodo);
+export function CompetenciaFechamento({ periodo, status, onPedirTroca }) {
   return (
-    <div className="vf-fin-competencia">
-      <div className="vf-fin-competencia__linha">
-        <div className="vf-fin-competencia__texto">
-          <span className="vf-fin-competencia__rotulo">Competência do fechamento</span>
-          <strong className="vf-fin-competencia__valor" data-testid="competencia-extenso">{atual}</strong>
-        </div>
-        <VFMonthYearSelector value={periodo} onChange={onPedirTroca} />
-        {status && (
-          <span className={`vf-tag is-${status.tom}`} data-testid="status-competencia">
-            {status.label}
-          </span>
-        )}
-      </div>
+    <div className="vf-fin-competencia" role="group" aria-label="Competência do fechamento">
+      <span className="vf-visually-hidden" data-testid="competencia-extenso">
+        Competência do fechamento: {rotularCompetencia(periodo)}
+      </span>
+      <VFMonthYearSelector value={periodo} onChange={onPedirTroca} />
+      {status && (
+        <span className={`vf-tag is-${status.tom}`} data-testid="status-competencia">
+          {status.label}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function AvisosCompetencia({ periodo, status, trocaPendente, onConfirmarTroca, onCancelarTroca }) {
+  const atual = rotularCompetencia(periodo);
+  if (!status?.legado && !trocaPendente) return null;
+  return (
+    <div className="vf-stack vf-stack--sm">
       {status?.legado && (
         <p className="vf-field__hint">
           Existe um fechamento legado desta competência sem operação registrada — ele é do cliente, não desta conta.
-          Veja em Relatórios gerados.
+          Veja em Relatórios.
         </p>
       )}
       {trocaPendente && (

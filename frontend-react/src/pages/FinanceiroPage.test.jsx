@@ -1,10 +1,9 @@
 // Testes de render do Financeiro V3 — paridade operacional.
 //
-// A página tem três áreas (Fechamento · Relatórios gerados · Histórico). As
-// antigas abas Resultado/Conciliação viraram blocos da aba Fechamento. O
-// que se protege aqui:
+// Modelo B: uma tela só (a mesa do fechamento), sem abas; Histórico e
+// Relatórios abrem drawers pelo cabeçalho. O que se protege aqui:
 //   · honestidade M6: item sem valor nunca vira R$ 0,00;
-//   · contexto do Shell (cliente/marketplace/conta) só em leitura;
+//   · contexto do Shell (cliente/conta na sidebar) — sem seletor próprio;
 //   · competência por extenso, status DESTA conta e troca com confirmação;
 //   · publicar/despublicar só na entrega desta conta, nomeando a competência.
 
@@ -103,23 +102,38 @@ beforeEach(() => {
   mocks.requisitar.mockResolvedValue({ ok: true, bases: [] });
 });
 
-describe("FinanceiroPage · organização das abas", () => {
-  it("três áreas: Fechamento, Relatórios gerados e Histórico — Resultado e Conciliação deixaram de ser abas", () => {
+describe("FinanceiroPage · modelo B (mesa sem abas)", () => {
+  it("uma tela só: sem abas; Histórico e Relatórios abrem drawers pelo cabeçalho", async () => {
+    const usuario = userEvent.setup();
     mockarHooks({ dados: dadosBase() });
     render(<FinanceiroPage />);
-    const abas = screen.getAllByRole("tab").map((t) => t.textContent);
-    expect(abas).toEqual(["Fechamento", "Relatórios gerados", "Histórico"]);
-    expect(screen.getByRole("tab", { name: "Fechamento" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    await usuario.click(screen.getByRole("button", { name: "Histórico" }));
+    expect(screen.getByRole("dialog", { name: "Histórico" })).toBeInTheDocument();
   });
 
-  it("a aba Fechamento abre com o formulário de processamento", async () => {
-    mockarHooks({ dados: dadosBase() });
+  it("o painel lateral lista as seis etapas do fechamento e o próximo passo", () => {
+    mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [] }) });
     render(<FinanceiroPage />);
-    expect(await screen.findByText("Arquivos do fechamento")).toBeInTheDocument();
+    const painel = screen.getByRole("complementary", { name: "Etapas do fechamento" });
+    const etapas = Array.from(painel.querySelectorAll("[data-etapa]")).map((e) => e.dataset.etapa);
+    expect(etapas).toEqual(["base", "arquivos", "ajustes", "processar", "pendencias", "publicar"]);
+    expect(within(painel).getByRole("button", { name: /Enviar planilha de vendas/ })).toBeInTheDocument();
+  });
+
+  it("Enviar planilha de vendas abre o drawer de preparo com base, arquivos e ajustes", async () => {
+    const usuario = userEvent.setup();
+    mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [] }) });
+    render(<FinanceiroPage />);
+    await usuario.click(screen.getByRole("button", { name: /Enviar planilha de vendas/ }));
+    const drawer = screen.getByRole("dialog", { name: "Preparar fechamento" });
+    expect(within(drawer).getByText("Base de custos")).toBeInTheDocument();
+    expect(within(drawer).getByLabelText(/Planilha de vendas/)).toBeInTheDocument();
+    expect(within(drawer).getByText("Ajustes do período")).toBeInTheDocument();
   });
 });
 
-describe("FinanceiroPage · fechamento salvo (antiga aba Resultado)", () => {
+describe("FinanceiroPage · fechamento salvo", () => {
   it("item de composição sem valor mostra '—', nunca 'R$ 0,00'; percentual não vira R$", () => {
     mockarHooks({ dados: dadosBase() });
     render(<FinanceiroPage />);
@@ -131,14 +145,14 @@ describe("FinanceiroPage · fechamento salvo (antiga aba Resultado)", () => {
     expect(within(linhaMc).getByText("20,0%")).toBeInTheDocument();
   });
 
-  it("sem fechamento salvo: diz para processar acima — não fala de 'linhas de composição'", () => {
+  it("sem fechamento salvo: a mesa diz que o mês ainda não foi fechado", () => {
     mockarHooks({ dados: dadosBase({ resultado: envelope(false, null, "Nenhum fechamento gerado para este período.") }) });
     render(<FinanceiroPage />);
-    expect(screen.getByText(/Processe um fechamento acima para visualizar o resultado/)).toBeInTheDocument();
+    expect(screen.getByText("Agosto/2026 ainda não foi fechado")).toBeInTheDocument();
     expect(screen.queryByText(/não tem linhas de composição/)).not.toBeInTheDocument();
   });
 
-  it("conciliação Mercado Pago aparece DENTRO do fechamento (MELI) e indisponível não derruba o resto", () => {
+  it("conciliação Mercado Pago continua à vista (MELI) e indisponível não derruba o resto", () => {
     mockarHooks({ dados: dadosBase({ conciliacao: envelope(false, null, "Mercado Pago ainda não conectado.") }) });
     render(<FinanceiroPage />);
     expect(screen.getByText("Conciliação Mercado Pago (Central de Vendas)")).toBeInTheDocument();
@@ -152,11 +166,11 @@ describe("FinanceiroPage · fechamento salvo (antiga aba Resultado)", () => {
     expect(screen.queryByText("Conciliação Mercado Pago (Central de Vendas)")).not.toBeInTheDocument();
   });
 
-  it("erro geral sem dados: banner de erro e o formulário continua disponível", () => {
+  it("erro geral sem dados: banner de erro e a mesa continua disponível", () => {
     mockarHooks({ erro: { mensagem: "Falha de rede." } });
     render(<FinanceiroPage />);
     expect(screen.getByRole("alert")).toHaveTextContent("Falha de rede.");
-    expect(screen.getByText("Arquivos do fechamento")).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Etapas do fechamento" })).toBeInTheDocument();
   });
 
   it("contexto ainda não pronto: página não renderiza nada", () => {
@@ -167,31 +181,30 @@ describe("FinanceiroPage · fechamento salvo (antiga aba Resultado)", () => {
 });
 
 describe("FinanceiroPage · contexto do Shell", () => {
-  it("mostra marketplace, conta (com identificador externo) e cliente em leitura — sem seletores próprios", () => {
+  it("cliente e conta ficam na sidebar: a página não tem barra de contexto nem seletores próprios", () => {
     mockarHooks({ dados: dadosBase() });
     render(<FinanceiroPage />);
-    const ctx = screen.getByTestId("contexto-fechamento");
-    expect(ctx).toHaveTextContent("Mercado Livre");
-    expect(ctx).toHaveTextContent("Mercado Livre 1 · 2574840252");
-    expect(ctx).toHaveTextContent("Influência Jeans");
+    expect(screen.queryByTestId("contexto-fechamento")).not.toBeInTheDocument();
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getByText("Mercado Livre · Financeiro")).toBeInTheDocument();
   });
 
-  it("nome do cliente aparece no cabeçalho E na entrega para o cliente", () => {
+  it("nome do cliente aparece na entrega para o cliente", async () => {
+    const usuario = userEvent.setup();
     mockarHooks({
       dados: dadosBase(),
       entregas: estadoDeEntregas({ entregas: [{ id: 7, periodo: "2026-08", cliente_conta_id: 42, publicado: false, token_publico: null, created_at: "2026-08-20T10:00:00Z" }] }),
     });
     render(<FinanceiroPage />);
-    expect(within(screen.getByTestId("contexto-fechamento")).getByText("Influência Jeans")).toBeInTheDocument();
+    await usuario.click(screen.getByRole("button", { name: "Editar apresentação" }));
     const identidade = screen.getByTestId("identidade-entrega");
     expect(within(identidade).getByText("Cliente").nextSibling).toHaveTextContent("Influência Jeans");
   });
 
-  it("troca de cliente no Shell atualiza o nome junto com conta e marketplace — nada stale", () => {
+  it("troca de operação no Shell atualiza o marketplace do cabeçalho — nada stale", () => {
     mockarHooks({ dados: dadosBase() });
     const { rerender } = render(<FinanceiroPage />);
-    expect(screen.getByTestId("contexto-fechamento")).toHaveTextContent("Influência Jeans");
+    expect(screen.getByText("Mercado Livre · Financeiro")).toBeInTheDocument();
     mockarHooks({
       dados: dadosBase(),
       operacao: operacaoPronta({
@@ -200,30 +213,26 @@ describe("FinanceiroPage · contexto do Shell", () => {
       }),
     });
     rerender(<FinanceiroPage />);
-    const ctx = screen.getByTestId("contexto-fechamento");
-    expect(ctx).toHaveTextContent("Zenite Comercial");
-    expect(ctx).toHaveTextContent("Shopee Zenite");
-    expect(ctx).toHaveTextContent("Shopee");
-    expect(ctx).not.toHaveTextContent("Influência Jeans");
+    expect(screen.getByText("Shopee · Financeiro")).toBeInTheDocument();
+    expect(screen.queryByText("Mercado Livre · Financeiro")).not.toBeInTheDocument();
   });
 
-  it("sem nome na carteira: fallback neutro '—', nunca o slug no lugar do nome", () => {
+  it("sem nome na carteira: fallback neutro '—' na entrega, nunca o slug no lugar do nome", async () => {
+    const usuario = userEvent.setup();
     mockarHooks({
       dados: dadosBase(),
       operacao: operacaoPronta({ clienteSlug: "influencia-jeans", clienteNome: null, snapshot: { state: "READY", context: { clienteId: 87, clienteSlug: "influencia-jeans", clienteContaId: 42 }, cliente: { id: 87, slug: "influencia-jeans", nome: null }, meta: { nome: "Mercado Livre 1" } } }),
       entregas: estadoDeEntregas({ entregas: [{ id: 7, periodo: "2026-08", cliente_conta_id: 42, publicado: false, token_publico: null, created_at: "2026-08-20T10:00:00Z" }] }),
     });
     render(<FinanceiroPage />);
-    const ctx = screen.getByTestId("contexto-fechamento");
-    expect(within(ctx).getByText("Cliente").nextSibling).toHaveTextContent(/^—$/);
-    expect(ctx).not.toHaveTextContent(/influencia|Influência/i);
+    await usuario.click(screen.getByRole("button", { name: "Editar apresentação" }));
     expect(within(screen.getByTestId("identidade-entrega")).getByText("Cliente").nextSibling).toHaveTextContent(/^—$/);
   });
 
   it("o cabeçalho linka pro Financeiro legado com o clienteSlug da operação atual", () => {
     mockarHooks({ dados: dadosBase(), operacao: operacaoPronta({ clienteSlug: "zenite" }) });
     render(<FinanceiroPage />);
-    expect(screen.getByRole("link", { name: /Financeiro \(legado\)/ })).toHaveAttribute("href", "financeiro.html?cliente=zenite");
+    expect(screen.getAllByRole("link", { name: /Financeiro \(legado\)/ })[0]).toHaveAttribute("href", "financeiro.html?cliente=zenite");
   });
 });
 
@@ -280,7 +289,9 @@ describe("FinanceiroPage · competência do fechamento", () => {
     const usuario = userEvent.setup();
     mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [] }) });
     render(<FinanceiroPage />);
+    await usuario.click(screen.getByRole("button", { name: /Enviar planilha de vendas/ }));
     await usuario.upload(screen.getByLabelText(/Planilha de vendas/), new File(["a"], "vendas.xlsx"));
+    await usuario.click(screen.getByRole("button", { name: "Cancelar" }));
 
     await usuario.click(screen.getByRole("button", { name: "Ago 2026" }));
     await usuario.click(screen.getByRole("button", { name: "Nov" }));
@@ -305,7 +316,7 @@ describe("FinanceiroPage · publicar/despublicar a entrega desta conta", () => {
     const entregas = estadoDeEntregas({ entregas: [{ id: 7, periodo: "2026-08", publicado: false, cliente_conta_id: 42 }] });
     mockarHooks({ dados: dadosBase(), entregas });
     render(<FinanceiroPage />);
-    await usuario.click(screen.getByRole("button", { name: "Publicar" }));
+    await usuario.click(screen.getByRole("button", { name: /^Publicar/ }));
     expect(screen.getByText(/Publicar Agosto\/2026\?/)).toBeInTheDocument();
     await usuario.click(screen.getByRole("button", { name: "Publicar" }));
     expect(entregas.publicar).toHaveBeenCalledWith(7);
@@ -316,28 +327,31 @@ describe("FinanceiroPage · publicar/despublicar a entrega desta conta", () => {
     const entregas = estadoDeEntregas({ entregas: [{ id: 7, periodo: "2026-08", publicado: false, cliente_conta_id: 42 }] });
     mockarHooks({ dados: dadosBase(), entregas });
     render(<FinanceiroPage />);
-    await usuario.click(screen.getByRole("button", { name: "Publicar" }));
+    await usuario.click(screen.getByRole("button", { name: /^Publicar/ }));
     await usuario.click(screen.getByRole("button", { name: "Cancelar" }));
     expect(entregas.publicar).not.toHaveBeenCalled();
   });
 
-  it("entrega publicada: Despublicar, Abrir e Copiar link", async () => {
+  it("entrega publicada: Copiar link e Abrir link no painel; Despublicar na entrega", async () => {
     const usuario = userEvent.setup();
     const entregas = estadoDeEntregas({
       entregas: [{ id: 7, periodo: "2026-08", publicado: true, token_publico: "tok-abc", published_at: "2026-09-01T10:00:00Z", cliente_conta_id: 42 }],
     });
     mockarHooks({ dados: dadosBase(), entregas });
     render(<FinanceiroPage />);
-    expect(screen.getByRole("link", { name: "Abrir" })).toHaveAttribute("href", expect.stringContaining("relatorio-publico.html?token=tok-abc"));
-    expect(screen.getByRole("button", { name: "Copiar link" })).toBeInTheDocument();
-    await usuario.click(screen.getByRole("button", { name: "Despublicar" }));
-    expect(screen.getByText(/Despublicar Agosto\/2026\?/)).toBeInTheDocument();
-    await usuario.click(screen.getByRole("button", { name: "Despublicar" }));
+    const painel = screen.getByRole("complementary", { name: "Etapas do fechamento" });
+    expect(within(painel).getByRole("link", { name: "Abrir link" })).toHaveAttribute("href", expect.stringContaining("relatorio-publico.html?token=tok-abc"));
+    expect(within(painel).getByRole("button", { name: /Copiar link/ })).toBeInTheDocument();
+    await usuario.click(within(painel).getByRole("button", { name: "Apresentação e link" }));
+    const drawer = screen.getByRole("dialog", { name: "Entrega para o cliente" });
+    await usuario.click(within(drawer).getByRole("button", { name: "Despublicar" }));
+    expect(within(drawer).getByText(/Despublicar Agosto\/2026\?/)).toBeInTheDocument();
+    await usuario.click(within(drawer).getByRole("button", { name: "Despublicar" }));
     expect(entregas.despublicar).toHaveBeenCalledWith(7);
   });
 });
 
-describe("FinanceiroPage · Relatórios gerados e Histórico", () => {
+describe("FinanceiroPage · Relatórios e Histórico (drawers do cabeçalho)", () => {
   it("Relatórios identifica a conta da operação e o legado, linha a linha", async () => {
     const usuario = userEvent.setup();
     mockarHooks({
@@ -351,30 +365,33 @@ describe("FinanceiroPage · Relatórios gerados e Histórico", () => {
       }),
     });
     render(<FinanceiroPage />);
-    await usuario.click(screen.getByRole("tab", { name: "Relatórios gerados" }));
-    const tabela = screen.getByRole("table");
+    await usuario.click(screen.getByRole("button", { name: "Relatórios" }));
+    const tabela = within(screen.getByRole("dialog", { name: "Relatórios" })).getByRole("table");
     expect(within(tabela).getByText("Shopee · Shopee 2 · shop-2")).toBeInTheDocument();
     expect(within(tabela).getByText("Legado · operação não registrada (Shopee)")).toBeInTheDocument();
     expect(within(tabela).getByText("97,5%")).toBeInTheDocument();
   });
 
-  it("trocar de aba e voltar não perde o arquivo escolhido no Fechamento", async () => {
+  it("abrir e fechar o Histórico não perde o arquivo escolhido no preparo", async () => {
     const usuario = userEvent.setup();
     mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [] }) });
     render(<FinanceiroPage />);
+    await usuario.click(screen.getByRole("button", { name: /Enviar planilha de vendas/ }));
     await usuario.upload(screen.getByLabelText(/Planilha de vendas/), new File(["a"], "vendas-agosto.xlsx"));
-    await usuario.click(screen.getByRole("tab", { name: "Histórico" }));
-    await usuario.click(screen.getByRole("tab", { name: "Fechamento" }));
-    expect(screen.getByText("vendas-agosto.xlsx")).toBeInTheDocument();
+    await usuario.click(screen.getByRole("button", { name: "Cancelar" }));
+    await usuario.click(screen.getByRole("button", { name: "Histórico" }));
+    await usuario.keyboard("{Escape}");
+    const painel = screen.getByRole("complementary", { name: "Etapas do fechamento" });
+    expect(within(painel).getByText("vendas-agosto.xlsx")).toBeInTheDocument();
   });
 
-  it("Histórico: escolher um mês sem trabalho em andamento troca a competência e volta ao Fechamento", async () => {
+  it("Histórico: escolher um mês sem trabalho em andamento troca a competência e fecha o drawer", async () => {
     const usuario = userEvent.setup();
     mockarHooks({ dados: dadosBase(), entregas: estadoDeEntregas({ entregas: [] }) });
     render(<FinanceiroPage />);
-    await usuario.click(screen.getByRole("tab", { name: "Histórico" }));
+    await usuario.click(screen.getByRole("button", { name: "Histórico" }));
     await usuario.click(screen.getByRole("button", { name: "Julho/2026" }));
     expect(mocks.setPeriodo).toHaveBeenCalledWith("2026-07");
-    expect(screen.getByRole("tab", { name: "Fechamento" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByRole("dialog", { name: "Histórico" })).not.toBeInTheDocument();
   });
 });

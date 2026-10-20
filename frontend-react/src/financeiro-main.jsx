@@ -7,6 +7,7 @@ import { createRoot } from "react-dom/client";
 import { ErrorBoundary } from "./components/ErrorBoundary.jsx";
 import FinanceiroPage from "./pages/FinanceiroPage.jsx";
 import "./styles/financeiro.css";
+import "./styles/financeiro-mesa.css";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>

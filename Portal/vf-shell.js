@@ -64,6 +64,10 @@ export const MODULOS = [
   { id: "central-vendas", label: "Central de Vendas", rota: "fechamentos-api.html" },
   { id: "ads", label: "Ads", rota: "ads.html", marketplaces: ["meli"] },
   { id: "anuncios", label: "Anúncios", rota: "anuncios-meli.html", marketplaces: ["meli"] },
+  // Central do Full (modelo C): ilha React que lê Cliente+Operação do
+  // vf-context.js (useOperacaoAtual), como a Visão — sem seletor próprio
+  // desde então. Full é logística do Mercado Livre.
+  { id: "central-full", label: "Central Full", rota: "full-gestao.html", marketplaces: ["meli"] },
   // F2.3 — Motor de Margem só resolve base MELI (contextoPrecificacaoService);
   // achado lendo o código real, não previsto no MASTER_SPEC original.
   { id: "margem", label: "Margem", rota: "central-margem.html", marketplaces: ["meli"] },
@@ -89,10 +93,6 @@ export const GLOBAIS = [
   { id: "cliente-operacao", label: "Cliente Operação", rota: "cliente-operacao.html" },
   { id: "cliente-360", label: "Cliente 360", rota: "cliente-360.html" },
   { id: "promocoes-ml", label: "Promoções ML", rota: "promocoes-retorno.html" },
-  // Central Full lê `clienteContaId` (não `conta`) quando presente — ver
-  // linkParamsCentralFull. Sem ele, a própria página mostra seu seletor de
-  // cliente/conta (fallback já existente, não uma tela quebrada).
-  { id: "central-full", label: "Central Full", rota: "full-gestao.html", linkParams: linkParamsCentralFull },
   { id: "curva-abc", label: "Curva ABC", rota: "fechamento.html" },
   { id: "clientes-contas", label: "Clientes e Contas", rota: "clientes.html" },
   { id: "ferramentas", label: "Ferramentas", rota: "ferramentas.html" },
@@ -213,14 +213,6 @@ export const MARKETPLACE_LABEL = { meli: "Mercado Livre", shopee: "Shopee", tikt
 function linkParamsCliente360V2(ctx, meta) {
   if (!ctx || !ctx.clienteSlug) return null;
   return { slug: ctx.clienteSlug, marketplace: meta && meta.marketplace ? meta.marketplace : undefined };
-}
-
-// full-gestao.html lê só `clienteContaId` (confirmado no bundle: nenhuma
-// outra chave de querystring é lida). Sem ele, a própria página mostra o
-// seletor de cliente/conta dela — por isso null aqui não é regressão.
-function linkParamsCentralFull(ctx) {
-  if (!ctx || !ctx.clienteContaId) return null;
-  return { clienteContaId: ctx.clienteContaId };
 }
 
 /* ── Estados (MASTER_SPEC §7.2) — tabela única; nenhuma lógica duplicada. */
@@ -692,7 +684,7 @@ export function createVfShell(options = {}) {
     const ctx = ctxStore.getContext();
     // `linkParams` é a válvula de escape para páginas que NÃO falam o
     // contrato padrão cliente/conta/periodo (recuperação de navegação —
-    // ver linkParamsCliente360V2/linkParamsCentralFull). Nunca inventa
+    // ver linkParamsCliente360V2). Nunca inventa
     // parâmetro: cada função só lê o campo que a página de destino
     // realmente documenta ler.
     if (mod.linkParams) {

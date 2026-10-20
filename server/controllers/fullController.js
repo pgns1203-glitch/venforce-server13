@@ -8,6 +8,8 @@
 const { resolveMarketplaceAccountContext, obterConta } = require("../services/clienteContas/clienteContaService");
 const { createFullMlGateway } = require("../services/full/fullMlGateway");
 const { createFullService } = require("../services/full/fullService");
+const { createFullCostProvider } = require("../services/full/fullCostProvider");
+const { lerCustosDaConta } = require("../services/meliAnuncios/meliCustosLoteService");
 
 const SENSITIVE_KEYS = new Set([
   "access_token",
@@ -208,6 +210,7 @@ function createFullController({ fullService, resolverClienteId = resolverCliente
 const defaultFullService = createFullService({
   mlGateway: createFullMlGateway(),
   resolveAccountContext: resolveMarketplaceAccountContext,
+  costProvider: createFullCostProvider({ lerCustos: lerCustosDaConta }),
 });
 
 module.exports = {

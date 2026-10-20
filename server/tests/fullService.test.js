@@ -6,7 +6,7 @@
 // zero/SEM_GIRO, so degrada a linha ou o lote afetado.
 
 const assert = require("assert");
-const { createFullService } = require("../services/full/fullService");
+const { createFullService, buildCommercialFields } = require("../services/full/fullService");
 const { createFullCache } = require("../services/full/fullCache");
 const { createFullCommercialAdapter } = require("../services/full/fullCommercialAdapter");
 
@@ -285,6 +285,76 @@ function run() {
       assert.strictEqual(snapshot.inventories.length, 2, "falha do adapter comercial nao pode derrubar o snapshot operacional inteiro");
       assert.strictEqual(snapshot.quality.sources.commercial.status, "unavailable");
       console.log("  ✓ commercialAdapter que quebra o contrato (lanca) nunca bloqueia metricas operacionais");
+    }
+
+    // Central do Full (modelo C): custo da Base numa unica leitura por coleta + valores em R$ por linha
+    {
+      const { gateway } = makeFakeGateway({ totalItems: 3 });
+      const costCalls = [];
+      const costProvider = {
+        async fetchCosts(args) {
+          costCalls.push(args);
+          return { status: "ok", reason: null, base: { slug: "base-x", nome: "Base X" }, costsByItemId: new Map([["MLB1", 12.5]]) };
+        },
+      };
+      const resolveAccountContext = async () => ({ cliente: { id: 1, slug: "cliente-x" }, mlUserId: "SELLER1", marketplace: "meli" });
+      const service = createFullService({ mlGateway: gateway, resolveAccountContext, costProvider });
+      const snapshot = await service.buildSnapshot({ clienteContaId: 400, windowDays: 14 });
+
+      assert.strictEqual(costCalls.length, 1, "custo e uma unica leitura em lote por coleta, nunca uma por inventory");
+      assert.strictEqual(costCalls[0].clienteSlug, "cliente-x");
+      assert.strictEqual(costCalls[0].clienteContaId, 400);
+      assert.deepStrictEqual(costCalls[0].itemIds, ["MLB1", "MLB2", "MLB3"]);
+      assert.deepStrictEqual(snapshot.quality.sources.costs, { status: "ok", reason: null, base: { slug: "base-x", nome: "Base X" } });
+
+      const comCusto = snapshot.inventories.find((r) => r.inventoryId === "INV-MLB1");
+      assert.strictEqual(comCusto.unitCost, 12.5);
+      assert.strictEqual(comCusto.stockCost, 125, "custo do estoque = total no Full x custo");
+      const semCusto = snapshot.inventories.find((r) => r.inventoryId === "INV-MLB2");
+      assert.strictEqual(semCusto.unitCost, null);
+      assert.strictEqual(semCusto.stockCost, null, "sem custo na Base o valor e ausente, nunca zero");
+      assert.strictEqual(snapshot.quality.status, "complete", "custo nao entra no status de qualidade operacional");
+      console.log("  ✓ custo da Base em uma leitura por coleta; custo do estoque por linha, ausente sem custo");
+    }
+
+    // costProvider que quebra o contrato nunca derruba o snapshot
+    {
+      const { gateway } = makeFakeGateway({ totalItems: 2 });
+      const costProvider = { fetchCosts: async () => { throw new Error("quebrou"); } };
+      const service = createFullService({ mlGateway: gateway, resolveAccountContext: fakeAccountContext(), costProvider });
+      const snapshot = await service.buildSnapshot({ clienteContaId: 401, windowDays: 14 });
+      assert.strictEqual(snapshot.inventories.length, 2);
+      assert.strictEqual(snapshot.quality.sources.costs.status, "unavailable");
+      assert.ok(snapshot.inventories.every((r) => r.unitCost === null && r.stockCost === null));
+      console.log("  ✓ costProvider que lanca vira custo indisponivel, o snapshot segue inteiro");
+    }
+
+    // buildCommercialFields: previsao de 30 dias limitada ao estoque disponivel
+    {
+      const base = {
+        references: [{ mlb: "MLB9", price: 10, thumbnail: "https://x/9.jpg", listingStatus: "active" }],
+        stock: { status: "ok", total: 12, available: 8 },
+      };
+      const custos = new Map([["MLB9", 4]]);
+
+      const giroAlto = buildCommercialFields({ ...base, dailyTurnover: 2 }, custos);
+      assert.strictEqual(giroAlto.forecast30dUnits, 8, "60 un. no ritmo, mas so 8 estao no Full");
+      assert.strictEqual(giroAlto.forecast30dRevenue, 80);
+      assert.strictEqual(giroAlto.stockCost, 48, "custo usa o estoque TOTAL (12), inclusive indisponivel");
+      assert.strictEqual(giroAlto.thumbnail, "https://x/9.jpg");
+
+      const giroBaixo = buildCommercialFields({ ...base, dailyTurnover: 0.1 }, custos);
+      assert.strictEqual(giroBaixo.forecast30dUnits, 3);
+      assert.strictEqual(giroBaixo.forecast30dRevenue, 30);
+
+      const semVenda = buildCommercialFields({ ...base, dailyTurnover: null }, custos);
+      assert.strictEqual(semVenda.forecast30dUnits, null, "giro desconhecido nunca vira previsao zero");
+      assert.strictEqual(semVenda.forecast30dRevenue, null);
+
+      const semEstoque = buildCommercialFields({ ...base, stock: { status: "unavailable", total: null, available: null }, dailyTurnover: 1 }, custos);
+      assert.strictEqual(semEstoque.stockCost, null);
+      assert.strictEqual(semEstoque.forecast30dUnits, null);
+      console.log("  ✓ previsao 30d limitada ao disponivel; ausencias (giro/estoque) nunca viram zero");
     }
 
     console.log("fullService.test.js passed");

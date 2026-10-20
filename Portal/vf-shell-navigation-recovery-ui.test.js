@@ -182,7 +182,6 @@ async function check(name, fn) {
 const TELAS_RESTAURADAS = [
   { modulo: "cliente-operacao", rotaEsperada: "cliente-operacao.html" },
   { modulo: "promocoes-ml", rotaEsperada: "promocoes-retorno.html" },
-  { modulo: "central-full", rotaEsperada: "full-gestao.html" },
   { modulo: "curva-abc", rotaEsperada: "fechamento.html" },
 ];
 const TELAS_ADMIN_RESTAURADAS = [
@@ -300,12 +299,14 @@ async function run() {
       }
     });
 
-    await check("com cliente/operação selecionados, Central Full recebe ?clienteContaId= (nunca ?conta=)", async () => {
+    // Central Full virou MÓDULO de conta (modelo C): lê Cliente+Operação do
+    // contexto, então o link segue o contrato padrão cliente/conta.
+    await check("com cliente/operação selecionados, Central Full recebe o contrato padrão ?cliente=&conta=", async () => {
       const href = await cdp.evaluate(
         "document.querySelector('.vf-shell__item[data-module=central-full]').getAttribute('href')"
       );
-      assert.ok(href.includes("clienteContaId=42"), `esperado clienteContaId=42 no link de Central Full, veio: ${href}`);
-      assert.ok(!/[?&]conta=/.test(href), `Central Full não deveria receber ?conta= (a página lê clienteContaId): ${href}`);
+      assert.ok(href.startsWith("full-gestao.html"), `href inesperado para Central Full: ${href}`);
+      assert.ok(/[?&]conta=42\b/.test(href), `esperado conta=42 no link de Central Full, veio: ${href}`);
     });
 
     await check("Cliente Operacao preserva o link no Shell", async () => {

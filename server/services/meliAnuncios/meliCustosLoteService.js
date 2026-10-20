@@ -221,10 +221,23 @@ async function salvarCustosEmLote({ clienteSlug, clienteContaId = null, body }, 
  * @returns {Promise<{ base, motivo, mensagem, custos: Object<string, number|null> }>}
  */
 async function lerCustosDosItens({ clienteSlug, clienteContaId = null, itemIds }, deps = {}) {
+  return lerCustos({ clienteSlug, clienteContaId, itemIds, limite: MAX_ITENS_LOTE }, deps);
+}
+
+/**
+ * Mesma leitura de lerCustosDosItens, sem o teto da lista de Anúncios: a
+ * Central do Full precisa do custo de TODOS os anúncios Full da conta numa
+ * única consulta (ANY), nunca em fatias de 100 que resolveriam a Base de novo.
+ */
+async function lerCustosDaConta({ clienteSlug, clienteContaId = null, itemIds }, deps = {}) {
+  return lerCustos({ clienteSlug, clienteContaId, itemIds, limite: Infinity }, deps);
+}
+
+async function lerCustos({ clienteSlug, clienteContaId, itemIds, limite }, deps) {
   const db = deps.db || pool;
   const resolverContexto = deps.resolverContextoPrecificacao || contextoPrecificacao.resolverContextoPrecificacao;
 
-  const ids = Array.from(new Set((itemIds || []).map(normalizarItemId).filter(Boolean))).slice(0, MAX_ITENS_LOTE);
+  const ids = Array.from(new Set((itemIds || []).map(normalizarItemId).filter(Boolean))).slice(0, limite);
   const contexto = await resolverContexto({ clienteSlugRaw: clienteSlug, clienteContaId });
   if (!contexto.pronto || !contexto.base) {
     return { base: null, motivo: contexto.motivo, mensagem: contexto.mensagem, custos: {} };
@@ -273,6 +286,7 @@ module.exports = {
   MAX_ITENS_LOTE,
   salvarCustosEmLote,
   lerCustosDosItens,
+  lerCustosDaConta,
   resolverBaseDeCustos,
   // exportados para teste
   validarPedido,

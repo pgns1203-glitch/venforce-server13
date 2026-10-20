@@ -1,8 +1,15 @@
-import { describe, it, expect } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProdutosMesa } from "./ProdutosMesa.jsx";
 import { normalizarLinhas } from "../../../utils/financeiro/produtos.js";
+
+const rede = vi.hoisted(() => ({ requisitar: vi.fn() }));
+vi.mock("../../../services/apiClient.js", async (orig) => ({ ...(await orig()), requisitar: rede.requisitar }));
+beforeEach(() => {
+  rede.requisitar.mockReset();
+  rede.requisitar.mockResolvedValue({ ok: true, miniaturas: {} });
+});
 
 const linhasMeli = normalizarLinhas([
   { "# de anúncio": "MLB1", "Título do anúncio": "Calça", Unidades: 1, "Venda Total": 100, "Total (BRL)": 80, "Preço de custo": 30, LC: 20, MC: 20, "Cobertura de custo": "com custo" },
@@ -106,5 +113,53 @@ describe("ProdutosMesa", () => {
   it("amostra do fechamento salvo diz que não são todas as linhas", () => {
     render(<ProdutosMesa linhas={linhasMeli} amostra />);
     expect(screen.getByText(/Amostra de 3 linhas gravadas no fechamento salvo/)).toBeInTheDocument();
+  });
+});
+
+describe("ProdutosMesa · foto do anúncio (Mercado Livre)", () => {
+  const ctx = { clienteSlug: "zenite", clienteContaId: 42, marketplace: "meli" };
+  const fotoDe = (titulo) => linhaDe(titulo).querySelector(".vf-fin-mesa-produto__sigla img");
+
+  it("pede só os MLBs da página e troca a sigla pela foto; sem foto fica a sigla", async () => {
+    rede.requisitar.mockResolvedValue({ ok: true, miniaturas: { MLB1: "https://img/1.jpg", MLB3: "https://img/3.jpg" } });
+    render(<ProdutosMesa linhas={linhasMeli} {...ctx} />);
+    await waitFor(() => expect(fotoDe("Calça")).toHaveAttribute("src", "https://img/1.jpg"));
+    expect(fotoDe("Saia")).toHaveAttribute("src", "https://img/3.jpg");
+    expect(fotoDe("Blusa")).toBeNull();
+    expect(within(linhaDe("Blusa")).getByText("BLU")).toBeInTheDocument();
+    expect(rede.requisitar).toHaveBeenCalledTimes(1);
+    const [caminho, opcoes] = rede.requisitar.mock.calls[0];
+    expect(caminho).toBe("/financeiro/zenite/miniaturas");
+    expect(opcoes.params).toEqual({ conta: 42, itens: "MLB1,MLB3,MLB2" });
+  });
+
+  it("filtrar não pede de novo o que já foi consultado", async () => {
+    const usuario = userEvent.setup();
+    render(<ProdutosMesa linhas={linhasMeli} {...ctx} />);
+    await waitFor(() => expect(rede.requisitar).toHaveBeenCalledTimes(1));
+    await usuario.click(screen.getByRole("button", { name: /^Sem custo/ }));
+    await usuario.click(screen.getByRole("button", { name: /^Todos/ }));
+    expect(rede.requisitar).toHaveBeenCalledTimes(1);
+  });
+
+  it("imagem que não carrega volta para a sigla", async () => {
+    rede.requisitar.mockResolvedValue({ ok: true, miniaturas: { MLB1: "https://img/quebrada.jpg" } });
+    render(<ProdutosMesa linhas={linhasMeli} {...ctx} />);
+    await waitFor(() => expect(fotoDe("Calça")).not.toBeNull());
+    fireEvent.error(fotoDe("Calça"));
+    expect(fotoDe("Calça")).toBeNull();
+    expect(within(linhaDe("Calça")).getByText("CAL")).toBeInTheDocument();
+  });
+
+  it("falha da consulta não quebra a lista", async () => {
+    rede.requisitar.mockRejectedValue(new Error("rede"));
+    render(<ProdutosMesa linhas={linhasMeli} {...ctx} />);
+    await waitFor(() => expect(rede.requisitar).toHaveBeenCalled());
+    expect(within(linhaDe("Calça")).getByText("CAL")).toBeInTheDocument();
+  });
+
+  it("Shopee não consulta fotos", () => {
+    render(<ProdutosMesa linhas={linhasMeli} {...ctx} marketplace="shopee" />);
+    expect(rede.requisitar).not.toHaveBeenCalled();
   });
 });

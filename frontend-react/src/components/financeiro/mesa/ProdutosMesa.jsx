@@ -6,11 +6,15 @@
 // do produto. As linhas são as COMPLETAS do processamento em memória —
 // milhares no Order.all —, então a lista é paginada.
 //
+// Mercado Livre: a sigla dá lugar à foto do anúncio (a mesma da tela de
+// Anúncios ML), pedida só para a página visível. Sem foto, fica a sigla.
+//
 // Sem rolagem horizontal: as colunas secundárias (Un., Repasse, Imposto)
 // saem conforme a largura da lista (container query em financeiro.css) e
 // continuam visíveis na linha expandida.
 
 import { useMemo, useState } from "react";
+import { useMiniaturasProdutos } from "../../../hooks/useMiniaturasProdutos.js";
 import { contarPorFiltro, filtrarLinhas, FILTROS_PRODUTO } from "../../../utils/financeiro/produtos.js";
 import { numOuNull } from "../../../utils/financeiro/resumoFechamento.js";
 import { formatarValor } from "../shared/ValorFinanceiro.jsx";
@@ -49,6 +53,17 @@ function sigla(l) {
   const base = l.sku || l.titulo || l.itemId || "";
   const limpo = String(base).replace(/[^0-9A-Za-zÀ-ú]/g, "");
   return limpo.slice(0, 3).toUpperCase() || "—";
+}
+
+// Foto do anúncio; se a URL falhar ao carregar, volta para a sigla.
+function Miniatura({ linha, url }) {
+  const [falhou, setFalhou] = useState(false);
+  if (!url || falhou) return <span className="vf-fin-mesa-produto__sigla" aria-hidden="true">{sigla(linha)}</span>;
+  return (
+    <span className="vf-fin-mesa-produto__sigla vf-fin-mesa-produto__foto" aria-hidden="true">
+      <img src={url} alt="" loading="lazy" decoding="async" onError={() => setFalhou(true)} />
+    </span>
+  );
 }
 
 // Custo da coluna: o total da linha; sem total, o unitário (dito como /un).
@@ -142,7 +157,7 @@ function LinhaExpandida({ l }) {
 
 // `pedido` = { filtro, seq }: o aviso de pendências pede um recorte de fora
 // ("Sem custo"); cada novo `seq` reaplica, mesmo que o filtro seja o mesmo.
-export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "produtos" }) {
+export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "produtos", clienteSlug = null, clienteContaId = null, marketplace = null }) {
   const [filtro, setFiltro] = useState(pedido?.filtro || "todos");
   const [busca, setBusca] = useState("");
   const [pagina, setPagina] = useState(0);
@@ -163,11 +178,18 @@ export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "pro
     setAberta(null);
   }
 
-  if (!linhas.length) return null;
-
   const totalPaginas = Math.max(1, Math.ceil(filtradas.length / porPagina));
   const paginaAtual = Math.min(pagina, totalPaginas - 1);
   const visiveis = filtradas.slice(paginaAtual * porPagina, (paginaAtual + 1) * porPagina);
+  const ehMeli = marketplace === "meli";
+  const miniaturas = useMiniaturasProdutos({
+    clienteSlug,
+    clienteContaId,
+    habilitado: ehMeli,
+    itemIds: ehMeli ? visiveis.map((l) => l.itemId) : [],
+  });
+
+  if (!linhas.length) return null;
   const mudar = (fn) => (v) => { fn(v); setPagina(0); setAberta(null); };
 
   return (
@@ -244,7 +266,7 @@ export function ProdutosMesa({ linhas, pedido = null, amostra = false, id = "pro
                     }
                   }}
                 >
-                  <span className="vf-fin-mesa-produto__sigla" aria-hidden="true">{sigla(l)}</span>
+                  <Miniatura key={l.itemId || chave} linha={l} url={l.itemId ? miniaturas[l.itemId] : null} />
                   <span className="vf-fin-mesa-produto__principal">
                     <span className="vf-fin-mesa-produto__titulo" title={l.titulo || undefined}>{l.titulo || "—"}</span>
                     {ids.length > 0 && (

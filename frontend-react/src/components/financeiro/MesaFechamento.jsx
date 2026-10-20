@@ -572,7 +572,14 @@ export function MesaFechamento({
         </PainelEtapas>
       </div>
 
-      {linhas.length > 0 && <ProdutosMesa linhas={linhas} pedido={pedidoProdutos} amostra={!p} />}
+      {linhas.length > 0 && <ProdutosMesa
+          linhas={linhas}
+          pedido={pedidoProdutos}
+          amostra={!p}
+          clienteSlug={clienteSlug}
+          clienteContaId={clienteContaId}
+          marketplace={f.marketplace}
+        />}
 
       {/* ── Drawers ────────────────────────────────────────────────── */}
       {drawer === "preparar" && (

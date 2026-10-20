@@ -3,6 +3,7 @@
 // Não confundir com fechamentosFinanceiroController.js (fluxo de upload/
 // processamento, intocado, montado em /fechamentos).
 const { obterFinanceiro } = require("../services/financeiroVisaoService");
+const { obterAdsDoFechamento } = require("../services/financeiroAdsService");
 
 function responderErro(res, err) {
   const statusCode = Number.isFinite(Number(err?.statusCode)) && Number(err.statusCode) >= 400 ? Number(err.statusCode) : 500;
@@ -25,4 +26,23 @@ async function financeiro(req, res) {
   }
 }
 
-module.exports = { financeiro };
+// GET /financeiro/:cliente/ads?conta=&periodo=YYYY-MM[&atualizar=1] — campo
+// ADS do Fechamento. Ver services/financeiroAdsService.js.
+async function ads(req, res) {
+  try {
+    const dados = await obterAdsDoFechamento({
+      clienteSlugRaw: req.params.cliente,
+      clienteContaIdRaw: req.query.conta,
+      periodoRaw: req.query.periodo,
+      atualizarRaw: req.query.atualizar,
+    });
+    return res.json({ ok: true, ...dados });
+  } catch (err) {
+    if (err?.code === "MULTIPLE_MARKETPLACE_ACCOUNTS") {
+      return res.status(409).json({ ok: false, code: err.code, erro: err.message, contas: err.contas });
+    }
+    return responderErro(res, err);
+  }
+}
+
+module.exports = { financeiro, ads };

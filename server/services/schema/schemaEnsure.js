@@ -309,6 +309,22 @@ async function ensurePromocoesRebateSchema(db = pool) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Financeiro V3 — cache do investimento do Mercado Ads por conta+competência
+// (campo ADS do Fechamento). Mesmo desenho das trilhas acima.
+const FINANCEIRO_ADS_CACHE_MIGRATION = "20261020_financeiro_ads_cache.sql";
+const FINANCEIRO_ADS_CACHE_LOCK_KEY = "vf:schema:financeiro_ads_cache";
+const financeiroAdsCacheEmCurso = new WeakMap();
+
+function financeiroAdsCacheDdl() {
+  return fs.readFileSync(path.join(migrationsDir, FINANCEIRO_ADS_CACHE_MIGRATION), "utf8");
+}
+
+async function ensureFinanceiroAdsCacheSchema(db = pool) {
+  return singleFlight(financeiroAdsCacheEmCurso, db, (chave) =>
+    aplicarMigrationSerializada(chave, financeiroAdsCacheDdl(), FINANCEIRO_ADS_CACHE_LOCK_KEY));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // BLOCO 18 — GOVERNANÇA DE MIGRATIONS (inventário legível por máquina)
 // ───────────────────────────────────────────────────────────────────────────
 // `auto: true`  → aplicada por um `ensure*` no boot (idempotente, aditiva).
@@ -495,6 +511,21 @@ const MIGRATIONS_INVENTARIO = [
       "subindo ao mesmo tempo",
     rollback: "DROP TABLE promocoes_rebate_jobs (nenhuma tabela existente é alterada)",
   },
+  {
+    arquivo: FINANCEIRO_ADS_CACHE_MIGRATION,
+    descricao:
+      "cria financeiro_ads_cache — investimento do Mercado Ads por conta ML e competência, " +
+      "lido pelo campo ADS do Fechamento (Financeiro V3)",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensureFinanceiroAdsCacheSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito:
+      "nenhum (sem FKs). Serializado por pg_advisory_xact_lock: seguro com duas instâncias " +
+      "subindo ao mesmo tempo",
+    rollback: "DROP TABLE financeiro_ads_cache (nenhuma tabela existente é alterada)",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -518,6 +549,10 @@ module.exports = {
   promocoesRebateDdl,
   PROMOCOES_REBATE_MIGRATION,
   PROMOCOES_REBATE_LOCK_KEY,
+  ensureFinanceiroAdsCacheSchema,
+  financeiroAdsCacheDdl,
+  FINANCEIRO_ADS_CACHE_MIGRATION,
+  FINANCEIRO_ADS_CACHE_LOCK_KEY,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,

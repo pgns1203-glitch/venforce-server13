@@ -313,6 +313,67 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ADS do Mercado Ads (modelo B): linha inteira para a legenda caber; o
+   campo continua com a largura dos outros ajustes. */
+.vf-fin-ajuste--ads { grid-column: 1 / -1; }
+.vf-fin-ajuste__campo--ads { max-width: 260px; }
+.vf-fin-ajuste__campo--ads .vf-input { padding-right: 34px; }
+.vf-fin-ajuste__selo {
+  position: absolute;
+  left: 2.1rem;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: var(--vf-fs-xs, 0.75rem);
+  font-weight: var(--vf-fw-semibold, 600);
+  line-height: 1.4;
+  pointer-events: none;
+}
+.vf-fin-ajuste__selo--api { background: var(--vf-info-bg); color: var(--vf-info-strong); border: 1px solid var(--vf-info-border); }
+.vf-fin-ajuste__selo--manual { background: var(--vf-surface-2); color: var(--vf-text-muted); border: 1px solid var(--vf-border-strong); }
+.vf-fin-ajuste__atualizar {
+  position: absolute;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: var(--vf-radius-sm, 6px);
+  background: transparent;
+  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-sm, 0.875rem);
+  cursor: pointer;
+}
+.vf-fin-ajuste__atualizar:hover:not(:disabled) { background: var(--vf-primary-soft); color: var(--vf-primary); }
+.vf-fin-ajuste__atualizar:focus-visible { outline: none; box-shadow: var(--vf-focus-ring); }
+.vf-fin-ajuste__atualizar:disabled { cursor: default; }
+.vf-fin-ajuste__giro { display: inline-block; animation: vf-fin-giro 0.8s linear infinite; }
+@keyframes vf-fin-giro { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .vf-fin-ajuste__giro { animation: none; } }
+.vf-fin-ajuste__legenda {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--vf-fs-xs, 0.75rem);
+  color: var(--vf-text-muted);
+}
+.vf-fin-ajuste__legenda--aviso { color: var(--vf-warning-strong); }
+.vf-fin-ajuste__ponto { width: 6px; height: 6px; border-radius: 50%; background: var(--vf-success); flex: none; }
+.vf-fin-ajuste__ponto--manual { background: var(--vf-warning); }
+.vf-fin-ajuste__link {
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  font-weight: var(--vf-fw-semibold, 600);
+  color: var(--vf-primary);
+  cursor: pointer;
+}
+.vf-fin-ajuste__link:hover { text-decoration: underline; }
+.vf-fin-ajuste__link:focus-visible { outline: none; box-shadow: var(--vf-focus-ring); border-radius: 2px; }
+
 /* Ação primária */
 .vf-fin-novo__acao {
   display: flex;

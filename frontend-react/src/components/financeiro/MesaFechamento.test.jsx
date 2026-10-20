@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { MesaFechamento } from "./MesaFechamento.jsx";
 import { montarPayloadFechamento, parseMoedaBR, cardsDoSummary } from "../../utils/fechamentoPayload.js";
 import { FechamentoApiError } from "../../services/financeiroFechamentoApi.js";
+import { formatarValorCampo, origemDoAds } from "../../hooks/useAdsMercadoAds.js";
 
 const api = vi.hoisted(() => ({ processar: vi.fn(), salvar: vi.fn() }));
 vi.mock("../../services/financeiroFechamentoApi.js", async (orig) => ({
@@ -415,6 +416,127 @@ describe("Mesa · competência divergente", () => {
     await usuario.click(screen.getByRole("checkbox"));
     expect(rascunho).toBeEnabled();
     expect(publicar).toBeEnabled();
+  });
+});
+
+// GET /financeiro/:cliente/ads responde o Mercado Ads; o resto da rede
+// (base-vinculos) segue o vínculo de sempre.
+function redeComAds(ads, vinculos = vinculosCom({ marketplace: "meli", contaId: 42 })) {
+  rede.requisitar.mockImplementation(async (caminho, opcoes = {}) => {
+    if (/\/financeiro\/[^/]+\/ads$/.test(caminho)) return typeof ads === "function" ? ads(opcoes) : ads;
+    return vinculos;
+  });
+}
+const ADS_OK = { ok: true, disponivel: true, fonte: "cache", investimentoAds: 4812.4, gmvAds: 38017.96, roas: 7.9, campanhas: 14, consultadoEm: "2026-09-04T03:12:00Z" };
+const campoAds = () => screen.getByLabelText("ADS");
+const chamadasAds = () => rede.requisitar.mock.calls.filter(([c]) => /\/ads$/.test(c));
+
+describe("Mesa · ADS do Mercado Ads (modelo B)", () => {
+  it("formatarValorCampo e origemDoAds", () => {
+    expect(formatarValorCampo(4812.4)).toBe("4.812,40");
+    expect(formatarValorCampo(0)).toBe("0,00");
+    const ads = { status: "ok", valorCampo: "4.812,40" };
+    expect(origemDoAds("4.812,40", ads)).toBe("mercado_ads");
+    expect(origemDoAds("5.000,00", ads)).toBe("manual");
+    expect(origemDoAds("", ads)).toBeNull();
+    expect(origemDoAds("100,00", { status: "indisponivel" })).toBe("manual");
+  });
+
+  it("MELI: o campo já vem com o valor do Mercado Ads da conta e da competência", async () => {
+    redeComAds(ADS_OK);
+    const usuario = userEvent.setup();
+    render(<MesaFechamento {...props} />);
+    await within(painel()).findByText("Base Zenite · vinculada");
+    await abrirPreparo(usuario);
+    await waitFor(() => expect(campoAds()).toHaveValue("4.812,40"));
+    expect(screen.getByText("Mercado Ads")).toBeInTheDocument();
+    expect(screen.getByText(/ROAS 7,9 · 14 campanhas/)).toBeInTheDocument();
+    const [caminho, opcoes] = chamadasAds()[0];
+    expect(caminho).toBe("/financeiro/zenite/ads");
+    expect(opcoes.params).toMatchObject({ conta: 42, periodo: "2026-08" });
+  });
+
+  it("editar vira Manual; 'Usar o da API' volta ao valor do Mercado Ads", async () => {
+    redeComAds(ADS_OK);
+    const usuario = userEvent.setup();
+    render(<MesaFechamento {...props} />);
+    await abrirPreparo(usuario);
+    await waitFor(() => expect(campoAds()).toHaveValue("4.812,40"));
+    await usuario.clear(campoAds());
+    await usuario.type(campoAds(), "5.000,00");
+    expect(screen.getByText("Manual")).toBeInTheDocument();
+    expect(screen.getByText(/Editado à mão · Mercado Ads: R\$ 4\.812,40/)).toBeInTheDocument();
+    await usuario.click(screen.getByRole("button", { name: "Usar o da API" }));
+    expect(campoAds()).toHaveValue("4.812,40");
+    expect(screen.getByText("Mercado Ads")).toBeInTheDocument();
+  });
+
+  it("↻ consulta ao vivo e troca o valor que veio da API", async () => {
+    redeComAds((opcoes) => (opcoes.params?.atualizar ? { ...ADS_OK, fonte: "ao_vivo", investimentoAds: 4907.15 } : ADS_OK));
+    const usuario = userEvent.setup();
+    render(<MesaFechamento {...props} />);
+    await abrirPreparo(usuario);
+    await waitFor(() => expect(campoAds()).toHaveValue("4.812,40"));
+    await usuario.click(screen.getByRole("button", { name: "Atualizar do Mercado Ads agora" }));
+    await waitFor(() => expect(campoAds()).toHaveValue("4.907,15"));
+    expect(chamadasAds().at(-1)[1].params.atualizar).toBe(1);
+    expect(screen.getByText(/consultado agora/)).toBeInTheDocument();
+  });
+
+  it("↻ não passa por cima de um valor digitado", async () => {
+    redeComAds((opcoes) => (opcoes.params?.atualizar ? { ...ADS_OK, investimentoAds: 4907.15 } : ADS_OK));
+    const usuario = userEvent.setup();
+    render(<MesaFechamento {...props} />);
+    await abrirPreparo(usuario);
+    await waitFor(() => expect(campoAds()).toHaveValue("4.812,40"));
+    await usuario.clear(campoAds());
+    await usuario.type(campoAds(), "100,00");
+    await usuario.click(screen.getByRole("button", { name: "Atualizar do Mercado Ads agora" }));
+    await screen.findByText(/Editado à mão · Mercado Ads: R\$ 4\.907,15/);
+    expect(campoAds()).toHaveValue("100,00");
+  });
+
+  it("sem permissão de Ads: campo vazio e manual, a legenda diz como resolver", async () => {
+    redeComAds({ ok: true, disponivel: false, codigo: "NO_ADS_PERMISSION", motivo: "x" });
+    const usuario = userEvent.setup();
+    render(<MesaFechamento {...props} />);
+    await abrirPreparo(usuario);
+    expect(await screen.findByText(/não tem acesso ao Mercado Ads/)).toBeInTheDocument();
+    expect(campoAds()).toHaveValue("");
+    expect(screen.queryByText("Mercado Ads")).not.toBeInTheDocument();
+  });
+
+  it("Shopee: ADS segue manual e nem consulta o Mercado Ads", async () => {
+    redeComAds(ADS_OK, vinculosCom({ marketplace: "shopee", contaId: 42 }));
+    const usuario = userEvent.setup();
+    render(<MesaFechamento {...props} marketplace="shopee" />);
+    await within(painel()).findByText("Base Zenite · vinculada");
+    await abrirPreparo(usuario);
+    expect(screen.getByLabelText(/^ADS/)).toHaveValue("");
+    expect(screen.queryByText("Mercado Ads")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Atualizar do Mercado Ads agora" })).not.toBeInTheDocument();
+    expect(chamadasAds()).toHaveLength(0);
+  });
+
+  it("o fechamento salvo guarda a origem do ADS", async () => {
+    redeComAds(ADS_OK);
+    api.processar.mockResolvedValue(respostaOk());
+    api.salvar.mockResolvedValue({ id: 5, publicado: false, token_publico: null });
+    const usuario = userEvent.setup();
+    render(<MesaFechamento {...props} />);
+    await within(painel()).findByText("Base Zenite · vinculada");
+    const drawer = await abrirPreparo(usuario);
+    await waitFor(() => expect(campoAds()).toHaveValue("4.812,40"));
+    await subirVendas(usuario);
+    await usuario.click(within(drawer).getByRole("button", { name: "Processar fechamento" }));
+    await waitFor(() => expect(api.processar).toHaveBeenCalled());
+    expect(api.processar.mock.calls[0][0].get("ads")).toBe("4.812,40");
+    await within(painel()).findByText(/competência confere/);
+    await usuario.click(within(painel()).getByRole("button", { name: "Salvar como rascunho" }));
+    await waitFor(() => expect(api.salvar).toHaveBeenCalledTimes(1));
+    const meta = api.salvar.mock.calls[0][0].payload_json.metadados;
+    expect(meta.ads).toBe(4812.4);
+    expect(meta.adsOrigem).toEqual({ origem: "mercado_ads", consultadoEm: "2026-09-04T03:12:00Z" });
   });
 });
 

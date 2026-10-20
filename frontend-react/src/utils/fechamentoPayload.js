@@ -67,6 +67,7 @@ export function montarPayloadFechamento({
   periodo,
   marketplace,
   ajustes = {},
+  adsOrigem = null,
 }) {
   const summary = processamento?.summary || {};
   const detailedRows = Array.isArray(processamento?.detailedRows)
@@ -98,6 +99,10 @@ export function montarPayloadFechamento({
       origem: "financeiro-v3-nativo",
       marketplace: marketplace || null,
       ads: parseMoedaBR(ajustes.ads),
+      // De onde veio o ADS: { origem: "mercado_ads", consultadoEm } quando o
+      // campo ficou com o valor da API, { origem: "manual" } quando foi
+      // digitado. Para auditoria — o número em si é o `ads` acima.
+      adsOrigem: adsOrigem || null,
       venforce: parseMoedaBR(ajustes.venforce),
       affiliates: parseMoedaBR(ajustes.affiliates),
       fullCost: parseMoedaBR(ajustes.fullCost),

@@ -134,6 +134,7 @@ const {
   ensureMargemPrecificacaoSchema,
   ensurePromoSnapshotSchema,
   ensurePromocoesRebateSchema,
+  ensureFinanceiroAdsCacheSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -2128,6 +2129,12 @@ const server = app.listen(PORT, () => {
   // chama o mesmo runner como proteção.
   ensurePromocoesRebateSchema().catch((err) => {
     console.error("[schema] erro ao garantir schema de promocoes_rebate_jobs no boot:", err.message);
+  });
+
+  // Financeiro V3 — cache do Mercado Ads do campo ADS do Fechamento. Aditiva,
+  // serializada por advisory lock; o serviço chama o mesmo runner como proteção.
+  ensureFinanceiroAdsCacheSchema().catch((err) => {
+    console.error("[schema] erro ao garantir schema de financeiro_ads_cache no boot:", err.message);
   });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`

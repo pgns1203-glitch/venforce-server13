@@ -4,8 +4,71 @@
 // fechamento. Prefixo R$, largura contida, zero confortável (placeholder
 // "0,00", campo vazio vale zero no backend). FULL e Custos adicionais só
 // aparecem no Mercado Livre.
+//
+// ADS no Mercado Livre (modelo B): o campo já vem com o investimento do
+// Mercado Ads da conta na competência (selo "Mercado Ads"). ↻ consulta de
+// novo ao vivo. Se a pessoa digitar outro valor, o selo vira "Manual" e a
+// legenda oferece voltar ao da API. Sem dado da API, a legenda diz por quê
+// e o campo segue manual.
 
 import { useId } from "react";
+import { formatarMoeda } from "../../../utils/currency.js";
+
+const MOTIVO_INDISPONIVEL = {
+  NO_ADS_PERMISSION:
+    "A conexão com o Mercado Livre não tem acesso ao Mercado Ads. Reconecte a conta em Clientes e Contas ou digite o valor.",
+  NO_ADVERTISER_FOUND:
+    "Esta conta não anuncia no Mercado Ads. Se houve investimento por outro canal, digite o valor.",
+  NO_TOKEN: "A conta não está conectada ao Mercado Livre. Digite o valor.",
+};
+const MOTIVO_PADRAO = "O Mercado Livre não respondeu agora. Tente ↻ em alguns minutos ou digite o valor.";
+
+function quandoFoiConsultado(dados) {
+  if (dados?.fonte === "ao_vivo") return "agora";
+  const d = new Date(dados?.consultadoEm);
+  if (Number.isNaN(d.getTime())) return null;
+  const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  if (d.toDateString() === new Date().toDateString()) return `hoje, ${hora}`;
+  return `${d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" })}, ${hora}`;
+}
+
+function LegendaAds({ ads, origem, onUsarAdsDaApi }) {
+  if (ads.status === "carregando") {
+    return <p className="vf-fin-ajuste__legenda" role="status">Buscando no Mercado Ads…</p>;
+  }
+  if (ads.status === "indisponivel" || ads.status === "erro") {
+    return (
+      <p className="vf-fin-ajuste__legenda vf-fin-ajuste__legenda--aviso" role="status">
+        {MOTIVO_INDISPONIVEL[ads.codigo] || MOTIVO_PADRAO}
+      </p>
+    );
+  }
+  if (ads.status !== "ok") return null;
+  if (origem === "manual") {
+    return (
+      <p className="vf-fin-ajuste__legenda">
+        <span className="vf-fin-ajuste__ponto vf-fin-ajuste__ponto--manual" aria-hidden="true" />
+        <span>Editado à mão · Mercado Ads: {formatarMoeda(ads.dados.investimentoAds)}</span>
+        <button type="button" className="vf-fin-ajuste__link" onClick={onUsarAdsDaApi}>
+          Usar o da API
+        </button>
+      </p>
+    );
+  }
+  const quando = quandoFoiConsultado(ads.dados);
+  const roas = Number(ads.dados.roas);
+  const partes = [
+    quando ? `consultado ${quando}` : null,
+    roas > 0 ? `ROAS ${roas.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}` : null,
+    `${ads.dados.campanhas} ${ads.dados.campanhas === 1 ? "campanha" : "campanhas"}`,
+  ].filter(Boolean);
+  return (
+    <p className="vf-fin-ajuste__legenda">
+      <span className="vf-fin-ajuste__ponto" aria-hidden="true" />
+      <span>Mercado Ads · {partes.join(" · ")}</span>
+    </p>
+  );
+}
 
 function CampoMoeda({ rotulo, valor, onChange, secundario }) {
   const id = useId();
@@ -28,12 +91,67 @@ function CampoMoeda({ rotulo, valor, onChange, secundario }) {
   );
 }
 
-export function FechamentoAjustes({ marketplace, ajustes, onAjuste }) {
+function CampoAds({ valor, onChange, ads, origem, onUsarAdsDaApi }) {
+  const id = useId();
+  const legendaId = useId();
+  const ocupado = ads.status === "carregando" || ads.atualizando;
+  const selo = !ocupado && ads.status === "ok" && origem ? origem : null;
+  return (
+    <div className="vf-fin-ajuste vf-fin-ajuste--ads">
+      <label className="vf-fin-ajuste__label" htmlFor={id}>ADS</label>
+      <span className="vf-fin-ajuste__campo vf-fin-ajuste__campo--ads">
+        <span className="vf-fin-ajuste__prefixo" aria-hidden="true">R$</span>
+        {selo && (
+          <span className={`vf-fin-ajuste__selo vf-fin-ajuste__selo--${selo === "mercado_ads" ? "api" : "manual"}`}>
+            {selo === "mercado_ads" ? "Mercado Ads" : "Manual"}
+          </span>
+        )}
+        <input
+          id={id}
+          type="text"
+          inputMode="decimal"
+          className="vf-input"
+          placeholder="0,00"
+          value={valor}
+          aria-describedby={legendaId}
+          aria-busy={ocupado || undefined}
+          onChange={(e) => onChange(e.target.value)}
+        />
+        <button
+          type="button"
+          className="vf-fin-ajuste__atualizar"
+          onClick={ads.atualizar}
+          disabled={ocupado}
+          title="Atualizar do Mercado Ads agora"
+          aria-label="Atualizar do Mercado Ads agora"
+        >
+          <span aria-hidden="true" className={ocupado ? "vf-fin-ajuste__giro" : undefined}>↻</span>
+        </button>
+      </span>
+      <div id={legendaId}>
+        <LegendaAds ads={ads} origem={origem} onUsarAdsDaApi={onUsarAdsDaApi} />
+      </div>
+    </div>
+  );
+}
+
+export function FechamentoAjustes({ marketplace, ajustes, onAjuste, ads, adsOrigem, onUsarAdsDaApi }) {
   const ehMeli = marketplace === "meli";
+  const adsDaApi = ehMeli && ads && ads.status !== "inativo";
   return (
     <div className="vf-fin-ajustes">
       <div className="vf-fin-ajustes__grid">
-        <CampoMoeda rotulo="ADS" valor={ajustes.ads} onChange={(v) => onAjuste("ads", v)} />
+        {adsDaApi ? (
+          <CampoAds
+            valor={ajustes.ads}
+            onChange={(v) => onAjuste("ads", v)}
+            ads={ads}
+            origem={adsOrigem}
+            onUsarAdsDaApi={onUsarAdsDaApi}
+          />
+        ) : (
+          <CampoMoeda rotulo="ADS" valor={ajustes.ads} onChange={(v) => onAjuste("ads", v)} />
+        )}
         <CampoMoeda rotulo="Venforce" valor={ajustes.venforce} onChange={(v) => onAjuste("venforce", v)} />
         <CampoMoeda rotulo="Afiliados" valor={ajustes.affiliates} onChange={(v) => onAjuste("affiliates", v)} />
         {ehMeli && (

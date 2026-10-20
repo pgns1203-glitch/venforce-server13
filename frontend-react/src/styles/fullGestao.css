@@ -187,17 +187,15 @@
 .full-page .full-kpi .vf-metric__foot.is-danger { color: var(--vf-danger-strong); }
 .full-page .full-kpi .vf-metric__foot.is-neutral { color: var(--vf-text-muted); }
 
-/* ---- Layout: card principal + painel lateral ------------------------- */
+/* ---- Layout: faixa de ação em cima + lista na largura toda ----------- */
 
 .full-page .full-layout {
   display: flex;
-  flex-wrap: wrap;
-  align-items: flex-start;
+  flex-direction: column;
   gap: var(--vf-sp-4);
 }
 
 .full-page .full-principal {
-  flex: 999 1 720px;
   min-width: 0;
   padding: 0;
   overflow: hidden;
@@ -587,16 +585,24 @@
   color: var(--vf-text-muted);
 }
 
-/* ---- Painel lateral (atenção / resumo do envio) ---------------------- */
+/* ---- Faixa de ação (atenção / resumo do envio) ----------------------- */
+/* Cabeça | conteúdo em linha | botão. Abaixo de ~860px o conteúdo desce
+   para uma linha própria (flex-wrap), sem rolar. */
 
 .full-page .full-lateral {
-  flex: 1 1 300px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
   padding: 0;
   overflow: hidden;
 }
 
 .full-page .full-lateral__cabeca {
-  padding: var(--vf-sp-4);
+  display: flex;
+  flex: 0 0 200px;
+  flex-direction: column;
+  justify-content: center;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
 }
 
 .full-page .full-lateral__sub {
@@ -613,10 +619,13 @@
 
 .full-page .full-lateral__pe {
   display: flex;
+  flex: 0 0 280px;
   flex-direction: column;
-  gap: var(--vf-sp-2);
-  padding: var(--vf-sp-4);
-  border-top: 1px solid var(--vf-border);
+  justify-content: center;
+  gap: var(--vf-sp-1);
+  margin-left: auto;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border-left: 1px solid var(--vf-border);
 }
 
 .full-page .full-lateral__nota {
@@ -626,9 +635,17 @@
 }
 
 .full-page .full-atencao {
+  display: flex;
+  flex: 1 1 480px;
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.full-page .full-atencao > li {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .full-page .full-atencao__item {
@@ -638,7 +655,7 @@
   width: 100%;
   padding: var(--vf-sp-3) var(--vf-sp-4);
   border: 0;
-  border-top: 1px solid var(--vf-border);
+  border-left: 1px solid var(--vf-border);
   background: var(--vf-surface);
   font: inherit;
   color: inherit;
@@ -686,35 +703,41 @@
 }
 
 .full-page .full-resumo {
+  display: flex;
+  flex: 1 1 480px;
   margin: 0;
-  padding: 0 var(--vf-sp-4) var(--vf-sp-2);
+  padding: 0;
 }
 
 .full-page .full-resumo > div {
   display: flex;
-  justify-content: space-between;
-  gap: var(--vf-sp-3);
-  padding: 9px 0;
-  border-bottom: 1px solid var(--vf-border);
-  font-size: var(--vf-fs-sm);
-}
-
-.full-page .full-resumo > div:last-child {
-  border-bottom: 0;
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  border-left: 1px solid var(--vf-border);
 }
 
 .full-page .full-resumo dt {
+  font-size: var(--vf-fs-xs);
   color: var(--vf-text-secondary);
 }
 
 .full-page .full-resumo dd {
   margin: 0;
+  font-size: var(--vf-fs-md);
   font-weight: var(--vf-fw-bold);
   font-variant-numeric: tabular-nums;
 }
 
+/* O alerta de custo ocupa uma linha inteira embaixo da faixa (order: vem
+   depois do botão, que fica na mesma linha dos números). */
 .full-page .full-alerta {
-  margin: 0 var(--vf-sp-4) var(--vf-sp-4);
+  flex: 0 0 calc(100% - 2 * var(--vf-sp-4));
+  order: 1;
+  margin: 0 var(--vf-sp-4) var(--vf-sp-3);
   padding: 10px 12px;
   border-radius: var(--vf-radius-sm);
   background: var(--vf-warning-bg);
@@ -771,5 +794,32 @@
 @media (max-width: 420px) {
   .full-drawer-fields {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Faixa em tela estreita: cada bloco numa linha, separados por filete. */
+@container (max-width: 860px) {
+  .full-page .full-lateral__cabeca,
+  .full-page .full-lateral__pe,
+  .full-page .full-atencao,
+  .full-page .full-resumo {
+    flex: 1 0 100%;
+  }
+
+  .full-page .full-lateral__pe {
+    margin-left: 0;
+    border-top: 1px solid var(--vf-border);
+    border-left: 0;
+  }
+
+  .full-page .full-atencao,
+  .full-page .full-resumo {
+    flex-wrap: wrap;
+    border-top: 1px solid var(--vf-border);
+  }
+
+  .full-page .full-atencao > li,
+  .full-page .full-resumo > div {
+    flex: 1 1 200px;
   }
 }

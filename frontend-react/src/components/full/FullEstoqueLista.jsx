@@ -7,7 +7,7 @@
 import { useState } from "react";
 import { formatarNumero, ehAusente, AUSENTE } from "../../utils/numbers.js";
 import { formatarMoeda } from "../../utils/currency.js";
-import { FullProdutoInfo, FullStatus, FullThumb } from "./FullProduto.jsx";
+import { FullACaminho, FullProdutoInfo, FullStatus, FullThumb } from "./FullProduto.jsx";
 
 const PAGINA = 50;
 const META_DIAS = 30;
@@ -77,7 +77,10 @@ export default function FullEstoqueLista({ inventories, onDetalhar }) {
             <span role="cell"><FullThumb inv={inv} /></span>
             <span role="cell" className="full-linha__produto"><FullProdutoInfo inv={inv} /></span>
             <span role="cell"><FullStatus inv={inv} /></span>
-            <span role="cell" className="full-num">{formatarNumero(inv.stock?.available)}</span>
+            <span role="cell" className="full-num full-disponivel">
+              {formatarNumero(inv.stock?.available)}
+              <FullACaminho inv={inv} />
+            </span>
             <span role="cell" className="full-num">
               {formatarNumero(inv.sales?.total14d)} <Tendencia trend={inv.trend} />
             </span>

@@ -311,6 +311,15 @@ function run() {
     console.log("  ✓ reposicao so sugere para anuncio com estoque disponivel no Full");
   }
 
+  // Reposicao: o que ja esta a caminho do Full desconta da sugestao
+  {
+    const base = { dailyTurnover: 5, turnoverStatus: "ok", availableStock: 50, stockStatus: "ok", targetCoverageDays: 30 };
+    assert.strictEqual(calculateBaseReplenishment({ ...base, inboundUnits: 60 }).sendQuantity, 40);
+    assert.strictEqual(calculateBaseReplenishment({ ...base, inboundUnits: 500 }).sendQuantity, 0);
+    assert.strictEqual(calculateBaseReplenishment({ ...base, inboundUnits: null }).sendQuantity, 100);
+    console.log("  ✓ reposicao desconta unidades a caminho; desconhecido nao desconta");
+  }
+
   // Reposicao: input invalido (dado necessario ausente) nunca inventa valor
   {
     const semGiro = calculateBaseReplenishment({

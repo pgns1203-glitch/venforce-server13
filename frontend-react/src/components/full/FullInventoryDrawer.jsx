@@ -4,6 +4,27 @@ import { formatarNumero, ehAusente, AUSENTE } from "../../utils/numbers.js";
 import { formatarDataHora } from "../../utils/dates.js";
 import { STATUS_LABEL, STATUS_TONE } from "../../utils/fullOperationalStatus.js";
 
+const PRAZO_ML = {
+  THIS_WEEK: "esta semana",
+  NEXT_WEEK: "na próxima semana",
+  IN_TWO_WEEKS: "em até duas semanas",
+};
+
+// Recomendação de reposição do próprio ML (já considera o que está a caminho).
+function textoSugestaoMl(rec) {
+  if (!rec || !rec.type) return AUSENTE;
+  if (rec.type === "NO_REPLENISHMENT_BY_RESTRICTION") return "Não repor (restrição no produto)";
+  if (rec.type !== "REPLENISH") return "Não repor agora";
+  const qtd =
+    rec.quantity !== null && rec.quantity !== undefined
+      ? `${formatarNumero(rec.quantity)} un`
+      : rec.quantityMin !== null && rec.quantityMin !== undefined
+        ? `${formatarNumero(rec.quantityMin)} a ${formatarNumero(rec.quantityMax)} un`
+        : null;
+  const prazo = PRAZO_ML[rec.deadline];
+  return ["Repor", qtd, prazo].filter(Boolean).join(" · ");
+}
+
 // Motivo de não haver sugestão de envio, em português para o usuário.
 const MOTIVO_REPOSICAO = {
   no_full_stock: "sem estoque no Full: fora da sugestão",
@@ -66,6 +87,20 @@ export default function FullInventoryDrawer({ clienteContaId, inventoryId, onFec
               <div className="vf-field">
                 <span className="vf-field__label">Total</span>
                 <span className="num">{formatarNumero(detalhe.stock?.total)}</span>
+              </div>
+              <div className="vf-field">
+                <span className="vf-field__label">A caminho</span>
+                <span className="num">
+                  {detalhe.inbound?.status === "ok"
+                    ? formatarNumero(detalhe.inbound.units)
+                    : detalhe.inbound?.status === "unsupported"
+                      ? "não informado (formato antigo de anúncio)"
+                      : AUSENTE}
+                </span>
+              </div>
+              <div className="vf-field">
+                <span className="vf-field__label">Sugestão do Mercado Livre</span>
+                <span>{textoSugestaoMl(detalhe.mlRecommendation)}</span>
               </div>
             </div>
           </section>

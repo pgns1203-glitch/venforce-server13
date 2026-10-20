@@ -357,6 +357,73 @@ function run() {
       console.log("  ✓ previsao 30d limitada ao disponivel; ausencias (giro/estoque) nunca viram zero");
     }
 
+    // A caminho (API de reposicao do ML): desconta da sugestao; formato
+    // antigo recusa o MLB inteiro com 1 chamada; falha so degrada a linha.
+    {
+      const { gateway } = makeFakeGateway({ totalItems: 0 });
+      const repCalls = [];
+      gateway.searchFullItems = async () => ({ ok: true, status: 200, ids: ["MLB1", "MLB2", "MLB3"], nextCursor: null });
+      gateway.multigetItems = async () => ({
+        ok: true,
+        status: 200,
+        itemErrors: [],
+        items: [
+          { id: "MLB1", inventory_id: "INV-1", user_product_id: "U1" },
+          {
+            id: "MLB2",
+            variations: [
+              { id: 21, inventory_id: "INV-21", user_product_id: "U21" },
+              { id: 22, inventory_id: "INV-22", user_product_id: "U22" },
+              { id: 23, inventory_id: "INV-23", user_product_id: "U23" },
+            ],
+          },
+          { id: "MLB3", inventory_id: "INV-3", user_product_id: "U3" },
+        ],
+      });
+      gateway.getReplenishment = async ({ userProductId, sellerId }) => {
+        repCalls.push({ userProductId, sellerId });
+        if (userProductId === "U1") {
+          return {
+            ok: true,
+            status: 200,
+            data: {
+              stock: { total_stock: 70, shipping_urgency: "NO_URGENCY" },
+              recommendation: { recommendation_type: "NO_REPLENISHMENT", suggested_quantity: null, replenishment_deadline: "NEXT_WEEK" },
+            },
+          };
+        }
+        if (userProductId.startsWith("U2")) {
+          return { ok: false, status: 400, data: { message: "This User Product is not yet available for replenishment through the API." } };
+        }
+        return { ok: false, status: 500, data: null };
+      };
+
+      const service = createFullService({ mlGateway: gateway, resolveAccountContext: fakeAccountContext() });
+      const snapshot = await service.buildSnapshot({ clienteContaId: 9, windowDays: 14 });
+      const byId = new Map(snapshot.inventories.map((r) => [r.inventoryId, r]));
+
+      const inv1 = byId.get("INV-1");
+      assert.deepStrictEqual(inv1.inbound, { status: "ok", reason: null, units: 60, totalStock: 70 });
+      assert.strictEqual(inv1.mlRecommendation.type, "NO_REPLENISHMENT");
+      assert.strictEqual(inv1.mlRecommendation.deadline, "NEXT_WEEK");
+      assert.strictEqual(inv1.sendQuantity, Math.max(0, Math.ceil(inv1.dailyTurnover * 30 - 10 - 60)));
+
+      ["INV-21", "INV-22", "INV-23"].forEach((id) => {
+        assert.strictEqual(byId.get(id).inbound.status, "unsupported");
+        assert.strictEqual(byId.get(id).inbound.units, null);
+      });
+      assert.strictEqual(repCalls.filter((c) => c.userProductId.startsWith("U2")).length, 1);
+      assert.ok(repCalls.every((c) => c.sellerId === "SELLER1"));
+
+      const inv3 = byId.get("INV-3");
+      assert.strictEqual(inv3.inbound.status, "unavailable");
+      assert.strictEqual(inv3.sendQuantity, Math.max(0, Math.ceil(inv3.dailyTurnover * 30 - 10)));
+
+      assert.deepStrictEqual(snapshot.quality.sources.inbound, { status: "partial", expected: 5, received: 1, unsupported: 3 });
+      assert.strictEqual(snapshot.quality.status, "complete"); // fonte opcional nunca rebaixa o status geral
+      console.log("  ✓ a caminho: desconta da sugestao, formato antigo gasta 1 chamada por MLB, falha so degrada a linha");
+    }
+
     console.log("fullService.test.js passed");
   })();
 }

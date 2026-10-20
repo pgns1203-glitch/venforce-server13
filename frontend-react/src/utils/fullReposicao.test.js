@@ -27,6 +27,13 @@ describe("quantidadeSugerida — mesma regra do backend (calculateBaseReplenishm
     expect(quantidadeSugerida(inv({ stock: { available: null, status: "unavailable" } }), 30)).toBe(null);
   });
 
+  it("desconta o que já está a caminho do Full; a caminho desconhecido não desconta", () => {
+    expect(quantidadeSugerida(inv({ inbound: { status: "ok", units: 15 } }), 30)).toBe(5); // 30 − 10 − 15
+    expect(quantidadeSugerida(inv({ inbound: { status: "ok", units: 50 } }), 30)).toBe(0);
+    expect(quantidadeSugerida(inv({ inbound: { status: "unsupported", units: null } }), 30)).toBe(20);
+    expect(coberturaApos(inv({ inbound: { status: "ok", units: 15 } }), 5)).toBe(30); // (10 + 15 + 5) ÷ 1
+  });
+
   it("anúncio sem estoque disponível no Full não recebe sugestão, mesmo vendendo", () => {
     expect(quantidadeSugerida(inv({ stock: { available: 0, total: 0, status: "ok" }, dailyTurnover: 5 }), 30)).toBe(0);
   });

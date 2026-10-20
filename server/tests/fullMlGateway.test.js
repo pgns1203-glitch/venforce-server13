@@ -204,6 +204,20 @@ async function run() {
     console.log("  ✓ 404 nao e retentado pelo gateway");
   }
 
+  // Reposicao do ML: URL com country=BR e os headers de caller exigidos
+  {
+    const { gateway, calls } = makeGateway({ responses: okResponse({ stock: { total_stock: 5 } }) });
+    const result = await gateway.getReplenishment({ clienteId: 1, mlUserId: "SELLER1", sellerId: "SELLER1", userProductId: "MLBU123" });
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(calls[0].path, "/marketplace/fbm/user-products/MLBU123/replenishment?country=BR");
+    assert.deepStrictEqual(calls[0].options, {
+      mlUserId: "SELLER1",
+      headers: { "x-caller-id": "SELLER1", "x-caller-siteId": "MLB" },
+    });
+    await assert.rejects(() => gateway.getReplenishment({ clienteId: 1, mlUserId: "S", sellerId: "S", userProductId: null }), TypeError);
+    console.log("  ✓ getReplenishment: country=BR + x-caller-id/x-caller-siteId");
+  }
+
   console.log("fullMlGateway.test.js passed");
 }
 

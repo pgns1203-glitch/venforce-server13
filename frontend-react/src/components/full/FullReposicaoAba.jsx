@@ -16,7 +16,7 @@ import {
   resumirEnvio,
   gerarCsvConferencia,
 } from "../../utils/fullReposicao.js";
-import { FullProdutoInfo, FullStatus, FullThumb } from "./FullProduto.jsx";
+import { FullACaminho, FullProdutoInfo, FullStatus, FullThumb } from "./FullProduto.jsx";
 
 const PAGINA = 50;
 
@@ -94,6 +94,7 @@ export default function FullReposicaoAba({ inventories, cabecalho, clienteSlug, 
   }
 
   const visiveis = linhas.slice(0, limite);
+  const comACaminho = useMemo(() => inventories.filter((inv) => inv.inbound?.status === "ok").length, [inventories]);
 
   return (
     <div className="full-layout">
@@ -166,6 +167,11 @@ export default function FullReposicaoAba({ inventories, cabecalho, clienteSlug, 
             Só com venda nos últimos 14 dias
           </label>
         </div>
+        <p className="full-nota-a-caminho">
+          {comACaminho === inventories.length
+            ? "A sugestão já desconta os envios a caminho do Full informados pelo Mercado Livre."
+            : `A sugestão desconta os envios a caminho do Full quando o Mercado Livre informa: ${formatarNumero(comACaminho)} de ${formatarNumero(inventories.length)} produtos. Nos marcados com "a caminho: ?", confira os envios no Seller Center.`}
+        </p>
 
         {linhas.length === 0 ? (
           <p className="full-vazio">Nenhum produto precisa de reposição para cobrir {dias} dias.</p>
@@ -199,7 +205,10 @@ export default function FullReposicaoAba({ inventories, cabecalho, clienteSlug, 
                     {editada ? <span className="vf-tag is-primary full-editado">editado</span> : null}
                   </span>
                   <span role="cell"><FullStatus inv={inv} /></span>
-                  <span role="cell" className="full-num">{formatarNumero(inv.stock?.available)}</span>
+                  <span role="cell" className="full-num full-disponivel">
+                    {formatarNumero(inv.stock?.available)}
+                    <FullACaminho inv={inv} mostrarDesconhecido />
+                  </span>
                   <span role="cell" className="full-num">{formatarNumero(inv.dailyTurnover, 2)}</span>
                   <span role="cell" className="full-antes-depois">
                     <span>{formatarNumero(inv.coverageDays, 1)}</span>

@@ -90,7 +90,16 @@ const SEMENTE = `
 `;
 
 // Registro do que a tela pediu ao "servidor".
-const SERVIDOR = { custosLidos: [] };
+const SERVIDOR = { custosLidos: [], resumosLidos: [] };
+
+// GET /anuncios-meli/resumo por conta: MLBs sincronizados (total) e quantos
+// estão sem custo na base que o Motor usa (semCusto). Conta 32 falha.
+const RESUMOS = {
+  11: { total: 420, semCusto: 8 },
+  12: { total: 100, semCusto: 0 },
+  21: { total: 900, semCusto: null, semCustoMotivo: "Cliente sem base MELI vinculada." },
+  31: { total: 0, semCusto: 0 },
+};
 
 function custosDaBase(b) {
   const dados = {};
@@ -207,6 +216,12 @@ function wireInterception(cdp, excecoes) {
     if (p === "/base-vinculos") return respond({ ok: true, bases: BASES.map((b) => ({ id: b.id, slug: b.slug, vinculo: VINCULOS[b.id] || null, sugestao: null })) });
     if (p === "/base-vinculos/clientes") return respond({ ok: true, clientes: PORTFOLIO.clientes.map((c) => ({ id: c.id, nome: c.nome, slug: c.slug, ativo: true })) });
     if (p === "/cliente-imagens") return respond({ ok: true, imagens: [] });
+    if (p === "/anuncios-meli/resumo") {
+      const conta = u.searchParams.get("clienteContaId");
+      SERVIDOR.resumosLidos.push(`${u.searchParams.get("clienteSlug")}|${conta}`);
+      const r = RESUMOS[conta];
+      return r ? respond({ ok: true, cliente: {}, resumo: r }) : respond({ ok: false, motivo: "falhou" }, 500);
+    }
     const contas = p.match(/^\/clientes\/([^/]+)\/contas$/);
     if (contas) {
       const cli = PORTFOLIO.clientes.find((c) => String(c.id) === contas[1] || c.slug === contas[1]);
@@ -296,8 +311,22 @@ async function run() {
       assert.deepStrictEqual(titulos, ["ALMA OFICIAL", "ALMA OUTLET", "almacosmeticos", "alma_tiktok"]);
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(".vf-bases-conta.is-vazia").length`), 0);
     });
-    await check("A2 — cobertura somada do cliente: 741 de 796 com custo, 93% (arredonda para baixo)", async () => {
-      assert.match(await cdp.evaluate(texto(".vf-bases-painel__cov")), /^93% ?741 de 796 com custo$/);
+    const cartaoDe = (nome) => `[...document.querySelectorAll(".vf-bases-conta")].find((c) => c.querySelector(".vf-bases-conta__abrir, b")?.textContent.trim() === ${JSON.stringify(nome)})`;
+    const textoDe = (expr) => `((${expr} || {}).textContent || "").replace(/\\s+/g, " ").trim()`;
+    await check("A2 — conta ML: MLBs da conta com custo na base (resumo de Anúncios ML), com atalho para os sem custo", async () => {
+      await waitFor(cdp, `${cartaoDe("ALMA OFICIAL")}.querySelector(".vf-bases-cov__barra")`, "cobertura de anúncios não apareceu");
+      assert.match(await cdp.evaluate(textoDe(`${cartaoDe("ALMA OFICIAL")}.querySelector(".vf-bases-cov")`)), /^98% ?412 de 420 anúncios com custo ?8 sem custo · ver em Anúncios ML$/);
+      assert.strictEqual(await cdp.evaluate(`${cartaoDe("ALMA OFICIAL")}.querySelector(".vf-bases-cov__link").getAttribute("href")`), "anuncios-meli.html?cliente=alma&conta=11");
+      assert.match(await cdp.evaluate(textoDe(`${cartaoDe("ALMA OUTLET")}.querySelector(".vf-bases-cov")`)), /^100% ?100 de 100 anúncios com custo$/);
+      assert.match(await cdp.evaluate(textoDe(`${cartaoDe("ALMA OFICIAL")}.querySelector(".vf-bases-conta__rodape")`)), /^alma · 412 itens/);
+    });
+    await check("A2b — Shopee e TikTok não têm anúncios sincronizados: sem barra; só contas ML pedem o resumo", async () => {
+      assert.strictEqual(await cdp.evaluate(`!!${cartaoDe("almacosmeticos")}.querySelector(".vf-bases-cov")`), false);
+      assert.strictEqual(await cdp.evaluate(`!!${cartaoDe("alma_tiktok")}.querySelector(".vf-bases-cov")`), false);
+      assert.deepStrictEqual([...SERVIDOR.resumosLidos].sort(), ["alma|11", "alma|12"]);
+    });
+    await check("A2c — cabeçalho soma as contas ML do cliente: 512 de 520", async () => {
+      assert.match(await cdp.evaluate(texto("#bases-painel-cov")), /^98% ?512 de 520 anúncios ML com custo$/);
     });
     await check("A3 — base desatualizada (+30d) aparece como aviso no cartão", async () => {
       const cartao = `[...document.querySelectorAll(".vf-bases-conta")].find((c) => c.textContent.includes("ALMA OUTLET"))`;
@@ -318,6 +347,10 @@ async function run() {
       assert.strictEqual(await cdp.evaluate(`${q(".vf-bases-cli[aria-selected='true'] .vf-bases-cli__nome")}.textContent`), "ETX Ferramentas");
       assert.match(await cdp.evaluate(texto(".vf-bases-painel__desc")), /1 conta sem base/);
     });
+    await check("E1b — base não resolvida para a conta: mostra o motivo do Motor, sem número inventado", async () => {
+      await waitFor(cdp, `${cartaoDe("ETX FERRAMENTAS")}.querySelector(".vf-bases-cov.is-vazio") && !${cartaoDe("ETX FERRAMENTAS")}.querySelector(".vf-bases-cov").textContent.includes("Cruzando")`, "motivo não apareceu");
+      assert.match(await cdp.evaluate(textoDe(`${cartaoDe("ETX FERRAMENTAS")}.querySelector(".vf-bases-cov")`)), /Cliente sem base MELI vinculada/);
+    });
     await check("E2 — conta conectada sem base vira cartão tracejado com 'Importar planilha'", async () => {
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll(".vf-bases-conta.is-vazia").length`), 1);
       assert.match(await cdp.evaluate(texto(".vf-bases-conta.is-vazia")), /etx\.oficial.*Shopee · ID 730118842.*sem base de custo/);
@@ -334,6 +367,11 @@ async function run() {
       await waitFor(cdp, `new URLSearchParams(location.search).get("cliente") === "meira"`, "URL não acompanhou a escolha");
     });
 
+    await check("M0 — conta sem anúncio sincronizado e falha de leitura viram aviso, sem barra nem soma", async () => {
+      await waitFor(cdp, `${cartaoDe("MEIRA DECOR")}.querySelector(".vf-bases-cov").textContent.includes("Não foi possível")`, "falha do resumo não apareceu");
+      assert.match(await cdp.evaluate(textoDe(`${cartaoDe("MEIRA CASA")}.querySelector(".vf-bases-cov")`)), /Nenhum anúncio sincronizado/);
+      assert.strictEqual(await cdp.evaluate(texto("#bases-painel-cov")), "");
+    });
     await check("M1 — base vinculada só ao cliente casa pela base que a conta informa; a que sobra fica 'conta não definida'", async () => {
       const cartoes = await cdp.evaluate(`[...document.querySelectorAll(".vf-bases-conta")].map((c) => c.textContent.replace(/\\s+/g, " ").trim())`);
       assert.strictEqual(cartoes.length, 3, "conta inativa não deveria virar cartão");
@@ -359,7 +397,7 @@ async function run() {
       await cdp.evaluate(clicar(`.vf-bases-cli[data-cli-key='sem-cliente']`));
       await waitFor(cdp, `${texto("#bases-painel-titulo")} === "Bases sem cliente"`, "painel sem cliente não abriu");
       assert.match(await cdp.evaluate(texto(".vf-bases-painel__desc")), /Definir cliente\/vínculo/);
-      assert.match(await cdp.evaluate(texto(".vf-bases-conta")), /teste_import.*0%.*0 de 12 com custo/);
+      assert.match(await cdp.evaluate(texto(".vf-bases-conta")), /teste_import.*12 itens/);
     });
     await foto(cdp, "03-sem-cliente");
 

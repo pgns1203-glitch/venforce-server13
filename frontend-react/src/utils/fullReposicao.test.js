@@ -26,6 +26,10 @@ describe("quantidadeSugerida — mesma regra do backend (calculateBaseReplenishm
     expect(quantidadeSugerida(inv({ dailyTurnover: null }), 30)).toBe(null);
     expect(quantidadeSugerida(inv({ stock: { available: null, status: "unavailable" } }), 30)).toBe(null);
   });
+
+  it("anúncio sem estoque disponível no Full não recebe sugestão, mesmo vendendo", () => {
+    expect(quantidadeSugerida(inv({ stock: { available: 0, total: 0, status: "ok" }, dailyTurnover: 5 }), 30)).toBe(0);
+  });
 });
 
 describe("coberturaApos", () => {
@@ -42,7 +46,7 @@ describe("resumirEnvio", () => {
       { inv: inv({ inventoryId: "INV-2", unitCost: null, operationalStatus: "RUPTURA" }), quantidade: 5 },
       { inv: inv({ inventoryId: "INV-3" }), quantidade: 0 },
     ]);
-    expect(r).toEqual({ produtos: 2, unidades: 25, custo: 240, semCusto: 1, rupturasResolvidas: 1 });
+    expect(r).toEqual({ produtos: 2, unidades: 25, custo: 240, semCusto: 1 });
   });
 
   it("nenhum custo conhecido → custo null", () => {

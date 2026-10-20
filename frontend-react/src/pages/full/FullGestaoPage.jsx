@@ -38,6 +38,15 @@ const ROTULO_KPI = {
 };
 
 const ORDENACOES = {
+  disponivel: {
+    rotulo: "Mais disponível no Full",
+    ordenar: (lista) =>
+      [...lista].sort(
+        (a, b) =>
+          (b.stock?.available ?? -1) - (a.stock?.available ?? -1) ||
+          (b.sales?.total14d ?? -1) - (a.sales?.total14d ?? -1)
+      ),
+  },
   urgencia: { rotulo: "Urgência (cobertura)", ordenar: ordenarPorUrgencia },
   vendas: {
     rotulo: "Mais vendidos 14d",
@@ -60,7 +69,7 @@ export default function FullGestaoPage() {
   const [aba, setAba] = useState("estoque");
   const [kpisAtivos, setKpisAtivos] = useState([]);
   const [busca, setBusca] = useState("");
-  const [ordenacao, setOrdenacao] = useState("urgencia");
+  const [ordenacao, setOrdenacao] = useState("disponivel");
   const [inventoryIdSelecionado, setInventoryIdSelecionado] = useState(null);
 
   const inventories = dados?.inventories ?? [];

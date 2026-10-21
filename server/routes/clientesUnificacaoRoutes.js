@@ -34,7 +34,13 @@ function createRouter({
     "/config",
     handle((req) => ({
       ...getUiConfig(),
-      actor: { id: req.user.id, role: req.user.role },
+      actor: {
+        id: req.user.id,
+        role: req.user.role,
+        ...((req.user.nome ?? req.user.name) != null
+          ? { nome: req.user.nome ?? req.user.name }
+          : {}),
+      },
     })),
   );
   const present = (operation) =>

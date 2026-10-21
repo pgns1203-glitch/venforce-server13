@@ -2,6 +2,17 @@ const { isCurrentGrant } = require("../mlGrantIdentity");
 const {
   checkAccountContext,
 } = require("../clienteContas/accountContextInvariant");
+const { strategy } = require("./references");
+const ACTIVE_STATUS = [
+  "queued",
+  "running",
+  "processing",
+  "pending",
+  "started",
+  "aplicando",
+  "executing",
+];
+const SELLER_COLUMNS = ["seller_id", "ml_user_id", "external_account_id", "conta_ml"];
 const same = (a, b) => a != null && b != null && String(a) === String(b);
 const TRANSACTION_TIME = "__TRANSACTION_TIMESTAMP__";
 
@@ -232,11 +243,32 @@ function resolveIdentity(snapshot, manifest, issue, required) {
           : table === "base_cliente_vinculos"
             ? hits.filter((v) => v.ativo === true)
             : hits;
-      if (critical.length) references.push({ table, count: critical.length });
+      if (!critical.length) continue;
+      // Placeholder: referência só é aceitável se o motor conhece a tabela,
+      // não há operação em andamento e a linha não prova operação externa
+      // própria (identidade de seller fora do merge). Histórico fica no ID
+      // da Conta, que é desativada e nunca apagada.
+      const known =
+        !["ml_tokens", "base_cliente_vinculos"].includes(table) &&
+        strategy(table) !== "BLOCKED_UNKNOWN";
+      const active = critical.some((r) => ACTIVE_STATUS.includes(r.status));
+      const foreignSeller = critical.some((r) =>
+        SELLER_COLUMNS.some(
+          (k) => r[k] != null && !sellers.includes(String(r[k])),
+        ),
+      );
+      references.push({
+        table,
+        count: critical.length,
+        action:
+          known && !active && !foreignSeller ? "PRESERVE_ON_INACTIVE" : null,
+      });
     }
     const assigned = selectedAccounts.has(Number(a.id));
     const canDeactivate =
-      !assigned && !references.length && !(snapshot.errors || []).length;
+      !assigned &&
+      references.every((r) => r.action) &&
+      !(snapshot.errors || []).length;
     const selected = d.deactivateEmptyAccountIds.includes(Number(a.id));
     result.emptyAccounts.push({
       id: a.id,

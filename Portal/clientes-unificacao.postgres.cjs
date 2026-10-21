@@ -86,7 +86,6 @@ async function main() {
       await c.click("cu-preview");
       await c.wait("document.getElementById('cu-approved')");
       await c.check("cu-approved");
-      await c.input("cu-approver", "5", "change");
       await c.input("cu-evidence", "DOC-LOCAL-001", "change");
       for (const selector of [
         "[data-decision=primary][value='21']",

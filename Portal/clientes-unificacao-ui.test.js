@@ -67,7 +67,7 @@ const domain = createService({
       if (mode.identity) {
         s.tables.painel_contas_lancamentos_manuais = [];
         if (mode.identityCritical)
-          s.tables.fechamento_incidentes = [
+          s.tables.tabela_desconhecida_x = [
             { id: 99, cliente_id: 1, cliente_conta_id: 72, status: "aberto" },
           ];
       }
@@ -344,11 +344,10 @@ async function main() {
   }
   async function decide() {
     await c.eval(
-      "document.getElementById('cu-approved').checked=true;document.getElementById('cu-approver').value='5';document.getElementById('cu-evidence').value='DOC-TEST-001';document.querySelector('[data-decision=primary][value=\"21\"]').checked=true;document.querySelector('[data-decision=grant][value=\"32\"]').checked=true;",
+      "document.getElementById('cu-approved').checked=true;document.getElementById('cu-evidence').value='DOC-TEST-001';document.querySelector('[data-decision=primary][value=\"21\"]').checked=true;document.querySelector('[data-decision=grant][value=\"32\"]').checked=true;",
     );
     for (const selector of [
       "#cu-approved",
-      "#cu-approver",
       "#cu-evidence",
       "[data-decision=primary][value='21']",
       "[data-decision=grant][value='32']",
@@ -356,6 +355,12 @@ async function main() {
       await c.eval(
         `document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new Event('change',{bubbles:true}))`,
       );
+    await sleep(750);
+    assert.equal(
+      calls.filter((r) => r.route === "/preview").at(-1).body.manifest.aprovacao
+        .aprovadorUserId,
+      5,
+    );
     await c.wait(
       "document.getElementById('cu-execution-state').textContent.includes('Preview validado')",
     );
@@ -1005,6 +1010,12 @@ async function main() {
         assert.deepEqual(d.sellerAccounts, { 111: 65 });
         assert.deepEqual(d.canonicalGrantsBySeller, { 111: 51 });
         assert.deepEqual(d.deactivateEmptyAccountIds, [72]);
+        // Wizard: resumo humano visível, detalhes técnicos colapsados.
+        assert.ok((await c.text("cu-review")).includes("Passo 3"));
+        assert.equal(
+          await c.eval("document.getElementById('cu-technical').open"),
+          false,
+        );
         assert.equal(
           await c.eval("document.getElementById('cu-execute').disabled"),
           true,
@@ -1019,7 +1030,7 @@ async function main() {
           "document.getElementById('cu-review').textContent.includes('EMPTY_ACCOUNT_NOT_SAFE')",
         );
         assert.ok(
-          (await c.text("cu-review")).includes("fechamento_incidentes"),
+          (await c.text("cu-review")).includes("tabela_desconhecida_x"),
         );
       },
     );

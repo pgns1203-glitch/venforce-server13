@@ -5,6 +5,7 @@ const { normalizeManifest, hash, canonical } = require("./contracts");
 const {
   checkAccountContext,
 } = require("../clienteContas/accountContextInvariant");
+const { labelPatches } = require("./labels");
 const { strategy, core, infrastructure } = require("./references");
 const { centralPolicy } = require("./centralReferenceScope");
 const same = (a, b) => a != null && b != null && String(a) === String(b);
@@ -210,6 +211,17 @@ function buildExecutablePlan(snapshot, input) {
     manifest.schemaVersion === 2
       ? resolveIdentity(snapshot, manifest, issue, decisionsRequired)
       : null;
+  if (identity)
+    for (const [aid, patch] of labelPatches({
+      accounts,
+      accountPatches: identity.accountPatches,
+      selectedPrimary: manifest.decisoes.primaryAccounts,
+      target,
+    }))
+      identity.accountPatches.set(aid, {
+        ...(identity.accountPatches.get(aid) || {}),
+        ...patch,
+      });
   const currentGrants = grants
     .filter(isCurrentGrant)
     .filter(
@@ -487,16 +499,17 @@ function buildExecutablePlan(snapshot, input) {
             table,
             reason: "CENTRAL_ROOT_WITHOUT_ACCOUNT",
           });
-        if (
-          r.cliente_conta_id != null &&
-          cols.includes("cliente_id") &&
-          !accounts.some(
-            (a) =>
-              same(a.id, r.cliente_conta_id) &&
-              same(a.cliente_id, r.cliente_id),
-          )
-        )
-          issue("ACCOUNT_OWNER_MISMATCH", { table });
+        // Owner é avaliado no estado FINAL: a Conta do merge termina no
+        // canônico, então linha de qualquer cliente do merge é reconciliada
+        // para o canônico (MOVE abaixo). Conta fora do merge, ou linha de
+        // cliente fora dele/sem owner, continua fail-closed.
+        if (r.cliente_conta_id != null && cols.includes("cliente_id")) {
+          const acc = accounts.find((a) => same(a.id, r.cliente_conta_id));
+          const rowOwnerInMerge =
+            r.cliente_id != null && ids.includes(Number(r.cliente_id));
+          if (!acc || !rowOwnerInMerge)
+            issue("ACCOUNT_OWNER_MISMATCH", { table });
+        }
         if (
           r.cliente_conta_id != null &&
           r.marketplace != null &&

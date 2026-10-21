@@ -80,6 +80,7 @@ const STRATEGIES = {
   KEEP_AS_LEGACY_ORIGIN: "Manter origem legada",
   ACCOUNT_ALREADY_AUTHORITATIVE: "Referência já vinculada à Conta",
   DERIVED_REBUILDABLE: "Dado derivado (conforme plano)",
+  PRESERVE_BY_PARENT: "Histórico preservado pelo vínculo de origem (sem alteração)",
   BLOCKED_UNKNOWN: "Referência bloqueada",
 };
 const DETAIL_FIELDS = {

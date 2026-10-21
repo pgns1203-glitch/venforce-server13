@@ -6,6 +6,7 @@ const {
   checkAccountContext,
 } = require("../clienteContas/accountContextInvariant");
 const { strategy, core, infrastructure } = require("./references");
+const { centralPolicy } = require("./centralReferenceScope");
 const same = (a, b) => a != null && b != null && String(a) === String(b);
 const rows = (s, t) => s.tables?.[t] || [];
 const order = (list) =>
@@ -471,6 +472,21 @@ function buildExecutablePlan(snapshot, input) {
       )
         issue("ACTIVE_OPERATION", { table });
       for (const r of affected) {
+        // Raiz da Central sem Conta: mover misturaria o legado de duas
+        // operações no fallback do canônico. Conta nunca é inferida.
+        if (
+          centralPolicy(table) &&
+          r.cliente_conta_id == null &&
+          (sources.includes(Number(r.cliente_id)) ||
+            clients.some(
+              (c) =>
+                sources.includes(Number(c.id)) && same(c.slug, r.cliente_slug),
+            ))
+        )
+          issue("ACCOUNT_CONTEXT_AMBIGUOUS", {
+            table,
+            reason: "CENTRAL_ROOT_WITHOUT_ACCOUNT",
+          });
         if (
           r.cliente_conta_id != null &&
           cols.includes("cliente_id") &&
@@ -582,6 +598,25 @@ function buildExecutablePlan(snapshot, input) {
       )
     )
       continue;
+    // Índice parcial: linha alterada que fica fora do predicado não entra no
+    // índice e não pode colidir (ex.: runs concluídos no índice de ativos).
+    if (index.predicate) {
+      const after = new Map(
+        virtual(index.table_name).map((r) => [
+          JSON.stringify(Object.keys(updates[0].pk).map((k) => String(r[k]))),
+          r,
+        ]),
+      );
+      if (
+        updates.every((c) => {
+          const row = after.get(
+            JSON.stringify(Object.values(c.pk).map((v) => String(v))),
+          );
+          return row && predicate(index.predicate, row) === false;
+        })
+      )
+        continue;
+    }
     if (
       index.valid === false ||
       index.ready === false ||
@@ -661,6 +696,13 @@ function buildExecutablePlan(snapshot, input) {
       issue("FINAL_IDENTITY_INVALID", { seller });
   }
   const material = materialSnapshot(snapshot, manifest);
+  const historicalFootprints = footprints(snapshot);
+  for (const f of historicalFootprints)
+    impactCounts.push({
+      table: f.table,
+      count: Number(f.rows),
+      strategy: f.strategy,
+    });
   const validation = {
     ok: !blockers.length,
     blockers: order(blockers),
@@ -683,6 +725,7 @@ function buildExecutablePlan(snapshot, input) {
         }
       : {}),
     changes: order(changes),
+    ...(historicalFootprints.length ? { historicalFootprints } : {}),
     impactCounts: order(impactCounts),
     decisionsRequired: [...new Set(decisionsRequired)].sort(),
     validation,
@@ -777,6 +820,22 @@ function materialSnapshot(snapshot, manifest) {
   }
   return canonical(result);
 }
+// Subgrafos preservados com histórico. Vazio não entra (planos/ledgers sem
+// Central continuam idênticos); aparecer/sumir/mudar invalida o planHash.
+function footprints(snapshot) {
+  return order(
+    (snapshot.footprints || [])
+      .filter((f) => Number(f.rows) > 0)
+      .map((f) => canonical(f)),
+  );
+}
+const FOOTPRINT_KEY = "@historical_footprints";
+// Material + footprints: before/after/rollback do ledger, compacto.
+function ledgerSnapshot(snapshot, manifest) {
+  const material = materialSnapshot(snapshot, manifest);
+  const list = footprints(snapshot);
+  return list.length ? { ...material, [FOOTPRINT_KEY]: list } : material;
+}
 function buildPlan(s, m, o) {
   return m?.schemaVersion == null
     ? legacy.buildPlan(s, m, o)
@@ -792,6 +851,7 @@ module.exports = {
   buildExecutablePlan,
   normalizeManifest,
   materialSnapshot,
+  ledgerSnapshot,
   canonicalId,
   predicate,
 };

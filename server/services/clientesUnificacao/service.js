@@ -10,7 +10,7 @@ const {
   hash,
   safeError,
 } = require("./contracts");
-const { buildPlan, materialSnapshot, canonicalId } = require("./planner");
+const { buildPlan, ledgerSnapshot, canonicalId } = require("./planner");
 const defaultRepository = require("./repository");
 function createService({
   pool,
@@ -224,7 +224,8 @@ function createService({
             if (fresh.planHash !== input.planHash)
               throw fail("MERGE_PLAN_CHANGED");
             if (!fresh.validation.ok) throw fail("MERGE_VALIDATION_BLOCKED");
-            const before = materialSnapshot(locked, manifest);
+            // Material + footprints dos filhos preservados (sem linhas).
+            const before = ledgerSnapshot(locked, manifest);
             const appliedChanges = await materializeChanges(db, fresh.changes);
             const rollbackChanges = [...appliedChanges]
               .reverse()
@@ -249,7 +250,7 @@ function createService({
             const afterSource = await repo.readSnapshot(db, manifest);
             verifyChanges(afterSource, appliedChanges);
             verifyIdentity(afterSource, manifest, fresh);
-            const after = materialSnapshot(afterSource, manifest);
+            const after = ledgerSnapshot(afterSource, manifest);
             const expected = JSON.parse(JSON.stringify(before));
             for (const c of appliedChanges) {
               const row = expected[c.table]?.find((r) =>
@@ -330,7 +331,7 @@ function createService({
             await repo.lockRows(db, snapshot, manifest);
             const locked = await repo.readSnapshot(db, manifest);
             if (
-              hash(materialSnapshot(locked, manifest)) !==
+              hash(ledgerSnapshot(locked, manifest)) !==
                 hash(op.after_snapshot_json) ||
               locked.errors.length
             )
@@ -349,7 +350,7 @@ function createService({
             // Row versions must change on UPDATE; compare all safe identities/keys
             // while retaining original versions in the immutable before snapshot.
             if (
-              hash(withoutVersions(materialSnapshot(restored, manifest))) !==
+              hash(withoutVersions(ledgerSnapshot(restored, manifest))) !==
               hash(withoutVersions(op.before_snapshot_json))
             )
               throw fail("ROLLBACK_POST_VALIDATION_FAILED");

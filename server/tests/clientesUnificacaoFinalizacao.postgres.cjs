@@ -1,0 +1,116 @@
+// Apenas banco LOCAL descartável validado por environment(). Nunca produção.
+// Caso sanitizado equivalente a #36/#65: owner mismatch, placeholder, labels,
+// Grants canônico/superseded, principalidade e rollback integral.
+const assert = require("node:assert/strict");
+const { environment } = require("./helpers/clientesUnificacaoPostgres");
+const { createService, withoutVersions } = require("../services/clientesUnificacao/service");
+const repo = require("../services/clientesUnificacao/repository");
+const { materialSnapshot } = require("../services/clientesUnificacao/planner");
+const { identityManifest } = require("./helpers/clientesUnificacaoIdentityFixture");
+const actor = { id: 5, role: "admin", ativo: true };
+async function main() {
+  const env = await environment();
+  let count = 0;
+  const service = createService({
+    pool: env.pool,
+    getFlags: () => ({ execute: true, rollback: true }),
+  });
+  const q = (sql, p) => env.pool.query(sql, p).then((r) => r.rows);
+  async function seed(extra) {
+    await env.seed();
+    await q(`DELETE FROM base_cliente_vinculos; DELETE FROM ml_tokens; DELETE FROM cliente_contas WHERE cliente_id IN (1,2,3,4)`);
+    await q(`DROP TABLE IF EXISTS fechamento_incidentes, zz_desconhecida`);
+    await q(`CREATE TABLE fechamento_incidentes(id integer PRIMARY KEY,cliente_id integer REFERENCES clientes(id),cliente_conta_id integer REFERENCES cliente_contas(id),status text)`);
+    await q(`INSERT INTO cliente_contas VALUES
+      (65,1,'meli','Mercado Livre 1','c65',NULL,true,true),
+      (72,1,'meli','Mercado Livre 2','c72',NULL,false,true),
+      (71,2,'meli','Mercado Livre 1','c71','222',true,true),
+      (138,2,'shopee','Shopee 1','c138',NULL,true,true),
+      (139,2,'shopee','Shopee 2','c139',NULL,false,true);
+      INSERT INTO ml_tokens(id,cliente_id,cliente_conta_id,ml_user_id,token_status,is_primary,access_token,refresh_token) VALUES
+      (51,1,NULL,'111','valid',true,'s-a','s-r'),(52,2,NULL,'111','valid',false,'s-b','s-s'),(103,2,71,'222','valid',false,'s-c','s-t');
+      INSERT INTO fechamento_incidentes VALUES(1,2,65,'concluido'),(2,1,72,'concluido'),(3,2,71,'concluido'),(4,1,65,'concluido')`);
+    await q(`INSERT INTO painel_contas_lancamentos_manuais VALUES(90,1,72,'2026-01',10)`);
+    if (extra) await extra();
+  }
+  const manifest = () => {
+    const m = identityManifest();
+    m.decisoes.sellerAccounts = { 111: 65, 222: 71 };
+    m.decisoes.canonicalGrantsBySeller = { 111: 51, 222: 103 };
+    m.decisoes.primaryAccounts = { meli: 65 };
+    m.decisoes.primaryGrantId = 51;
+    m.decisoes.deactivateEmptyAccountIds = [72];
+    return m;
+  };
+  try {
+    await seed();
+    const m = manifest();
+    const before = materialSnapshot(await repo.readSnapshot(env.pool, m), m);
+    const p = await service.preview(m, actor);
+    assert.equal(p.validationReady, true, JSON.stringify(p.blockers));
+    assert.equal(p.blockers.length, 0);
+    const op = await service.execute(
+      { manifest: m, planHash: p.planHash, confirmationText: p.confirmationText, idempotencyKey: "final-local-1" },
+      actor,
+    );
+    assert.equal(op.status, "completed");
+    const contas = await q("SELECT id,cliente_id,nome,ativo,is_primary FROM cliente_contas ORDER BY id");
+    const by = Object.fromEntries(contas.map((c) => [c.id, c]));
+    assert.ok(contas.every((c) => c.cliente_id === 1));
+    assert.equal(by[65].nome, "Mercado Livre 1");
+    assert.equal(by[71].nome, "Mercado Livre 2");
+    assert.equal(by[71].is_primary, false);
+    assert.equal(by[65].is_primary, true);
+    assert.equal(by[72].ativo, false);
+    assert.equal(by[138].nome, "Shopee 1");
+    assert.equal(by[139].nome, "Shopee 2");
+    const grants = Object.fromEntries((await q("SELECT * FROM ml_tokens")).map((g) => [g.id, g]));
+    assert.equal(grants[51].cliente_conta_id, 65);
+    assert.equal(grants[52].superseded_by_grant_id, 51);
+    assert.equal(grants[103].cliente_conta_id, 71);
+    assert.equal(grants[103].cliente_id, 1);
+    assert.ok((await q("SELECT cliente_id FROM fechamento_incidentes")).every((r) => r.cliente_id === 1));
+    assert.equal((await q("SELECT cliente_conta_id FROM fechamento_incidentes WHERE id=2"))[0].cliente_conta_id, 72);
+    assert.equal((await q("SELECT cliente_conta_id FROM painel_contas_lancamentos_manuais WHERE id=90"))[0].cliente_conta_id, 72);
+    assert.equal((await q("SELECT merged_into_cliente_id m FROM clientes WHERE id=2"))[0].m, 1);
+    assert.equal((await q("SELECT count(*)::int n FROM cliente_contas"))[0].n, 5);
+    const back = await service.rollback(op.id, { confirmationText: `REVERTER UNIFICACAO ${op.id}` }, actor);
+    assert.equal(back.status, "rolled_back");
+    assert.deepEqual(
+      withoutVersions(materialSnapshot(await repo.readSnapshot(env.pool, m), m)),
+      withoutVersions(before),
+    );
+    console.log("ok — PG: caso sanitizado #36/#65 (owner mismatch, placeholder #72, labels ML1/ML2, Grants, rollback integral)");
+    count++;
+
+    // Owner indeterminável: conta do merge mas linha de cliente fora dele.
+    await seed(() => q("INSERT INTO fechamento_incidentes VALUES(9,3,71,'concluido')"));
+    let r = await service.preview(manifest(), actor);
+    assert.ok(r.blockers.some((b) => b.code === "ACCOUNT_OWNER_MISMATCH"));
+    // Conta fora do merge.
+    await seed(() => q("INSERT INTO cliente_contas VALUES(31,3,'shopee','SP3','c31',NULL,true,true);INSERT INTO fechamento_incidentes VALUES(9,2,31,'concluido')"));
+    r = await service.preview(manifest(), actor);
+    assert.ok(r.blockers.some((b) => b.code === "ACCOUNT_OWNER_MISMATCH"));
+    console.log("ok — PG: owner indeterminável continua fail-closed");
+    count++;
+
+    // Placeholder com referência desconhecida / em andamento.
+    await seed(() =>
+      q(`CREATE TABLE zz_desconhecida(id integer PRIMARY KEY,cliente_conta_id integer REFERENCES cliente_contas(id));INSERT INTO zz_desconhecida VALUES(1,72)`),
+    );
+    r = await service.preview(manifest(), actor);
+    assert.ok(r.blockers.some((b) => b.code === "EMPTY_ACCOUNT_NOT_SAFE"), JSON.stringify(r.blockers));
+    await seed(() => q("UPDATE fechamento_incidentes SET status='running' WHERE id=2"));
+    r = await service.preview(manifest(), actor);
+    assert.ok(r.blockers.length > 0);
+    console.log("ok — PG: placeholder com referência desconhecida ou ativa bloqueia");
+    count++;
+    console.log(`${count} cenários PostgreSQL de finalização passaram.`);
+  } finally {
+    await env.close();
+  }
+}
+main().catch((e) => {
+  console.error(e);
+  process.exitCode = 1;
+});

@@ -276,6 +276,42 @@ function previewMarkup(p) {
     <section class="cu-review-section"><h3>4. Validação e decisões</h3>${issues("Bloqueios", p.blockers, "blocker")}${issues("Avisos", p.warnings, "warning")}${issues("Informações", p.info)}</section>`;
 }
 
+// Passo 3: resumo em linguagem de operação; o detalhe fica no accordion.
+function summaryMarkup(p) {
+  const r = p.plan?.identityResolution;
+  const changes = p.plan?.changes || [];
+  const moved = (p.clienteContas || []).filter((a) =>
+    changes.some(
+      (c) =>
+        c.table === "cliente_contas" &&
+        equalId(c.pk.id, a.id) &&
+        c.after.cliente_id != null &&
+        a.ativo !== false,
+    ),
+  );
+  const byMarket = Object.entries(
+    moved.reduce((m, a) => ({ ...m, [a.marketplace]: (m[a.marketplace] || 0) + 1 }), {}),
+  ).map(([k, n]) => `${n} conta(s) ${e(MARKETS[k]?.[0] || k)}`);
+  const lines = [
+    `<li>Empresa que permanece: ${e(p.clienteCanonico?.nome || `#${p.clienteCanonico?.id}`)}</li>`,
+    byMarket.length ? `<li>Serão incorporadas: ${byMarket.join(", ")}</li>` : "",
+    ...(r?.sellers || [])
+      .filter((s) => s.supersededGrantIds?.length)
+      .map(
+        (s) =>
+          `<li>Será consolidado o seller ${e(s.seller)}: Grant ${s.supersededGrantIds.map((id) => `#${e(id)}`).join(", ")} vira histórico</li>`,
+      ),
+    ...(r?.emptyAccounts || [])
+      .filter((a) => a.selected)
+      .map(
+        (a) =>
+          `<li>Operação antiga sem conexão real (Conta #${e(a.id)}) será desativada; o histórico é preservado</li>`,
+      ),
+  ].filter(Boolean);
+  const warn = (p.warnings || []).some((w) => w.code === "ACCOUNT_WITHOUT_BASE");
+  return `<section class="cu-review-section"><h3>Passo 3 · Revisar e confirmar</h3><ul>${lines.join("")}</ul><p>✓ Histórico preservado (Central de Vendas, Financeiro e demais registros)</p>${warn ? "<p>Aviso: contas sem Base continuarão sem Base após a unificação.</p>" : ""}</section>`;
+}
+
 export function createUnificacaoPage({
   document: doc,
   api = vfApi,
@@ -552,8 +588,10 @@ export function createUnificacaoPage({
       ...new Set([...state.required, ...(p.decisionsRequired || [])]),
     ];
     const fields = state.required.map((path) => {
-      if (path === "aprovacao")
-        return `<fieldset class="cu-decision"><legend>Aprovação empresarial obrigatória</legend><label><input id="cu-approved" type="checkbox" data-decision="approved" ${state.approval.aprovada ? "checked" : ""}> Confirmo que a unificação foi aprovada com evidência empresarial externa.</label><label for="cu-approver">ID do usuário aprovador declarado</label><input id="cu-approver" class="vf-input" type="number" min="1" step="1" data-decision="approver" value="${e(state.approval.aprovadorUserId || "")}"><label for="cu-evidence">Referência documental da aprovação</label><input id="cu-evidence" class="vf-input" maxlength="160" data-decision="evidence" value="${e(state.approval.evidencia || "")}" placeholder="Ex.: APROVACAO-2026-001"><p class="cu-muted">Informe apenas a referência. Não envie documentos, credenciais ou segredos.</p></fieldset>`;
+      if (path === "aprovacao") {
+        const who = state.config?.actor || {};
+        return `<fieldset class="cu-decision"><legend>Aprovação</legend><label><input id="cu-approved" type="checkbox" data-decision="approved" ${state.approval.aprovada ? "checked" : ""}> Confirmo que esta unificação foi aprovada.</label><p>Aprovador: ${e(who.nome || "usuário atual")} (ID ${e(who.id ?? "?")})</p><label for="cu-evidence">Referência interna da aprovação</label><input id="cu-evidence" class="vf-input" maxlength="160" data-decision="evidence" value="${e(state.approval.evidencia || "")}" placeholder="Ex.: APROVACAO-2026-001"><p class="cu-muted">Informe apenas a referência. Não envie documentos, credenciais ou segredos.</p></fieldset>`;
+      }
       if (path.startsWith("decisoes.primaryAccounts.")) {
         const key = path.split(".").at(-1);
         return `<fieldset class="cu-decision"><legend>Conta principal · ${e(MARKETS[key]?.[0] || key)}</legend>${(
@@ -633,13 +671,40 @@ export function createUnificacaoPage({
     });
     el("decisions").hidden = !fields.length;
     el("decisions").innerHTML = fields.length
-      ? `<h3>Decisões obrigatórias</h3>${fields.join("")}<p class="cu-muted">Cada alteração invalida o preview anterior e solicita uma nova validação.</p>`
+      ? `<h3>Passo 2 · Organizar operações</h3>${fields.join("")}<p class="cu-muted">Cada alteração invalida o preview anterior e solicita uma nova validação.</p>`
       : "";
     if (focusedId && el("decisions").contains(doc.getElementById(focusedId))) {
       const focused = doc.getElementById(focusedId);
       focused.focus();
       if (typeof caret === "number") focused.setSelectionRange(caret, caret);
     }
+  }
+  // Auto-resolução só do que o backend prova seguro; segue explícito no manifesto.
+  function autoResolve(p) {
+    const r = p.plan?.identityResolution;
+    if (!r) return false;
+    const d = state.decisions;
+    let changed = false;
+    const ids = new Set(d.deactivateEmptyAccountIds || []);
+    // Só depois que todo seller tem Conta: antes disso a Conta vazia ainda
+    // pode ser a escolhida pelo operador.
+    const sellersResolved = (r.sellers || []).every((s) => s.accountId != null);
+    for (const a of sellersResolved ? r.emptyAccounts || [] : [])
+      if (!a.assigned && !a.selected && a.canDeactivate && !ids.has(Number(a.id))) {
+        ids.add(Number(a.id));
+        changed = true;
+      }
+    d.deactivateEmptyAccountIds = [...ids].sort((x, y) => x - y);
+    for (const s of r.sellers || [])
+      if (
+        d.sellerAccounts?.[s.seller] == null &&
+        s.accountOptions?.length === 1 &&
+        s.grantOptions?.length === 1
+      ) {
+        d.sellerAccounts = { ...d.sellerAccounts, [s.seller]: Number(s.accountOptions[0].id) };
+        changed = true;
+      }
+    return changed;
   }
   async function preview() {
     if (
@@ -672,7 +737,17 @@ export function createUnificacaoPage({
       state.preview = p;
       state.decisions = clone(p.manifest.decisoes);
       state.approval = clone(p.manifest.aprovacao);
-      el("review").innerHTML = previewMarkup(p);
+      if (autoResolve(p)) {
+        // Decisões seguras preenchidas: o preview anterior perde validade e
+        // é refeito pelo laço de revisão do finally.
+        // Mantém o controle visível para o operador poder desfazer a sugestão.
+        state.required = [
+          ...new Set([...state.required, ...(p.decisionsRequired || [])]),
+        ];
+        invalidate();
+        return;
+      }
+      el("review").innerHTML = `${summaryMarkup(p)}<details class="cu-technical" id="cu-technical"><summary>Detalhes técnicos</summary>${previewMarkup(p)}</details>`;
       el("review").hidden = false;
       renderDecisions(p);
       el("confirmation-text").textContent = p.confirmationText;
@@ -728,7 +803,13 @@ export function createUnificacaoPage({
       state.decisions.deactivateEmptyAccountIds = [...ids].sort(
         (a, b) => a - b,
       );
-    } else if (kind === "approved") state.approval.aprovada = target.checked;
+    } else if (kind === "approved") {
+      state.approval.aprovada = target.checked;
+      // Aprovador = usuário autenticado (o backend ainda valida o admin).
+      state.approval.aprovadorUserId = target.checked
+        ? Number(state.config?.actor?.id) || null
+        : null;
+    }
     else if (kind === "approver")
       state.approval.aprovadorUserId = target.value
         ? Number(target.value)

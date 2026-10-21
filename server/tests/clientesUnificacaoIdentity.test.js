@@ -198,9 +198,10 @@ async function main() {
         "margin_snapshot_runs",
         { id: 90, cliente_conta_id: 72, status: "running" },
       ],
+      ["tabela_desconhecida_x", { id: 90, cliente_conta_id: 72 }],
       [
-        "fechamento_incidentes",
-        { id: 90, cliente_conta_id: 72, status: "aberto" },
+        "margin_snapshot_runs",
+        { id: 91, cliente_conta_id: 72, status: "completed", seller_id: "999" },
       ],
     ];
     for (const [table, row] of references) {
@@ -210,6 +211,17 @@ async function main() {
     }
     s.errors.push({ table: "unknown", code: "BOUNDED_VOLUME_EXCEEDED" });
     assert.ok(blocked(s, m, "EMPTY_ACCOUNT_NOT_SAFE"));
+  });
+  await test("placeholder com histórico em tabela conhecida é desativável e preserva o ID", (s, m) => {
+    s.tables.fechamento_incidentes = [
+      { id: 90, cliente_id: 1, cliente_conta_id: 72, status: "concluido" },
+    ];
+    const plan = buildPlan(s, m);
+    assert.equal(plan.validation.ok, true, JSON.stringify(plan.validation.blockers));
+    const empty = plan.identityResolution.emptyAccounts.find((a) => a.id === 72);
+    assert.equal(empty.canDeactivate, true);
+    assert.equal(empty.references[0].action, "PRESERVE_ON_INACTIVE");
+    assert.ok(plan.changes.some((c) => c.table === "cliente_contas" && c.pk.id === 72 && c.after.ativo === false));
   });
   await test("atribuição não ignora seller histórico incompatível nem job ativo", (s, m) => {
     s.tables.margin_snapshot_runs = [

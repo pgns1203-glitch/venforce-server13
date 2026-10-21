@@ -333,3 +333,10 @@ passaram. Backend completo: **356/360 na branch e 356/360 em origin/main
 03d92dca**, com as mesmas quatro falhas históricas e mensagens idênticas
 (basesTiktok, designStudioWorkspace, meliAnunciosOrdenacaoGlobal,
 mlTokenService). Nenhuma falha nova.
+
+## Finalização: owner, placeholder e labels
+
+- **Owner (`ACCOUNT_OWNER_MISMATCH`)**: linhas MOVE com `cliente_conta_id` são avaliadas pelo estado final. Conta do merge + linha de cliente do merge → reconciliada para o canônico (`cliente_id` muda, reversível). Conta fora do merge ou linha de cliente fora dele continua bloqueando.
+- **Placeholder** (`identity.js`): Conta ML sem seller, sem Grant/Base ativos e não escolhida pode ser desativada (nunca apagada) se toda referência está numa tabela conhecida, sem operação em andamento e sem seller externo. Histórico fica no ID da Conta (`action: PRESERVE_ON_INACTIVE`). Tabela desconhecida → `EMPTY_ACCOUNT_NOT_SAFE`.
+- **Labels** (`labels.js`): contas ativas com nome automático ("Mercado Livre 2") são renumeradas por marketplace: principal final, depois canônico, depois id. Nomes personalizados e contas inativas ficam intactos; rollback restaura via `before`.
+- **UI**: 3 passos; detalhes técnicos em accordion; aprovador = usuário autenticado; desativação de placeholder e Conta única de seller são sugeridas automaticamente (seguem explícitas no manifesto e desfazíveis).

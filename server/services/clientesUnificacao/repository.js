@@ -1,3 +1,5 @@
+const { types } = require("pg");
+const { diagnostics } = require("./snapshotDiagnostics");
 const { randomUUID } = require("node:crypto");
 const {
   core,
@@ -55,35 +57,67 @@ const CORE_FIELDS = {
   squads: ["id", "nome", "slug", "ativo"],
   squad_members: ["id", "squad_id", "user_id", "funcao", "is_primary", "ativo"],
 };
-async function readSnapshot(db, manifest) {
+async function readSnapshot(db, manifest, options = {}) {
+  const timing = diagnostics(options);
+  try {
+    const snapshot = await collectSnapshot(db, manifest, timing);
+    timing.finish("ok");
+    return snapshot;
+  } catch (error) {
+    timing.finish("error");
+    throw error;
+  }
+}
+async function collectSnapshot(db, manifest, timing) {
   const s = { profile: "executor-v1", tables: {}, errors: [] };
   s.columns = (
-    await db.query(
-      "SELECT c.table_name,c.column_name,c.data_type FROM information_schema.columns c JOIN information_schema.tables t USING(table_schema,table_name) WHERE c.table_schema='public' AND t.table_type='BASE TABLE' ORDER BY c.table_name,c.ordinal_position",
+    await timing.query(
+      db,
+      "catalog.columns",
+      "SELECT c.table_name,c.column_name,c.data_type,(CASE WHEN y.typtype='d' THEN y.typbasetype ELSE a.atttypid END)::integer AS _type_oid FROM information_schema.columns c JOIN pg_namespace n ON n.nspname=c.table_schema JOIN pg_class t ON t.relnamespace=n.oid AND t.relname=c.table_name AND t.relkind IN ('r','p') JOIN pg_attribute a ON a.attrelid=t.oid AND a.attname=c.column_name AND a.attnum>0 AND NOT a.attisdropped JOIN pg_type y ON y.oid=a.atttypid WHERE c.table_schema='public' ORDER BY c.table_name,c.ordinal_position",
     )
   ).rows;
   s.constraints = (
-    await db.query(`SELECT c.conname AS name,c.contype AS type,c.convalidated AS validated,r.relname AS table_name,p.relname AS referenced_table,
+    await timing.query(
+      db,
+      "catalog.constraints",
+      `SELECT c.conname AS name,c.contype AS type,c.convalidated AS validated,r.relname AS table_name,p.relname AS referenced_table,
    ARRAY(SELECT a.attname::text FROM unnest(c.conkey) WITH ORDINALITY k(n,pos) JOIN pg_attribute a ON a.attrelid=c.conrelid AND a.attnum=k.n ORDER BY k.pos) AS columns,
    ARRAY(SELECT a.attname::text FROM unnest(c.confkey) WITH ORDINALITY k(n,pos) JOIN pg_attribute a ON a.attrelid=c.confrelid AND a.attnum=k.n ORDER BY k.pos) AS referenced_columns,
    pg_get_constraintdef(c.oid) AS definition
    FROM pg_constraint c JOIN pg_class r ON r.oid=c.conrelid LEFT JOIN pg_class p ON p.oid=c.confrelid JOIN pg_namespace n ON n.oid=r.relnamespace
-   WHERE n.nspname='public' ORDER BY r.relname,c.conname`)
+   WHERE n.nspname='public' ORDER BY r.relname,c.conname`,
+    )
   ).rows;
   s.indexes = (
-    await db.query(`SELECT t.relname AS table_name,i.relname AS name,x.indisunique AS unique,x.indisvalid AS valid,x.indisready AS ready,
+    await timing.query(
+      db,
+      "catalog.indexes",
+      `SELECT t.relname AS table_name,i.relname AS name,x.indisunique AS unique,x.indisvalid AS valid,x.indisready AS ready,
    ARRAY(SELECT pg_get_indexdef(x.indexrelid,k,true) FROM generate_series(1,x.indnkeyatts) k) AS keys,
    pg_get_expr(x.indpred,x.indrelid) AS predicate, pg_get_indexdef(x.indexrelid) AS definition,
    COALESCE((to_jsonb(x)->>'indnullsnotdistinct')::boolean,false) AS nulls_not_distinct
    FROM pg_index x JOIN pg_class t ON t.oid=x.indrelid JOIN pg_class i ON i.oid=x.indexrelid JOIN pg_namespace n ON n.oid=t.relnamespace
-   WHERE n.nspname='public' ORDER BY t.relname,i.relname`)
+   WHERE n.nspname='public' ORDER BY t.relname,i.relname`,
+    )
   ).rows;
+  const parsers = new Map(
+    s.columns.map((c) => [
+      `${c.table_name}.${c.column_name}`,
+      types.getTypeParser(c._type_oid || 25),
+    ]),
+  );
+  s.columns = s.columns.map(({ _type_oid, ...c }) => c);
+  const columnsByTable = new Map();
+  for (const c of s.columns) {
+    if (!columnsByTable.has(c.table_name)) columnsByTable.set(c.table_name, []);
+    columnsByTable.get(c.table_name).push(c.column_name);
+  }
   const ids = [manifest.clienteCanonicoId, ...manifest.clientesLegadosIds];
   const names = [...new Set(s.columns.map((c) => c.table_name))].filter(
     (t) => !infrastructure.has(t),
   );
-  const columns = (t) =>
-    s.columns.filter((c) => c.table_name === t).map((c) => c.column_name);
+  const columns = (t) => columnsByTable.get(t) || [];
   if (!columns("clientes").includes("merged_into_cliente_id"))
     s.errors.push({ table: "clientes", code: "MERGE_INFRASTRUCTURE_MISSING" });
   for (const [table, allowed] of Object.entries(CORE_FIELDS))
@@ -125,23 +159,146 @@ async function readSnapshot(db, manifest) {
       ]),
     ].filter((c) => cols.includes(c) && !secretColumns.test(c));
   }
-  async function load(table, clauses = [], values = []) {
-    const cols = fields(table);
-    if (!cols.length) {
-      s.errors.push({ table, code: "PROJECTION_UNKNOWN" });
-      s.tables[table] = [];
+  // Une consultas independentes em uma ida ao banco, sem paralelismo no client.
+  // Células em texto + parsers do pg preservam bigint/numeric/array/date exatamente
+  // como SELECTs individuais (JSON numérico não pode arredondar IDs de 64 bits).
+  async function loadBatch(specs, phase) {
+    // Limita tamanho do statement e o conjunto diagnosticado em caso de timeout.
+    if (specs.length > 16) {
+      for (let i = 0; i < specs.length; i += 16)
+        await loadBatch(specs.slice(i, i + 16), phase);
       return;
     }
-    const result = await db.query(
-      `SELECT ${cols.map(quote).join(",")},xmin::text AS "_version" FROM ${quote(table)}${clauses.length ? " WHERE " + clauses.join(" OR ") : ""} LIMIT ${MAX_ROWS + 1}`,
-      values,
+    const params = [],
+      projections = new Map();
+    const parts = [];
+    for (const { table, clauses = [] } of specs) {
+      const cols = fields(table);
+      if (!cols.length) {
+        s.errors.push({ table, code: "PROJECTION_UNKNOWN" });
+        s.tables[table] = [];
+        continue;
+      }
+      projections.set(table, cols);
+      const bind = (value) => {
+        params.push(value);
+        return `$${params.length}`;
+      };
+      const where = clauses.map((c) => c(bind));
+      parts.push(
+        `(WITH started AS MATERIALIZED (SELECT clock_timestamp() AS at) SELECT ${bind(table)}::text AS "_table", COALESCE(json_agg(bounded."_row") FILTER (WHERE bounded."_row" IS NOT NULL),'[]'::json) AS "_rows", extract(epoch FROM clock_timestamp()-started.at)*1000 AS "_server_ms" FROM started LEFT JOIN LATERAL (SELECT ARRAY[${cols.map((c) => quote(c) + "::text").join(",")},xmin::text] AS "_row" FROM ${quote(table)} WHERE started.at IS NOT NULL AND (${where.length ? where.join(" OR ") : "false"}) LIMIT ${MAX_ROWS + 1}) bounded ON true GROUP BY started.at)`,
+      );
+    }
+    if (!parts.length) return;
+    const result = await timing.query(
+      db,
+      phase,
+      parts.join(" UNION ALL "),
+      params,
+      { tables: [...projections.keys()] },
     );
-    s.tables[table] = result.rows;
-    if (result.rows.length > MAX_ROWS)
-      s.errors.push({ table, code: "BOUNDED_VOLUME_EXCEEDED" });
+    for (const { _table: table, _rows: data, _server_ms } of result.rows) {
+      const cols = projections.get(table);
+      if (!cols || !Array.isArray(data)) throw fail("SNAPSHOT_BATCH_INVALID");
+      await timing.measure(
+        "table.decode",
+        async () => {
+          s.tables[table] = data.map((values) =>
+            Object.fromEntries([
+              ...cols.map((c, i) => [
+                c,
+                values[i] == null
+                  ? null
+                  : parsers.get(`${table}.${c}`)(values[i]),
+              ]),
+              ["_version", values[cols.length]],
+            ]),
+          );
+          return { rows: s.tables[table] };
+        },
+        { table, phase },
+      );
+      if (data.length > MAX_ROWS)
+        s.errors.push({ table, code: "BOUNDED_VOLUME_EXCEEDED" });
+      timing.table(table, phase, data.length, _server_ms);
+    }
+    for (const table of projections.keys())
+      if (!Object.hasOwn(s.tables, table)) throw fail("SNAPSHOT_BATCH_INVALID");
   }
-  for (const table of [...core].sort())
-    if (names.includes(table)) await load(table);
+  const has = (t) => names.includes(t);
+  const eq = (col, values) => (bind) => `${quote(col)} = ANY(${bind(values)})`;
+  const initial = [];
+  if (has("clientes"))
+    initial.push({
+      table: "clientes",
+      clauses: [
+        (bind) =>
+          columns("clientes").includes("merged_into_cliente_id")
+            ? `id IN (WITH RECURSIVE family AS (SELECT id,merged_into_cliente_id FROM clientes WHERE id=ANY(${bind(ids)}::integer[]) UNION SELECT c.id,c.merged_into_cliente_id FROM clientes c JOIN family f ON c.id=f.merged_into_cliente_id) SELECT id FROM family)`
+            : `id=ANY(${bind(ids)}::integer[])`,
+      ],
+    });
+  // Conflitos de seller, mesmo em terceiro Cliente/inativo, continuam visíveis.
+  if (has("cliente_contas"))
+    initial.push({
+      table: "cliente_contas",
+      clauses: [
+        eq("cliente_id", ids),
+        (bind) =>
+          `id IN (SELECT cliente_conta_id FROM ml_tokens WHERE cliente_id=ANY(${bind(ids)}::integer[]))`,
+        (bind) =>
+          `(marketplace,external_account_id) IN (SELECT marketplace,external_account_id FROM cliente_contas WHERE cliente_id=ANY(${bind(ids)}::integer[]) UNION SELECT 'meli',ml_user_id FROM ml_tokens WHERE cliente_id=ANY(${bind(ids)}::integer[]))`,
+      ],
+    });
+  if (has("ml_tokens"))
+    initial.push({
+      table: "ml_tokens",
+      clauses: [
+        eq("cliente_id", ids),
+        (bind) =>
+          `cliente_conta_id IN (SELECT id FROM cliente_contas WHERE cliente_id=ANY(${bind(ids)}::integer[]))`,
+        (bind) =>
+          `ml_user_id IN (SELECT ml_user_id FROM ml_tokens WHERE cliente_id=ANY(${bind(ids)}::integer[]) UNION SELECT external_account_id FROM cliente_contas WHERE marketplace='meli' AND cliente_id=ANY(${bind(ids)}::integer[]))`,
+      ],
+    });
+  if (has("base_cliente_vinculos"))
+    initial.push({
+      table: "base_cliente_vinculos",
+      clauses: [
+        eq("cliente_id", ids),
+        (bind) =>
+          `cliente_conta_id IN (SELECT id FROM cliente_contas WHERE cliente_id=ANY(${bind(ids)}::integer[]))`,
+        (bind) =>
+          `base_id IN (SELECT base_id FROM base_cliente_vinculos WHERE cliente_id=ANY(${bind(ids)}::integer[]) OR cliente_conta_id IN (SELECT id FROM cliente_contas WHERE cliente_id=ANY(${bind(ids)}::integer[])))`,
+      ],
+    });
+  for (const table of ["squads", "squad_members"])
+    if (has(table))
+      initial.push({
+        table,
+        clauses: has("cliente_squad_history")
+          ? [
+              (bind) =>
+                `${table === "squads" ? "id" : "squad_id"} IN (SELECT squad_id FROM cliente_squad_history WHERE cliente_id=ANY(${bind(ids)}::integer[]))`,
+            ]
+          : [],
+      });
+  await loadBatch(initial, "core.identity");
+  if (has("bases"))
+    await loadBatch(
+      [
+        {
+          table: "bases",
+          clauses: [
+            eq(
+              "id",
+              (s.tables.base_cliente_vinculos || []).map((v) => v.base_id),
+            ),
+          ],
+        },
+      ],
+      "core.bases",
+    );
   const slugs = (s.tables.clientes || [])
     .filter((c) => ids.includes(Number(c.id)))
     .map((c) => c.slug);
@@ -170,6 +327,7 @@ async function readSnapshot(db, manifest) {
     if (core.has(table)) return [];
     return (s.tables[table] || []).map((r) => r[col]).filter((x) => x != null);
   };
+  const finishDiscovery = timing.span("references.discovery");
   const reached = new Set(["clientes", "cliente_contas", "ml_tokens", "bases"]);
   let changed = true;
   while (changed) {
@@ -191,16 +349,22 @@ async function readSnapshot(db, manifest) {
         (reached.has(t) || columns(t).some((c) => identityColumns.has(c))),
     ),
   );
+  finishDiscovery({ tables: pending.size });
   for (let pass = 0; pending.size && pass <= names.length; pass++) {
+    const finishLevel = timing.span("references.level");
     let progress = false;
+    const batch = [];
     for (const table of [...pending].sort()) {
       const cols = columns(table),
-        values = [],
-        clauses = [];
+        clauses = [],
+        seenClauses = new Set();
       const add = (col, list) => {
         if (list.length) {
-          values.push(list);
-          clauses.push(`${quote(col)} = ANY($${values.length})`);
+          const key = col + ":" + JSON.stringify(list);
+          if (!seenClauses.has(key)) {
+            seenClauses.add(key);
+            clauses.push(eq(col, list));
+          }
         }
       };
       if (cols.includes("cliente_id")) add("cliente_id", ids);
@@ -236,15 +400,22 @@ async function readSnapshot(db, manifest) {
         )
           s.errors.push({ table, code: "COMPOSITE_FK_SCOPE_UNKNOWN" });
       }
-      if (clauses.length) await load(table, clauses, values);
+      if (clauses.length) batch.push({ table, clauses });
       else if (fks.length) s.tables[table] = [];
       else {
         s.tables[table] = [];
         s.errors.push({ table, code: "LOGICAL_SCOPE_UNKNOWN" });
       }
-      pending.delete(table);
       progress = true;
     }
+    finishLevel({
+      pass,
+      pending: pending.size,
+      tables: batch.map((x) => x.table),
+    });
+    await loadBatch(batch, "references.load");
+    for (const table of [...pending])
+      if (Object.hasOwn(s.tables, table)) pending.delete(table);
     if (!progress) break;
   }
   for (const table of pending)
@@ -253,7 +424,9 @@ async function readSnapshot(db, manifest) {
   // catalogued; unsupported semantics cannot be waived through a manifest.
   // pg_trigger bits: INSERT=4, UPDATE=16. DELETE não é usado pelo motor.
   const triggers = (
-    await db.query(
+    await timing.query(
+      db,
+      "catalog.triggers",
       `SELECT r.relname AS table_name,t.tgname AS name FROM pg_trigger t JOIN pg_class r ON r.oid=t.tgrelid JOIN pg_namespace n ON n.oid=r.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND t.tgenabled<>'D' AND (t.tgtype & 20)<>0 ORDER BY r.relname,t.tgname`,
     )
   ).rows;

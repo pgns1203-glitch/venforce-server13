@@ -10,4 +10,12 @@ function flags(env = process.env) {
     rollback: enabled(env.CLIENTES_UNIFICACAO_ROLLBACK_ENABLED),
   };
 }
-module.exports = { flags, enabled };
+// Só transações READ ONLY. Escrita mantém os quatro limites originais.
+function previewTimeoutMs(env = process.env) {
+  const raw = String(env.CLIENTES_UNIFICACAO_PREVIEW_TIMEOUT_MS || "");
+  const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isInteger(value) && value >= 15000 && value <= 45000
+    ? value
+    : 30000;
+}
+module.exports = { flags, enabled, previewTimeoutMs };

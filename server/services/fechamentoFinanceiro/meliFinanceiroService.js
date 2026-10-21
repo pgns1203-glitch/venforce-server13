@@ -410,6 +410,7 @@ function parseMeliCostRows(rows) {
         "preço custo",
         "preco custo",
         "custo",
+        "custos",
         "custo do produto",
         "custo produto",
         "custo unitário",

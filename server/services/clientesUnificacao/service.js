@@ -1,6 +1,6 @@
 const { finalIdentityViolations, TRANSACTION_TIME } = require("./identity");
 const { isCurrentGrant, currentGrantSql } = require("../mlGrantIdentity");
-const { flags } = require("../../config/clientesUnificacao");
+const { flags, previewTimeoutMs } = require("../../config/clientesUnificacao");
 const {
   normalizeManifest,
   confirmation,
@@ -16,6 +16,8 @@ function createService({
   pool,
   repository = defaultRepository,
   getFlags = flags,
+  getPreviewTimeoutMs = previewTimeoutMs,
+  now = Date.now,
 } = {}) {
   if (!pool) throw new Error("UNIFICATION_POOL_REQUIRED");
   const repo = repository;
@@ -41,13 +43,14 @@ function createService({
     for (let attempt = 0; ; attempt++) {
       let active = false;
       const baseQuery = db.query;
-      const deadline = Date.now() + 15000;
+      const budget = readOnly ? getPreviewTimeoutMs() : 15000;
+      const deadline = now() + budget;
       db.query = async function (...args) {
         const command = String(args[0]).trim().toUpperCase();
-        if (command !== "ROLLBACK" && Date.now() > deadline)
+        if (command !== "ROLLBACK" && now() > deadline)
           throw fail("MERGE_TRANSACTION_TIMEOUT");
         const result = await baseQuery.apply(db, args);
-        if (!["ROLLBACK", "COMMIT"].includes(command) && Date.now() > deadline)
+        if (!["ROLLBACK", "COMMIT"].includes(command) && now() > deadline)
           throw fail("MERGE_TRANSACTION_TIMEOUT");
         return result;
       };

@@ -430,7 +430,7 @@ function buildExecutablePlan(snapshot, input) {
     const parent = (snapshot.constraints || []).filter(
       (c) => c.type === "f" && c.table_name === table,
     );
-    const affected = data.filter(
+    let affected = data.filter(
       (r) =>
         sources.includes(Number(r.cliente_id)) ||
         clients.some(
@@ -460,6 +460,19 @@ function buildExecutablePlan(snapshot, input) {
         ),
     );
     const category = strategy(table);
+    // Linha MOVE sem cliente_id mas com Conta do merge: o dono final vem da
+    // Conta (mesmo quando ela já pertence ao canônico).
+    if (category === "MOVE_TO_CANONICAL" && cols.includes("cliente_id"))
+      affected = [
+        ...affected,
+        ...data.filter(
+          (r) =>
+            r.cliente_id == null &&
+            r.cliente_conta_id != null &&
+            !affected.includes(r) &&
+            accounts.some((a) => same(a.id, r.cliente_conta_id)),
+        ),
+      ];
     if (category === "BLOCKED_UNKNOWN" && data.length) {
       issue("UNKNOWN_CRITICAL_REFERENCE", { table });
       impactCounts.push({ table, count: data.length, strategy: category });
@@ -505,8 +518,9 @@ function buildExecutablePlan(snapshot, input) {
         // cliente fora dele/sem owner, continua fail-closed.
         if (r.cliente_conta_id != null && cols.includes("cliente_id")) {
           const acc = accounts.find((a) => same(a.id, r.cliente_conta_id));
+          // cliente_id NULL: o dono é o da Conta (já no merge) → reconciliado.
           const rowOwnerInMerge =
-            r.cliente_id != null && ids.includes(Number(r.cliente_id));
+            r.cliente_id == null || ids.includes(Number(r.cliente_id));
           if (!acc || !rowOwnerInMerge)
             issue("ACCOUNT_OWNER_MISMATCH", { table });
         }
@@ -540,7 +554,10 @@ function buildExecutablePlan(snapshot, input) {
         const after = {};
         if (
           cols.includes("cliente_id") &&
-          sources.includes(Number(r.cliente_id))
+          (sources.includes(Number(r.cliente_id)) ||
+            (r.cliente_id == null &&
+              r.cliente_conta_id != null &&
+              accounts.some((a) => same(a.id, r.cliente_conta_id))))
         )
           after.cliente_id = target;
         if (

@@ -29,7 +29,8 @@ async function main() {
       (139,2,'shopee','Shopee 2','c139',NULL,false,true);
       INSERT INTO ml_tokens(id,cliente_id,cliente_conta_id,ml_user_id,token_status,is_primary,access_token,refresh_token) VALUES
       (51,1,NULL,'111','valid',true,'s-a','s-r'),(52,2,NULL,'111','valid',false,'s-b','s-s'),(103,2,71,'222','valid',false,'s-c','s-t');
-      INSERT INTO fechamento_incidentes VALUES(1,2,65,'concluido'),(2,1,72,'concluido'),(3,2,71,'concluido'),(4,1,65,'concluido')`);
+      INSERT INTO fechamento_incidentes VALUES(1,2,65,'concluido'),(2,1,72,'concluido'),(3,2,71,'concluido'),(4,1,65,'concluido'),
+      (11,NULL,65,'concluido'),(12,NULL,72,'concluido'),(13,NULL,138,'concluido'),(14,NULL,139,'concluido')`);
     await q(`INSERT INTO painel_contas_lancamentos_manuais VALUES(90,1,72,'2026-01',10)`);
     if (extra) await extra();
   }
@@ -49,6 +50,9 @@ async function main() {
     const p = await service.preview(m, actor);
     assert.equal(p.validationReady, true, JSON.stringify(p.blockers));
     assert.equal(p.blockers.length, 0);
+    const planned = p.plan.changes.filter((c) => c.table === "fechamento_incidentes" && c.before.cliente_id === null);
+    assert.deepEqual(planned.map((c) => c.pk.id).sort((a, b) => a - b), [11, 12, 13, 14]);
+    assert.ok(planned.every((c) => c.after.cliente_id === 1 && Object.keys(c.after).length === 1));
     const op = await service.execute(
       { manifest: m, planHash: p.planHash, confirmationText: p.confirmationText, idempotencyKey: "final-local-1" },
       actor,
@@ -80,12 +84,28 @@ async function main() {
       withoutVersions(materialSnapshot(await repo.readSnapshot(env.pool, m), m)),
       withoutVersions(before),
     );
+    assert.deepEqual(
+      (await q("SELECT id FROM fechamento_incidentes WHERE cliente_id IS NULL ORDER BY id")).map((r) => r.id),
+      [11, 12, 13, 14],
+    );
+    assert.deepEqual(
+      (await q("SELECT cliente_conta_id c FROM fechamento_incidentes WHERE id BETWEEN 11 AND 14 ORDER BY id")).map((r) => r.c),
+      [65, 72, 138, 139],
+    );
     console.log("ok — PG: caso sanitizado #36/#65 (owner mismatch, placeholder #72, labels ML1/ML2, Grants, rollback integral)");
+    count++;
+
+    // cliente_id NULL com Conta fora do merge: não é tocado nem bloqueia.
+    await seed(() => q("INSERT INTO cliente_contas VALUES(31,3,'shopee','SP3','c31',NULL,true,true);INSERT INTO fechamento_incidentes VALUES(20,NULL,31,'concluido')"));
+    let r = await service.preview(manifest(), actor);
+    assert.equal(r.blockers.length, 0, JSON.stringify(r.blockers));
+    assert.ok(!r.plan.changes.some((c) => c.table === "fechamento_incidentes" && c.pk.id === 20));
+    console.log("ok — PG: cliente_id NULL com Conta fora do merge permanece intocado");
     count++;
 
     // Owner indeterminável: conta do merge mas linha de cliente fora dele.
     await seed(() => q("INSERT INTO fechamento_incidentes VALUES(9,3,71,'concluido')"));
-    let r = await service.preview(manifest(), actor);
+    r = await service.preview(manifest(), actor);
     assert.ok(r.blockers.some((b) => b.code === "ACCOUNT_OWNER_MISMATCH"));
     // Conta fora do merge.
     await seed(() => q("INSERT INTO cliente_contas VALUES(31,3,'shopee','SP3','c31',NULL,true,true);INSERT INTO fechamento_incidentes VALUES(9,2,31,'concluido')"));

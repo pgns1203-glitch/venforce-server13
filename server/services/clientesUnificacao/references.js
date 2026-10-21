@@ -1,4 +1,5 @@
 // Políticas auditadas do catálogo de #254. Nunca recebe nomes SQL do manifesto.
+const { centralPolicy } = require("./centralReferenceScope");
 const move = [
   "meli_anuncios",
   "meli_user_products",
@@ -80,8 +81,9 @@ const identityColumns = new Set([
 const secretColumns =
   /(?:token|password|senha|secret|api_key|jwt|database_url|payload|metadata|document|identity_json|respostas|diagnostico_gerado|diagnostico_revisado|query_json|conteudo|error_message|erro_mensagem|erro|raw_response|fingerprint_json|calculo_json|gates_json|detalhes|valores_json|resumo_json|observacoes|observacao|feedback_text|checklist|motivo|imagem)/i;
 function strategy(table) {
-  // Filtros e redundâncias da Central exigem trabalho separado, sem alterar P0.
-  if (table.startsWith("central_vendas_")) return "BLOCKED_UNKNOWN";
+  // Central: só o shape auditado em centralReferenceScope; resto bloqueia.
+  if (table.startsWith("central_vendas_"))
+    return centralPolicy(table)?.strategy || "BLOCKED_UNKNOWN";
   return registry[table] || "BLOCKED_UNKNOWN";
 }
 module.exports = {

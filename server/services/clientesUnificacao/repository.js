@@ -1,6 +1,12 @@
 const { types } = require("pg");
 const { diagnostics } = require("./snapshotDiagnostics");
-const { centralReferenceScope } = require("./centralReferenceScope");
+const {
+  centralReferenceScope,
+  centralPolicyErrors,
+  preservedByParent,
+  preservedFootprintQuery,
+  scopeParents,
+} = require("./centralReferenceScope");
 const { randomUUID } = require("node:crypto");
 const {
   core,
@@ -70,7 +76,12 @@ async function readSnapshot(db, manifest, options = {}) {
   }
 }
 async function collectSnapshot(db, manifest, timing) {
-  const s = { profile: "executor-v1", tables: {}, errors: [] };
+  const s = {
+    profile: "executor-v1",
+    tables: {},
+    errors: [],
+    footprints: [],
+  };
   s.columns = (
     await timing.query(
       db,
@@ -368,6 +379,8 @@ async function collectSnapshot(db, manifest, timing) {
     ),
   );
   finishDiscovery({ tables: pending.size });
+  // Filhos históricos da Central preservados pelo pai: não carregam linhas.
+  const preserved = new Set();
   for (let pass = 0; pending.size && pass <= names.length; pass++) {
     const finishLevel = timing.span("references.level");
     let progress = false;
@@ -407,6 +420,25 @@ async function collectSnapshot(db, manifest, timing) {
         )
       )
         continue;
+      progress = true;
+      for (const code of centralPolicyErrors({
+        table,
+        columns: cols,
+        constraints: s.constraints,
+        indexes: s.indexes,
+        identityColumns,
+      }))
+        s.errors.push({ table, code });
+      if (preservedByParent(table)) {
+        preserved.add(table);
+        continue;
+      }
+      // Pai preservado não tem IDs no snapshot: seguir a FK esconderia linhas.
+      if (fks.some((f) => preserved.has(f.referenced_table))) {
+        s.tables[table] = [];
+        s.errors.push({ table, code: "CENTRAL_PRESERVED_PARENT_UNSUPPORTED" });
+        continue;
+      }
       for (const fk of fks) {
         if (fk.columns?.length === 1)
           add(
@@ -501,7 +533,6 @@ async function collectSnapshot(db, manifest, timing) {
         s.tables[table] = [];
         s.errors.push({ table, code: "LOGICAL_SCOPE_UNKNOWN" });
       }
-      progress = true;
     }
     finishLevel({
       pass,
@@ -510,11 +541,71 @@ async function collectSnapshot(db, manifest, timing) {
     });
     await loadBatch(batch, "references.load");
     for (const table of [...pending])
-      if (Object.hasOwn(s.tables, table)) pending.delete(table);
+      if (Object.hasOwn(s.tables, table) || preserved.has(table))
+        pending.delete(table);
     if (!progress) break;
   }
   for (const table of pending)
     s.errors.push({ table, code: "FK_SCOPE_CYCLE_UNKNOWN" });
+  // Ancestral com qualquer erro (volume, drift, conflito) não define um
+  // subgrafo confiável: blocker sem gastar a consulta de fingerprint.
+  const ancestors = (table, seen = new Set()) => {
+    for (const fk of s.constraints)
+      if (
+        fk.type === "f" &&
+        fk.table_name === table &&
+        fk.referenced_table?.startsWith("central_vendas_") &&
+        !seen.has(fk.referenced_table)
+      ) {
+        seen.add(fk.referenced_table);
+        ancestors(fk.referenced_table, seen);
+      }
+    return seen;
+  };
+  for (const table of [...preserved].sort()) {
+    const lineage = ancestors(table);
+    if (s.errors.some((e) => e.table === table)) continue;
+    if (
+      [...lineage].some(
+        (t) =>
+          s.errors.some((e) => e.table === t) ||
+          (!preserved.has(t) && !Object.hasOwn(s.tables, t)),
+      )
+    ) {
+      s.errors.push({ table, code: "CENTRAL_PARENT_SCOPE_INCOMPLETE" });
+      continue;
+    }
+    // Sem raiz carregada o subgrafo é vazio por definição (footprint vazio
+    // não entra no plano): evita uma consulta por filho sem histórico.
+    if (
+      [...lineage]
+        .filter((t) => !preserved.has(t))
+        .every((t) => !s.tables[t].length)
+    )
+      continue;
+    const { sql, params } = preservedFootprintQuery({
+      table,
+      rootIds: (t) => parentIds(t, "id"),
+      quote,
+    });
+    const result = await timing.query(db, "references.footprint", sql, params, {
+      tables: [table],
+    });
+    const row = result.rows[0];
+    if (!row || !/^[0-9]+$/.test(row.rows || "") || !row.fingerprint)
+      throw fail("SNAPSHOT_BATCH_INVALID");
+    timing.table(table, "references.footprint", Number(row.rows), row._server_ms);
+    s.footprints.push({
+      table,
+      strategy: "PRESERVE_BY_PARENT",
+      // FKs que definem o subgrafo coberto pelo fingerprint.
+      parents: scopeParents(table)
+        .map(([column, parent]) => `${column}>${parent}.id`)
+        .sort(),
+      rows: row.rows,
+      fingerprint: row.fingerprint,
+    });
+  }
   // Custom triggers / exclusion constraints on changed identity families are
   // catalogued; unsupported semantics cannot be waived through a manifest.
   // pg_trigger bits: INSERT=4, UPDATE=16. DELETE não é usado pelo motor.

@@ -167,59 +167,169 @@ Cliente/slug. Não se escolhe apenas a última execução, um período recente,
 status completed/published ou apenas Grants correntes para reduzir volume:
 histórico relevante permanece relevante.
 
-Uma consulta `SELECT EXISTS` separada por tabela verifica identidade direta
-fora do subgrafo carregado, incluindo Cliente/slug/Conta/Grant/Base/seller
-quando presentes. Uma contradição vira `CENTRAL_IDENTITY_OUTSIDE_PARENT_SCOPE`;
-não carregamos o histórico inteiro dessa Conta externa. Filhos alcançados
-pelo pai são mantidos mesmo quando declaram ownership de terceiro. FKs não
-validadas, compostas ou desconhecidas continuam fail-closed, assim como
-referências desconhecidas, catálogo e blockers históricos. Essa política **não
-libera a movimentação de histórico da Central**: `BLOCKED_UNKNOWN` permanece.
+Para as **raízes** (`sync_runs`, `imports`), uma consulta `SELECT EXISTS`
+separada por tabela verifica identidade direta fora do subgrafo carregado,
+incluindo Cliente/slug/Conta/Grant/Base/seller quando presentes. Uma
+contradição vira `CENTRAL_IDENTITY_OUTSIDE_PARENT_SCOPE`; não carregamos o
+histórico inteiro dessa Conta externa. FKs não validadas, compostas ou
+desconhecidas continuam fail-closed, assim como referências desconhecidas,
+catálogo e blockers históricos.
 
-`MAX_ROWS=5000` e todos os timeouts permanecem inalterados. Se um pai relevante
-retorna 5.001 linhas, mantém `BOUNDED_VOLUME_EXCEEDED`; os descendentes recebem
-`CENTRAL_PARENT_SCOPE_INCOMPLETE` sem expandir IDs de um pai truncado. O preview
-conclui com blockers em vez de gastar outra consulta em um grafo incompleto.
-Uma tabela histórica é carregada por statement, evitando somar três leituras
-no mesmo orçamento de 10 s e identificando exatamente a tabela que falhar.
-`references.conflicts` distingue o custo da verificação de inconsistências do
-custo de `references.load`. Sem SQL, parâmetros ou secrets nos eventos.
+`MAX_ROWS=5000` e todos os timeouts permanecem inalterados. Se uma raiz
+relevante retorna 5.001 linhas, mantém `BOUNDED_VOLUME_EXCEEDED`; os
+descendentes recebem `CENTRAL_PARENT_SCOPE_INCOMPLETE` sem expandir IDs de um
+pai truncado. Uma tabela histórica é carregada por statement, evitando somar
+leituras no mesmo orçamento de 10 s e identificando exatamente a tabela que
+falhar. Sem SQL, parâmetros ou secrets nos eventos.
 
-Preview, execute, revalidação, pós-validação e rollback continuam chamando o
-mesmo coletor. Planos previamente gerados precisam de novo preview: o hash
-continua cobrindo catálogo, material, blockers e plano reverso. Mudanças de
-conflito devem invalidar o hash; histórico global sem relação não o altera.
+## Central de Vendas: alto volume histórico relevante
 
-### Evidência local e limite da homologação
+O diagnóstico real da Conta #71 mostrou que o histórico **realmente
+relevante** já passa de 5.000: 7.291 payments, 7.064 pedidos, 35.079 charges,
+19 sync runs e 24 imports. O escopo por Conta (acima) remove histórico alheio,
+mas sozinho não resolve: carregar cada filho linha a linha no snapshot
+estoura `MAX_ROWS`, e subir `MAX_ROWS` criaria snapshot, planHash, ledger e
+locks enormes. Além disso, até aqui **toda** tabela `central_vendas_*` era
+`BLOCKED_UNKNOWN`: qualquer histórico da Central bloqueava a unificação.
 
-`clientesUnificacaoCentralScope.postgres.cjs` aplica o schema real em banco
-PostgreSQL local descartável. Com 6.001 pedidos/payments/charges de terceiro,
-carrega uma linha relevante por tabela. Compartilhamento de Base/Grant antes
-causava overflow no oracle antigo; agora sinaliza a referência cruzada sem
-expandir esse histórico. Mais de 5.000 payments realmente relevantes continuam
-bloqueando, e charges do pai truncado não são consultadas. Também compara o
-plano completo/hash/validator/material/plano reverso, executor bloqueado,
-terceiros, histórico sem Conta e FK ausente. A suíte foi adicionada a
-`npm run test:unificacao:postgres`.
+### Auditoria: quem depende de quê
 
-A sessão psql existente deixou de responder durante o primeiro SELECT desta
-tarefa, antes de produzir catálogo/contagens. Foi solicitado ao usuário
-recuperar essa sessão. Não foi criada conexão alternativa nem executada
-escrita. Portanto **não há contagem atual de payments/pedidos relevantes,
-EXPLAIN de produção ou duração pós-correção certificada para #36/#65**. Não é
-correto prometer que esse caso ficará abaixo de 5.000: se o histórico realmente
-pertencer às Contas envolvidas, o bloqueio precisa permanecer.
+Fonte de verdade: `server/sql/central_vendas_schema.sql` e todos os leitores
+(`centralVendasRepository`, MP payments/settlement repositories, sync
+run/source services, `painelContasRepository`, `centralVendasCliente360Adapter`,
+`meService`, `clientePurgeService`, `clienteDependenciasService`).
 
-O schema versionado já prevê índices em Conta nas raízes, import_id em pedidos,
-sync_run_id em payments, mp_payment_row_id em charges e settlement_report_id
-em movements. A existência e utilização desses índices em produção ainda
-precisa ser confirmada com catálogo/EXPLAIN na sessão recuperada. Nenhum índice
-ou migration é proposto sem essa evidência. Nenhuma mudança de produção,
-flag, deploy ou unificação foi feita.
+| Tabela | PK | FKs Central | Identidade redundante | Lida/apagada por | Estratégia |
+| --- | --- | --- | --- | --- | --- |
+| `central_vendas_sync_runs` | `id` | — | cliente_id (FK `clientes` **ON DELETE CASCADE**), slug, conta, grant, base, seller | `cliente_id` + conta; `JOIN clientes c ON c.id=r.cliente_id` | `MOVE_TO_CANONICAL` |
+| `central_vendas_imports` | `id` | `sync_run_id` | cliente_id, slug, conta, grant, base, seller | `cliente_slug` + conta; purge `DELETE … WHERE cliente_id` | `MOVE_TO_CANONICAL` |
+| `central_vendas_sync_sources` | `id` | `sync_run_id` | — | `sync_run_id` | `PRESERVE_BY_PARENT` |
+| `central_vendas_pedidos` | `id` | `import_id` | cliente_id, slug | `import_id` | `PRESERVE_BY_PARENT` |
+| `central_vendas_pedido_itens` | `id` | `import_id`, `pedido_row_id` | cliente_id, slug | `import_id`, `pedido_row_id` | `PRESERVE_BY_PARENT` |
+| `central_vendas_componentes` | `id` | `import_id`, `pedido_row_id`, `item_row_id` | cliente_id, slug | `import_id`, `pedido_row_id` | `PRESERVE_BY_PARENT` |
+| `central_vendas_mp_payments` | `id` | `sync_run_id` | cliente_id, conta, seller | `sync_run_id` + conta | `PRESERVE_BY_PARENT` |
+| `central_vendas_mp_payment_charges` | `id` | `mp_payment_row_id` | — (sync_run_id sem FK) | `mp_payment_row_id` | `PRESERVE_BY_PARENT` |
+| `central_vendas_mp_settlement_reports` | `id` | `sync_run_id` | cliente_id, conta, seller | `sync_run_id` + conta | `PRESERVE_BY_PARENT` |
+| `central_vendas_mp_settlement_movements` | `id` | `settlement_report_id` | conta (sem FK) | `sync_run_id`/report + conta | `PRESERVE_BY_PARENT` |
+| qualquer outra `central_vendas_*` | | | | | `BLOCKED_UNKNOWN` |
 
-Validação desta revisão: 61 cenários PostgreSQL (39 executor/rollback, 6
-identidade, 8 snapshot e 8 Central), 42 cenários Chrome e todas as suítes
-backend de unificação passaram. Backend completo: **356/360 na branch e
-356/360 em origin/main 03d92dca**. As quatro falhas são idênticas inclusive
-nas mensagens/assertions: basesTiktok, designStudioWorkspace,
-meliAnunciosOrdenacaoGlobal e mlTokenService. Nenhuma falha nova.
+Conclusões:
+
+- **Raízes precisam mudar.** A leitura de imports filtra `cliente_slug`, a de
+  runs filtra `cliente_id`, e `sync_runs.cliente_id` cascateia de `clientes`:
+  deixá-las no legado esconderia o histórico do canônico e um purge do legado
+  apagaria a operação preservada. São poucas linhas (19 + 24 para a Conta
+  #71), então usam o motor existente `MOVE_TO_CANONICAL` linha a linha (PK +
+  before-image, rowCount 1, ledger e rollback simétricos), trocando só
+  `cliente_id`/`cliente_slug`. Conta, Grant histórico, Base e seller ficam.
+  Nenhuma operação bulk foi necessária.
+- **Filhos não precisam mudar.** Nenhum leitor e nenhum purge usa o
+  `cliente_id`/`cliente_slug` redundante deles; tudo passa pela FK do pai,
+  cujo ID não muda (e cascateia junto com ele). Reescrever dezenas de
+  milhares de linhas de evidência financeira seria trabalho e risco sem
+  benefício. O valor redundante fica como origem histórica.
+
+### `PRESERVE_BY_PARENT`
+
+O snapshot não carrega linhas dos filhos. Para cada um registra
+`{table, strategy, parents, rows, fingerprint}`, onde `fingerprint` é
+`md5` de `id:xmin` ordenado por `id` sobre o subgrafo alcançado a partir das
+raízes carregadas. Qualquer INSERT/UPDATE/DELETE no subgrafo muda o
+fingerprint. A consulta devolve uma linha só; nenhum dado de negócio sai do
+banco.
+
+- `plan.historicalFootprints` entra no `planHash` (footprints com 0 linhas
+  ficam de fora, então planos sem histórico Central não mudam). Preview e
+  execute recalculam o mesmo coletor; se o histórico mudou, `planHash`
+  diverge → `MERGE_PLAN_CHANGED`, sem escrita.
+- O ledger (`before/after_snapshot_json`) guarda o material das raízes e os
+  footprints em `@historical_footprints`, alguns KB em vez de 35 mil linhas.
+  A pós-validação do execute exige footprints idênticos antes/depois; o
+  rollback exige footprints iguais ao estado pós-merge
+  (`ROLLBACK_STATE_DIVERGED` caso contrário) e os compara de novo após
+  restaurar.
+- `impactCounts` mostra cada filho com sua contagem e estratégia
+  `PRESERVE_BY_PARENT` na UI.
+
+O subgrafo segue só as FKs que são caminho real de leitura **e** têm índice.
+Em `componentes`, `item_row_id` é apenas cascata, sem índice e sem leitor;
+não define escopo. As linhas continuam intocadas de qualquer forma, mas um
+componente ligado **somente** por `item_row_id` a um item relevante (dado
+inconsistente, o writer grava os três FKs do mesmo import) não entra no
+fingerprint. Se uma FK de escopo perder o índice, o preview bloqueia com
+`CENTRAL_SCOPE_INDEX_MISSING` em vez de arriscar seq scan e `57014`.
+
+Desempenho: ramos de raiz usam `fk = ANY($ids)`; ramos via pai preservado usam
+`CROSS JOIN LATERAL (… WHERE fk = pai.id OFFSET 0)`. O `OFFSET 0` impede o
+planner de achatar o LATERAL em hash join com seq scan, então o trabalho é
+proporcional ao histórico relevante e não ao tamanho global da tabela. A
+primeira versão com `= ANY(ARRAY(subselect))` levou 947 ms só em componentes
+(filtro linear), e um semi-join simples fazia seq scan das tabelas inteiras.
+
+Para filhos preservados não há mais a verificação `EXISTS` de identidade
+redundante fora do pai. Ela exigia varrer as maiores tabelas por colunas sem
+índice e não protegia nada: uma linha dessas não é alterada pela unificação,
+continua presa ao próprio pai e nenhum leitor a acha pela identidade
+redundante.
+
+Continua blocker (fail-closed):
+
+- raiz do legado com `cliente_conta_id IS NULL` →
+  `ACCOUNT_CONTEXT_AMBIGUOUS/CENTRAL_ROOT_WITHOUT_ACCOUNT` (movê-la misturaria
+  o legado de duas operações no fallback do canônico; Conta nunca é inferida);
+- run `queued/running` no escopo → `ACTIVE_OPERATION`;
+- raiz com identidade direta fora do subgrafo →
+  `CENTRAL_IDENTITY_OUTSIDE_PARENT_SCOPE`, e seus filhos ficam sem footprint
+  (`CENTRAL_PARENT_SCOPE_INCOMPLETE`);
+- PK, FK Central ou coluna de identidade diferente do auditado →
+  `CENTRAL_POLICY_DRIFT`; filho preservado com FK para `clientes` →
+  `CENTRAL_PRESERVED_CLIENT_FK`; tabela não auditada que referencia um filho
+  preservado → `CENTRAL_PRESERVED_PARENT_UNSUPPORTED`; qualquer outra tabela
+  `central_vendas_*` com linhas → `BLOCKED_UNKNOWN`.
+
+O índice único parcial `uq_central_vendas_sync_runs_ativo_v2` tem chave de
+expressão (`COALESCE`). O planner passa a aceitar índice parcial quando toda
+linha alterada fica fora do predicado (runs concluídos não entram no índice de
+ativos e não colidem). Expressões não modeladas continuam bloqueando.
+
+### Evidência local
+
+`clientesUnificacaoCentralScope.postgres.cjs` aplica o schema real em
+PostgreSQL 18 local descartável, com o volume da Conta #71 (19 runs, 24
+imports, 7.064 pedidos/itens, 14.128 componentes, 7.291 payments, 35.079
+charges, 2.000 movements) e 6.001+ linhas de terceiro: snapshot sem
+`BOUNDED_VOLUME_EXCEEDED`, filhos nunca em `references.load`, plano
+executável; histórico alheio não muda o hash; UPDATE/INSERT em neto muda o
+hash e DELETE o restaura; mudança entre preview e execute dá
+`MERGE_PLAN_CHANGED` sem escrita; execute move as 43 raízes e mantém
+id/xmin/identidade de todos os filhos (oráculo SQL independente); retry
+idempotente; rollback bloqueia com histórico divergente, restaura e é
+idempotente; blockers de raiz sem Conta, run ativo, conflito externo, tabela
+desconhecida, drift, índice ausente e FK de Conta ausente; caso sanitizado
+#36/#65 (seller duplicado com decisão de Grant, Conta #71 + Grant #103,
+histórico Central) chega às decisões, executa e reverte.
+
+Benchmark local separado com ruído de 60 operações alheias (2,1 M charges,
+854 k componentes, 427 k payments) mais a Conta #71: snapshot 122–142 ms,
+preview 144 ms, execute 584 ms, rollback 457 ms, sem seq scan em nenhum plano.
+O mesmo cenário levava ~4,8 s no execute e 1,2 s por snapshot antes do LATERAL.
+
+**Limite:** não houve sessão psql de produção nesta rodada e nenhuma
+credencial foi procurada. Não há EXPLAIN nem contagem de produção desta
+versão. O índice exigido em cada FK de escopo é checado no catálogo real a
+cada preview: se faltar, o preview mostra blocker em vez de timeout. Nenhuma
+mudança de produção, flag, deploy, merge ou unificação foi feita.
+
+Operação: qualquer escrita no subgrafo preservado entre preview e execute
+(sync noturno da Conta, reprocessamento de run) invalida o plano com
+`MERGE_PLAN_CHANGED`. Isso é intencional. Execute fora da janela de sync e,
+se acontecer, gere um novo preview.
+
+Validação desta revisão: 62 cenários PostgreSQL (39 executor/rollback, 6
+identidade, 8 snapshot, 9 Central), 42 cenários de domínio, 42 cenários
+Chrome e 7 E2E UI + PostgreSQL. Todas as suítes de unificação,
+accountContextFoundation, oauthAccountBindingAtomic e Central de Vendas
+passaram. Backend completo: **356/360 na branch e 356/360 em origin/main
+03d92dca**, com as mesmas quatro falhas históricas e mensagens idênticas
+(basesTiktok, designStudioWorkspace, meliAnunciosOrdenacaoGlobal,
+mlTokenService). Nenhuma falha nova.

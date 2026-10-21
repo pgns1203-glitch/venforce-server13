@@ -101,13 +101,91 @@ test("referência crítica desconhecida", (s, m) => {
   s.columns.push({ table_name: "unknown", column_name: "cliente_id" });
   assert.ok(has(s, m, "UNKNOWN_CRITICAL_REFERENCE"));
 });
-test("Central com histórico exige integração separada", (s, m) => {
+const centralRoot = (s, row) => {
+  for (const column_name of [
+    "id",
+    "cliente_id",
+    "cliente_slug",
+    "cliente_conta_id",
+    "marketplace",
+  ])
+    s.columns.push({ table_name: "central_vendas_imports", column_name });
+  s.constraints.push({
+    type: "p",
+    table_name: "central_vendas_imports",
+    columns: ["id"],
+  });
   s.tables.central_vendas_imports = [
-    { id: 100, cliente_id: 1, cliente_conta_id: 11 },
+    { marketplace: "meli", _version: "1", ...row },
   ];
+};
+test("Central: raiz com Conta move cliente/slug; filho só como footprint", (s, m) => {
+  centralRoot(s, {
+    id: 100,
+    cliente_id: 2,
+    cliente_slug: "legado",
+    cliente_conta_id: 21,
+  });
+  s.footprints = [
+    {
+      table: "central_vendas_mp_payment_charges",
+      strategy: "PRESERVE_BY_PARENT",
+      parents: ["mp_payment_row_id>central_vendas_mp_payments.id"],
+      rows: "35079",
+      fingerprint: "a".repeat(32),
+    },
+  ];
+  const p = buildPlan(s, m);
+  assert.equal(p.validation.ok, true, JSON.stringify(p.validation.blockers));
+  assert.deepEqual(
+    p.changes.find((c) => c.table === "central_vendas_imports"),
+    {
+      table: "central_vendas_imports",
+      pk: { id: 100 },
+      before: { cliente_id: 2, cliente_slug: "legado" },
+      after: { cliente_id: 1, cliente_slug: "canonico" },
+    },
+  );
+  assert.equal(p.historicalFootprints.length, 1);
+  assert.ok(
+    p.impactCounts.some(
+      (i) => i.strategy === "PRESERVE_BY_PARENT" && i.count === 35079,
+    ),
+  );
+  s.footprints[0].fingerprint = "b".repeat(32);
+  assert.notEqual(buildPlan(s, m).planHash, p.planHash);
+  s.footprints[0].rows = "0";
+  assert.equal(buildPlan(s, m).historicalFootprints, undefined);
+});
+test("Central: raiz legada sem Conta e tabela desconhecida bloqueiam", (s, m) => {
+  centralRoot(s, {
+    id: 100,
+    cliente_id: 2,
+    cliente_slug: "legado",
+    cliente_conta_id: null,
+  });
+  assert.ok(
+    buildPlan(s, m).validation.blockers.some(
+      (b) =>
+        b.code === "ACCOUNT_CONTEXT_AMBIGUOUS" &&
+        b.detail.reason === "CENTRAL_ROOT_WITHOUT_ACCOUNT",
+    ),
+  );
+  // Sem cliente_id, só pelo slug do legado: mesma ambiguidade.
+  s.tables.central_vendas_imports[0].cliente_id = null;
+  assert.ok(
+    buildPlan(s, m).validation.blockers.some(
+      (b) => b.detail.reason === "CENTRAL_ROOT_WITHOUT_ACCOUNT",
+    ),
+  );
+  s.tables.central_vendas_imports[0].cliente_id = 2;
+  s.tables.central_vendas_imports[0].cliente_conta_id = 21;
+  s.tables.central_vendas_desconhecida = [{ id: 1, cliente_id: 1 }];
   assert.ok(has(s, m, "UNKNOWN_CRITICAL_REFERENCE"));
   assert.equal(
-    buildPlan(s, m).changes.some((c) => c.table.startsWith("central_vendas")),
+    buildPlan(s, m).changes.some(
+      (c) => c.table === "central_vendas_desconhecida",
+    ),
     false,
   );
 });

@@ -127,3 +127,99 @@ tokens, credenciais, valores de linhas ou manifesto e não afetam hashes.
 
 `npm run test:unificacao:postgres` inclui as três suítes PostgreSQL. Banco de
 produção não é aceito pelo helper. Sem migration, deploy ou unificação reais.
+
+## Central de Vendas: escopo de referências históricas (pós-PR #350)
+
+A captura de produção fornecida em 21/10/2026 mostrou `57014` em
+`references.load`, após aproximadamente 10.064 ms. O statement agrupava
+`central_vendas_mp_payment_charges`, `central_vendas_settlement_movements` e
+`central_vendas_pedidos`. Esse tempo é do **statement inteiro**, não prova qual
+ramo o consumiu. `central_vendas_mp_payments` retornou 5.001 linhas em cerca de
+3,5 s. Esses dados não permitem afirmar que as 5.001 linhas sejam alheias.
+
+O coletor genérico aplicava Cliente/slug/Conta/Base/Grant **ou** FK do pai em
+todos os níveis. Uma Base/Grant compartilhada podia expandir runs/imports de
+outra Conta e, daí, todos os filhos. A carga passa a usar a autoridade abaixo,
+confirmada no schema versionado `server/sql/central_vendas_schema.sql` e
+verificada contra as FKs do catálogo em cada snapshot:
+
+| Tabela | Raiz/pai autoritativo |
+| --- | --- |
+| `central_vendas_sync_runs` | `cliente_conta_id → cliente_contas.id` |
+| `central_vendas_imports` | `cliente_conta_id → cliente_contas.id`; também `sync_run_id → central_vendas_sync_runs.id` |
+| `central_vendas_pedidos` | `import_id → central_vendas_imports.id` |
+| `central_vendas_pedido_itens` | `import_id` e `pedido_row_id` |
+| `central_vendas_componentes` | `import_id`, `pedido_row_id` e `item_row_id` |
+| `central_vendas_mp_payments` | `sync_run_id → central_vendas_sync_runs.id` |
+| `central_vendas_mp_payment_charges` | `mp_payment_row_id → central_vendas_mp_payments.id` |
+| `central_vendas_mp_settlement_reports` | `sync_run_id → central_vendas_sync_runs.id` |
+| `central_vendas_mp_settlement_movements` | `settlement_report_id → central_vendas_mp_settlement_reports.id` |
+
+`sync_run_id` em charges/movements é redundante e não possui FK no schema
+versionado; não inventamos um caminho com esse campo. O nome sem `mp_`
+`central_vendas_settlement_movements`, presente na captura, não está nesse
+schema. Se existir em produção, suas FKs reais serão descobertas: segue pais
+Central com FK validada simples; sem caminho reconhecido continua bloqueado.
+Não se assume que seja sinônimo da tabela versionada.
+
+Raízes legadas sem Conta (`cliente_conta_id IS NULL`) continuam visíveis por
+Cliente/slug. Não se escolhe apenas a última execução, um período recente,
+status completed/published ou apenas Grants correntes para reduzir volume:
+histórico relevante permanece relevante.
+
+Uma consulta `SELECT EXISTS` separada por tabela verifica identidade direta
+fora do subgrafo carregado, incluindo Cliente/slug/Conta/Grant/Base/seller
+quando presentes. Uma contradição vira `CENTRAL_IDENTITY_OUTSIDE_PARENT_SCOPE`;
+não carregamos o histórico inteiro dessa Conta externa. Filhos alcançados
+pelo pai são mantidos mesmo quando declaram ownership de terceiro. FKs não
+validadas, compostas ou desconhecidas continuam fail-closed, assim como
+referências desconhecidas, catálogo e blockers históricos. Essa política **não
+libera a movimentação de histórico da Central**: `BLOCKED_UNKNOWN` permanece.
+
+`MAX_ROWS=5000` e todos os timeouts permanecem inalterados. Se um pai relevante
+retorna 5.001 linhas, mantém `BOUNDED_VOLUME_EXCEEDED`; os descendentes recebem
+`CENTRAL_PARENT_SCOPE_INCOMPLETE` sem expandir IDs de um pai truncado. O preview
+conclui com blockers em vez de gastar outra consulta em um grafo incompleto.
+Uma tabela histórica é carregada por statement, evitando somar três leituras
+no mesmo orçamento de 10 s e identificando exatamente a tabela que falhar.
+`references.conflicts` distingue o custo da verificação de inconsistências do
+custo de `references.load`. Sem SQL, parâmetros ou secrets nos eventos.
+
+Preview, execute, revalidação, pós-validação e rollback continuam chamando o
+mesmo coletor. Planos previamente gerados precisam de novo preview: o hash
+continua cobrindo catálogo, material, blockers e plano reverso. Mudanças de
+conflito devem invalidar o hash; histórico global sem relação não o altera.
+
+### Evidência local e limite da homologação
+
+`clientesUnificacaoCentralScope.postgres.cjs` aplica o schema real em banco
+PostgreSQL local descartável. Com 6.001 pedidos/payments/charges de terceiro,
+carrega uma linha relevante por tabela. Compartilhamento de Base/Grant antes
+causava overflow no oracle antigo; agora sinaliza a referência cruzada sem
+expandir esse histórico. Mais de 5.000 payments realmente relevantes continuam
+bloqueando, e charges do pai truncado não são consultadas. Também compara o
+plano completo/hash/validator/material/plano reverso, executor bloqueado,
+terceiros, histórico sem Conta e FK ausente. A suíte foi adicionada a
+`npm run test:unificacao:postgres`.
+
+A sessão psql existente deixou de responder durante o primeiro SELECT desta
+tarefa, antes de produzir catálogo/contagens. Foi solicitado ao usuário
+recuperar essa sessão. Não foi criada conexão alternativa nem executada
+escrita. Portanto **não há contagem atual de payments/pedidos relevantes,
+EXPLAIN de produção ou duração pós-correção certificada para #36/#65**. Não é
+correto prometer que esse caso ficará abaixo de 5.000: se o histórico realmente
+pertencer às Contas envolvidas, o bloqueio precisa permanecer.
+
+O schema versionado já prevê índices em Conta nas raízes, import_id em pedidos,
+sync_run_id em payments, mp_payment_row_id em charges e settlement_report_id
+em movements. A existência e utilização desses índices em produção ainda
+precisa ser confirmada com catálogo/EXPLAIN na sessão recuperada. Nenhum índice
+ou migration é proposto sem essa evidência. Nenhuma mudança de produção,
+flag, deploy ou unificação foi feita.
+
+Validação desta revisão: 61 cenários PostgreSQL (39 executor/rollback, 6
+identidade, 8 snapshot e 8 Central), 42 cenários Chrome e todas as suítes
+backend de unificação passaram. Backend completo: **356/360 na branch e
+356/360 em origin/main 03d92dca**. As quatro falhas são idênticas inclusive
+nas mensagens/assertions: basesTiktok, designStudioWorkspace,
+meliAnunciosOrdenacaoGlobal e mlTokenService. Nenhuma falha nova.

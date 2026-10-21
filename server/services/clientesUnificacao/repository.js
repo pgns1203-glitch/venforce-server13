@@ -1,5 +1,6 @@
 const { types } = require("pg");
 const { diagnostics } = require("./snapshotDiagnostics");
+const { centralReferenceScope } = require("./centralReferenceScope");
 const { randomUUID } = require("node:crypto");
 const {
   core,
@@ -163,6 +164,23 @@ async function collectSnapshot(db, manifest, timing) {
   // Células em texto + parsers do pg preservam bigint/numeric/array/date exatamente
   // como SELECTs individuais (JSON numérico não pode arredondar IDs de 64 bits).
   async function loadBatch(specs, phase) {
+    // Uma consulta por tabela histórica: timeout/EXPLAIN identificam o filho
+    // preciso e não somam três leituras grandes no mesmo statement de 10s.
+    if (
+      phase === "references.load" &&
+      specs.length > 1 &&
+      specs.some((x) => x.table.startsWith("central_vendas_"))
+    ) {
+      const ordinary = specs.filter(
+        (x) => !x.table.startsWith("central_vendas_"),
+      );
+      if (ordinary.length) await loadBatch(ordinary, phase);
+      for (const spec of specs.filter((x) =>
+        x.table.startsWith("central_vendas_"),
+      ))
+        await loadBatch([spec], phase);
+      return;
+    }
     // Limita tamanho do statement e o conjunto diagnosticado em caso de timeout.
     if (specs.length > 16) {
       for (let i = 0; i < specs.length; i += 16)
@@ -399,6 +417,83 @@ async function collectSnapshot(db, manifest, timing) {
           parentIds(fk.referenced_table, fk.referenced_columns?.[0]).length
         )
           s.errors.push({ table, code: "COMPOSITE_FK_SCOPE_UNKNOWN" });
+      }
+      const central = centralReferenceScope({
+        table,
+        columns: cols,
+        constraints: s.constraints,
+        accountIds,
+        ids,
+        slugs,
+        parentIds,
+        quote,
+      });
+      if (central) {
+        clauses.splice(0, clauses.length, ...central.clauses);
+        for (const code of central.errors) s.errors.push({ table, code });
+        // Teste de existência, não carga do histórico por Cliente. Mantém
+        // referências órfãs/cruzadas como blocker sem expandir outro subgrafo.
+        const direct = [];
+        if (cols.includes("cliente_id")) direct.push(eq("cliente_id", ids));
+        if (cols.includes("cliente_slug") && slugs.length)
+          direct.push(eq("cliente_slug", slugs));
+        if (cols.includes("cliente_conta_id"))
+          direct.push(eq("cliente_conta_id", accountIds));
+        if (cols.includes("grant_id") && grantIds.length)
+          direct.push(eq("grant_id", grantIds));
+        if (cols.includes("base_id") && baseIds.length)
+          direct.push(eq("base_id", baseIds));
+        if (cols.includes("external_account_id") && sellers.length)
+          direct.push(eq("external_account_id", sellers));
+        if (
+          direct.length &&
+          !central.errors.length &&
+          !central.parents.some((f) =>
+            s.errors.some(
+              (e) =>
+                e.table === f.referenced_table &&
+                e.code !== "CENTRAL_IDENTITY_OUTSIDE_PARENT_SCOPE",
+            ),
+          )
+        ) {
+          const params = [],
+            bind = (value) => {
+              params.push(value);
+              return `$${params.length}`;
+            };
+          const directSql = direct.map((c) => c(bind)).join(" OR ");
+          const scopeSql =
+            central.clauses.map((c) => c(bind)).join(" OR ") || "false";
+          const conflict = await timing.query(
+            db,
+            "references.conflicts",
+            `SELECT EXISTS(SELECT 1 FROM ${quote(table)} WHERE (${directSql}) AND NOT COALESCE((${scopeSql}),false)) AS conflict`,
+            params,
+            { tables: [table] },
+          );
+          if (conflict.rows[0]?.conflict)
+            s.errors.push({
+              table,
+              code: "CENTRAL_IDENTITY_OUTSIDE_PARENT_SCOPE",
+            });
+        }
+        // Um pai truncado não define um subgrafo completo. O blocker de volume
+        // permanece; expandi-lo gastaria tempo sem produzir plano executável.
+        if (
+          central.parents.some((f) =>
+            s.errors.some(
+              (e) =>
+                e.table === f.referenced_table &&
+                [
+                  "BOUNDED_VOLUME_EXCEEDED",
+                  "CENTRAL_PARENT_SCOPE_INCOMPLETE",
+                ].includes(e.code),
+            ),
+          )
+        ) {
+          clauses.length = 0;
+          s.errors.push({ table, code: "CENTRAL_PARENT_SCOPE_INCOMPLETE" });
+        }
       }
       if (clauses.length) batch.push({ table, clauses });
       else if (fks.length) s.tables[table] = [];

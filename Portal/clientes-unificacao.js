@@ -276,40 +276,32 @@ function previewMarkup(p) {
     <section class="cu-review-section"><h3>4. Validação e decisões</h3>${issues("Bloqueios", p.blockers, "blocker")}${issues("Avisos", p.warnings, "warning")}${issues("Informações", p.info)}</section>`;
 }
 
-// Passo 3: resumo em linguagem de operação; o detalhe fica no accordion.
+// Resultado da validação em linguagem de operação; o detalhe fica no accordion.
 function summaryMarkup(p) {
   const r = p.plan?.identityResolution;
-  const changes = p.plan?.changes || [];
-  const moved = (p.clienteContas || []).filter((a) =>
-    changes.some(
+  const accounts = (p.clienteContas || []).filter((a) => {
+    const off = p.plan?.changes?.some(
       (c) =>
         c.table === "cliente_contas" &&
         equalId(c.pk.id, a.id) &&
-        c.after.cliente_id != null &&
-        a.ativo !== false,
-    ),
-  );
-  const byMarket = Object.entries(
-    moved.reduce((m, a) => ({ ...m, [a.marketplace]: (m[a.marketplace] || 0) + 1 }), {}),
-  ).map(([k, n]) => `${n} conta(s) ${e(MARKETS[k]?.[0] || k)}`);
-  const lines = [
-    `<li>Empresa que permanece: ${e(p.clienteCanonico?.nome || `#${p.clienteCanonico?.id}`)}</li>`,
-    byMarket.length ? `<li>Serão incorporadas: ${byMarket.join(", ")}</li>` : "",
-    ...(r?.sellers || [])
-      .filter((s) => s.supersededGrantIds?.length)
-      .map(
-        (s) =>
-          `<li>Será consolidado o seller ${e(s.seller)}: Grant ${s.supersededGrantIds.map((id) => `#${e(id)}`).join(", ")} vira histórico</li>`,
-      ),
-    ...(r?.emptyAccounts || [])
-      .filter((a) => a.selected)
-      .map(
-        (a) =>
-          `<li>Operação antiga sem conexão real (Conta #${e(a.id)}) será desativada; o histórico é preservado</li>`,
-      ),
-  ].filter(Boolean);
-  const warn = (p.warnings || []).some((w) => w.code === "ACCOUNT_WITHOUT_BASE");
-  return `<section class="cu-review-section"><h3>Passo 3 · Revisar e confirmar</h3><ul>${lines.join("")}</ul><p>✓ Histórico preservado (Central de Vendas, Financeiro e demais registros)</p>${warn ? "<p>Aviso: contas sem Base continuarão sem Base após a unificação.</p>" : ""}</section>`;
+        c.after.ativo === false,
+    );
+    return a.ativo !== false && !off;
+  });
+  const sellers = r?.sellers || [];
+  const kept = sellers.filter((s) => s.canonicalGrantId).length;
+  const archived = sellers.reduce((n, s) => n + (s.supersededGrantIds?.length || 0), 0);
+  const retired = (r?.emptyAccounts || []).filter((a) => a.selected).length;
+  const noBase = (p.warnings || []).filter((w) => w.code === "ACCOUNT_WITHOUT_BASE").length;
+  const line = (ok, text) => `<li>${ok ? "✓" : "⚠"} ${text}</li>`;
+  return `<section class="cu-review-section"><h3>Resultado da validação</h3><ul>${[
+    line(true, `${accounts.length} operação(ões) serão preservadas`),
+    kept ? line(true, `${kept} Grant(s) serão mantidos`) : "",
+    archived ? line(true, `${archived} Grant(s) duplicado(s) serão arquivados no histórico`) : "",
+    retired ? line(true, `${retired} operação(ões) antiga(s) sem conexão serão desativadas, com histórico preservado`) : "",
+    line(true, "histórico será preservado"),
+    noBase ? line(false, `${noBase} conta(s) não possuem Base`) : "",
+  ].join("")}</ul></section>`;
 }
 
 export function createUnificacaoPage({
@@ -368,8 +360,6 @@ export function createUnificacaoPage({
       state.keyHash = null;
     }
     el("confirm").hidden = true;
-    el("reviewed").checked = false;
-    el("confirmation").value = "";
     feedback("Preview invalidado. Gere uma nova validação antes de continuar.");
     updateButtons();
   }
@@ -391,8 +381,7 @@ export function createUnificacaoPage({
       !p?.canExecute ||
       !!p.blockers?.length ||
       !!p.decisionsRequired?.length ||
-      !el("reviewed").checked ||
-      el("confirmation").value !== p.confirmationText;
+      false;
     el("execute").textContent =
       state.busy === "execute"
         ? "Unificando…"
@@ -403,8 +392,8 @@ export function createUnificacaoPage({
       state.busy === "preview"
         ? "Validando…"
         : p
-          ? "Atualizar preview"
-          : "Gerar preview";
+          ? "Validar novamente"
+          : "Validar";
   }
   function renderSelection() {
     el("canonical").innerHTML = state.canonical
@@ -588,10 +577,6 @@ export function createUnificacaoPage({
       ...new Set([...state.required, ...(p.decisionsRequired || [])]),
     ];
     const fields = state.required.map((path) => {
-      if (path === "aprovacao") {
-        const who = state.config?.actor || {};
-        return `<fieldset class="cu-decision"><legend>Aprovação</legend><label><input id="cu-approved" type="checkbox" data-decision="approved" ${state.approval.aprovada ? "checked" : ""}> Confirmo que esta unificação foi aprovada.</label><p>Aprovador: ${e(who.nome || "usuário atual")} (ID ${e(who.id ?? "?")})</p><label for="cu-evidence">Referência interna da aprovação</label><input id="cu-evidence" class="vf-input" maxlength="160" data-decision="evidence" value="${e(state.approval.evidencia || "")}" placeholder="Ex.: APROVACAO-2026-001"><p class="cu-muted">Informe apenas a referência. Não envie documentos, credenciais ou segredos.</p></fieldset>`;
-      }
       if (path.startsWith("decisoes.primaryAccounts.")) {
         const key = path.split(".").at(-1);
         return `<fieldset class="cu-decision"><legend>Conta principal · ${e(MARKETS[key]?.[0] || key)}</legend>${(
@@ -619,7 +604,7 @@ export function createUnificacaoPage({
         const item = p.plan?.identityResolution?.sellers.find(
           (i) => i.seller === seller,
         );
-        return `<fieldset class="cu-decision"><legend>Seller ${e(seller)} · Conta que representa este seller</legend>${(item?.accountOptions || []).map((a) => `<label><input type="radio" name="cu-seller-${e(seller)}" data-decision="seller-account" data-seller="${e(seller)}" value="${e(a.id)}" ${equalId(state.decisions.sellerAccounts?.[seller], a.id) ? "checked" : ""}> ${e(a.nome || "Conta")} · Conta #${e(a.id)} · Cliente #${e(a.cliente_id)}</label>`).join("")}</fieldset>`;
+        return `<fieldset class="cu-decision"><legend>Encontramos mais de uma Conta possível para o seller ${e(seller)}</legend>${(item?.accountOptions || []).map((a) => `<label><input type="radio" name="cu-seller-${e(seller)}" data-decision="seller-account" data-seller="${e(seller)}" value="${e(a.id)}" ${equalId(state.decisions.sellerAccounts?.[seller], a.id) ? "checked" : ""}> ${e(a.nome || "Conta")} · Conta #${e(a.id)} · Cliente #${e(a.cliente_id)}</label>`).join("")}</fieldset>`;
       }
       if (path.startsWith("decisoes.canonicalGrantsBySeller.")) {
         const seller = path.split(".").at(-1);
@@ -671,40 +656,13 @@ export function createUnificacaoPage({
     });
     el("decisions").hidden = !fields.length;
     el("decisions").innerHTML = fields.length
-      ? `<h3>Passo 2 · Organizar operações</h3>${fields.join("")}<p class="cu-muted">Cada alteração invalida o preview anterior e solicita uma nova validação.</p>`
+      ? `<h3>Precisamos de uma escolha sua</h3>${fields.join("")}<p class="cu-muted">Cada alteração invalida o preview anterior e solicita uma nova validação.</p>`
       : "";
     if (focusedId && el("decisions").contains(doc.getElementById(focusedId))) {
       const focused = doc.getElementById(focusedId);
       focused.focus();
       if (typeof caret === "number") focused.setSelectionRange(caret, caret);
     }
-  }
-  // Auto-resolução só do que o backend prova seguro; segue explícito no manifesto.
-  function autoResolve(p) {
-    const r = p.plan?.identityResolution;
-    if (!r) return false;
-    const d = state.decisions;
-    let changed = false;
-    const ids = new Set(d.deactivateEmptyAccountIds || []);
-    // Só depois que todo seller tem Conta: antes disso a Conta vazia ainda
-    // pode ser a escolhida pelo operador.
-    const sellersResolved = (r.sellers || []).every((s) => s.accountId != null);
-    for (const a of sellersResolved ? r.emptyAccounts || [] : [])
-      if (!a.assigned && !a.selected && a.canDeactivate && !ids.has(Number(a.id))) {
-        ids.add(Number(a.id));
-        changed = true;
-      }
-    d.deactivateEmptyAccountIds = [...ids].sort((x, y) => x - y);
-    for (const s of r.sellers || [])
-      if (
-        d.sellerAccounts?.[s.seller] == null &&
-        s.accountOptions?.length === 1 &&
-        s.grantOptions?.length === 1
-      ) {
-        d.sellerAccounts = { ...d.sellerAccounts, [s.seller]: Number(s.accountOptions[0].id) };
-        changed = true;
-      }
-    return changed;
   }
   async function preview() {
     if (
@@ -719,8 +677,6 @@ export function createUnificacaoPage({
     const request = manifest();
     state.preview = null;
     el("confirm").hidden = true;
-    el("reviewed").checked = false;
-    el("confirmation").value = "";
     state.busy = "preview";
     updateButtons();
     feedback("Validando com o backend…");
@@ -737,20 +693,9 @@ export function createUnificacaoPage({
       state.preview = p;
       state.decisions = clone(p.manifest.decisoes);
       state.approval = clone(p.manifest.aprovacao);
-      if (autoResolve(p)) {
-        // Decisões seguras preenchidas: o preview anterior perde validade e
-        // é refeito pelo laço de revisão do finally.
-        // Mantém o controle visível para o operador poder desfazer a sugestão.
-        state.required = [
-          ...new Set([...state.required, ...(p.decisionsRequired || [])]),
-        ];
-        invalidate();
-        return;
-      }
       el("review").innerHTML = `${summaryMarkup(p)}<details class="cu-technical" id="cu-technical"><summary>Detalhes técnicos</summary>${previewMarkup(p)}</details>`;
       el("review").hidden = false;
       renderDecisions(p);
-      el("confirmation-text").textContent = p.confirmationText;
       el("confirm").hidden = false;
       el("execution-state").textContent = p.canExecute
         ? "Preview validado. Revise os dados e confirme para executar."
@@ -865,12 +810,12 @@ export function createUnificacaoPage({
     feedback("Executando. Aguarde o resultado registrado pelo backend.");
     try {
       const data = await api.post(`${ROOT}/execute`, {
-        timeoutMs: 45000,
+        timeoutMs: 180000,
         body: {
           manifest: clone(state.preview.manifest),
           planHash: state.preview.planHash,
           idempotencyKey: state.key,
-          confirmationText: el("confirmation").value,
+          confirmationText: state.preview.confirmationText,
         },
       });
       if (data?.operation) showOperation(data.operation);
@@ -1104,8 +1049,6 @@ export function createUnificacaoPage({
     }
     el("preview").addEventListener("click", preview);
     el("execute").addEventListener("click", execute);
-    el("reviewed").addEventListener("change", updateButtons);
-    el("confirmation").addEventListener("input", updateButtons);
     el("decisions").addEventListener("change", (event) =>
       changeDecision(event.target),
     );

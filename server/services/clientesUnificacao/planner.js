@@ -211,11 +211,31 @@ function buildExecutablePlan(snapshot, input) {
     manifest.schemaVersion === 2
       ? resolveIdentity(snapshot, manifest, issue, decisionsRequired)
       : null;
+  // Principal por marketplace: decisão explícita; sem ela, preferência
+  // determinística (principal do canônico, senão menor id) entre as ativas.
+  const selectedPrimary = { ...manifest.decisoes.primaryAccounts };
+  for (const marketplace of new Set(accounts.map((a) => a.marketplace))) {
+    if (selectedPrimary[marketplace]) continue;
+    const primaries = accounts
+      .filter(
+        (a) =>
+          a.marketplace === marketplace &&
+          a.ativo === true &&
+          a.is_primary === true &&
+          identity?.accountPatches.get(Number(a.id))?.ativo !== false,
+      )
+      .sort(
+        (x, y) =>
+          Number(!same(x.cliente_id, target)) -
+            Number(!same(y.cliente_id, target)) || Number(x.id) - Number(y.id),
+      );
+    if (primaries.length > 1) selectedPrimary[marketplace] = Number(primaries[0].id);
+  }
   if (identity)
     for (const [aid, patch] of labelPatches({
       accounts,
       accountPatches: identity.accountPatches,
-      selectedPrimary: manifest.decisoes.primaryAccounts,
+      selectedPrimary,
       target,
     }))
       identity.accountPatches.set(aid, {
@@ -227,7 +247,6 @@ function buildExecutablePlan(snapshot, input) {
     .filter(
       (g) => !identity?.grantPatches.get(Number(g.id))?.superseded_by_grant_id,
     );
-  const selectedPrimary = manifest.decisoes.primaryAccounts;
   for (const [marketplace, choice] of Object.entries(selectedPrimary))
     if (
       !accounts.some(
@@ -256,16 +275,25 @@ function buildExecutablePlan(snapshot, input) {
       decisionsRequired.push(`decisoes.primaryAccounts.${marketplace}`);
     }
   }
-  if (
-    currentGrants.filter((g) => g.is_primary === true).length > 1 &&
-    !manifest.decisoes.primaryGrantId
-  ) {
-    issue("UNIQUE_COLLISION", { table: "ml_tokens", kind: "primary" });
-    decisionsRequired.push("decisoes.primaryGrantId");
+  // Grant principal: explícito; senão o da Conta ML principal, do canônico, id.
+  let primaryGrantId = manifest.decisoes.primaryGrantId;
+  const grantPrimaries = currentGrants.filter((g) => g.is_primary === true);
+  if (!primaryGrantId && grantPrimaries.length > 1) {
+    const accountOf = (g) =>
+      identity?.grantPatches.get(Number(g.id))?.cliente_conta_id ??
+      g.cliente_conta_id;
+    primaryGrantId = [...grantPrimaries].sort(
+      (x, y) =>
+        Number(!same(accountOf(x), selectedPrimary.meli)) -
+          Number(!same(accountOf(y), selectedPrimary.meli)) ||
+        Number(!same(x.cliente_id, target)) -
+          Number(!same(y.cliente_id, target)) ||
+        Number(x.id) - Number(y.id),
+    )[0].id;
   }
   if (
-    manifest.decisoes.primaryGrantId &&
-    !currentGrants.some((g) => same(g.id, manifest.decisoes.primaryGrantId))
+    primaryGrantId &&
+    !currentGrants.some((g) => same(g.id, primaryGrantId))
   )
     issue("PRIMARY_GRANT_DECISION_INVALID");
   for (const a of accounts) {
@@ -390,9 +418,8 @@ function buildExecutablePlan(snapshot, input) {
       sources.includes(Number(g.cliente_id))
     )
       after.cliente_id = target;
-    if (manifest.decisoes.primaryGrantId)
-      after.is_primary =
-        isCurrentGrant(g) && same(g.id, manifest.decisoes.primaryGrantId);
+    if (primaryGrantId)
+      after.is_primary = isCurrentGrant(g) && same(g.id, primaryGrantId);
     Object.assign(after, identity?.grantPatches.get(Number(g.id)) || {});
     mutate("ml_tokens", g, after);
     if (g.token_status !== "valid")

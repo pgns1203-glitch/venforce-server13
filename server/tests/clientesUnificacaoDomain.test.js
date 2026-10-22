@@ -189,12 +189,19 @@ test("Central: raiz legada sem Conta e tabela desconhecida bloqueiam", (s, m) =>
     false,
   );
 });
-test("primary ausente nunca escolhe sozinho", (s, m) => {
+test("primary ausente: preferência determinística, sem decisão manual", (s, m) => {
   delete m.decisoes.primaryAccounts.meli;
   delete m.decisoes.primaryGrantId;
   const p = buildPlan(s, m);
-  assert.ok(p.validation.blockers.some((b) => b.code === "UNIQUE_COLLISION"));
-  assert.ok(p.decisionsRequired.includes("decisoes.primaryAccounts.meli"));
+  assert.ok(!p.validation.blockers.some((b) => b.code === "UNIQUE_COLLISION"));
+  assert.ok(!p.decisionsRequired.includes("decisoes.primaryAccounts.meli"));
+  const again = buildPlan(s, m);
+  assert.equal(again.planHash, p.planHash);
+  // Principal do canônico vence; o do legado deixa de ser principal.
+  const primaries = p.changes.filter(
+    (c) => c.table === "cliente_contas" && c.after.is_primary === false,
+  );
+  assert.ok(primaries.length >= 1);
 });
 test("primary explícita válida", (s, m) => {
   const p = buildPlan(s, m);

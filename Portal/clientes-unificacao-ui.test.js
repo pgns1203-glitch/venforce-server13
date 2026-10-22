@@ -340,34 +340,20 @@ async function main() {
   }
   async function initialPreview() {
     await c.click("cu-preview");
-    await c.wait("document.getElementById('cu-approved')");
+    await c.wait(
+      "document.getElementById('cu-review').textContent.includes('Resultado da validação')",
+    );
   }
+  // Fluxo simples: nada a decidir; o backend já resolveu e o aprovador é o admin.
   async function decide() {
-    await c.eval(
-      "document.getElementById('cu-approved').checked=true;document.getElementById('cu-evidence').value='DOC-TEST-001';document.querySelector('[data-decision=primary][value=\"21\"]').checked=true;document.querySelector('[data-decision=grant][value=\"32\"]').checked=true;",
-    );
-    for (const selector of [
-      "#cu-approved",
-      "#cu-evidence",
-      "[data-decision=primary][value='21']",
-      "[data-decision=grant][value='32']",
-    ])
-      await c.eval(
-        `document.querySelector(${JSON.stringify(selector)}).dispatchEvent(new Event('change',{bubbles:true}))`,
-      );
-    await sleep(750);
-    assert.equal(
-      calls.filter((r) => r.route === "/preview").at(-1).body.manifest.aprovacao
-        .aprovadorUserId,
-      5,
-    );
     await c.wait(
       "document.getElementById('cu-execution-state').textContent.includes('Preview validado')",
     );
+    assert.equal(currentPreview.manifest.aprovacao.aprovadorUserId, 5);
+    assert.equal(currentPreview.decisionsRequired.length, 0);
   }
   async function confirm() {
-    await c.check("cu-reviewed");
-    await c.input("cu-confirmation", "UNIFICAR 2 EM 1");
+    await c.wait("!document.getElementById('cu-execute').disabled");
   }
   try {
     await check(
@@ -593,7 +579,8 @@ async function main() {
           "Grant #31",
           "Base Matriz",
           "Cliente #2",
-          "UNIQUE_COLLISION",
+          "Resultado da validação",
+          "Detalhes técnicos",
           "BUSINESS_APPROVAL_IS_EXTERNAL",
         ])
           assert.ok(txt.includes(v), v);
@@ -602,60 +589,37 @@ async function main() {
           null,
         );
         assert.equal(
-          await c.eval("document.getElementById('cu-execute').disabled"),
-          true,
+          await c.eval("document.getElementById('cu-technical').open"),
+          false,
         );
       },
     );
     await check(
-      "decisões invalidam preview e geram hash novo pelo backend",
+      "sem decisões manuais: valida sozinho e libera Unificar",
       async () => {
-        const old = previewHash;
         await decide();
-        assert.notEqual(previewHash, old);
-        assert.equal(currentPreview.decisionsRequired.length, 0);
-        assert.equal(
-          await c.eval("document.getElementById('cu-execute').disabled"),
-          true,
-        );
-      },
-    );
-    await check(
-      "atualizar preview exige revisão e confirmação novas",
-      async () => {
-        await confirm();
         assert.equal(
           await c.eval("document.getElementById('cu-execute').disabled"),
           false,
         );
+      },
+    );
+    await check(
+      "validar novamente mantém o botão consistente com o backend",
+      async () => {
         await c.click("cu-preview");
         await c.wait(
           "document.getElementById('cu-execution-state').textContent.includes('Preview validado') && !document.getElementById('cu-preview').disabled",
         );
         assert.equal(
-          await c.eval("document.getElementById('cu-reviewed').checked"),
-          false,
-        );
-        assert.equal(
-          await c.eval("document.getElementById('cu-confirmation').value"),
-          "",
-        );
-        assert.equal(
           await c.eval("document.getElementById('cu-execute').disabled"),
-          true,
+          false,
         );
       },
     );
     await check(
       "confirmação forte e duplo clique protegido com hash real",
       async () => {
-        await c.check("cu-reviewed");
-        await c.input("cu-confirmation", "unificar");
-        assert.equal(
-          await c.eval("document.getElementById('cu-execute').disabled"),
-          true,
-        );
-        await confirm();
         mode.executeDelay = 700;
         const n = calls.filter((r) => r.route === "/execute").length;
         await c.click("cu-execute");
@@ -984,22 +948,20 @@ async function main() {
           ),
           null,
         );
+        // Grant duplicado e placeholder são resolvidos pelo backend: só a Conta
+        // do seller (duas candidatas) é perguntada.
         assert.equal(
-          await c.eval(
-            "document.querySelector('[data-decision=canonical-grant]:checked')",
-          ),
+          await c.eval("document.querySelector('[data-decision=canonical-grant]')"),
+          null,
+        );
+        assert.equal(
+          await c.eval("document.querySelector('[data-decision=deactivate-empty]')"),
           null,
         );
         const old = previewHash;
-        for (const selector of [
-          "[data-decision=seller-account][value='65']",
-          "[data-decision=canonical-grant][value='51']",
-          "[data-decision=deactivate-empty][value='72']",
-        ]) {
-          await c.eval(
-            `{const i=document.querySelector(${JSON.stringify(selector)});i.checked=true;i.dispatchEvent(new Event('change',{bubbles:true}));}`,
-          );
-        }
+        await c.eval(
+          "{const i=document.querySelector('[data-decision=seller-account][value=\"65\"]');i.checked=true;i.dispatchEvent(new Event('change',{bubbles:true}));}",
+        );
         await sleep(750);
         await c.wait(
           "document.getElementById('cu-review').textContent.includes('superseded por #51')",
@@ -1008,17 +970,12 @@ async function main() {
         const d = calls.filter((r) => r.route === "/preview").at(-1).body
           .manifest.decisoes;
         assert.deepEqual(d.sellerAccounts, { 111: 65 });
-        assert.deepEqual(d.canonicalGrantsBySeller, { 111: 51 });
-        assert.deepEqual(d.deactivateEmptyAccountIds, [72]);
-        // Wizard: resumo humano visível, detalhes técnicos colapsados.
-        assert.ok((await c.text("cu-review")).includes("Passo 3"));
+        assert.deepEqual(d.canonicalGrantsBySeller, {});
+        assert.deepEqual(d.deactivateEmptyAccountIds, []);
+        assert.ok((await c.text("cu-review")).includes("Resultado da validação"));
         assert.equal(
           await c.eval("document.getElementById('cu-technical').open"),
           false,
-        );
-        assert.equal(
-          await c.eval("document.getElementById('cu-execute').disabled"),
-          true,
         );
         assert.equal(
           calls.some((r) => r.route === "/execute"),
@@ -1027,7 +984,7 @@ async function main() {
         mode.identityCritical = true;
         await c.click("cu-preview");
         await c.wait(
-          "document.getElementById('cu-review').textContent.includes('EMPTY_ACCOUNT_NOT_SAFE')",
+          "document.getElementById('cu-review').textContent.includes('UNKNOWN_CRITICAL_REFERENCE')",
         );
         assert.ok(
           (await c.text("cu-review")).includes("tabela_desconhecida_x"),

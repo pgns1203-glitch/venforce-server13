@@ -95,6 +95,57 @@ async function main() {
     console.log("ok — PG: caso sanitizado #36/#65 (owner mismatch, placeholder #72, labels ML1/ML2, Grants, rollback integral)");
     count++;
 
+    // Fluxo simples: só quem fica e quem entra. Sem decisões nem aprovação; o
+    // backend resolve principal, Grant duplicado e labels. #72 já inativa.
+    await seed(() => q("UPDATE cliente_contas SET ativo=false WHERE id=72"));
+    const bare = {
+      schemaVersion: 2,
+      clienteCanonicoId: 1,
+      clientesLegadosIds: [2],
+      decisoes: {},
+    };
+    const beforeBare = materialSnapshot(await repo.readSnapshot(env.pool, bare), bare);
+    const pb = await service.preview(bare, actor);
+    assert.equal(pb.validationReady, true, JSON.stringify(pb.blockers));
+    assert.deepEqual(pb.decisionsRequired, []);
+    assert.equal(pb.manifest.aprovacao.aprovadorUserId, 5);
+    const opb = await service.execute(
+      { manifest: pb.manifest, planHash: pb.planHash, confirmationText: pb.confirmationText, idempotencyKey: "final-local-bare" },
+      actor,
+    );
+    assert.equal(opb.status, "completed");
+    const cb = Object.fromEntries((await q("SELECT * FROM cliente_contas")).map((c) => [c.id, c]));
+    assert.ok(Object.values(cb).every((c) => c.cliente_id === 1));
+    assert.equal(cb[65].external_account_id, "111");
+    assert.equal(cb[65].is_primary, true);
+    assert.equal(cb[71].is_primary, false);
+    assert.equal(cb[65].nome, "Mercado Livre 1");
+    assert.equal(cb[71].nome, "Mercado Livre 2");
+    assert.equal(cb[72].ativo, false);
+    const gb = Object.fromEntries((await q("SELECT * FROM ml_tokens")).map((g) => [g.id, g]));
+    assert.equal(gb[51].cliente_conta_id, 65);
+    assert.equal(gb[52].superseded_by_grant_id, 51);
+    assert.equal(gb[103].cliente_conta_id, 71);
+    assert.equal((await q("SELECT count(*)::int n FROM ml_tokens WHERE is_primary AND superseded_by_grant_id IS NULL"))[0].n, 1);
+    await service.rollback(opb.id, { confirmationText: `REVERTER UNIFICACAO ${opb.id}` }, actor);
+    assert.deepEqual(
+      withoutVersions(materialSnapshot(await repo.readSnapshot(env.pool, bare), bare)),
+      withoutVersions(beforeBare),
+    );
+    console.log("ok — PG: fluxo simples sem decisões executa e reverte (#36/#65 equivalente)");
+    count++;
+
+    // Placeholder ativo com histórico: seller com 2 Contas candidatas pede só a Conta.
+    await seed();
+    const ask = await service.preview(bare, actor);
+    assert.deepEqual(ask.decisionsRequired, ["decisoes.sellerAccounts.111"]);
+    const picked = { ...bare, decisoes: { sellerAccounts: { 111: 65 } } };
+    const ok = await service.preview(picked, actor);
+    assert.equal(ok.validationReady, true, JSON.stringify(ok.blockers));
+    assert.ok(ok.plan.changes.some((c) => c.table === "cliente_contas" && c.pk.id === 72 && c.after.ativo === false));
+    console.log("ok — PG: única pergunta humana é a Conta do seller; placeholder com histórico sai sozinho");
+    count++;
+
     // cliente_id NULL com Conta fora do merge: não é tocado nem bloqueia.
     await seed(() => q("INSERT INTO cliente_contas VALUES(31,3,'shopee','SP3','c31',NULL,true,true);INSERT INTO fechamento_incidentes VALUES(20,NULL,31,'concluido')"));
     let r = await service.preview(manifest(), actor);

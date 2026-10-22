@@ -340,3 +340,7 @@ mlTokenService). Nenhuma falha nova.
 - **Placeholder** (`identity.js`): Conta ML sem seller, sem Grant/Base ativos e não escolhida pode ser desativada (nunca apagada) se toda referência está numa tabela conhecida, sem operação em andamento e sem seller externo. Histórico fica no ID da Conta (`action: PRESERVE_ON_INACTIVE`). Tabela desconhecida → `EMPTY_ACCOUNT_NOT_SAFE`.
 - **Labels** (`labels.js`): contas ativas com nome automático ("Mercado Livre 2") são renumeradas por marketplace: principal final, depois canônico, depois id. Nomes personalizados e contas inativas ficam intactos; rollback restaura via `before`.
 - **UI**: 3 passos; detalhes técnicos em accordion; aprovador = usuário autenticado; desativação de placeholder e Conta única de seller são sugeridas automaticamente (seguem explícitas no manifesto e desfazíveis).
+
+## Timeout de escrita (execute/rollback)
+
+`CLIENTES_UNIFICACAO_EXECUTE_TIMEOUT_MS` (15000–300000, default 120000; inválido → default) define o orçamento global da transação SERIALIZABLE de execute/rollback e o `statement_timeout` dela. Substitui o teto fixo de 15s, que estourava em planos grandes (~1000 alterações, ~21s). Preview segue em `CLIENTES_UNIFICACAO_PREVIEW_TIMEOUT_MS`; `lock_timeout` (1,5s) e `idle_in_transaction_session_timeout` (15s) não mudam. Limites de linhas, planner, planHash, locks, ledger e rollback ficam como estavam.

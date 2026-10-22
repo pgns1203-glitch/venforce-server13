@@ -9,12 +9,12 @@ require.cache[databasePath] = {
 const { createService } = require("../services/clientesUnificacao/service");
 const { buildPlan } = require("../services/clientesUnificacao/planner");
 const { fixture, manifest } = require("./helpers/clientesUnificacaoFixture");
-const { previewTimeoutMs } = require("../config/clientesUnificacao");
+const { previewTimeoutMs, executeTimeoutMs } = require("../config/clientesUnificacao");
 const {
   diagnostics,
 } = require("../services/clientesUnificacao/snapshotDiagnostics");
 const actor = { id: 5, role: "admin" };
-function harness(budget) {
+function harness(budget, executeBudget = 15000) {
   let clock = 0;
   const commands = [];
   const db = {
@@ -41,6 +41,7 @@ function harness(budget) {
     repository,
     getFlags: () => ({ execute: true }),
     getPreviewTimeoutMs: budget == null ? previewTimeoutMs : () => budget,
+    getExecuteTimeoutMs: () => executeBudget,
     now: () => clock,
   });
   return { service, commands };
@@ -76,6 +77,34 @@ async function main() {
     "SET LOCAL idle_in_transaction_session_timeout='15000ms'",
   ])
     assert.ok(write.commands.includes(sql));
+  // Escrita configurada acima de 15s: sem MERGE_TRANSACTION_TIMEOUT.
+  const long = harness(45000, 120000);
+  try {
+    await long.service.execute(
+      {
+        manifest: m,
+        planHash: plan.planHash,
+        idempotencyKey: "timing-write-long",
+        confirmationText: "UNIFICAR 2 EM 1",
+      },
+      actor,
+    );
+  } catch (e) {
+    assert.notEqual(e.code, "MERGE_TRANSACTION_TIMEOUT");
+  }
+  assert.ok(long.commands.includes("SET LOCAL statement_timeout='120000ms'"));
+  assert.ok(long.commands.filter((c) => c === "SELECT snapshot_step").length > 50);
+  for (const value of ["", "999999", "300001", "14999", "-1", "abc"])
+    assert.equal(
+      executeTimeoutMs({ CLIENTES_UNIFICACAO_EXECUTE_TIMEOUT_MS: value }),
+      120000,
+    );
+  assert.equal(executeTimeoutMs({}), 120000);
+  for (const value of ["15000", "300000"])
+    assert.equal(
+      executeTimeoutMs({ CLIENTES_UNIFICACAO_EXECUTE_TIMEOUT_MS: value }),
+      Number(value),
+    );
   for (const value of ["", "999999", "45001", "14999", "-1", "Infinity", "abc"])
     assert.equal(
       previewTimeoutMs({ CLIENTES_UNIFICACAO_PREVIEW_TIMEOUT_MS: value }),

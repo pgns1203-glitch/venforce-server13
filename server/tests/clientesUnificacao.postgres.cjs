@@ -948,6 +948,7 @@ async function main() {
           pool,
           repository: custom,
           getFlags: () => flags,
+          getExecuteTimeoutMs: () => 15000,
         });
         await assert.rejects(
           timed.execute(await input("deadline-test-key"), actor),

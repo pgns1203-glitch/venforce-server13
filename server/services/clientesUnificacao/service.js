@@ -1,6 +1,10 @@
 const { finalIdentityViolations, TRANSACTION_TIME } = require("./identity");
 const { isCurrentGrant, currentGrantSql } = require("../mlGrantIdentity");
-const { flags, previewTimeoutMs } = require("../../config/clientesUnificacao");
+const {
+  flags,
+  previewTimeoutMs,
+  executeTimeoutMs,
+} = require("../../config/clientesUnificacao");
 const {
   normalizeManifest,
   confirmation,
@@ -17,6 +21,7 @@ function createService({
   repository = defaultRepository,
   getFlags = flags,
   getPreviewTimeoutMs = previewTimeoutMs,
+  getExecuteTimeoutMs = executeTimeoutMs,
   now = Date.now,
 } = {}) {
   if (!pool) throw new Error("UNIFICATION_POOL_REQUIRED");
@@ -43,7 +48,7 @@ function createService({
     for (let attempt = 0; ; attempt++) {
       let active = false;
       const baseQuery = db.query;
-      const budget = readOnly ? getPreviewTimeoutMs() : 15000;
+      const budget = readOnly ? getPreviewTimeoutMs() : getExecuteTimeoutMs();
       const deadline = now() + budget;
       db.query = async function (...args) {
         const command = String(args[0]).trim().toUpperCase();
@@ -61,7 +66,10 @@ function createService({
             : "BEGIN ISOLATION LEVEL SERIALIZABLE",
         );
         active = true;
-        await db.query("SET LOCAL statement_timeout='10000ms'");
+        // Escrita: nenhuma query legítima pode morrer antes do orçamento global.
+        await db.query(
+          `SET LOCAL statement_timeout='${readOnly ? 10000 : budget}ms'`,
+        );
         await db.query("SET LOCAL lock_timeout='1500ms'");
         await db.query(
           "SET LOCAL idle_in_transaction_session_timeout='15000ms'",

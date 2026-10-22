@@ -10,7 +10,7 @@ function flags(env = process.env) {
     rollback: enabled(env.CLIENTES_UNIFICACAO_ROLLBACK_ENABLED),
   };
 }
-// Só transações READ ONLY. Escrita mantém os quatro limites originais.
+// Só transações READ ONLY.
 function previewTimeoutMs(env = process.env) {
   const raw = String(env.CLIENTES_UNIFICACAO_PREVIEW_TIMEOUT_MS || "");
   const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
@@ -18,4 +18,13 @@ function previewTimeoutMs(env = process.env) {
     ? value
     : 30000;
 }
-module.exports = { flags, enabled, previewTimeoutMs };
+// Orçamento global da transação de ESCRITA (execute/rollback). Também define
+// o statement_timeout dela. Inválido ou fora da faixa → default seguro.
+function executeTimeoutMs(env = process.env) {
+  const raw = String(env.CLIENTES_UNIFICACAO_EXECUTE_TIMEOUT_MS || "");
+  const value = /^[0-9]+$/.test(raw) ? Number(raw) : NaN;
+  return Number.isInteger(value) && value >= 15000 && value <= 300000
+    ? value
+    : 120000;
+}
+module.exports = { flags, enabled, previewTimeoutMs, executeTimeoutMs };

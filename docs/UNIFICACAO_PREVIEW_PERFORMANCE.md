@@ -344,3 +344,14 @@ mlTokenService). Nenhuma falha nova.
 ## Timeout de escrita (execute/rollback)
 
 `CLIENTES_UNIFICACAO_EXECUTE_TIMEOUT_MS` (15000–300000, default 120000; inválido → default) define o orçamento global da transação SERIALIZABLE de execute/rollback e o `statement_timeout` dela. Substitui o teto fixo de 15s, que estourava em planos grandes (~1000 alterações, ~21s). Preview segue em `CLIENTES_UNIFICACAO_PREVIEW_TIMEOUT_MS`; `lock_timeout` (1,5s) e `idle_in_transaction_session_timeout` (15s) não mudam. Limites de linhas, planner, planHash, locks, ledger e rollback ficam como estavam.
+
+## Fluxo simples (quem fica + quem entra)
+
+O operador informa só o canônico e os legados. O backend resolve de forma determinística (e o resultado entra no planHash/ledger):
+
+- **Aprovação**: o admin autenticado que valida/executa é o aprovador (`ADMIN_AUTENTICADO`) quando o manifesto não traz aprovador/referência. Aprovação explícita (API/CLI) continua valendo.
+- **Conta principal por marketplace**: a do canônico; senão menor id. **Grant principal**: o da Conta ML principal, do canônico, menor id.
+- **Grant duplicado do mesmo seller**: mantém o vinculado à Conta > válido > do canônico > menor id; os demais viram `superseded` (histórico).
+- **Conta do seller**: automática se uma Conta já declara o seller ou é a única possível. **Duas candidatas → única pergunta humana.**
+- **Placeholder** (ML sem seller, com histórico em tabelas conhecidas): desativado sem pergunta. Sem histórico fica como está.
+- Ausência de Base é só aviso. Confirmação textual e checkbox saíram da UI (o rollback mantém a confirmação).

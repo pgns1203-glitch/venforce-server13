@@ -55,24 +55,26 @@ async function test(name, fn) {
   console.log("ok — " + name);
 }
 async function main() {
-  await test("sem decisões: Conta, Grant e shell exigem decisão explícita", (s, m) => {
+  await test("sem decisões: só a Conta do seller (2 candidatas) segue humana", (s, m) => {
     m.decisoes = {};
     const p = buildPlan(s, m);
     assert.equal(p.validation.ok, false);
-    for (const path of [
-      "decisoes.sellerAccounts.111",
-      "decisoes.canonicalGrantsBySeller.111",
-      "decisoes.deactivateEmptyAccountIds",
-    ])
-      assert.ok(p.decisionsRequired.includes(path));
+    assert.deepEqual(p.decisionsRequired, ["decisoes.sellerAccounts.111"]);
   });
-  await test("não escolhe Conta por primary nem Grant por status", (s, m) => {
+  await test("Conta continua humana; Grant duplicado é consolidado sozinho", (s, m) => {
     delete m.decisoes.sellerAccounts["111"];
     assert.ok(blocked(s, m, "SELLER_ACCOUNT_DECISION_REQUIRED"));
     m = identityManifest();
     delete m.decisoes.canonicalGrantsBySeller["111"];
+    let p = buildPlan(s, m);
+    assert.equal(p.validation.ok, true, JSON.stringify(p.validation.blockers));
+    assert.equal(p.identityResolution.sellers[0].canonicalGrantId, 51);
     s.tables.ml_tokens[1].token_status = "revoked";
-    assert.ok(blocked(s, m, "CANONICAL_GRANT_DECISION_REQUIRED"));
+    s.tables.ml_tokens[0].token_status = "revoked";
+    s.tables.ml_tokens[1].token_status = "valid";
+    p = buildPlan(s, m);
+    assert.equal(p.identityResolution.sellers[0].canonicalGrantId, 52);
+    assert.deepEqual(p.identityResolution.sellers[0].supersededGrantIds, [51]);
   });
   await test("decisões completas: sellers, Conta real, superseded sem DELETE", (s, m) => {
     const p = buildPlan(s, m);

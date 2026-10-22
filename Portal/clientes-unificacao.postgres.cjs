@@ -84,23 +84,12 @@ async function main() {
       await c.wait("document.querySelector('[data-action=choose-legacy]')");
       await c.action("choose-legacy");
       await c.click("cu-preview");
-      await c.wait("document.getElementById('cu-approved')");
-      await c.check("cu-approved");
-      await c.input("cu-evidence", "DOC-LOCAL-001", "change");
-      for (const selector of [
-        "[data-decision=primary][value='21']",
-        "[data-decision=grant][value='32']",
-      ])
-        await c.eval(
-          `{const e=document.querySelector(${JSON.stringify(selector)});e.checked=true;e.dispatchEvent(new Event('change',{bubbles:true}));}`,
-        );
       await c.wait(
         "document.getElementById('cu-execution-state').textContent.includes('Preview validado') || document.getElementById('cu-execution-state').textContent.includes('não habilitada')",
       );
     }
     async function execute() {
-      await c.check("cu-reviewed");
-      await c.input("cu-confirmation", "UNIFICAR 2 EM 1");
+      await c.wait("!document.getElementById('cu-execute').disabled");
       await c.click("cu-execute");
       await c.wait(
         "document.getElementById('cu-result').textContent.includes('Unificação concluída')",

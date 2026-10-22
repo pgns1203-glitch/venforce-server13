@@ -152,9 +152,25 @@ function createService({
       plan,
     };
   }
+  // Fluxo simples: o admin autenticado que valida/executa é o aprovador. Só
+  // preenche quando o manifesto não traz aprovador nem referência; aprovação
+  // explícita (API/CLI) segue valendo como está.
+  function withActorApproval(input, actor) {
+    const a = input?.aprovacao;
+    if (!input || (a && (a.aprovadorUserId != null || a.evidencia != null)))
+      return input;
+    return {
+      ...input,
+      aprovacao: {
+        aprovada: true,
+        aprovadorUserId: Number(actor.id),
+        evidencia: "ADMIN_AUTENTICADO",
+      },
+    };
+  }
   async function preview(input, actor) {
     requireAdmin(actor);
-    const manifest = normalizeManifest(input);
+    const manifest = normalizeManifest(withActorApproval(input, actor));
     return connection(async (db) => {
       const result = await transaction(
         db,
@@ -183,7 +199,7 @@ function createService({
   async function execute(input, actor) {
     requireAdmin(actor);
     requireFlag("execute");
-    const manifest = normalizeManifest(input?.manifest);
+    const manifest = normalizeManifest(withActorApproval(input?.manifest, actor));
     if (!/^[a-f0-9]{64}$/.test(input.planHash || ""))
       throw fail("PLAN_HASH_REQUIRED", 422);
     if (

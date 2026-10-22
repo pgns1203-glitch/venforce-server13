@@ -86,7 +86,15 @@ function resolveIdentity(snapshot, manifest, issue, required) {
       existing.length === 1 &&
       group.length &&
       group.every((g) => same(g.cliente_conta_id, existing[0].id));
-    const accountId = explicit ?? (bound ? existing[0].id : null);
+    // Auto só quando a escolha é única e segura: Conta que já declara o
+    // seller, ou a única Conta possível. Duas candidatas → decisão humana.
+    const accountId =
+      explicit ??
+      (bound || existing.length === 1
+        ? existing[0].id
+        : !existing.length && options.length === 1
+          ? options[0].id
+          : null);
     const account = options.find((a) => same(a.id, accountId));
     if (accountId == null)
       need(
@@ -156,9 +164,22 @@ function resolveIdentity(snapshot, manifest, issue, required) {
             issue("ACTIVE_OPERATION", { table, clienteContaId: account.id });
         }
     }
-    const grantId =
-      d.canonicalGrantsBySeller[seller] ??
-      (group.length === 1 ? group[0].id : null);
+    // Mesmo seller, vários Grants: mantém o operacional de forma determinística
+    // (vinculado à Conta > válido > do canônico > menor id); os demais viram
+    // histórico superseded.
+    const rank = (g) => [
+      account && same(g.cliente_conta_id, account.id) ? 0 : 1,
+      g.token_status === "valid" ? 0 : 1,
+      same(g.cliente_id, manifest.clienteCanonicoId) ? 0 : 1,
+      Number(g.id),
+    ];
+    const best = [...group].sort((x, y) => {
+      const a = rank(x),
+        b = rank(y);
+      const i = a.findIndex((v, k) => v !== b[k]);
+      return i < 0 ? 0 : a[i] - b[i];
+    })[0];
+    const grantId = d.canonicalGrantsBySeller[seller] ?? best?.id ?? null;
     const canonical = group.find((g) => same(g.id, grantId));
     if (!group.length) issue("GRANT_AMBIGUOUS", { seller });
     else if (grantId == null)
@@ -269,8 +290,13 @@ function resolveIdentity(snapshot, manifest, issue, required) {
       !assigned &&
       references.every((r) => r.action) &&
       !(snapshot.errors || []).length;
-    const selected = d.deactivateEmptyAccountIds.includes(Number(a.id));
+    const explicit = d.deactivateEmptyAccountIds.includes(Number(a.id));
+    // Placeholder com histórico e referências todas conhecidas: desativa sem
+    // pedir decisão. Sem histórico (vaga de conexão pendente) fica como está.
+    const auto = !explicit && canDeactivate && references.length > 0;
+    const selected = explicit || auto;
     result.emptyAccounts.push({
+      auto,
       id: a.id,
       nome: a.nome,
       cliente_id: a.cliente_id,
@@ -283,12 +309,7 @@ function resolveIdentity(snapshot, manifest, issue, required) {
       issue("EMPTY_ACCOUNT_NOT_SAFE", { clienteContaId: a.id, references });
     else if (selected)
       accountPatches.set(Number(a.id), { ativo: false, is_primary: false });
-    else if (!assigned)
-      need(
-        "EMPTY_ACCOUNT_DECISION_REQUIRED",
-        "decisoes.deactivateEmptyAccountIds",
-        { clienteContaId: a.id },
-      );
+
   }
   for (const id of d.deactivateEmptyAccountIds)
     if (!result.emptyAccounts.some((a) => same(a.id, id)))

@@ -102,7 +102,7 @@
               </legend>
               <div class="cu-selection-grid">
                 <section>
-                  <h3>Passo 1 · Quem fica</h3><p class="cu-muted">Este cliente vai permanecer</p>
+                  <h3>Cliente que fica</h3>
                   <div id="cu-canonical"></div>
                   <label class="vf-field__label" for="cu-search-canonical"
                     >Buscar cliente canônico</label
@@ -122,7 +122,7 @@
                   ></div>
                 </section>
                 <section>
-                  <h3>Clientes que serão incorporados</h3>
+                  <h3>Clientes que entram</h3>
                   <div id="cu-legacies"></div>
                   <label class="vf-field__label" for="cu-search-legacy"
                     >Buscar e adicionar legado</label
@@ -149,28 +149,14 @@
               class="vf-btn vf-btn--secondary"
               disabled
             >
-              Gerar preview
+              Validar
             </button>
             <p id="cu-feedback" role="status" aria-live="polite"></p>
             <div id="cu-review" hidden></div>
             <section id="cu-decisions" hidden></section>
             <fieldset id="cu-confirm" class="cu-confirm" hidden>
-              <legend>Confirmação final</legend>
+              <legend class="vf-visually-hidden">Unificar</legend>
               <p id="cu-execution-state"></p>
-              <label
-                ><input type="checkbox" id="cu-reviewed" /> Revisei as contas,
-                Grants, Bases e Squad.</label
-              >
-              <label class="vf-field__label" for="cu-confirmation"
-                >Digite
-                <strong id="cu-confirmation-text" class="vf-mono"></strong
-              ></label>
-              <input
-                id="cu-confirmation"
-                class="vf-input vf-mono"
-                autocomplete="off"
-                spellcheck="false"
-              />
               <button
                 type="button"
                 id="cu-execute"
@@ -202,6 +188,6 @@
         >
       </main>
     </div>
-    <script type="module" src="clientes-unificacao.js?v=20261022-1"></script>
+    <script type="module" src="clientes-unificacao.js?v=20261023-1"></script>
   </body>
 </html>

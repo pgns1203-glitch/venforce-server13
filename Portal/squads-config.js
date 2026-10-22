@@ -18,6 +18,7 @@ const STATE = {
   view: "config",
   kpi: null, // filtro da faixa de KPIs: "ativos" | "semcoord" | null
   editingName: false,
+  clienteAberto: null, // slug do cliente com a linha expandida
   activityView: {
     period: "hoje", query: "", status: "idle", error: null, gen: 0,
     peopleCache: {}, // user_id -> {userId,nome,email,eventosTotal,falhasTotal,ultimaAtividade,eventosRecentes} — 1 fetch por pessoa, não por Squad
@@ -357,6 +358,7 @@ function loadSquads() {
 async function refreshSquads() {
   STATE.refreshing = true;
   STATE.catalogsReady = false;
+  Object.keys(CONTAS).forEach(slug => { if (CONTAS[slug].estado !== "carregando") delete CONTAS[slug]; }); // Atualizar relê as contas
   $("sq-refresh").disabled = true;
   $("sq-refresh").textContent = "Atualizando…";
   $("sq-state-error").style.display = "none";
@@ -453,6 +455,7 @@ async function abrirSquad(id) {
   if (changed) {
     $("sq-clients-search").value = "";
     STATE.editingName = false;
+    STATE.clienteAberto = null;
   }
   $("sq-detail").style.display = "block";
   $("sq-detail-placeholder").hidden = true;
@@ -513,7 +516,9 @@ function renderDetalhe(id) {
   $("sq-detail-subtitle").innerHTML = `
     <a class="vf-metric" href="#sq-people-section"><span class="vf-metric__label">Pessoas</span><span class="vf-metric__value">${count(s, "people")}</span><span class="vf-metric__foot">${nPrincipal === null ? "equipe indisponível" : `${nPrincipal} com este Squad principal`}</span></a>
     <a class="vf-metric" href="#sq-clients-section"><span class="vf-metric__label">Clientes</span><span class="vf-metric__value">${count(s, "clients")}</span><span class="vf-metric__foot">${nInativos === null ? "carteira indisponível" : `${nInativos} ${nInativos === 1 ? "inativo" : "inativos"}`}</span></a>
+    ${contasMetric(id)}
     <div class="vf-metric ${nCoord === 0 ? "vf-metric--warning" : ""}"><span class="vf-metric__label">Coordenadores</span><span class="vf-metric__value">${nCoord ?? "—"}</span><span class="vf-metric__foot ${nCoord === 0 ? "is-warning" : ""}">${nCoord === null ? "equipe indisponível" : nCoord ? "coordenação definida" : "defina um coordenador"}</span></div>`;
+  if (carteira?.some(c => !CONTAS[c.slug])) loadContasDoSquad(id);
   $("sq-btn-add-member").hidden = !canManage(id);
   $("sq-btn-add-cliente").hidden = !canManage(id);
   $("sq-people-count").textContent = count(s, "people");
@@ -543,6 +548,105 @@ function renderPeople() {
 }
 // Página do cliente: Cliente 360 V3 — vf-context.js lê ?cliente=<slug>.
 const clienteUrl = c => `cliente-360-v3.html?cliente=${encodeURIComponent(c.slug)}`;
+/* Linha do cliente expansível (padrão de /clientes.html): mostra as contas
+ * por marketplace via GET /clientes/:slug/contas, a mesma leitura da tela de
+ * Clientes, com o diagnóstico de clientes-contas-resumo.js. Uma aberta por vez. */
+const CONTAS = {}; // slug -> { estado: "carregando"|"ok"|"erro", contas, erro }
+const RESUMO = () => window.VF_CLIENTES_CONTAS_RESUMO;
+const MARKETPLACES = [["meli", "Mercado Livre"], ["shopee", "Shopee"], ["tiktok", "TikTok Shop"]];
+const TOM_TAG = { success: "is-success", warning: "is-warning", danger: "is-danger", neutral: "is-neutral" };
+const TOM_CHECK = { ok: "is-success", warn: "is-warning", bad: "is-danger", na: "is-neutral" };
+async function fetchContas(slug) {
+  CONTAS[slug] = { estado: "carregando", contas: CONTAS[slug]?.contas || [] };
+  try {
+    const data = await api(`/clientes/${encodeURIComponent(slug)}/contas`);
+    CONTAS[slug] = { estado: "ok", contas: Array.isArray(data.contas) ? data.contas : [] };
+  } catch (err) {
+    CONTAS[slug] = { estado: "erro", contas: [], erro: err };
+  }
+}
+async function loadContas(slug) {
+  const pending = fetchContas(slug);
+  renderClients();
+  await pending;
+  if (STATE.squadAbertoId) renderDetalhe(STATE.squadAbertoId);
+}
+/* KPI "Contas" do Squad: soma as contas ativas de todos os clientes da
+ * carteira (mesma leitura da linha expandida, com fan-out limitado). */
+async function loadContasDoSquad(id) {
+  const pend = (clients(id) || []).filter(c => !CONTAS[c.slug]);
+  if (!pend.length) return;
+  pend.forEach(c => { CONTAS[c.slug] = { estado: "carregando", contas: [] }; }); // evita disparo duplo
+  await eachLimited(pend, c => fetchContas(c.slug));
+  if (String(STATE.squadAbertoId) === String(id)) renderDetalhe(id);
+}
+function contasResumo(id) {
+  const carteira = clients(id); if (!carteira) return null;
+  const estados = carteira.map(c => CONTAS[c.slug]);
+  const porMp = { meli: 0, shopee: 0, tiktok: 0 };
+  estados.forEach(e => (e?.estado === "ok" ? e.contas : []).filter(x => x.ativo !== false).forEach(x => { if (x.marketplace in porMp) porMp[x.marketplace]++; }));
+  return {
+    carregando: estados.some(e => !e || e.estado === "carregando"),
+    semAcesso: estados.filter(e => e?.estado === "erro").length,
+    total: porMp.meli + porMp.shopee + porMp.tiktok, porMp,
+  };
+}
+function contasMetric(id) {
+  const r = contasResumo(id);
+  const foot = !r ? "carteira indisponível"
+    : r.carregando ? "somando as contas…"
+    : `ML ${r.porMp.meli} · Shopee ${r.porMp.shopee} · TikTok ${r.porMp.tiktok}${r.semAcesso ? ` · ${r.semAcesso} ${r.semAcesso === 1 ? "cliente" : "clientes"} sem leitura` : ""}`;
+  return `<div class="vf-metric" id="sq-metric-contas"><span class="vf-metric__label">Contas</span><span class="vf-metric__value">${!r || r.carregando ? "—" : r.total}</span><span class="vf-metric__foot">${foot}</span></div>`;
+}
+function toggleCliente(slug) {
+  STATE.clienteAberto = STATE.clienteAberto === slug ? null : slug;
+  if (STATE.clienteAberto && CONTAS[slug]?.estado !== "ok") loadContas(slug); else renderClients();
+  document.querySelector(`.sq-client-row[data-slug="${CSS.escape(slug)}"]`)?.focus();
+}
+/* "Abrir loja": vitrine pública no marketplace, em nova aba. Só a conta do
+ * Mercado Livre com grant válido tem um ID de vendedor confiável (grant.ml_user_id);
+ * as demais mostram o botão desabilitado com o motivo. */
+function lojaExterna(conta) {
+  if (conta.ativo === false) return { motivo: "Conta desativada" };
+  if (conta.marketplace === "shopee") return { motivo: "A Shopee não tem conexão por API no Portal" };
+  if (conta.marketplace !== "meli") return { motivo: "Sem integração com este marketplace" };
+  if (!conta.grant) return { motivo: "Conta ainda não conectada ao Mercado Livre" };
+  if (RESUMO()?.classificarStatusConta?.(conta)?.code === "atencao") return { motivo: "Conexão com problema: reconecte a conta" };
+  const sellerId = conta.grant.ml_user_id || conta.external_account_id;
+  if (!sellerId) return { motivo: "ID do vendedor indisponível" };
+  return { url: `https://lista.mercadolivre.com.br/_CustId_${encodeURIComponent(sellerId)}` };
+}
+function renderConta(conta) {
+  const diag = RESUMO()?.diagnosticarConta?.(conta);
+  const nome = conta.nome || conta.external_account_id || `Conta #${conta.id}`;
+  const loja = lojaExterna(conta);
+  return `<li class="sq-conta">
+    <div class="sq-conta__main">
+      <div class="sq-conta__top"><strong>${esc(nome)}</strong>${conta.is_primary ? '<span class="vf-tag is-primary">Principal</span>' : ""}${diag ? `<span class="vf-tag ${TOM_TAG[diag.tom] || ""}">${esc(diag.label)}</span>` : ""}</div>
+      <ul class="sq-conta__checks">${(diag?.checks || []).map(ch => `<li><span class="vf-status ${TOM_CHECK[ch.tom] || ""}">${esc(ch.label)}</span> ${esc(ch.texto)}</li>`).join("")}${conta.external_account_id ? `<li class="sq-conta__id">ID ${esc(conta.external_account_id)}</li>` : ""}</ul>
+      ${diag?.dica && diag.prioridade > 0 ? `<p class="sq-hint">${esc(diag.dica)}</p>` : ""}
+    </div>
+    ${loja.url
+      ? `<a class="vf-btn vf-btn--secondary vf-btn--sm sq-conta__open" href="${esc(loja.url)}" target="_blank" rel="noopener noreferrer" data-action="link" aria-label="Abrir a loja ${esc(nome)} no Mercado Livre (nova aba)">Abrir loja <span aria-hidden="true">↗</span></a>`
+      : `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-conta__open" disabled title="${esc(loja.motivo)}" aria-label="Abrir a loja ${esc(nome)}: indisponível. ${esc(loja.motivo)}">Abrir loja <span aria-hidden="true">↗</span></button>`}
+  </li>`;
+}
+function renderClienteExpand(c, colspan) {
+  const info = CONTAS[c.slug] || { estado: "carregando" };
+  let body;
+  if (info.estado === "carregando") body = '<p class="sq-hint" role="status">Carregando contas…</p>';
+  else if (info.estado === "erro") body = info.erro?.status === 403
+    ? '<p class="sq-hint">As contas deste cliente são visíveis só para quem atende a carteira dele.</p>'
+    : `<p class="sq-hint">Não foi possível carregar as contas: ${esc(info.erro?.message || "tente novamente")} <button type="button" class="sq-text-button" data-action="retry-contas" data-slug="${esc(c.slug)}">Tentar novamente</button></p>`;
+  else if (!info.contas.length) body = '<p class="sq-hint">Este cliente ainda não tem contas de marketplace.</p>';
+  else body = `<div class="sq-contas-grid">${MARKETPLACES.map(([mp, rotulo]) => {
+    const lista = info.contas.filter(x => x.marketplace === mp);
+    if (!lista.length) return "";
+    return `<section class="sq-contas-mp"><h4><span class="sq-mp-dot sq-mp-dot--${mp}" aria-hidden="true"></span>${rotulo} <span class="vf-badge">${lista.length}</span></h4><ul class="sq-contas-list">${lista.map(renderConta).join("")}</ul></section>`;
+  }).join("")}</div>`;
+  return `<tr class="sq-client-expand"><td colspan="${colspan}"><div class="sq-client-expand__inner" id="sq-cliente-${esc(c.id)}-contas">
+    ${body}</div></td></tr>`;
+}
 function renderClients() {
   const id = STATE.squadAbertoId; if (!id) return;
   const rows = clients(id); const state = contentState("clients", rows);
@@ -551,10 +655,11 @@ function renderClients() {
   $("sq-clients-result").textContent = `${filtered.length} de ${rows.length} clientes`;
   const canMove = ADMIN && canManage(id) && !STATE.errors[id]?.clients;
   $("sq-clientes-wrap").innerHTML = filtered.length ? `<div class="vf-table-wrap"><table class="vf-table sq-table"><caption class="sq-sr-only">Clientes de ${esc(squadName(id))}</caption><thead><tr><th scope="col">Cliente</th><th scope="col">Slug</th><th scope="col">Status</th><th scope="col" class="sq-col-actions">${canMove ? "Transferência" : '<span class="sq-sr-only">Ações</span>'}</th></tr></thead><tbody>${filtered.map(c => {
-    const nome = esc(c.nome || c.slug);
-    return `<tr><td><strong>${nome}</strong></td><td class="sq-client-slug">${esc(c.slug)}</td>
+    const nome = esc(c.nome || c.slug), open = STATE.clienteAberto === c.slug;
+    return `<tr class="sq-client-row ${open ? "is-open" : ""}" data-action="toggle-cliente" data-slug="${esc(c.slug)}" tabindex="0" aria-expanded="${open}" aria-controls="sq-cliente-${esc(c.id)}-contas" aria-label="${nome}: ${open ? "ocultar" : "mostrar"} contas">
+      <td><span class="sq-client-name"><span class="sq-chev" aria-hidden="true">›</span><strong>${nome}</strong></span></td><td class="sq-client-slug">${esc(c.slug)}</td>
       <td>${c.ativo === false ? '<span class="vf-status is-neutral">Inativo</span>' : '<span class="vf-status is-success">Ativo</span>'}</td>
-      <td class="sq-col-actions"><span class="sq-row-actions"><a class="vf-btn vf-btn--ghost vf-btn--sm" href="${esc(clienteUrl(c))}" aria-label="Abrir ${nome} na Cliente 360">Abrir <span aria-hidden="true">↗</span></a>${canMove ? `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="mover" data-cid="${esc(c.id)}" aria-label="Mover ${nome} para outro Squad">Mover <span aria-hidden="true">→</span></button>` : ""}</span></td></tr>`;
+      <td class="sq-col-actions"><span class="sq-row-actions"><a class="vf-btn vf-btn--ghost vf-btn--sm" href="${esc(clienteUrl(c))}" data-action="link" aria-label="Abrir ${nome} na Cliente 360">Abrir <span aria-hidden="true">↗</span></a>${canMove ? `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="mover" data-cid="${esc(c.id)}" aria-label="Mover ${nome} para outro Squad">Mover <span aria-hidden="true">→</span></button>` : ""}</span></td></tr>${open ? renderClienteExpand(c, 4) : ""}`;
   }).join("")}</tbody></table></div>` : `<div class="sq-empty"><h4>${rows.length ? "Nenhum cliente encontrado" : "Uma carteira para formar"}</h4><p>${rows.length ? "Tente outro nome ou identificador." : "Nenhum cliente neste squad. Adicione um cliente que aguarda atribuição."}</p></div>`;
 }
 function eligibleClients(query = "") {
@@ -842,6 +947,8 @@ document.addEventListener("click", event => {
   if (action === "principal" || action === "remover") memberAction(action, target.dataset.uid);
   if (action === "mover") openMove(target.dataset.cid);
   if (action === "mover-pessoa") openMovePerson(target.dataset.uid);
+  if (action === "toggle-cliente") toggleCliente(target.dataset.slug);
+  if (action === "retry-contas") loadContas(target.dataset.slug);
   if (action === "edit-name") startNameEdit();
   if (action === "toggle-state") toggleSquadState();
   if (action === "photo") $("sq-photo-input").click();
@@ -862,6 +969,10 @@ document.addEventListener("click", event => {
 });
 $("sq-search").addEventListener("input", renderSquadList);
 $("sq-clients-search").addEventListener("input", renderClients);
+$("sq-clientes-wrap").addEventListener("keydown", e => {
+  const row = e.target.closest?.(".sq-client-row");
+  if (row && e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleCliente(row.dataset.slug); }
+});
 $("sq-membros-wrap").addEventListener("change", e => { if (e.target.matches(".sq-funcao-select")) changeRole(e.target); });
 $("sq-list").addEventListener("keydown", e => {
   if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;

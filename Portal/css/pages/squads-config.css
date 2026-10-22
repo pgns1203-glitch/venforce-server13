@@ -140,6 +140,44 @@
 .sq-table strong { font-weight: var(--vf-fw-semibold); }
 .sq-client-slug { font-family: var(--vf-font-mono); font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); overflow-wrap: anywhere; }
 
+/* Linha do cliente expansível — mesmo padrão da tabela de /clientes.html */
+.sq-client-row { cursor: pointer; }
+.sq-client-row:focus-visible { outline: 2px solid var(--vf-focus-color); outline-offset: -2px; }
+.sq-client-row.is-open td { background: var(--vf-surface-2); }
+.sq-client-name { display: inline-flex; align-items: center; gap: 6px; }
+.sq-chev { display: inline-grid; place-items: center; width: 18px; color: var(--vf-text-muted); font-family: var(--vf-font-mono); transition: transform var(--vf-duration-fast); }
+.sq-client-row.is-open .sq-chev { transform: rotate(90deg); color: var(--vf-primary-strong); }
+.vf-page-squads-config .sq-client-expand > td { padding: 0; background: var(--vf-surface-2); }
+.vf-page-squads-config .sq-client-expand:hover > td { background: var(--vf-surface-2); }
+.sq-client-expand__inner { padding: 10px 16px 12px 40px; }
+.sq-contas-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 10px 14px; }
+.sq-contas-mp h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; font-family: var(--vf-font-display); font-size: var(--vf-fs-xs); font-weight: var(--vf-fw-semibold); letter-spacing: .02em; color: var(--vf-text-secondary); }
+.sq-mp-dot { width: 8px; height: 8px; border-radius: var(--vf-radius-pill); background: var(--vf-neutral); }
+.sq-mp-dot--meli { background: var(--vf-warning); }
+.sq-mp-dot--shopee { background: var(--vf-danger); }
+.sq-contas-list { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+/* Card da conta: dados à esquerda, "Abrir" à direita. */
+.sq-conta { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 12px; padding: 8px 10px 8px 12px; background: var(--vf-surface); border: 1px solid var(--vf-border); border-radius: var(--vf-radius-sm); }
+.sq-conta__main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.sq-conta__top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.sq-conta__top strong { margin-right: 2px; font-size: var(--vf-fs-sm); font-weight: var(--vf-fw-semibold); overflow-wrap: anywhere; }
+.sq-conta__top .vf-tag { height: 20px; padding: 0 6px; }
+.sq-conta__checks { display: flex; flex-wrap: wrap; gap: 2px 12px; margin: 0; padding: 0; list-style: none; font-size: var(--vf-fs-2xs); color: var(--vf-text-secondary); }
+.sq-conta__checks .vf-status { font-size: var(--vf-fs-2xs); font-weight: var(--vf-fw-semibold); }
+.vf-page-squads-config .vf-status.is-neutral { color: var(--vf-text-muted); }
+.sq-conta .sq-hint { margin: 0; font-size: var(--vf-fs-2xs); }
+.sq-conta__id { font-family: var(--vf-font-mono); color: var(--vf-text-muted); }
+.sq-conta__open { text-decoration: none; }
+@media (max-width: 700px) {
+  .sq-client-expand__inner { padding: 10px 12px 12px; }
+  /* Sem a coluna Slug a tabela cabe na tela; o slug segue no link "Abrir". */
+  .sq-table th:nth-child(2), .sq-table td.sq-client-slug { display: none; }
+  .sq-table .sq-row-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .sq-conta { grid-template-columns: minmax(0, 1fr); }
+  .sq-conta__open { justify-self: start; }
+}
+@media (prefers-reduced-motion: reduce) { .sq-chev { transition: none; } }
+
 /* Estados */
 .sq-empty { padding: 24px 4px; color: var(--vf-text-secondary); font-size: var(--vf-fs-sm); line-height: 1.5; }
 .sq-empty :is(h3,h4) { margin: 0 0 5px; font-size: var(--vf-fs-md); font-weight: var(--vf-fw-semibold); color: var(--vf-text); }

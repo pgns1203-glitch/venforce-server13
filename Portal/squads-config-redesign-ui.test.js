@@ -59,6 +59,9 @@ function route(url, method, body) {
   }
   match = url.match(/^\/squads\/(\d+)$/);
   if (match && method === "PATCH") { Object.assign(s.squads.find(squad => squad.id === Number(match[1])), body); return { status: 200, body: { ok: true } }; }
+  if (url === "/clientes/cliente-vinculado/contas" && method === "GET") return { status: 200, body: { ok: true, contas: [
+    { id: 501, marketplace: "meli", nome: "Loja ML", ativo: true, is_primary: true, external_account_id: "123456", grant: { id: 9, token_status: "valid" }, base: { base_id: 3, nome: "Base Set" } },
+    { id: 502, marketplace: "shopee", nome: "Loja Shopee", ativo: true, base: null } ] } };
   const result = harness.exports.rotaApi(url, method, body);
   if (url === "/squads" && role !== "admin") result.body.squads = result.body.squads.filter(squad => [1,2].includes(squad.id));
   return result;
@@ -141,6 +144,26 @@ async function run() {
     await check("mover pessoa: falha na remoção avisa que ficou nos dois Squads", async () => { await click('[data-action="mover-pessoa"][data-uid="11"]'); await val("sq-movepessoa-destino","2","change"); fail={path:"/squads/1/membros/11",method:"DELETE"}; await click("#sq-movepessoa-confirm"); await settled(); fail=null; assert.match(await ev("$('sq-movepessoa-danger').textContent"),/entrou em Squad Beta, mas continua em Squad Alfa/); assert.equal(await ev("STATE.modal"),"movepessoa"); assert.ok(harness.exports.getState().membros[2].some(m=>m.user_id===11) && harness.exports.getState().membros[1].some(m=>m.user_id===11)); await click("#sq-movepessoa-cancel"); await select(2); await click('[data-action="remover"][data-uid="11"]'); await click("#sq-confirm-ok"); await settled(); await select(1); assert.ok(!harness.exports.getState().membros[2].some(m=>m.user_id===11)); });
     await check("busca de cliente tem vazio específico", async () => { await val("sq-clients-search","inexistente"); assert.match(await ev("$('sq-clientes-wrap').textContent"),/Nenhum cliente encontrado/); await val("sq-clients-search",""); });
     await check("cliente tem slug em mono e atalho para a Cliente 360", async () => { assert.equal(await ev("document.querySelector('#sq-clientes-wrap .sq-client-slug').textContent"),"cliente-vinculado"); assert.equal(await ev("document.querySelector('#sq-clientes-wrap a.vf-btn').getAttribute('href')"),"cliente-360-v3.html?cliente=cliente-vinculado"); });
+    await check("KPI Contas soma as contas ativas da carteira por marketplace", async () => {
+      await waitFor(cdp, "/ML/.test(document.getElementById('sq-metric-contas').textContent)", "KPI Contas não somou");
+      assert.match(await ev("$('sq-metric-contas').textContent"), /Contas\s*2\s*ML 1 · Shopee 1 · TikTok 0/);
+      assert.equal(await ev("document.querySelectorAll('#sq-detail-subtitle .vf-metric').length"), 4);
+    });
+    await check("linha do cliente expande com as contas e recolhe; Mover e Abrir não expandem", async () => {
+      const n = requested.filter(u => u.endsWith("/clientes/cliente-vinculado/contas")).length;
+      await click('[data-action="mover"][data-cid="100"]'); assert.equal(await ev("STATE.clienteAberto"), null); await click("#sq-move-cancel");
+      await click('.sq-client-row[data-slug="cliente-vinculado"] td');
+      await waitFor(cdp, "!!document.querySelector('.sq-client-expand') && !/Carregando/.test(document.querySelector('.sq-client-expand').textContent)", "contas não carregaram");
+      const txt = await ev("document.querySelector('.sq-client-expand').textContent");
+      assert.match(txt, /Mercado Livre[\s\S]*Loja ML[\s\S]*Pronta para operar/); assert.match(txt, /Shopee[\s\S]*Loja Shopee/); assert.deepEqual(await ev("Array.from(document.querySelectorAll('.sq-client-expand .sq-conta__open')).map(a=>[a.tagName, a.getAttribute('href'), a.getAttribute('target'), a.disabled === true])"), [["A","https://lista.mercadolivre.com.br/_CustId_123456","_blank",false],["BUTTON",null,null,true]]); assert.match(await ev("document.querySelectorAll('.sq-client-expand .sq-conta__open')[1].title"), /Shopee não tem conexão/);
+      assert.equal(await ev("document.querySelector('.sq-client-row').getAttribute('aria-expanded')"), "true");
+      const m = requested.filter(u => u.endsWith("/clientes/cliente-vinculado/contas")).length; assert.ok(m > 0, "as contas vêm de GET /clientes/:slug/contas");
+      await ev("document.querySelector('.sq-client-row').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))");
+      assert.equal(await ev("document.querySelector('.sq-client-expand')"), null);
+      await ev("document.querySelector('.sq-client-row').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}))");
+      assert.equal(requested.filter(u => u.endsWith("/clientes/cliente-vinculado/contas")).length, m, "contas já carregadas não são buscadas de novo");
+      await ev("document.querySelector('.sq-client-row').click()"); assert.equal(await ev("STATE.clienteAberto"), null);
+    });
     await check("foto do Squad: importa, reduz e guarda só neste navegador; remover apaga", async () => {
       const png = path.join(profile, "sq-foto.png"); fs.writeFileSync(png, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64"));
       const { root } = await cdp.send("DOM.getDocument"); const { nodeId } = await cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#sq-photo-input" });

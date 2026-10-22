@@ -273,6 +273,7 @@ function renderActivityView() {
 }
 /* Modal de atividade da pessoa — independente de STATE.modal (que guarda
  * os modais de escrita); mesmo padrão de foco contido e Esc. */
+const TRASH_ICON = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
 const iniciais = nome => String(nome || "?").trim().split(/\s+/).map(p => p[0]).slice(0, 2).join("").toUpperCase();
 function openPersonModal(uid) {
   const cache = STATE.activityView.peopleCache[Number(uid)] || STATE.activityView.peopleCache[uid];
@@ -538,12 +539,12 @@ function renderPeople() {
   const sorted = rows.slice().sort((a,b) => FUNCOES.indexOf(b.funcao) - FUNCOES.indexOf(a.funcao) || String(a.user_nome).localeCompare(String(b.user_nome), "pt-BR"));
   // Mover pessoa exige gerir também algum destino (POST + DELETE em /squads/*).
   const canMovePeople = canManage(id) && STATE.squads.some(s => String(s.id) !== String(id) && s.ativo !== false && canManage(s.id));
-  $("sq-membros-wrap").innerHTML = sorted.length ? `<div class="vf-table-wrap"><table class="vf-table sq-people"><caption class="sq-sr-only">Pessoas de ${esc(squadName(id))}</caption><thead><tr><th scope="col">Pessoa</th><th scope="col">Função</th><th scope="col">Squad principal</th>${canManage(id) ? '<th scope="col" class="sq-col-actions"><span class="sq-sr-only">Ações</span></th>' : ""}</tr></thead><tbody>${sorted.map(m => {
+  $("sq-membros-wrap").innerHTML = sorted.length ? `<div class="vf-table-wrap"><table class="vf-table sq-people"><caption class="sq-sr-only">Pessoas de ${esc(squadName(id))}</caption><thead><tr><th scope="col">Pessoa</th><th scope="col">Função</th><th scope="col">Principal</th>${canManage(id) ? '<th scope="col" class="sq-col-actions"><span class="sq-sr-only">Ações</span></th>' : ""}</tr></thead><tbody>${sorted.map(m => {
     const name = esc(m.user_nome), uid = esc(m.user_id), valid = FUNCOES.includes(m.funcao);
     return `<tr class="sq-person" data-person="${uid}"><td class="sq-person-identity"><strong>${name}</strong><span>${esc(m.user_email)}</span></td>
       <td class="sq-person-role">${ADMIN && canManage(id) ? `<label class="sq-sr-only" for="sq-role-${uid}">Função de ${name}</label><select id="sq-role-${uid}" class="vf-select sq-funcao-select" data-uid="${uid}" data-original="${esc(m.funcao)}">${!valid ? '<option value="" selected>Função não definida</option>' : ""}<option value="membro" ${m.funcao === "membro" ? "selected" : ""}>Membro</option><option value="gestor" ${m.funcao === "gestor" ? "selected" : ""}>Gestor</option><option value="coordenador" ${m.funcao === "coordenador" ? "selected" : ""}>Coordenador</option></select>` : `<span class="sq-role-label">${valid ? FUNCAO_ROTULO[m.funcao] : "Função não definida"}</span>`}</td>
       <td class="sq-person-primary">${m.is_primary ? '<span class="sq-primary">Principal</span>' : canManage(id) ? `<button type="button" class="sq-text-button" data-action="principal" data-uid="${uid}" aria-label="Definir este Squad como principal de ${name}">Definir principal</button>` : '<span class="sq-hint">Outro Squad principal</span>'}</td>
-      ${canManage(id) ? `<td class="sq-col-actions"><span class="sq-row-actions">${canMovePeople ? `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="mover-pessoa" data-uid="${uid}" aria-label="Mover ${name} para outro Squad">Mover <span aria-hidden="true">→</span></button>` : ""}<button type="button" class="sq-remove" data-action="remover" data-uid="${uid}" aria-label="Remover ${name} deste Squad">Remover</button></span></td>` : ""}</tr>`;
+      ${canManage(id) ? `<td class="sq-col-actions"><span class="sq-row-actions">${canMovePeople ? `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="mover-pessoa" data-uid="${uid}" aria-label="Mover ${name} para outro Squad">Mover <span aria-hidden="true">→</span></button>` : ""}<button type="button" class="sq-remove" data-action="remover" data-uid="${uid}" aria-label="Remover ${name} deste Squad" title="Remover do Squad">${TRASH_ICON}</button></span></td>` : ""}</tr>`;
   }).join("")}</tbody></table></div>` : `<div class="sq-empty"><h4>A equipe começa aqui</h4><p>Nenhum membro neste squad. Use Adicionar pessoa para compor a equipe.</p></div>`;
 }
 // Página do cliente: Cliente 360 V3 — vf-context.js lê ?cliente=<slug>.
@@ -974,10 +975,12 @@ $("sq-clientes-wrap").addEventListener("keydown", e => {
   if (row && e.target === row && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggleCliente(row.dataset.slug); }
 });
 $("sq-membros-wrap").addEventListener("change", e => { if (e.target.matches(".sq-funcao-select")) changeRole(e.target); });
+// Barra horizontal no desktop, lista vertical no celular: as quatro setas navegam.
 $("sq-list").addEventListener("keydown", e => {
-  if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+  if (!["ArrowDown", "ArrowUp", "ArrowRight", "ArrowLeft", "Home", "End"].includes(e.key)) return;
   const rows = [...$("sq-list").querySelectorAll("button")], i = rows.indexOf(document.activeElement); if (i < 0) return;
-  e.preventDefault(); rows[e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : (i + (e.key === "ArrowDown" ? 1 : -1) + rows.length) % rows.length]?.focus();
+  const step = e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : -1;
+  e.preventDefault(); rows[e.key === "Home" ? 0 : e.key === "End" ? rows.length - 1 : (i + step + rows.length) % rows.length]?.focus({ preventScroll: false });
 });
 $("sq-refresh").addEventListener("click", () => { if (!STATE.busy) loadSquads(); });
 $("sq-btn-retry").addEventListener("click", loadSquads);

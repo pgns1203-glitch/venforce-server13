@@ -129,6 +129,14 @@ async function run() {
     await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await goto();
     await check("admin lista todos os Squads e clientes aguardando atribuição", async () => { assert.equal(await ev("document.querySelectorAll('.sq-row').length"),4); assert.match(await ev("$('sq-unassigned').textContent"),/1 cliente aguarda/); });
+    await check("barra de Squads: setas esquerda/direita navegam entre os Squads", async () => {
+      await ev("document.querySelector('.sq-row').focus()");
+      const k = key => ev(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'${key}',bubbles:true}))`);
+      await k("ArrowRight"); assert.equal(await ev("document.activeElement.dataset.id"), "2");
+      await k("ArrowLeft"); assert.equal(await ev("document.activeElement.dataset.id"), "1");
+      await k("ArrowLeft"); assert.equal(await ev("document.activeElement.dataset.id"), "9", "volta ao último");
+      await k("Home"); assert.equal(await ev("document.activeElement.dataset.id"), "1");
+    });
     await check("KPIs filtram a lista: Squads ativos e Sem coordenação", async () => { assert.equal(await ev("$('sq-kpis').hidden"),false); assert.match(await ev("$('sq-kpis').textContent"),/Aguardando Squad\s*1/); await click('[data-kpi="semcoord"]'); assert.deepEqual(await ev("Array.from(document.querySelectorAll('.sq-row')).map(r=>r.dataset.id)"),["2","8","9"]); assert.match(await ev("$('sq-kpi-filter').textContent"),/Sem coordenação/); await click('[data-kpi="ativos"]'); assert.deepEqual(await ev("Array.from(document.querySelectorAll('.sq-row')).map(r=>r.dataset.id)"),["1","2","8"]); await click('[data-kpi="ativos"]'); assert.equal(await ev("document.querySelectorAll('.sq-row').length"),4); assert.equal(await ev("$('sq-kpi-filter').hidden"),true); });
     await select(1);
     await check("seleção identifica Squad, coordenação, pessoas, clientes e principal", async () => { assert.equal(await ev("$('sq-detail-title').textContent"),"Squad Alfa"); assert.match(await ev("$('sq-detail-coord').textContent"),/Ana/); assert.equal(await ev("document.querySelectorAll('.sq-person').length"),2); assert.equal(await ev("document.querySelectorAll('.sq-primary').length"),1); });

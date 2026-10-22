@@ -16,10 +16,12 @@ const STATE = {
   squadAbertoId: null, usuarios: null, todosClientes: null, catalogsReady: false,
   refreshing: false, busy: false, selection: 0, modal: null, returnFocus: null, initialSelection: false,
   view: "config",
+  kpi: null, // filtro da faixa de KPIs: "ativos" | "semcoord" | null
+  editingName: false,
   activityView: {
     period: "hoje", query: "", status: "idle", error: null, gen: 0,
     peopleCache: {}, // user_id -> {userId,nome,email,eventosTotal,falhasTotal,ultimaAtividade,eventosRecentes} — 1 fetch por pessoa, não por Squad
-    drawer: { open: false, userId: null, status: "all" },
+    personModal: { open: false, userId: null, status: "all" },
   },
 };
 function esc(value) {
@@ -143,23 +145,22 @@ function sortActivityPeople(list) {
     return String(a.nome).localeCompare(String(b.nome), "pt-BR");
   });
 }
-/* Timeline compartilhada — reaproveitada apenas pelo drawer da pessoa
- * agora (a comparação por Squad não precisa mais de timeline por item). */
+/* Timeline do modal da pessoa — tabela V2 (Hora · Ação · Status). */
 function renderTimelineList(events, period) {
   if (!events.length) return '<p class="sq-empty">Nenhum evento para este filtro.</p>';
-  return `<ul class="sq-activity-timeline-list">${events.map(ev => {
+  return `<div class="vf-table-wrap sq-timeline-scroll"><table class="vf-table sq-activity-timeline-list"><thead><tr><th scope="col">Hora</th><th scope="col">Ação</th><th scope="col">Status</th></tr></thead><tbody>${events.map(ev => {
     const label = rotuloAcao(ev.acao), detPlain = detalhesPlainText(ev.detalhes);
     const preview = detPlain.length > 140 ? detPlain.slice(0, 140).trim() + "…" : detPlain;
     const statusKey = String(ev.status || "").toLowerCase();
     const statusClass = statusKey === "falha" ? "is-danger" : statusKey === "sucesso" ? "is-success" : "is-neutral";
     const statusLabel = statusKey === "falha" ? "Falha" : statusKey === "sucesso" ? "Sucesso" : (ev.status || "—");
-    return `<li class="sq-activity-item">
-      <span class="sq-activity-item-time">${esc(formatMomento(ev.created_at, period))}</span>
-      <span class="sq-activity-item-action">${esc(label)}${label !== ev.acao ? `<span class="sq-activity-item-raw">${esc(ev.acao)}</span>` : ""}</span>
-      <span class="vf-tag ${statusClass}">${esc(statusLabel)}</span>
-      ${detPlain ? `<details class="sq-activity-detail"><summary>Ver detalhes</summary><p>${esc(preview)}</p>${ev.ip ? `<p class="sq-hint">IP: ${esc(ev.ip)}</p>` : ""}</details>` : ""}
-    </li>`;
-  }).join("")}</ul>`;
+    return `<tr class="sq-activity-item">
+      <td class="sq-activity-item-time">${esc(formatMomento(ev.created_at, period))}</td>
+      <td class="sq-activity-item-action">${esc(label)}${label !== ev.acao ? `<span class="sq-activity-item-raw">${esc(ev.acao)}</span>` : ""}
+        ${detPlain ? `<details class="sq-activity-detail"><summary>Ver detalhes</summary><p>${esc(preview)}</p>${ev.ip ? `<p class="sq-hint">IP: ${esc(ev.ip)}</p>` : ""}</details>` : ""}</td>
+      <td><span class="vf-tag ${statusClass}">${esc(statusLabel)}</span></td>
+    </tr>`;
+  }).join("")}</tbody></table></div>`;
 }
 /* Visão ATIVIDADE — comparação lado a lado dos Squads. Um fetch por
  * user_id único (não por vínculo de Squad): pessoa em 3 Squads é buscada
@@ -267,48 +268,58 @@ function renderActivityView() {
   const cards = STATE.squads.map(s => ({ squad: s, data: squadActivityData(s.id) })).filter(({ squad, data }) => activityMatchesQuery(squad, data, query));
   $("sq-activity-grid").innerHTML = cards.length ? cards.map(({ squad, data }) => renderActivityCard(squad, data, query)).join("")
     : `<div class="sq-empty"><h3>Nenhum resultado</h3><p>Ajuste a busca para encontrar um Squad ou pessoa.</p></div>`;
-  if (a.drawer.open) renderPersonDrawerBody();
+  if (a.personModal.open) renderPersonModalBody();
 }
-/* Drawer de detalhe da pessoa — mesmo padrão de foco/Esc dos modais,
- * mas sem inert no fundo (a grade continua legível atrás do drawer). */
-function openPersonDrawer(uid) {
+/* Modal de atividade da pessoa — independente de STATE.modal (que guarda
+ * os modais de escrita); mesmo padrão de foco contido e Esc. */
+const iniciais = nome => String(nome || "?").trim().split(/\s+/).map(p => p[0]).slice(0, 2).join("").toUpperCase();
+function openPersonModal(uid) {
   const cache = STATE.activityView.peopleCache[Number(uid)] || STATE.activityView.peopleCache[uid];
   if (!cache) return;
-  STATE.activityView.drawer = { open: true, userId: cache.userId, status: "all" };
+  STATE.activityView.personModal = { open: true, userId: cache.userId, status: "all" };
   STATE.returnFocus = document.activeElement;
-  const squadsDaPessoa = STATE.squads.filter(s => (people(s.id) || []).some(m => String(m.user_id) === String(cache.userId))).map(s => s.nome);
-  $("sq-person-drawer-title").textContent = cache.nome;
-  $("sq-person-drawer-subtitle").textContent = squadsDaPessoa.length ? `Squad${squadsDaPessoa.length > 1 ? "s" : ""}: ${squadsDaPessoa.join(", ")}` : "";
-  $("sq-person-drawer-status").value = "all";
-  renderPersonDrawerBody();
-  $("sq-person-drawer-backdrop").classList.add("is-open");
-  $("sq-person-drawer").classList.add("is-open");
+  $("sq-person-modal-title").textContent = cache.nome;
+  $("sq-person-modal-subtitle").textContent = cache.email || "";
+  $("sq-person-modal-avatar").textContent = iniciais(cache.nome);
+  $("sq-person-modal-squads").innerHTML = STATE.squads.map(s => ({ s, m: (people(s.id) || []).find(m => String(m.user_id) === String(cache.userId)) })).filter(x => x.m)
+    .map(({ s, m }) => `<span class="vf-tag ${m.is_primary ? "is-primary" : ""}">${esc(s.nome)} · ${esc(FUNCAO_ROTULO[m.funcao] || "Função não definida")}${m.is_primary ? " · principal" : ""}</span>`).join("");
+  renderPersonModalBody();
+  $("sq-person-modal").classList.add("is-open");
   document.body.classList.add("vf-no-scroll");
-  requestAnimationFrame(() => $("sq-person-drawer-close").focus());
+  requestAnimationFrame(() => $("sq-person-modal-close").focus());
 }
-function closePersonDrawer() {
-  if (!STATE.activityView.drawer.open) return;
-  STATE.activityView.drawer.open = false;
-  $("sq-person-drawer-backdrop").classList.remove("is-open");
-  $("sq-person-drawer").classList.remove("is-open");
+function closePersonModal() {
+  if (!STATE.activityView.personModal.open) return;
+  STATE.activityView.personModal.open = false;
+  $("sq-person-modal").classList.remove("is-open");
   document.body.classList.remove("vf-no-scroll");
   if (STATE.returnFocus?.isConnected) STATE.returnFocus.focus();
 }
-function renderPersonDrawerBody() {
-  const uid = STATE.activityView.drawer.userId;
+function renderPersonModalBody() {
+  const uid = STATE.activityView.personModal.userId;
   const cache = STATE.activityView.peopleCache[uid]; if (!cache) return;
-  const periodLabel = { hoje: "Hoje", "7d": "7 dias", "30d": "30 dias" }[STATE.activityView.period];
-  $("sq-person-drawer-summary").textContent = `${periodLabel} · ${cache.eventosTotal} ${cache.eventosTotal === 1 ? "evento" : "eventos"} · ${cache.falhasTotal} ${cache.falhasTotal === 1 ? "falha" : "falhas"} · Última ${formatMomento(cache.ultimaAtividade, STATE.activityView.period)}`;
-  const statusFilter = STATE.activityView.drawer.status;
-  const events = cache.eventosRecentes.filter(ev => statusFilter === "all" || String(ev.status).toLowerCase() === statusFilter);
-  $("sq-person-drawer-timeline").innerHTML = renderTimelineList(events, STATE.activityView.period);
+  const period = STATE.activityView.period;
+  const periodLabel = { hoje: "hoje", "7d": "nos últimos 7 dias", "30d": "nos últimos 30 dias" }[period];
+  const ultima = cache.eventosRecentes[0];
+  $("sq-person-modal-summary").innerHTML = `
+    <div class="vf-metric"><span class="vf-metric__label">Eventos</span><span class="vf-metric__value">${cache.eventosTotal}</span><span class="vf-metric__foot">${periodLabel}</span></div>
+    <div class="vf-metric ${cache.falhasTotal ? "vf-metric--warning" : ""}"><span class="vf-metric__label">Falhas</span><span class="vf-metric__value">${cache.falhasTotal}</span><span class="vf-metric__foot ${cache.falhasTotal ? "is-warning" : ""}">${cache.falhasTotal ? "veja abaixo" : "nenhuma"}</span></div>
+    <div class="vf-metric"><span class="vf-metric__label">Última atividade</span><span class="vf-metric__value sq-metric-time">${esc(formatMomento(cache.ultimaAtividade, period))}</span><span class="vf-metric__foot">${ultima ? esc(rotuloAcao(ultima.acao)) : "sem registro"}</span></div>`;
+  const statusFilter = STATE.activityView.personModal.status;
+  const recentes = cache.eventosRecentes;
+  const nFalha = recentes.filter(ev => String(ev.status).toLowerCase() === "falha").length;
+  const nSucesso = recentes.filter(ev => String(ev.status).toLowerCase() === "sucesso").length;
+  $("sq-person-modal-status").innerHTML = [["all", "Todos", recentes.length], ["sucesso", "Sucesso", nSucesso], ["falha", "Falha", nFalha]]
+    .map(([k, l, n]) => `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm ${statusFilter === k ? "is-active" : ""}" data-action="person-status" data-status="${k}" aria-pressed="${statusFilter === k}">${l} <span class="vf-badge">${n}</span></button>`).join("");
+  const events = recentes.filter(ev => statusFilter === "all" || String(ev.status).toLowerCase() === statusFilter);
+  $("sq-person-modal-timeline").innerHTML = renderTimelineList(events, period);
 }
 /* Alterna Configuração ⇄ Atividade. Reflete no hash só para permitir
  * refresh preservar a visão — não é um router. */
 function currentHashView() { return location.hash === "#activity" ? "activity" : "config"; }
 function setView(view) {
   if (view === "activity" && !ADMIN) view = "config";
-  if (view !== "activity") closePersonDrawer();
+  if (view !== "activity") closePersonModal();
   STATE.view = view;
   $("sq-view-config").hidden = view !== "config";
   $("sq-view-activity").hidden = view !== "activity";
@@ -390,19 +401,49 @@ function coordinators(s) {
   const names = (people(s.id) || []).filter(m => m.funcao === "coordenador").map(m => m.user_nome);
   return names.length ? names.join(", ") : "Sem coordenador";
 }
+// "Sem coordenação" só quando a equipe foi lida: equipe indisponível não é equipe vazia.
+const semCoordenacao = s => Array.isArray(people(s.id)) && !people(s.id).some(m => m.funcao === "coordenador");
+const KPI_ROTULO = { ativos: "Squads ativos", semcoord: "Sem coordenação" };
+function renderKpis() {
+  const wrap = $("sq-kpis");
+  wrap.hidden = !STATE.squads.length;
+  if (!STATE.squads.length) return;
+  const ativos = STATE.squads.filter(s => s.ativo !== false).length;
+  const pessoas = new Set(STATE.squads.flatMap(s => (people(s.id) || []).map(m => String(m.user_id)))).size;
+  const parcial = STATE.squads.some(s => !Array.isArray(people(s.id)));
+  const clientes = STATE.squads.reduce((n, s) => n + (Number(count(s, "clients")) || 0), 0);
+  const semCoord = STATE.squads.filter(semCoordenacao).length;
+  const items = [
+    { k: "ativos", label: "Squads ativos", value: ativos, foot: `${STATE.squads.length - ativos} ${STATE.squads.length - ativos === 1 ? "inativo" : "inativos"}` },
+    { label: "Pessoas", value: pessoas, foot: parcial ? "nos Squads que você gerencia" : "distintas, em todos os Squads" },
+    { label: "Clientes na carteira", value: clientes, foot: "atribuídos a algum Squad" },
+    { k: "semcoord", label: "Sem coordenação", value: semCoord, foot: semCoord ? "precisa de coordenador" : "todos coordenados", warn: semCoord > 0 },
+  ];
+  if (ADMIN && STATE.catalogsReady) {
+    const pend = eligibleClients().length;
+    items.push({ k: "pend", label: "Aguardando Squad", value: pend, foot: "clientes sem atribuição", warn: pend > 0 });
+  }
+  wrap.innerHTML = items.map(i => i.k
+    ? `<button type="button" class="vf-metric sq-kpi ${i.warn ? "is-warning" : ""} ${STATE.kpi === i.k ? "is-active" : ""}" data-action="kpi" data-kpi="${i.k}" aria-pressed="${STATE.kpi === i.k}"><span class="vf-metric__label">${i.label}</span><span class="vf-metric__value">${i.value}</span><span class="vf-metric__foot ${i.warn ? "is-warning" : ""}">${i.foot}</span></button>`
+    : `<div class="vf-metric sq-kpi"><span class="vf-metric__label">${i.label}</span><span class="vf-metric__value">${i.value}</span><span class="vf-metric__foot">${i.foot}</span></div>`).join("");
+}
 function renderSquadList() {
   const query = $("sq-search").value;
   const filtered = STATE.squads.filter(s => matches(query, s.nome, s.slug,
     ...(people(s.id) || []).flatMap(m => [m.user_nome, m.user_email]),
-    ...(clients(s.id) || []).flatMap(c => [c.nome, c.slug])));
+    ...(clients(s.id) || []).flatMap(c => [c.nome, c.slug]))
+    && (STATE.kpi !== "ativos" || s.ativo !== false) && (STATE.kpi !== "semcoord" || semCoordenacao(s)));
   $("sq-search-status").textContent = query ? `${filtered.length} de ${STATE.squads.length} Squads · busca nos dados disponíveis` : "";
+  $("sq-kpi-filter").hidden = !KPI_ROTULO[STATE.kpi];
+  $("sq-kpi-filter").innerHTML = KPI_ROTULO[STATE.kpi] ? `<span class="vf-tag is-primary">Filtro: ${KPI_ROTULO[STATE.kpi]}</span><button type="button" class="sq-text-button" data-action="kpi" data-kpi="${STATE.kpi}">Limpar</button>` : "";
   $("sq-list").innerHTML = filtered.map(s => {
     const selected = String(STATE.squadAbertoId) === String(s.id);
     return `<button type="button" class="sq-row ${selected ? "is-selected" : ""}" data-action="abrir" data-id="${esc(s.id)}" aria-current="${selected ? "true" : "false"}" aria-controls="sq-detail">
-      <span class="sq-row__main"><strong>${esc(s.nome)}</strong>${isLegado(s) ? '<span class="sq-badge-legado">Legado</span>' : ""}${s.ativo === false ? '<span class="sq-tag">Inativo</span>' : ""}</span>
+      <span class="sq-row__main"><strong>${esc(s.nome)}</strong>${isLegado(s) ? '<span class="vf-tag sq-badge-legado">Legado</span>' : ""}${s.ativo === false ? '<span class="vf-tag sq-tag">Inativo</span>' : ""}</span>
       <span class="sq-row__stats"><span><b>${count(s, "clients")}</b> ${Number(count(s, "clients")) === 1 ? "cliente" : "clientes"}</span><span><b>${count(s, "people")}</b> ${Number(count(s, "people")) === 1 ? "pessoa" : "pessoas"}</span></span>
       <span class="sq-row__coord">${esc(coordinators(s))}</span></button>`;
-  }).join("") || `<div class="sq-empty"><h3>${STATE.squads.length ? "Nenhum Squad encontrado" : "Nenhum Squad disponível"}</h3><p>${STATE.squads.length ? "Busque outro nome ou limpe a busca." : "Os Squads disponíveis para você aparecerão aqui."}</p></div>`;
+  }).join("") || `<div class="sq-empty"><h3>${STATE.squads.length ? "Nenhum Squad encontrado" : "Nenhum Squad disponível"}</h3><p>${STATE.squads.length ? (STATE.kpi ? "Limpe o filtro ou busque outro nome." : "Busque outro nome ou limpe a busca.") : "Os Squads disponíveis para você aparecerão aqui."}</p></div>`;
+  renderKpis();
 }
 async function abrirSquad(id) {
   if (STATE.busy) return;
@@ -410,9 +451,8 @@ async function abrirSquad(id) {
   STATE.squadAbertoId = Number(id);
   const version = ++STATE.selection;
   if (changed) {
-    ["sq-people-search", "sq-clients-search"].forEach(key => $(key).value = "");
-    $("sq-people-filter").value = "all";
-    $("sq-edit-form").hidden = true;
+    $("sq-clients-search").value = "";
+    STATE.editingName = false;
   }
   $("sq-detail").style.display = "block";
   $("sq-detail-placeholder").hidden = true;
@@ -448,12 +488,32 @@ function renderDetailStatus() {
 }
 function renderDetalhe(id) {
   const s = squadPorId(id); if (!s) return;
-  $("sq-detail-title").textContent = s.nome;
-  $("sq-detail-state").textContent = s.ativo === false ? "Inativo" : "Ativo";
+  const editable = canManage(id), ativo = s.ativo !== false;
+  // Nome: clicar no título abre o campo no lugar (PATCH /squads/:id, mesmo contrato do antigo "Editar Squad").
+  if (!STATE.editingName) {
+    $("sq-detail-title").innerHTML = editable
+      ? `<button type="button" class="sq-name-btn" data-action="edit-name" title="Clique para renomear">${esc(s.nome)}</button>`
+      : esc(s.nome);
+  }
+  $("sq-detail-title").hidden = STATE.editingName;
+  $("sq-name-input").hidden = !STATE.editingName;
+  // Status: só admin altera (requireAdmin no backend); os demais veem o estado.
+  const stateText = ativo ? "Ativo" : "Inativo";
+  $("sq-detail-state-wrap").innerHTML = ADMIN
+    ? `<button type="button" id="sq-detail-state" class="sq-status-btn ${ativo ? "is-on" : "is-off"}" data-action="toggle-state" title="Clique para ${ativo ? "desativar" : "reativar"}" aria-label="Status: ${stateText}. Clique para ${ativo ? "desativar" : "reativar"}"><span class="vf-status ${ativo ? "is-success" : "is-neutral"}">${stateText}</span><span class="sq-status-btn__caret" aria-hidden="true">⇄</span></button>`
+    : `<span id="sq-detail-state" class="vf-status ${ativo ? "is-success" : "is-neutral"}">${stateText}</span>`;
+  $("sq-detail-legado").hidden = !isLegado(s);
   $("sq-detail-coord").textContent = `Coordenação · ${coordinators(s)}`;
   $("sq-legacy-note").hidden = !isLegado(s);
-  $("sq-detail-subtitle").innerHTML = `<a href="#sq-people-section"><strong>${count(s, "people")}</strong> ${Number(count(s, "people")) === 1 ? "pessoa" : "pessoas"}</a><a href="#sq-clients-section"><strong>${count(s, "clients")}</strong> ${Number(count(s, "clients")) === 1 ? "cliente" : "clientes"}</a>${isLegado(s) ? '<span class="sq-badge-legado">Squad 8 · Legado</span>' : ""}`;
-  $("sq-edit").hidden = !canManage(id);
+  renderPhoto(s);
+  const rows = people(id), carteira = clients(id);
+  const nPrincipal = rows ? rows.filter(m => m.is_primary).length : null;
+  const nCoord = rows ? rows.filter(m => m.funcao === "coordenador").length : null;
+  const nInativos = carteira ? carteira.filter(c => c.ativo === false).length : null;
+  $("sq-detail-subtitle").innerHTML = `
+    <a class="vf-metric" href="#sq-people-section"><span class="vf-metric__label">Pessoas</span><span class="vf-metric__value">${count(s, "people")}</span><span class="vf-metric__foot">${nPrincipal === null ? "equipe indisponível" : `${nPrincipal} com este Squad principal`}</span></a>
+    <a class="vf-metric" href="#sq-clients-section"><span class="vf-metric__label">Clientes</span><span class="vf-metric__value">${count(s, "clients")}</span><span class="vf-metric__foot">${nInativos === null ? "carteira indisponível" : `${nInativos} ${nInativos === 1 ? "inativo" : "inativos"}`}</span></a>
+    <div class="vf-metric ${nCoord === 0 ? "vf-metric--warning" : ""}"><span class="vf-metric__label">Coordenadores</span><span class="vf-metric__value">${nCoord ?? "—"}</span><span class="vf-metric__foot ${nCoord === 0 ? "is-warning" : ""}">${nCoord === null ? "equipe indisponível" : nCoord ? "coordenação definida" : "defina um coordenador"}</span></div>`;
   $("sq-btn-add-member").hidden = !canManage(id);
   $("sq-btn-add-cliente").hidden = !canManage(id);
   $("sq-people-count").textContent = count(s, "people");
@@ -470,24 +530,32 @@ function renderPeople() {
   const id = STATE.squadAbertoId; if (!id) return;
   const rows = people(id); const state = contentState("people", rows);
   if (state) { $("sq-membros-wrap").innerHTML = state; return; }
-  const q = $("sq-people-search").value, filter = $("sq-people-filter").value;
-  const filtered = rows.filter(m => matches(q, m.user_nome, m.user_email) && (filter === "all" || (filter === "primary" ? m.is_primary : filter === "invalid" ? !FUNCOES.includes(m.funcao) : m.funcao === filter)))
-    .sort((a,b) => FUNCOES.indexOf(b.funcao) - FUNCOES.indexOf(a.funcao) || String(a.user_nome).localeCompare(String(b.user_nome), "pt-BR"));
-  $("sq-membros-wrap").innerHTML = filtered.length ? `<ul class="sq-people">${filtered.map(m => {
+  const sorted = rows.slice().sort((a,b) => FUNCOES.indexOf(b.funcao) - FUNCOES.indexOf(a.funcao) || String(a.user_nome).localeCompare(String(b.user_nome), "pt-BR"));
+  // Mover pessoa exige gerir também algum destino (POST + DELETE em /squads/*).
+  const canMovePeople = canManage(id) && STATE.squads.some(s => String(s.id) !== String(id) && s.ativo !== false && canManage(s.id));
+  $("sq-membros-wrap").innerHTML = sorted.length ? `<div class="vf-table-wrap"><table class="vf-table sq-people"><caption class="sq-sr-only">Pessoas de ${esc(squadName(id))}</caption><thead><tr><th scope="col">Pessoa</th><th scope="col">Função</th><th scope="col">Squad principal</th>${canManage(id) ? '<th scope="col" class="sq-col-actions"><span class="sq-sr-only">Ações</span></th>' : ""}</tr></thead><tbody>${sorted.map(m => {
     const name = esc(m.user_nome), uid = esc(m.user_id), valid = FUNCOES.includes(m.funcao);
-    return `<li class="sq-person" data-person="${uid}"><div class="sq-person-identity"><strong>${name}</strong><span>${esc(m.user_email)}</span></div>
-      <div class="sq-person-role">${ADMIN && canManage(id) ? `<label class="sq-sr-only" for="sq-role-${uid}">Função de ${name}</label><select id="sq-role-${uid}" class="vf-select sq-funcao-select" data-uid="${uid}" data-original="${esc(m.funcao)}">${!valid ? '<option value="" selected>Função não definida</option>' : ""}<option value="membro" ${m.funcao === "membro" ? "selected" : ""}>Membro</option><option value="gestor" ${m.funcao === "gestor" ? "selected" : ""}>Gestor</option><option value="coordenador" ${m.funcao === "coordenador" ? "selected" : ""}>Coordenador</option></select>` : `<span class="sq-role-label">${valid ? FUNCAO_ROTULO[m.funcao] : "Função não definida"}</span>`}</div>
-      <div class="sq-person-primary">${m.is_primary ? '<span class="sq-primary">Squad principal</span>' : canManage(id) ? `<button type="button" class="sq-text-button" data-action="principal" data-uid="${uid}" aria-label="Definir este Squad como principal de ${name}">Definir principal</button>` : '<span class="sq-hint">Outro Squad principal</span>'}</div>
-      ${canManage(id) ? `<button type="button" class="sq-remove" data-action="remover" data-uid="${uid}" aria-label="Remover ${name} deste Squad">Remover</button>` : ""}</li>`;
-  }).join("")}</ul>` : `<div class="sq-empty"><h4>${rows.length ? "Nenhuma pessoa encontrada" : "A equipe começa aqui"}</h4><p>${rows.length ? "Ajuste a busca ou o filtro de função." : "Nenhum membro neste squad. Use Adicionar pessoa para compor a equipe."}</p></div>`;
+    return `<tr class="sq-person" data-person="${uid}"><td class="sq-person-identity"><strong>${name}</strong><span>${esc(m.user_email)}</span></td>
+      <td class="sq-person-role">${ADMIN && canManage(id) ? `<label class="sq-sr-only" for="sq-role-${uid}">Função de ${name}</label><select id="sq-role-${uid}" class="vf-select sq-funcao-select" data-uid="${uid}" data-original="${esc(m.funcao)}">${!valid ? '<option value="" selected>Função não definida</option>' : ""}<option value="membro" ${m.funcao === "membro" ? "selected" : ""}>Membro</option><option value="gestor" ${m.funcao === "gestor" ? "selected" : ""}>Gestor</option><option value="coordenador" ${m.funcao === "coordenador" ? "selected" : ""}>Coordenador</option></select>` : `<span class="sq-role-label">${valid ? FUNCAO_ROTULO[m.funcao] : "Função não definida"}</span>`}</td>
+      <td class="sq-person-primary">${m.is_primary ? '<span class="sq-primary">Principal</span>' : canManage(id) ? `<button type="button" class="sq-text-button" data-action="principal" data-uid="${uid}" aria-label="Definir este Squad como principal de ${name}">Definir principal</button>` : '<span class="sq-hint">Outro Squad principal</span>'}</td>
+      ${canManage(id) ? `<td class="sq-col-actions"><span class="sq-row-actions">${canMovePeople ? `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="mover-pessoa" data-uid="${uid}" aria-label="Mover ${name} para outro Squad">Mover <span aria-hidden="true">→</span></button>` : ""}<button type="button" class="sq-remove" data-action="remover" data-uid="${uid}" aria-label="Remover ${name} deste Squad">Remover</button></span></td>` : ""}</tr>`;
+  }).join("")}</tbody></table></div>` : `<div class="sq-empty"><h4>A equipe começa aqui</h4><p>Nenhum membro neste squad. Use Adicionar pessoa para compor a equipe.</p></div>`;
 }
+// Página do cliente: Cliente 360 V3 — vf-context.js lê ?cliente=<slug>.
+const clienteUrl = c => `cliente-360-v3.html?cliente=${encodeURIComponent(c.slug)}`;
 function renderClients() {
   const id = STATE.squadAbertoId; if (!id) return;
   const rows = clients(id); const state = contentState("clients", rows);
   if (state) { $("sq-clientes-wrap").innerHTML = state; $("sq-clients-result").textContent = ""; return; }
   const filtered = rows.filter(c => matches($("sq-clients-search").value, c.nome, c.slug));
   $("sq-clients-result").textContent = `${filtered.length} de ${rows.length} clientes`;
-  $("sq-clientes-wrap").innerHTML = filtered.length ? `<div class="sq-table-wrap"><table class="sq-table"><caption class="sq-sr-only">Clientes de ${esc(squadName(id))}</caption><thead><tr><th scope="col">Cliente</th><th scope="col" class="sq-col-actions">${ADMIN ? "Transferência" : "Estado"}</th></tr></thead><tbody>${filtered.map(c => `<tr><td><strong>${esc(c.nome || c.slug)}</strong><span class="sq-client-slug">${esc(c.slug)}${c.ativo === false ? " · Inativo" : ""}</span></td><td class="sq-col-actions">${ADMIN && canManage(id) && !STATE.errors[id]?.clients ? `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="mover" data-cid="${esc(c.id)}" aria-label="Mover ${esc(c.nome || c.slug)} para outro Squad">Mover <span aria-hidden="true">→</span></button>` : esc(c.ativo === false ? "Inativo" : "Ativo")}</td></tr>`).join("")}</tbody></table></div>` : `<div class="sq-empty"><h4>${rows.length ? "Nenhum cliente encontrado" : "Uma carteira para formar"}</h4><p>${rows.length ? "Tente outro nome ou identificador." : "Nenhum cliente neste squad. Adicione um cliente que aguarda atribuição."}</p></div>`;
+  const canMove = ADMIN && canManage(id) && !STATE.errors[id]?.clients;
+  $("sq-clientes-wrap").innerHTML = filtered.length ? `<div class="vf-table-wrap"><table class="vf-table sq-table"><caption class="sq-sr-only">Clientes de ${esc(squadName(id))}</caption><thead><tr><th scope="col">Cliente</th><th scope="col">Slug</th><th scope="col">Status</th><th scope="col" class="sq-col-actions">${canMove ? "Transferência" : '<span class="sq-sr-only">Ações</span>'}</th></tr></thead><tbody>${filtered.map(c => {
+    const nome = esc(c.nome || c.slug);
+    return `<tr><td><strong>${nome}</strong></td><td class="sq-client-slug">${esc(c.slug)}</td>
+      <td>${c.ativo === false ? '<span class="vf-status is-neutral">Inativo</span>' : '<span class="vf-status is-success">Ativo</span>'}</td>
+      <td class="sq-col-actions"><span class="sq-row-actions"><a class="vf-btn vf-btn--ghost vf-btn--sm" href="${esc(clienteUrl(c))}" aria-label="Abrir ${nome} na Cliente 360">Abrir <span aria-hidden="true">↗</span></a>${canMove ? `<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="mover" data-cid="${esc(c.id)}" aria-label="Mover ${nome} para outro Squad">Mover <span aria-hidden="true">→</span></button>` : ""}</span></td></tr>`;
+  }).join("")}</tbody></table></div>` : `<div class="sq-empty"><h4>${rows.length ? "Nenhum cliente encontrado" : "Uma carteira para formar"}</h4><p>${rows.length ? "Tente outro nome ou identificador." : "Nenhum cliente neste squad. Adicione um cliente que aguarda atribuição."}</p></div>`;
 }
 function eligibleClients(query = "") {
   if (!STATE.catalogsReady) return [];
@@ -499,7 +567,8 @@ function renderUnassigned() {
   if (!ADMIN) return;
   if (!STATE.catalogsReady) { wrap.innerHTML = '<span>Clientes sem Squad · não foi possível verificar todas as carteiras.</span><button class="sq-text-button" type="button" data-action="retry">Tentar novamente</button>'; return; }
   const rows = eligibleClients(); wrap.hidden = !rows.length;
-  wrap.innerHTML = `<div><strong>${rows.length} ${rows.length === 1 ? "cliente aguarda" : "clientes aguardam"} atribuição</strong><span>Clientes ativos que ainda não pertencem a um Squad.</span></div><button type="button" class="vf-btn vf-btn--secondary" data-action="assign">Atribuir clientes</button>`;
+  wrap.innerHTML = `<div><strong>${rows.length} ${rows.length === 1 ? "cliente aguarda" : "clientes aguardam"} atribuição</strong><span>Clientes ativos que ainda não pertencem a um Squad.</span></div><button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-action="assign">Atribuir clientes</button>`;
+  renderKpis();
 }
 /* Dialogs: foco contido, retorno ao acionador, Esc e bloqueio durante escrita. */
 function openModal(kind, sid) {
@@ -527,10 +596,10 @@ function confirmDialog({ title, text, label = "Confirmar", danger = false, actio
   $("sq-confirm-ok").className = `vf-btn vf-btn--${danger ? "danger" : "primary"}`;
   confirmAction = action; openModal("confirm", STATE.squadAbertoId);
 }
-async function mutate({ path, method, body, message, button, errorId, done }) {
+async function mutate({ path, method, body, run, message, button, errorId, done }) {
   if (STATE.busy) return;
   STATE.busy = true;
-  const text = button.textContent; button.textContent = "Salvando…";
+  const text = button?.textContent; if (button) button.textContent = "Salvando…";
   const scope = STATE.modal ? $(`sq-${STATE.modal}-modal`) : $("sq-detail");
   const controls = [...scope.querySelectorAll("button,input,select")].map(el => [el, el.disabled]);
   controls.forEach(([el]) => el.disabled = true);
@@ -539,7 +608,7 @@ async function mutate({ path, method, body, message, button, errorId, done }) {
   try {
     // Uma leitura anterior não pode sobrescrever o resultado desta escrita.
     if (refreshTask) await refreshTask;
-    await api(path, { method, body }); success = true;
+    await (run ? run() : api(path, { method, body })); success = true;
     feedback(message);
     // A escrita já foi confirmada. Falha de atualização nunca vira "falha ao salvar".
     await loadSquads();
@@ -547,8 +616,10 @@ async function mutate({ path, method, body, message, button, errorId, done }) {
     const text = `${message.split(".")[0]} — alteração não concluída: ${err.message}`;
     if (errorId) { $(errorId).textContent = err.message; $(errorId).style.display = "block"; }
     else feedback(text, "danger");
+    // Escrita em etapas que parou no meio: o servidor já mudou, a tela relê.
+    if (err.partial) await loadSquads();
   } finally {
-    STATE.busy = false; controls.forEach(([el, disabled]) => el.disabled = disabled); button.textContent = text;
+    STATE.busy = false; controls.forEach(([el, disabled]) => el.disabled = disabled); if (button) button.textContent = text;
     if (success) { closeModal(); done?.(); }
   }
   return success;
@@ -655,19 +726,111 @@ function confirmMove() {
   if (!ADMIN || !canManage(sid) || !dest || dest === sid || squadPorId(dest)?.ativo === false) return;
   mutate({ path: `/squads/${dest}/clientes/${cid}/transferir`, method: "POST", body: { motivo: $("sq-move-motivo").value.trim() || null }, message: `${modal.dataset.clienteNome} foi movido de ${squadName(sid)} para ${squadName(dest)}.`, button: $("sq-move-confirm"), errorId: "sq-move-danger" });
 }
-function editSquad() {
-  const s = squadPorId(STATE.squadAbertoId); if (!canManage(s?.id)) return;
-  $("sq-edit-name").value = s.nome; $("sq-edit-state").value = String(s.ativo !== false);
-  $("sq-edit-state-wrap").hidden = !ADMIN; $("sq-edit-form").hidden = false; $("sq-edit-error").textContent = ""; $("sq-edit-name").focus();
+/* Nome editável no próprio título: Enter ou sair do campo salva, Esc cancela. */
+function startNameEdit() {
+  const s = squadPorId(STATE.squadAbertoId); if (!s || !canManage(s.id) || STATE.busy) return;
+  STATE.editingName = true;
+  $("sq-name-input").value = s.nome;
+  renderDetalhe(s.id);
+  $("sq-name-input").focus(); $("sq-name-input").select();
 }
-function saveSquad(event) {
-  event.preventDefault();
+let finishingName = false;
+async function finishNameEdit(save) {
+  if (!STATE.editingName || finishingName) return;
+  finishingName = true;
+  const s = squadPorId(STATE.squadAbertoId), nome = $("sq-name-input").value.trim();
+  STATE.editingName = false;
+  if (s) renderDetalhe(s.id);
+  if (save && s && !nome) feedback("O nome do Squad não pode ficar vazio. O nome anterior foi mantido.", "warning");
+  else if (save && s && nome !== s.nome) await mutate({ path: `/squads/${s.id}`, method: "PATCH", body: { nome }, message: `${s.nome} agora se chama ${nome}.` });
+  finishingName = false;
+  $("sq-detail-title").querySelector("button")?.focus();
+}
+/* Status: clicar alterna. Desativar pede confirmação; reativar é direto. */
+function toggleSquadState() {
+  const s = squadPorId(STATE.squadAbertoId); if (!ADMIN || !s || STATE.busy) return;
+  if (s.ativo !== false) {
+    confirmDialog({ title: "Desativar Squad", text: `${s.nome} ficará inativo. Um Squad inativo deixa de conceder acesso operacional pela carteira. Seus vínculos serão mantidos.`, label: "Desativar Squad", danger: true,
+      action: () => mutate({ path: `/squads/${s.id}`, method: "PATCH", body: { ativo: false }, message: `${s.nome} está inativo.`, button: $("sq-confirm-ok"), errorId: "sq-confirm-danger" }) });
+  } else mutate({ path: `/squads/${s.id}`, method: "PATCH", body: { ativo: true }, message: `${s.nome} foi reativado.` });
+}
+/* Foto do Squad: as rotas /squads não têm campo de imagem, então a imagem
+ * fica só neste navegador (localStorage), reduzida para 160px. */
+const PHOTO_KEY = id => `vf-squad-foto:${id}`;
+const CAMERA_ICON = '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13.5" r="3.5"/></svg>';
+function readPhoto(id) { try { return localStorage.getItem(PHOTO_KEY(id)); } catch { return null; } }
+function renderPhoto(s) {
+  const foto = readPhoto(s.id), editable = canManage(s.id);
+  const btn = $("sq-photo-btn");
+  btn.classList.toggle("has-img", !!foto);
+  btn.innerHTML = foto ? '<img alt="">' : CAMERA_ICON;
+  if (foto) btn.querySelector("img").src = foto;
+  btn.disabled = !editable;
+  btn.title = editable ? (foto ? "Trocar imagem" : "Importar imagem") : "";
+  btn.setAttribute("aria-label", foto ? `Trocar a imagem de ${s.nome}` : `Importar imagem para ${s.nome}`);
+  $("sq-photo-remove").hidden = !foto || !editable;
+  btn.closest(".sq-photo").hidden = !foto && !editable;
+  $("sq-photo-remove").setAttribute("aria-label", `Remover a imagem de ${s.nome}`);
+}
+function photoHint(text) { $("sq-photo-hint").textContent = text; $("sq-photo-hint").hidden = !text; }
+function importPhoto(file) {
+  const s = squadPorId(STATE.squadAbertoId); if (!file || !s || !canManage(s.id)) return;
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { photoHint("Use uma imagem PNG, JPG ou WebP."); return; }
+  if (file.size > 2 * 1024 * 1024) { photoHint(`A imagem tem ${(file.size / 1048576).toFixed(1)} MB. O limite é 2 MB.`); return; }
+  const img = new Image(), url = URL.createObjectURL(file);
+  img.onload = () => {
+    const side = 160, canvas = document.createElement("canvas"); canvas.width = canvas.height = side;
+    const crop = Math.min(img.width, img.height);
+    canvas.getContext("2d").drawImage(img, (img.width - crop) / 2, (img.height - crop) / 2, crop, crop, 0, 0, side, side);
+    URL.revokeObjectURL(url);
+    try { localStorage.setItem(PHOTO_KEY(s.id), canvas.toDataURL("image/jpeg", 0.85)); }
+    catch { photoHint("Não foi possível guardar a imagem neste navegador."); return; }
+    renderPhoto(s);
+    photoHint("Imagem salva neste navegador. Outras pessoas ainda não a veem.");
+    $("sq-photo-btn").focus();
+  };
+  img.onerror = () => { URL.revokeObjectURL(url); photoHint("Não foi possível ler a imagem. Tente outro arquivo."); };
+  img.src = url;
+}
+function removePhoto() {
   const s = squadPorId(STATE.squadAbertoId); if (!s || !canManage(s.id)) return;
-  const body = { nome: $("sq-edit-name").value.trim() }; if (!body.nome) return;
-  if (ADMIN) body.ativo = $("sq-edit-state").value === "true";
-  const execute = (button, errorId) => mutate({ path: `/squads/${s.id}`, method: "PATCH", body, message: `${body.nome} foi atualizado${ADMIN ? ` e está ${body.ativo ? "ativo" : "inativo"}` : ""}.`, button, errorId, done: () => $("sq-edit-form").hidden = true });
-  if (ADMIN && body.ativo === false && s.ativo !== false) confirmDialog({ title: "Desativar Squad", text: `${s.nome} ficará inativo. Um Squad inativo deixa de conceder acesso operacional pela carteira. Seus vínculos serão mantidos.`, label: "Desativar Squad", danger: true, action: () => execute($("sq-confirm-ok"), "sq-confirm-danger") });
-  else execute(event.submitter, "sq-edit-error");
+  try { localStorage.removeItem(PHOTO_KEY(s.id)); } catch { /* armazenamento indisponível */ }
+  renderPhoto(s); photoHint(""); $("sq-photo-btn").focus();
+}
+/* Mover pessoa: não há rota de transferência de membro. Usa as duas
+ * existentes, nesta ordem — incluir no destino, depois remover da origem —
+ * para que uma falha no meio nunca deixe a pessoa fora dos dois Squads. */
+function openMovePerson(uid) {
+  const sid = STATE.squadAbertoId, m = people(sid)?.find(x => String(x.user_id) === String(uid));
+  if (!canManage(sid) || !m) return;
+  const modal = $("sq-movepessoa-modal"); modal.dataset.userId = uid;
+  $("sq-movepessoa-subtitle").textContent = `${m.user_nome} · ${m.user_email}`;
+  $("sq-movepessoa-destino").innerHTML = '<option value="">Selecione o destino</option>' + STATE.squads
+    .filter(s => String(s.id) !== String(sid) && s.ativo !== false && canManage(s.id))
+    .map(s => { const ja = (people(s.id) || []).some(x => String(x.user_id) === String(uid)); return `<option value="${esc(s.id)}" ${ja ? "disabled" : ""}>${esc(s.nome)}${isLegado(s) ? " · Legado" : ""}${ja ? " (já participa)" : ""}</option>`; }).join("");
+  $("sq-movepessoa-funcao").value = FUNCOES.includes(m.funcao) ? m.funcao : "membro";
+  $("sq-movepessoa-rule").textContent = `${m.is_primary ? `${squadName(sid)} é o Squad principal desta pessoa; o destino passa a ser o principal. ` : ""}A pessoa é incluída no destino e depois removida de ${squadName(sid)}. Se a segunda etapa falhar, ela fica nos dois Squads e a tela avisa.`;
+  openModal("movepessoa", sid); movePersonPreview();
+}
+function movePersonPreview() {
+  const modal = $("sq-movepessoa-modal"), sid = modal.dataset.squadId, dest = $("sq-movepessoa-destino").value;
+  $("sq-movepessoa-preview").innerHTML = `<span class="sq-transfer-route"><span><small>Sai de</small>${esc(squadName(sid))}</span><span aria-hidden="true">→</span><span><small>Entra em</small>${dest ? esc(squadName(dest)) : "Escolha um Squad"}</span></span>`;
+  $("sq-movepessoa-confirm").disabled = !dest;
+}
+function confirmMovePerson() {
+  const modal = $("sq-movepessoa-modal"), sid = modal.dataset.squadId, uid = modal.dataset.userId, dest = $("sq-movepessoa-destino").value;
+  const m = people(sid)?.find(x => String(x.user_id) === String(uid));
+  if (!m || !dest || dest === sid || !canManage(sid) || !canManage(dest)) return;
+  const name = m.user_nome, funcao = $("sq-movepessoa-funcao").value;
+  mutate({
+    run: async () => {
+      await api(`/squads/${dest}/membros`, { method: "POST", body: { userId: Number(uid), funcao, isPrimary: m.is_primary === true } });
+      try { await api(`/squads/${sid}/membros/${uid}`, { method: "DELETE" }); }
+      catch (err) { throw Object.assign(new Error(`${name} entrou em ${squadName(dest)}, mas continua em ${squadName(sid)}: ${err.message} Remova manualmente.`), { partial: true }); }
+    },
+    message: `${name} saiu de ${squadName(sid)} e entrou em ${squadName(dest)} como ${FUNCAO_ROTULO[funcao].toLowerCase()}.`,
+    button: $("sq-movepessoa-confirm"), errorId: "sq-movepessoa-danger",
+  });
 }
 /* Eventos delegados: renderizar uma lista não multiplica listeners. */
 document.addEventListener("click", event => {
@@ -678,18 +841,26 @@ document.addEventListener("click", event => {
   if (action === "retry") loadSquads();
   if (action === "principal" || action === "remover") memberAction(action, target.dataset.uid);
   if (action === "mover") openMove(target.dataset.cid);
+  if (action === "mover-pessoa") openMovePerson(target.dataset.uid);
+  if (action === "edit-name") startNameEdit();
+  if (action === "toggle-state") toggleSquadState();
+  if (action === "photo") $("sq-photo-input").click();
+  if (action === "photo-remove") removePhoto();
+  if (action === "kpi") {
+    if (target.dataset.kpi === "pend") { STATE.kpi = null; renderSquadList(); document.querySelector('[data-action="assign"]')?.click(); return; }
+    STATE.kpi = STATE.kpi === target.dataset.kpi ? null : target.dataset.kpi; renderSquadList();
+  }
+  if (action === "person-status") { STATE.activityView.personModal.status = target.dataset.status; renderPersonModalBody(); }
   if (action === "view") setView(target.dataset.view);
   if (action === "activity-period" && ADMIN) { STATE.activityView.period = target.dataset.period; loadActivityView(); }
   if (action === "activity-retry" && ADMIN) loadActivityView();
-  if (action === "activity-person" && ADMIN) openPersonDrawer(target.dataset.uid);
+  if (action === "activity-person" && ADMIN) openPersonModal(target.dataset.uid);
   if (action === "assign") {
     if (STATE.squadAbertoId && canManage(STATE.squadAbertoId)) addClient(STATE.squadAbertoId);
     else { feedback("Selecione o Squad que receberá os clientes e use Adicionar cliente.", "neutral"); $("sq-search").focus(); }
   }
 });
 $("sq-search").addEventListener("input", renderSquadList);
-$("sq-people-search").addEventListener("input", renderPeople);
-$("sq-people-filter").addEventListener("change", renderPeople);
 $("sq-clients-search").addEventListener("input", renderClients);
 $("sq-membros-wrap").addEventListener("change", e => { if (e.target.matches(".sq-funcao-select")) changeRole(e.target); });
 $("sq-list").addEventListener("keydown", e => {
@@ -702,9 +873,12 @@ $("sq-btn-retry").addEventListener("click", loadSquads);
 $("sq-detail-close").addEventListener("click", fecharDetalhe);
 $("sq-btn-add-member").addEventListener("click", () => addPerson(STATE.squadAbertoId));
 $("sq-btn-add-cliente").addEventListener("click", () => addClient(STATE.squadAbertoId));
-$("sq-edit").addEventListener("click", editSquad);
-$("sq-edit-form").addEventListener("submit", saveSquad);
-$("sq-edit-cancel").addEventListener("click", () => { $("sq-edit-form").hidden = true; $("sq-edit").focus(); });
+$("sq-name-input").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); finishNameEdit(true); }
+  if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); finishNameEdit(false); }
+});
+$("sq-name-input").addEventListener("blur", () => finishNameEdit(true));
+$("sq-photo-input").addEventListener("change", e => { importPhoto(e.target.files?.[0]); e.target.value = ""; });
 $("sq-confirm-ok").addEventListener("click", () => { if (!STATE.busy) confirmAction?.(); });
 $("sq-add-confirm").addEventListener("click", confirmPerson);
 $("sq-add-search").addEventListener("input", renderUserOptions);
@@ -715,15 +889,17 @@ $("sq-addcliente-select").addEventListener("change", clientPreview);
 $("sq-addcliente-id").addEventListener("input", clientPreview);
 $("sq-move-destino").addEventListener("change", movePreview);
 $("sq-move-confirm").addEventListener("click", confirmMove);
-["confirm", "add", "addcliente", "move"].forEach(kind => {
+$("sq-movepessoa-destino").addEventListener("change", movePersonPreview);
+$("sq-movepessoa-confirm").addEventListener("click", confirmMovePerson);
+["confirm", "add", "addcliente", "move", "movepessoa"].forEach(kind => {
   ["close", "cancel"].forEach(action => $(`sq-${kind}-${action}`).addEventListener("click", closeModal));
   $(`sq-${kind}-modal`).addEventListener("click", e => { if (e.target.id === `sq-${kind}-modal`) closeModal(); });
 });
 document.addEventListener("keydown", e => {
-  if (STATE.activityView.drawer.open) {
-    if (e.key === "Escape") { e.preventDefault(); closePersonDrawer(); return; }
+  if (STATE.activityView.personModal.open) {
+    if (e.key === "Escape") { e.preventDefault(); closePersonModal(); return; }
     if (e.key === "Tab") {
-      const controls = [...$("sq-person-drawer").querySelectorAll("button,input,select,[tabindex]")].filter(el => !el.disabled && el.offsetParent !== null);
+      const controls = [...$("sq-person-modal").querySelectorAll("button,input,select,summary,[tabindex]")].filter(el => !el.disabled && el.offsetParent !== null);
       const first = controls[0], last = controls.at(-1);
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last?.focus(); }
       if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first?.focus(); }
@@ -744,9 +920,8 @@ document.addEventListener("keydown", e => {
     if (!$(id).disabled) { e.preventDefault(); $(id).click(); }
   }
 });
-$("sq-person-drawer-close").addEventListener("click", closePersonDrawer);
-$("sq-person-drawer-backdrop").addEventListener("click", closePersonDrawer);
-$("sq-person-drawer-status").addEventListener("change", () => { STATE.activityView.drawer.status = $("sq-person-drawer-status").value; renderPersonDrawerBody(); });
+["sq-person-modal-close", "sq-person-modal-cancel"].forEach(id => $(id).addEventListener("click", closePersonModal));
+$("sq-person-modal").addEventListener("click", e => { if (e.target.id === "sq-person-modal") closePersonModal(); });
 $("sq-activity-search").addEventListener("input", () => { STATE.activityView.query = $("sq-activity-search").value; renderActivityView(); });
 window.addEventListener("hashchange", () => setView(currentHashView()));
 $("sq-access-label").textContent = ADMIN ? "Administração global" : "Gestão dos seus Squads";

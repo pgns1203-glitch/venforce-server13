@@ -20,9 +20,13 @@
       <div class="vf-page-shell">
         <div class="vf-page-container vf-page-container--wide">
 
-          <header class="sq-page-header">
-            <div><h1>Squads</h1><p>Equipes e carteiras, no mesmo lugar.</p></div>
-            <div class="sq-page-tools"><span id="sq-access-label">Administração de Squads</span><button id="sq-refresh" class="vf-btn vf-btn--secondary" type="button">Atualizar</button></div>
+          <header class="vf-page-header">
+            <div class="vf-page-header__main">
+              <p class="vf-page-header__eyebrow">Gestão</p>
+              <h1 class="vf-page-header__title">Squads</h1>
+              <p class="vf-page-header__description">Equipes e carteiras no mesmo lugar. Escolha um Squad para ver quem coordena, quem participa e quais clientes ele atende.</p>
+            </div>
+            <div class="vf-page-header__actions"><span id="sq-access-label" class="sq-access">Administração de Squads</span><button id="sq-refresh" class="vf-btn vf-btn--secondary" type="button">Atualizar</button></div>
           </header>
           <nav class="sq-mode-switch" role="tablist" aria-label="Modo de visualização">
             <button type="button" class="sq-mode-btn is-active" id="sq-mode-config" data-action="view" data-view="config" role="tab" aria-selected="true">Configuração</button>
@@ -30,62 +34,78 @@
           </nav>
           <div id="sq-feedback" class="vf-banner" role="status" aria-live="polite" hidden></div>
 
-          <div id="sq-view-config">
+          <div id="sq-view-config" class="sq-view-config">
+          <!-- KPI clicável — padrão am-resumo de Anúncios ML. -->
+          <div id="sq-kpis" class="vf-metric-row sq-kpis" aria-label="Resumo dos Squads" hidden></div>
           <div id="sq-unassigned" class="sq-unassigned" hidden></div>
           <div id="sq-workspace" class="sq-workspace">
             <aside class="sq-master" aria-label="Selecionar Squad">
-              <div class="sq-master-heading"><h2>Squads <span id="sq-list-count">—</span></h2><span id="sq-list-scope">Todos</span></div>
-              <label class="sq-search-label" for="sq-search">Encontrar Squad, pessoa ou cliente</label>
-              <input id="sq-search" class="vf-input" type="search" placeholder="Buscar na gestão…" autocomplete="off">
-              <p id="sq-search-status" class="sq-hint" role="status"></p>
+              <div class="sq-master-heading"><h2>Squads <span id="sq-list-count" class="vf-badge">—</span></h2><span id="sq-list-scope">Todos</span></div>
+              <div class="sq-master-search">
+                <label class="sq-search-label" for="sq-search">Squad, pessoa ou cliente</label>
+                <input id="sq-search" class="vf-input" type="search" placeholder="Buscar na gestão…" autocomplete="off">
+                <p id="sq-search-status" class="sq-hint" role="status"></p>
+                <p id="sq-kpi-filter" class="sq-kpi-filter" hidden></p>
+              </div>
               <div id="sq-list-content">
                 <div id="sq-state-loading" class="sq-loading" role="status"><p>Carregando Squads…</p><div class="sq-skeleton"></div><div class="sq-skeleton"></div><div class="sq-skeleton"></div></div>
                 <div id="sq-state-error" class="sq-empty" style="display:none;"><h3>Não foi possível carregar</h3><p id="sq-error-message"></p><button id="sq-btn-retry" type="button" class="vf-btn vf-btn--secondary">Tentar novamente</button></div>
                 <nav id="sq-list" class="sq-list" aria-label="Squads disponíveis" style="display:none;"></nav>
               </div>
-              <p class="sq-master-foot">Compare clientes, pessoas e coordenação antes de selecionar.</p>
             </aside>
             <div id="sq-detail-placeholder" class="sq-detail-placeholder"><h2>Selecione um Squad</h2><p>A equipe e a carteira aparecem aqui.</p></div>
             <section id="sq-detail" class="sq-detail" aria-labelledby="sq-detail-title" style="display:none;">
               <button type="button" id="sq-detail-close" class="vf-btn vf-btn--ghost sq-back">← Todos os Squads</button>
-              <header class="sq-detail-header">
-                <div><div class="sq-title-line"><h2 id="sq-detail-title" tabindex="-1">Squad</h2><span id="sq-detail-state" class="sq-tag"></span></div><p id="sq-detail-coord"></p></div>
-                <button type="button" id="sq-edit" class="vf-btn vf-btn--secondary vf-btn--sm" hidden>Editar Squad</button>
-              </header>
-              <p id="sq-legacy-note" class="sq-hint" hidden>Carteira legado: agrupamento deliberado dos clientes legados.</p>
-              <div id="sq-detail-subtitle" class="sq-summary" aria-label="Ir para pessoas ou clientes"></div>
-              <form id="sq-edit-form" class="sq-edit-form" hidden>
-                <div class="sq-field"><label for="sq-edit-name">Nome do Squad</label><input id="sq-edit-name" class="vf-input" required maxlength="120"></div>
-                <div class="sq-field" id="sq-edit-state-wrap"><label for="sq-edit-state">Estado</label><select id="sq-edit-state" class="vf-select"><option value="true">Ativo</option><option value="false">Inativo</option></select></div>
-                <div class="sq-inline-actions"><button type="submit" class="vf-btn vf-btn--primary">Salvar alterações</button><button id="sq-edit-cancel" type="button" class="vf-btn vf-btn--secondary">Cancelar</button></div>
-                <p id="sq-edit-error" class="sq-hint" role="alert"></p>
-              </form>
+              <div class="sq-hero">
+                <header class="sq-detail-header">
+                  <!-- Foto: salva só neste navegador (localStorage). As rotas /squads não têm campo de imagem. -->
+                  <div class="sq-photo">
+                    <button type="button" id="sq-photo-btn" class="sq-photo__btn" data-action="photo" aria-label="Importar imagem para o Squad"></button>
+                    <button type="button" id="sq-photo-remove" class="sq-photo__rm" data-action="photo-remove" aria-label="Remover a imagem do Squad" hidden>✕</button>
+                    <input type="file" id="sq-photo-input" accept="image/png,image/jpeg,image/webp" hidden>
+                  </div>
+                  <div class="sq-detail-identity">
+                    <div class="sq-title-line">
+                      <h2 id="sq-detail-title" tabindex="-1">Squad</h2>
+                      <input id="sq-name-input" class="vf-input sq-name-input" maxlength="120" aria-label="Nome do Squad" hidden>
+                      <span id="sq-detail-legado" class="vf-tag" hidden>Legado</span>
+                      <span id="sq-detail-state-wrap"></span>
+                    </div>
+                    <p id="sq-detail-coord"></p>
+                    <p id="sq-legacy-note" class="sq-hint" hidden>Carteira legado: agrupamento deliberado dos clientes legados.</p>
+                  </div>
+                </header>
+                <div id="sq-detail-subtitle" class="vf-metric-row sq-detail-metrics" aria-label="Resumo do Squad"></div>
+              </div>
+              <p id="sq-photo-hint" class="sq-hint" hidden></p>
               <div id="sq-detail-status" class="sq-detail-status" role="status"></div>
-              <section id="sq-people-section" class="sq-section" aria-labelledby="sq-people-title">
-                <div class="sq-section-title"><div><h3 id="sq-people-title">Pessoas <span id="sq-people-count"></span></h3></div><button type="button" id="sq-btn-add-member" class="vf-btn vf-btn--secondary">+ Adicionar pessoa</button></div>
-                <div class="sq-toolbar"><label for="sq-people-search">Buscar pessoa<input id="sq-people-search" class="vf-input" type="search" placeholder="Nome ou e-mail…"></label><label for="sq-people-filter">Mostrar<select id="sq-people-filter" class="vf-select"><option value="all">Todas as pessoas</option><option value="coordenador">Coordenadores</option><option value="gestor">Gestores</option><option value="primary">Squad principal</option><option value="invalid">Função não definida</option></select></label></div>
-                <div id="sq-membros-wrap"></div>
-                <p class="sq-principal-help"><strong>Squad principal</strong> é o padrão de organização da pessoa. Ela continua participando dos outros Squads.</p>
-              </section>
-              <section id="sq-clients-section" class="sq-section" aria-labelledby="sq-clients-title">
-                <div class="sq-section-title"><div><h3 id="sq-clients-title">Clientes <span id="sq-clients-count"></span></h3></div><button type="button" id="sq-btn-add-cliente" class="vf-btn vf-btn--secondary">+ Adicionar cliente</button></div>
-                <div class="sq-toolbar"><label for="sq-clients-search">Buscar cliente<input id="sq-clients-search" class="vf-input" type="search" placeholder="Nome ou identificador…"></label><span id="sq-clients-result" class="sq-hint" role="status"></span></div>
-                <div id="sq-clientes-wrap"></div>
-              </section>
+              <div class="sq-split">
+                <section id="sq-people-section" class="vf-card sq-section" aria-labelledby="sq-people-title">
+                  <div class="sq-section-title"><div><h3 id="sq-people-title">Pessoas <span id="sq-people-count" class="vf-badge"></span></h3><p><strong>★ Principal</strong> é o Squad padrão da pessoa. Ela continua nos outros.</p></div><button type="button" id="sq-btn-add-member" class="vf-btn vf-btn--secondary vf-btn--sm">+ Adicionar pessoa</button></div>
+                  <div id="sq-membros-wrap"></div>
+                </section>
+                <section id="sq-clients-section" class="vf-card sq-section" aria-labelledby="sq-clients-title">
+                  <div class="sq-section-title"><div><h3 id="sq-clients-title">Clientes <span id="sq-clients-count" class="vf-badge"></span></h3><p>Carteira atendida por este Squad.</p></div><button type="button" id="sq-btn-add-cliente" class="vf-btn vf-btn--secondary vf-btn--sm">+ Adicionar cliente</button></div>
+                  <div class="sq-toolbar"><div class="vf-field"><label class="vf-field__label" for="sq-clients-search">Buscar cliente</label><input id="sq-clients-search" class="vf-input" type="search" placeholder="Nome ou slug…"></div><span id="sq-clients-result" class="sq-hint" role="status"></span></div>
+                  <div id="sq-clientes-wrap"></div>
+                </section>
+              </div>
             </section>
           </div>
           </div>
 
           <div id="sq-view-activity" class="sq-activity-view" hidden>
             <div class="sq-activity-controls">
-              <div class="sq-activity-periods" role="group" aria-label="Período da atividade">
-                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="hoje">Hoje</button>
-                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="7d">7 dias</button>
-                <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="30d">30 dias</button>
+              <div class="vf-field"><span class="vf-field__label" id="sq-activity-period-label">Período</span>
+                <div class="vf-btn-group sq-activity-periods" role="group" aria-labelledby="sq-activity-period-label">
+                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="hoje">Hoje</button>
+                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="7d">7 dias</button>
+                  <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm sq-period-btn" data-action="activity-period" data-period="30d">30 dias</button>
+                </div>
               </div>
-              <label class="sq-activity-search-label" for="sq-activity-search">Buscar pessoa ou Squad<input id="sq-activity-search" class="vf-input" type="search" placeholder="Buscar pessoa ou Squad…" autocomplete="off"></label>
+              <div class="vf-field sq-activity-search-label"><label class="vf-field__label" for="sq-activity-search">Buscar pessoa ou Squad</label><input id="sq-activity-search" class="vf-input" type="search" placeholder="Buscar pessoa ou Squad…" autocomplete="off"></div>
             </div>
-            <p class="sq-hint sq-activity-explain">Atividade registrada das pessoas que pertencem a cada Squad. Membros de múltiplos Squads aparecem em mais de uma equipe.</p>
+            <p class="sq-hint sq-activity-explain">Atividade registrada das pessoas de cada Squad. Quem participa de mais de um Squad aparece em mais de uma equipe.</p>
             <p id="sq-activity-global-summary" class="sq-activity-global-summary" role="status"></p>
             <div id="sq-activity-state-loading" class="sq-loading" role="status" hidden><p>Carregando atividade…</p><div class="sq-skeleton"></div><div class="sq-skeleton"></div></div>
             <div id="sq-activity-state-error" class="sq-empty" hidden><h3>Não foi possível carregar a atividade</h3><p id="sq-activity-error-message"></p><button type="button" class="vf-btn vf-btn--secondary" data-action="activity-retry">Tentar novamente</button></div>
@@ -97,25 +117,33 @@
     </main>
   </div>
 
-  <!-- Drawer: detalhe de atividade da pessoa -->
-  <div class="vf-drawer-backdrop" id="sq-person-drawer-backdrop"></div>
-  <aside class="vf-drawer vf-drawer--sm" id="sq-person-drawer" role="dialog" aria-modal="true" aria-labelledby="sq-person-drawer-title" tabindex="-1">
-    <header class="vf-drawer__header">
-      <div>
-        <h2 class="vf-drawer__title" id="sq-person-drawer-title">Pessoa</h2>
-        <p id="sq-person-drawer-subtitle" class="sq-hint"></p>
+  <!-- Modal: atividade da pessoa (substitui o drawer lateral) -->
+  <div id="sq-person-modal" class="vf-overlay">
+    <div class="vf-modal sq-person-modal" role="dialog" aria-modal="true" aria-labelledby="sq-person-modal-title">
+      <div class="vf-modal__header">
+        <div class="sq-person-who">
+          <span id="sq-person-modal-avatar" class="sq-avatar" aria-hidden="true"></span>
+          <div>
+            <h2 id="sq-person-modal-title" class="vf-modal__title">Pessoa</h2>
+            <p id="sq-person-modal-subtitle" class="vf-card__description"></p>
+          </div>
+        </div>
+        <button type="button" id="sq-person-modal-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">×</button>
       </div>
-      <button type="button" id="sq-person-drawer-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">×</button>
-    </header>
-    <div class="vf-drawer__body">
-      <p id="sq-person-drawer-summary" class="sq-activity-stats"></p>
-      <div class="sq-toolbar sq-activity-toolbar">
-        <label for="sq-person-drawer-status">Status<select id="sq-person-drawer-status" class="vf-select"><option value="all">Todos</option><option value="sucesso">Sucesso</option><option value="falha">Falha</option></select></label>
+      <div class="vf-modal__body">
+        <div id="sq-person-modal-squads" class="sq-person-squads"></div>
+        <div id="sq-person-modal-summary" class="vf-metric-row sq-person-metrics"></div>
+        <div class="sq-person-bar">
+          <h3 class="sq-activity-timeline-title">Atividade recente</h3>
+          <div class="vf-btn-group" id="sq-person-modal-status" role="group" aria-label="Filtrar por status"></div>
+        </div>
+        <div id="sq-person-modal-timeline"></div>
       </div>
-      <h4 class="sq-activity-timeline-title">Atividade recente</h4>
-      <div id="sq-person-drawer-timeline"></div>
+      <div class="vf-modal__footer">
+        <button type="button" id="sq-person-modal-cancel" class="vf-btn vf-btn--secondary">Fechar</button>
+      </div>
     </div>
-  </aside>
+  </div>
 
   <!-- Modal genérico de confirmação (remover membro / definir principal) -->
   <div id="sq-confirm-modal" class="vf-overlay">
@@ -230,6 +258,40 @@
       <div class="vf-modal__footer">
         <button type="button" id="sq-move-cancel" class="vf-btn vf-btn--secondary">Cancelar</button>
         <button type="button" id="sq-move-confirm" class="vf-btn vf-btn--danger">Mover cliente</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: mover pessoa (incluir no destino + remover da origem; não existe rota de transferência de pessoa) -->
+  <div id="sq-movepessoa-modal" class="vf-overlay">
+    <div class="vf-modal vf-modal--sm" role="dialog" aria-modal="true" aria-labelledby="sq-movepessoa-title">
+      <div class="vf-modal__header">
+        <div>
+          <h2 id="sq-movepessoa-title" class="vf-modal__title">Mover pessoa</h2>
+          <p id="sq-movepessoa-subtitle" class="vf-card__description"></p>
+        </div>
+        <button type="button" id="sq-movepessoa-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">×</button>
+      </div>
+      <div class="vf-modal__body">
+        <div class="sq-field">
+          <label for="sq-movepessoa-destino">Squad de destino</label>
+          <select id="sq-movepessoa-destino" class="vf-select"></select>
+        </div>
+        <div class="sq-field">
+          <label for="sq-movepessoa-funcao">Função no destino</label>
+          <select id="sq-movepessoa-funcao" class="vf-select">
+            <option value="membro">Membro</option>
+            <option value="gestor">Gestor</option>
+            <option value="coordenador">Coordenador</option>
+          </select>
+        </div>
+        <div id="sq-movepessoa-preview" class="sq-preview" aria-live="polite"></div>
+        <p id="sq-movepessoa-rule" class="sq-hint"></p>
+        <div id="sq-movepessoa-danger" class="vf-banner is-danger" role="alert" style="display:none;margin-top:12px;"></div>
+      </div>
+      <div class="vf-modal__footer">
+        <button type="button" id="sq-movepessoa-cancel" class="vf-btn vf-btn--secondary">Cancelar</button>
+        <button type="button" id="sq-movepessoa-confirm" class="vf-btn vf-btn--primary">Mover pessoa</button>
       </div>
     </div>
   </div>

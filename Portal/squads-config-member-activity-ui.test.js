@@ -3,7 +3,7 @@
  * Ajuste de UX sobre a V1: Atividade deixou de ser uma seção dentro do
  * detalhe de um Squad e virou um MODO próprio (Configuração ⇄ Atividade)
  * que compara vários Squads lado a lado, com dedupe de /admin/logs por
- * user_id (uma pessoa em 3 Squads é buscada 1 vez só) e um drawer de
+ * user_id (uma pessoa em 3 Squads é buscada 1 vez só) e um modal de
  * detalhe por pessoa. Reaproveita GET /admin/logs (logsController.js) já
  * existente; nenhum endpoint, tabela ou logger novo.
  *
@@ -292,27 +292,27 @@ async function run() {
       await ev(`document.getElementById('sq-activity-search').value=''; document.getElementById('sq-activity-search').dispatchEvent(new Event('input'))`);
     });
 
-    await check("14/15. clique em pessoa abre o drawer com a timeline correta dela", async () => {
+    await check("14/15. clique em pessoa abre o modal com a timeline correta dela", async () => {
       await click('.sq-activity-card-person[data-uid="10"]');
-      await waitFor(cdp, "$('sq-person-drawer').classList.contains('is-open')", "drawer não abriu");
-      assert.equal(await ev("$('sq-person-drawer-title').textContent"), "Pedro Gabriel");
-      const subtitulo = await ev("$('sq-person-drawer-subtitle').textContent");
+      await waitFor(cdp, "$('sq-person-modal').classList.contains('is-open')", "modal da pessoa não abriu");
+      assert.equal(await ev("$('sq-person-modal-title').textContent"), "Pedro Gabriel");
+      const subtitulo = await ev("$('sq-person-modal-squads').textContent");
       assert.match(subtitulo, /Squad Alfa/);
       assert.match(subtitulo, /Squad Beta/);
-      const timeline = await ev("$('sq-person-drawer-timeline').textContent");
+      const timeline = await ev("$('sq-person-modal-timeline').textContent");
       assert.match(timeline, /Criou cliente/);
-      assert.doesNotMatch(timeline, /Micael|Gustavo|Fernando/, "timeline do drawer deve conter só eventos do Pedro");
+      assert.doesNotMatch(timeline, /Micael|Gustavo|Fernando/, "timeline do modal deve conter só eventos do Pedro");
     });
 
-    await check("filtro de status do drawer é client-side (sem nova request)", async () => {
+    await check("filtro de status do modal é client-side (sem nova request)", async () => {
       const antes = logsRequested.length;
-      await ev(`document.getElementById('sq-person-drawer-status').value='falha'; document.getElementById('sq-person-drawer-status').dispatchEvent(new Event('change'))`);
-      const itens = await ev("Array.from(document.querySelectorAll('#sq-person-drawer-timeline .vf-tag')).map(e => e.textContent)");
+      await click('[data-action="person-status"][data-status="falha"]');
+      const itens = await ev("Array.from(document.querySelectorAll('#sq-person-modal-timeline .vf-tag')).map(e => e.textContent)");
       assert.ok(itens.length > 0 && itens.every(t => t === "Falha"));
       assert.equal(logsRequested.length, antes);
-      await ev(`document.getElementById('sq-person-drawer-status').value='all'; document.getElementById('sq-person-drawer-status').dispatchEvent(new Event('change'))`);
-      await click("#sq-person-drawer-close");
-      await waitFor(cdp, "!$('sq-person-drawer').classList.contains('is-open')", "drawer não fechou");
+      await click('[data-action="person-status"][data-status="all"]');
+      await click("#sq-person-modal-close");
+      await waitFor(cdp, "!$('sq-person-modal').classList.contains('is-open')", "modal da pessoa não fechou");
     });
 
     await check("erro no /admin/logs mostra retry; retry recupera", async () => {
@@ -342,13 +342,13 @@ async function run() {
       await activitySettled();
     });
 
-    await check("2. voltar para Configuração fecha o drawer se estava aberto e some com a Atividade", async () => {
+    await check("2. voltar para Configuração fecha o modal se estava aberto e some com a Atividade", async () => {
       await click('.sq-activity-card-person[data-uid="10"]');
-      await waitFor(cdp, "$('sq-person-drawer').classList.contains('is-open')", "drawer não abriu de novo");
+      await waitFor(cdp, "$('sq-person-modal').classList.contains('is-open')", "modal da pessoa não abriu de novo");
       await click("#sq-mode-config");
       assert.equal(await ev("$('sq-view-config').hidden"), false);
       assert.equal(await ev("$('sq-view-activity').hidden"), true);
-      assert.equal(await ev("$('sq-person-drawer').classList.contains('is-open')"), false);
+      assert.equal(await ev("$('sq-person-modal').classList.contains('is-open')"), false);
     });
 
     await check("18. modo Configuração continua funcionando (seleção de Squad, Pessoas, Clientes)", async () => {

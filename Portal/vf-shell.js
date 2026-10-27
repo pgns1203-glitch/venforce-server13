@@ -75,6 +75,11 @@ export const MODULOS = [
   { id: "automacoes", label: "Automações", rota: "automacoes.html", marketplaces: ["meli"] },
 ];
 
+// Espelho da regra do BACKEND do Sentinel (sentinelAcesso.papelPermitido = authorizationService.ehAdmin
+// || ehInterno, com os internos de server/services/squads/rolesInternas.js: user, membro, interno).
+// Só decide se o item aparece; quem autoriza continua sendo a API (403). seller já é desviado p/ seller.html.
+export const PAPEIS_SENTINEL = Object.freeze(["admin", "user", "membro", "interno"]);
+
 export const GLOBAIS = [
   { id: "carteira", label: "Carteira", rota: "carteira.html" },
   // Painel de Controle de Contas por Squad — carteira agrupada por Squad,
@@ -83,6 +88,10 @@ export const GLOBAIS = [
   // escolhidos antes (Auditoria Painel_Controle_Contas_Squads §13/§16).
   { id: "painel-contas", label: "Painel de Contas", rota: "painel-contas.html" },
   { id: "bases", label: "Bases", rota: "bases.html" },
+  // Sentinel — fila de incidentes (margem/custo/leitura) por carteira. GLOBAL como
+  // Carteira/Painel de Contas: filtra por Squad/conta na própria tela e aceita
+  // ?cliente=&conta= como pré-filtro; a autorização é toda da API /sentinel.
+  { id: "sentinel", label: "Sentinel", rota: "sentinel.html", papeis: PAPEIS_SENTINEL },
   // Recuperação de navegação (auditoria forense, seção 6.2/15) — estas 5
   // telas têm arquivo, backend e lógica ativos em ATUAL; só perderam a
   // entrada de menu quando o Shell V3 chegou. Nenhuma delas lê `cliente`/
@@ -175,6 +184,7 @@ const ICONS = {
   pessoas: '<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path>',
   "clientes-contas": '<rect x="4" y="3" width="14" height="18" rx="2"></rect><circle cx="11" cy="9" r="2.4"></circle><path d="M7.5 17c0-2 1.6-3.4 3.5-3.4s3.5 1.4 3.5 3.4"></path><line x1="18" y1="7" x2="21" y2="7"></line><line x1="18" y1="12" x2="21" y2="12"></line>',
   relatorios: '<line x1="12" y1="20" x2="12" y2="10"></line><line x1="18" y1="20" x2="18" y2="4"></line><line x1="6" y1="20" x2="6" y2="16"></line>',
+  sentinel: '<path d="M12 2l8 3v6c0 5-3.5 9-8 11-4.5-2-8-6-8-11V5z"></path><path d="M9 12l2 2 4-4"></path>',
   bases: '<ellipse cx="12" cy="5" rx="9" ry="3"></ellipse><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>',
   ferramentas: '<path d="M14.7 6.3a4 4 0 1 0-5.4 5.4L2 19l3 3 7.3-7.3a4 4 0 0 0 5.4-5.4z"></path>',
   guia: '<path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>',
@@ -190,7 +200,7 @@ const ICONS = {
 
 // V1 e V2 permanecem registradas para acesso direto por URL, fora da sidebar para todos os perfis.
 export const GRUPOS_NAV = [
-  { titulo: "Operação", ids: ["visao", "carteira", "painel-contas", "cliente-360-v3", "cliente-operacao"] },
+  { titulo: "Operação", ids: ["visao", "carteira", "painel-contas", "sentinel", "cliente-360-v3", "cliente-operacao"] },
   { titulo: "Performance", ids: ["central-vendas", "financeiro", "margem", "ads", "anuncios", "central-full", "curva-abc"] },
   { titulo: "Execução", ids: ["automacoes", "diagnosticos", "promocoes-ml"] },
   { titulo: "Gestão", ids: ["pessoas", "clientes-contas", "relatorios", "bases"] },
@@ -538,7 +548,8 @@ export function createVfShell(options = {}) {
     // obrigatório + gating por marketplace para quem era MODULOS; sempre
     // disponível para quem era GLOBAIS) — só decidida por id agora.
     GRUPOS_NAV.forEach((grupo) => {
-      const itens = grupo.ids.map(porId).filter(Boolean);
+      const papelAtual = String(user.role || "").toLowerCase();
+      const itens = grupo.ids.map(porId).filter(Boolean).filter((mod) => !mod.papeis || mod.papeis.includes(papelAtual));
       const disponiveis = [];
       const indisponiveis = [];
       itens.forEach((mod) => {

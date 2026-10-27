@@ -50,6 +50,10 @@ const TABELAS_DEPENDENTES = [
   ["Lançamentos manuais do Painel de Contas", "painel_contas_lancamentos_manuais", "cliente_id", "id"],
   ["Acompanhamento de Ads", "ads_acompanhamentos", "cliente_slug", "slug"],
   ["Resumos mensais de Ads", "ads_resumos_mensais", "cliente_slug", "slug"],
+  ["Pedidos monitorados pelo Sentinel", "sentinel_pedidos", "cliente_id", "id"],
+  // tipo "conta": linhas chaveadas pela Conta do cliente (sem cliente_id).
+  ["Incidentes do Sentinel", "sentinel_incidentes", "cliente_conta_id", "conta"],
+  ["Checkpoints de leitura do Sentinel", "sentinel_checkpoints", "cliente_conta_id", "conta"],
 ];
 
 async function tabelaExiste(tabela) {
@@ -63,12 +67,17 @@ async function tabelaExiste(tabela) {
 async function verificarDependenciasCliente(clienteId, clienteSlug) {
   const dependencias = [];
   for (const [label, tabela, coluna, tipo] of TABELAS_DEPENDENTES) {
-    const valor = tipo === "slug" ? clienteSlug : clienteId;
+    const valor = tipo === "slug" ? clienteSlug : clienteId; // "id" e "conta" partem do id
     if (valor === undefined || valor === null) continue;
     // eslint-disable-next-line no-await-in-loop
     if (!(await tabelaExiste(tabela))) continue;
     // eslint-disable-next-line no-await-in-loop
-    const r = await pool.query(`SELECT COUNT(*)::int AS total FROM ${tabela} WHERE ${coluna} = $1`, [valor]);
+    const r = tipo === "conta"
+      ? await pool.query(
+        `SELECT COUNT(*)::int AS total FROM ${tabela} WHERE ${coluna} IN (SELECT id FROM cliente_contas WHERE cliente_id = $1)`,
+        [clienteId]
+      )
+      : await pool.query(`SELECT COUNT(*)::int AS total FROM ${tabela} WHERE ${coluna} = $1`, [valor]);
     const total = r.rows[0]?.total || 0;
     if (total > 0) dependencias.push({ label, tabela, total });
   }

@@ -1424,8 +1424,8 @@
     }
     if (state.error) {
       var contextError = {
-        BASE_MELI_NAO_VINCULADA: { title: "Cliente sem Base vinculada", action: '<a class="vf-btn vf-btn--secondary vf-btn--sm" href="bases.html">Ver em Bases</a>' },
-        MULTIPLAS_BASES_MELI: { title: "Vínculo de Base ambíguo", action: '<a class="vf-btn vf-btn--secondary vf-btn--sm" href="bases.html">Ver em Bases</a>' },
+        BASE_MELI_NAO_VINCULADA: { title: "Cliente sem Base vinculada", action: '<a class="vf-btn vf-btn--secondary vf-btn--sm" href="' + basesHref() + '">Ver em Bases</a>' },
+        MULTIPLAS_BASES_MELI: { title: "Vínculo de Base ambíguo", action: '<a class="vf-btn vf-btn--secondary vf-btn--sm" href="' + basesHref() + '">Ver em Bases</a>' },
         GRANT_ML_NAO_CONECTADO: { title: "Mercado Livre não conectado", action: '<a class="vf-btn vf-btn--secondary vf-btn--sm" href="clientes.html">Ver cliente</a>' },
       }[state.errorCode] || null;
       refs.pageState.innerHTML = '<div class="vf-banner is-danger" role="alert"><div class="vf-banner__content"><p class="vf-banner__title">Não foi possível carregar a Central</p><p class="vf-banner__description">' +
@@ -1501,7 +1501,7 @@
       '<p><strong>Mercado Pago</strong> · recebimento/conciliação — integração pendente. Nenhum valor é inventado; a célula fica indisponível até a integração existir.</p>' +
       '<p><strong>Extensão</strong> · evidência visual — ingestão pendente. O canal de recebimento ainda não existe no backend.</p>' +
       "</div>" +
-      '<div class="cm-sources-actions"><a class="vf-btn vf-btn--secondary vf-btn--sm" href="bases.html">Ver na Base</a></div>';
+      '<div class="cm-sources-actions"><a class="vf-btn vf-btn--secondary vf-btn--sm" href="' + basesHref() + '">Ver na Base</a></div>';
   }
 
   function openSourcesPanel() {
@@ -3333,7 +3333,7 @@
     var financial = contract.financialResult(item);
     var integrity = contract.dataIntegrity(item);
     refs.drawerTitle.textContent = item.title;
-    var baseHref = "bases.html?busca=" + encodeURIComponent(item.itemId || item.sku || "");
+    var baseHref = basesHref(); // Bases não filtra por MLB (a busca dela é de CLIENTES): leva ao cliente em contexto
     // Linha cinza única (mockup): MLB · status · saúde dos dados · Ver na Base. Sem selos coloridos; o title explica.
     var metaTexto = function (texto, title) { return texto ? '<span class="cm-drawer__meta-item"' + (title ? ' title="' + escapeHtml(title) + '"' : "") + ">" + escapeHtml(texto) + "</span>" : ""; };
     var saudeTitle = [financial && financial.label, integrity && integrity.reason].filter(Boolean).join(" · ");
@@ -5265,8 +5265,28 @@
 
   // ---------------------------------------------------------------------------
 
+  // Link para Bases com o cliente em contexto (mesmo slug que a Central usa na API). A Bases
+  // lê ?cliente=<slug>; sem cliente escolhido, href simples (comportamento anterior).
+  function basesHref() {
+    return "bases.html" + (state.client && state.client.slug ? "?cliente=" + encodeURIComponent(state.client.slug) : "");
+  }
+
+  // Deep link do Sentinel (?mlb=MLB123): só PRÉ-PREENCHE a busca existente (título/MLB/SKU).
+  // Não muda cliente/conta (isso segue sendo contexto do Shell + carteira validada no backend)
+  // e sem o parâmetro o comportamento é idêntico ao anterior. Valor fora do formato de
+  // identificador é ignorado.
+  function seedBuscaDaUrl() {
+    try {
+      var mlb = new URLSearchParams(root.location.search).get("mlb");
+      if (!mlb || !/^[A-Za-z0-9_-]{3,40}$/.test(mlb)) return;
+      state.search = mlb;
+      if (refs.search) refs.search.value = mlb;
+    } catch (_) { /* URL inválida: sem pré-filtro */ }
+  }
+
   function init() {
     cacheRefs();
+    seedBuscaDaUrl();
     state.token = root.localStorage && root.localStorage.getItem("vf-token");
     if (typeof root.initLayout === "function") root.initLayout();
     bindEvents();

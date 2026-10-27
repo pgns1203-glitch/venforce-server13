@@ -29,6 +29,9 @@ const move = [
   "fechamento_incidentes",
   "promocoes_diagnosticos",
   "margem_precificacao_aplicacoes",
+  // Sentinel: pedido guarda cliente_id (FK) + cliente_conta_id; a Conta não
+  // muda na unificação, só o dono ⇒ cliente_id vai para o canônico.
+  "sentinel_pedidos",
 ];
 const keep = [
   "cliente_squad_history",
@@ -47,6 +50,13 @@ const authoritative = [
   "cliente_360_diagnostico_itens",
   "fechamento_incidente_arquivos",
   "promo_snapshot_run_lotes",
+  // Sentinel: chaveadas só pela Conta (sem cliente_id); a Conta sobrevive à
+  // unificação com o mesmo id ⇒ nada a mover. Eventos seguem o incidente pela
+  // FK (mesmo caso de fechamento_incidente_arquivos).
+  "sentinel_checkpoints",
+  "sentinel_pedido_excecoes",
+  "sentinel_incidentes",
+  "sentinel_incidente_eventos",
 ];
 const registry = Object.fromEntries([
   ...move.map((t) => [t, "MOVE_TO_CANONICAL"]),

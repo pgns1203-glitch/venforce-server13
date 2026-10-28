@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VenForce — Sentinel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;500;600;700&family=Manrope:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/vf-tokens-v2.css">
+  <link rel="stylesheet" href="css/vf-components-v2.css">
+  <link rel="stylesheet" href="css/vf-shell.css">
+  <link rel="stylesheet" href="sentinel.css">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+</head>
+<!-- Sentinel no Shell V3 (scope global, como Carteira/Painel de Contas): sidebar, login
+     JWT (redireciona p/ index.html sem token) e identidade vêm do vf-shell.js. A tela só fala
+     com a API /sentinel; a autorização é toda do backend. ?demo=1 = dados de exemplo, com
+     selo, SEM shell e SEM chamar API (topbar própria abaixo só aparece nesse modo). -->
+<body class="vf-page vf-page-sentinel" data-vf-density="compact" data-vf-scope="global" data-vf-module="sentinel">
+  <header class="sn-topbar">
+    <a class="sn-brand" href="carteira.html">VenForce</a>
+    <nav class="sn-nav" aria-label="Principal">
+      <a href="carteira.html">Carteira</a>
+      <a href="central-margem.html">Central de Margem</a>
+      <a href="bases.html">Bases</a>
+      <a href="sentinel.html" aria-current="page">Sentinel</a>
+    </nav>
+  </header>
+
+  <main class="vf-content" id="sn-app" aria-label="Sentinel">
+    <div class="vf-page-shell">
+      <div class="vf-page-container vf-page-container--wide">
+        <div class="vf-page-header sn-header">
+          <div class="vf-page-header__main">
+            <div class="vf-page-header__eyebrow">Monitoramento</div>
+            <h1 class="vf-page-header__title">Sentinel</h1>
+            <p class="vf-page-header__description">Fila de incidentes de margem, custo e leitura das contas do Mercado Livre, por Squad.</p>
+          </div>
+          <div class="vf-page-header__actions"><span class="sn-seal" id="sn-demo-seal" role="status" hidden>DADOS DE EXEMPLO</span></div>
+        </div>
+
+        <div id="sn-banners"></div>
+        <div class="vf-kpi-grid" id="sn-kpis" aria-label="Resumo"></div>
+
+        <div class="sn-toolbar" id="sn-filtros" role="group" aria-label="Filtros" hidden>
+          <select class="vf-select vf-select--sm" id="sn-f-squad" aria-label="Squad / carteira"></select>
+          <select class="vf-select vf-select--sm" id="sn-f-conta" aria-label="Conta"></select>
+          <select class="vf-select vf-select--sm" id="sn-f-tipo" aria-label="Tipo"></select>
+          <select class="vf-select vf-select--sm" id="sn-f-status" aria-label="Status"></select>
+          <select class="vf-select vf-select--sm" id="sn-f-sev" aria-label="Prioridade"></select>
+          <select class="vf-select vf-select--sm" id="sn-f-periodo" aria-label="Período (última ocorrência)">
+            <option value="24h">Últimas 24 h</option><option value="7d">Últimos 7 dias</option><option value="30d">Últimos 30 dias</option><option value="todos">Todo o período</option>
+          </select>
+          <input class="vf-input vf-input--sm" id="sn-f-busca" type="search" placeholder="Buscar MLB ou título" aria-label="Buscar">
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--ghost" id="sn-clear">Limpar</button>
+          <span class="sn-count" id="sn-count" aria-live="polite"></span>
+        </div>
+
+        <div class="vf-tabs" role="tablist">
+          <button class="vf-tab" role="tab" data-tab="fila">Fila de incidentes</button>
+          <button class="vf-tab" role="tab" data-tab="contas">Contas</button>
+          <button class="vf-tab" role="tab" data-tab="saude">Saúde do monitoramento</button>
+        </div>
+        <div id="sn-painel" role="tabpanel" aria-live="polite"></div>
+      </div>
+    </div>
+  </main>
+
+  <div class="vf-drawer-backdrop" id="sn-backdrop"></div>
+  <aside class="vf-drawer vf-drawer--lg" id="sn-drawer" role="dialog" aria-modal="true" aria-labelledby="sn-drawer-title" aria-hidden="true">
+    <div class="vf-drawer__header">
+      <div class="vf-drawer__heading"><h2 class="vf-drawer__title" id="sn-drawer-title"></h2><div class="vf-drawer__subtitle" id="sn-drawer-sub"></div></div>
+      <button type="button" class="vf-btn vf-btn--icon vf-btn--ghost" id="sn-drawer-close" aria-label="Fechar">✕</button>
+    </div>
+    <div class="vf-drawer__body" id="sn-drawer-body"></div>
+    <div class="vf-drawer__footer" id="sn-drawer-foot"></div>
+  </aside>
+
+  <script src="sentinel.js"></script>
+  <script>
+    if (!/[?&]demo=1(&|$)/.test(location.search)) {
+      var sh = document.createElement("script"); sh.type = "module"; sh.src = "vf-shell.js"; document.body.appendChild(sh);
+    }
+  </script>
+</body>
+</html>

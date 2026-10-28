@@ -50,6 +50,13 @@ const TABELAS_SEM_FK_POR_ID = [
 
 const TABELAS_SEM_FK_POR_SLUG = ["ads_acompanhamentos", "ads_resumos_mensais"];
 
+// Sentinel: chaveadas só pela Conta e SEM FK (de propósito: checkpoint de conta
+// inválida precisa gravar o erro). Apagadas aqui, ANTES do DELETE FROM clientes
+// (que leva as contas), senão viram órfãs e uma conta futura com o mesmo id
+// herdaria checkpoint/exceções. sentinel_pedidos (FK clientes) e
+// sentinel_incidentes(+eventos) (FK cliente_contas) cascateiam sozinhos.
+const TABELAS_SEM_FK_POR_CONTA = ["sentinel_checkpoints", "sentinel_pedido_excecoes"];
+
 function erro(status, code, mensagem) {
   const e = new Error(mensagem);
   e.statusCode = status;
@@ -82,9 +89,23 @@ async function purgarClientePermanentemente(slug) {
       throw erro(404, "CLIENTE_NAO_ENCONTRADO", "Cliente não encontrado.");
     }
     const cliente = clienteRes.rows[0];
+    // Trava as Contas ANTES de limpar as tabelas sem FK: o worker do Sentinel só
+    // grava checkpoint/exceção com FOR KEY SHARE na Conta, então fica bloqueado até
+    // este COMMIT e depois não acha mais a Conta — nada órfão entra no meio.
+    await client.query("SELECT id FROM cliente_contas WHERE cliente_id = $1 FOR UPDATE", [cliente.id]);
 
     const apagados = [];
 
+    for (const tabela of TABELAS_SEM_FK_POR_CONTA) {
+      // eslint-disable-next-line no-await-in-loop
+      if (!(await tabelaExiste(client, tabela))) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const r = await client.query(
+        `DELETE FROM ${tabela} WHERE cliente_conta_id IN (SELECT id FROM cliente_contas WHERE cliente_id = $1)`,
+        [cliente.id]
+      );
+      if (r.rowCount) apagados.push({ tabela, total: r.rowCount });
+    }
     for (const tabela of TABELAS_SEM_FK_POR_ID) {
       // eslint-disable-next-line no-await-in-loop
       if (!(await tabelaExiste(client, tabela))) continue;
@@ -138,4 +159,4 @@ async function purgarClientePermanentemente(slug) {
   }
 }
 
-module.exports = { purgarClientePermanentemente, TABELAS_SEM_FK_POR_ID, TABELAS_SEM_FK_POR_SLUG };
+module.exports = { purgarClientePermanentemente, TABELAS_SEM_FK_POR_ID, TABELAS_SEM_FK_POR_SLUG, TABELAS_SEM_FK_POR_CONTA };

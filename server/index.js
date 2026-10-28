@@ -864,6 +864,8 @@ app.use("/", clienteContasRoutes);
 app.use("/me", meRoutes);
 app.use("/squads", squadsRoutes);
 app.use("/painel-contas", painelContasRoutes);
+app.use("/sentinel", require("./routes/sentinelRoutes"));
+if (process.env.SENTINEL_VIGIA_LEITURA_ENABLED === "1") require("./services/sentinel/sentinelIncidentes").iniciarVigiaLeitura({ db: pool });
 app.use("/clientes", clienteResponsaveisRoutes);
 // Imagem (avatar) do Cliente — tela Clientes e Contas. Rotas aditivas.
 app.use("/cliente-imagens", clienteImagemRoutes);

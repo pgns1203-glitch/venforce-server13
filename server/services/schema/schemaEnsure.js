@@ -556,6 +556,7 @@ module.exports = {
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,
+  aplicarMigrationSerializada,
   _resetEnsuredParaTeste: () => { _ensured = false; },
   _resetAmpsEnsuredParaTeste: () => { _ensuredAmps = false; },
 };

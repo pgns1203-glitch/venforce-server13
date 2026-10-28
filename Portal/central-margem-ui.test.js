@@ -590,6 +590,13 @@ async function run() {
       await cdp.evaluate("document.getElementById('cm-restore-sources').click()");
     });
 
+    await check("drawer: 'Ver na Base' leva ao cliente em contexto (Bases não filtra por MLB)", async () => {
+      await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-LOSS\"]').click()");
+      await waitFor(cdp, "!!document.querySelector('#cm-drawer-meta a.cm-link')", "drawer não abriu");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-drawer-meta a.cm-link').getAttribute('href')"), "bases.html?cliente=loja-teste");
+      await cdp.evaluate("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
+    });
+
     await check("célula indisponível explica fonte esperada, situação e ação", async () => {
       const title = await cdp.evaluate("document.querySelector('tr[data-item-id=\"MLB-UNVALIDATED\"] .cm-var-cell .cm-unavailable').getAttribute('title')");
       assert.ok(title.includes("Fonte esperada"), title);
@@ -617,7 +624,7 @@ async function run() {
       assert.ok(body.includes("mercado pago") && body.includes("pendente"), body);
       assert.ok(body.includes("extensão") && body.includes("pendente"), body);
       assert.ok(body.includes("51 de 51 carregados"), body);
-      assert.ok(await cdp.evaluate("!!document.querySelector('#cm-sources-body a[href=\"bases.html\"]')"), "ação Ver na Base ausente");
+      assert.ok(await cdp.evaluate("!!document.querySelector('#cm-sources-body a[href=\"bases.html?cliente=loja-teste\"]')"), "ação Ver na Base ausente (deve levar ao cliente em contexto)");
       await cdp.evaluate("document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}))");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-sources-overlay').classList.contains('is-open')"), false);
     });
@@ -864,6 +871,25 @@ async function run() {
       await waitFor(cdp, "window.VFCentralMargemUi.getState().error && document.getElementById('cm-page-state').innerText.indexOf('Erro simulado') !== -1", "Erro não apareceu");
       await cdp.evaluate("window.__cmFail=false;document.getElementById('cm-retry').click()");
       await waitFor(cdp, "window.VFCentralMargemUi.getState().data && !window.VFCentralMargemUi.getState().loading", "Retry não recuperou");
+      assert.strictEqual(await rowCount(), 50);
+    });
+
+    await check("deep link ?mlb= (Sentinel) pré-preenche a busca; sem o parâmetro nada muda; valor inválido é ignorado", async () => {
+      const base = `http://127.0.0.1:${serverPort}/central-margem.html?cliente=loja-teste`;
+      const carregou = "window.VFCentralMargemUi && window.VFCentralMargemUi.getState().data && !window.VFCentralMargemUi.getState().loading";
+      await cdp.send("Page.navigate", { url: base + "&mlb=MLB-LOSS" });
+      await waitFor(cdp, carregou, "Central não carregou com ?mlb=");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-search').value"), "MLB-LOSS");
+      await waitFor(cdp, "document.querySelectorAll('#cm-table-host tbody tr[data-item-id]').length === 1", "?mlb= não filtrou a planilha");
+      assert.ok((await sheetText()).includes("Kit Ferramentas"));
+      assert.ok(String(await cdp.evaluate("location.search")).includes("cliente=loja-teste"), "cliente da URL preservado");
+      await cdp.send("Page.navigate", { url: base });
+      await waitFor(cdp, carregou, "Central não carregou sem ?mlb=");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-search').value"), "");
+      assert.strictEqual(await rowCount(), 50, "sem o parâmetro: lista completa (comportamento antigo)");
+      await cdp.send("Page.navigate", { url: base + "&mlb=" + encodeURIComponent("<img src=x>") });
+      await waitFor(cdp, carregou, "Central não carregou com ?mlb= inválido");
+      assert.strictEqual(await cdp.evaluate("document.getElementById('cm-search').value"), "", "valor inválido ignorado");
       assert.strictEqual(await rowCount(), 50);
     });
 

@@ -217,14 +217,18 @@ async function main() {
     eq("sem frete cheio: frete NULL + frete_pack_incompleto", [(await linha(1001)).frete, (await linha(1001)).pendencias.includes("frete_pack_incompleto")], [null, true]);
     ok("conta reporta orçamento esgotado", /SENTINEL_ORCAMENTO_CHAMADAS/.test(cO.contas[0].erro || ""));
 
-    console.log("\n▸ pack cancelado no meio: o cancelado continua no rateio");
+    console.log("\n▸ B3: pedido fora do resultado (cancelado) tem peso zero; o pago leva o shipment inteiro");
     await limpar(); await setCp();
     const ca = pedido(5001, { shipment: 7005, pack: 9005, itens: [["MLB100", 1, 100, 12.5]] });
     const cb = pedido(5002, { shipment: 7005, pack: 9005, status: "cancelled", itens: [["MLB200", 1, 100, 10]] });
     const mlC = criarMl({ pedidos: [ca, cb], packs: { 9005: { shipment: 7005, orders: [5001, 5002] } }, fretes: { 7005: { cost: 20, receita: 0 } } });
-    mlC.janela = [ca];
+    mlC.janela = [ca, cb];
     await ciclo(mlC);
-    eq("o pedido pago recebe 10,00 (cancelado entra no rateio)", Number((await linha(5001)).frete), 10);
+    eq("pago recebe 20,00 (o cancelado tem peso zero) e o cancelado 0,00; Σ resultado = 20,00", [Number((await linha(5001)).frete), Number((await linha(5002)).frete)], [20, 0]);
+    mlC.janela = [ca];
+    await limpar(); await setCp();
+    await ciclo(mlC);
+    eq("só o pago na janela (cancelado buscado por ID) ⇒ também 20,00", Number((await linha(5001)).frete), 20);
 
     console.log(`\n${checks} verificações passaram (PostgreSQL local ${parsed.hostname}).`);
   } finally {

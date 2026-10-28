@@ -14,7 +14,12 @@ Regra nova (função pura `ratearEnvioCompartilhado`, `server/services/centralVe
   em centavos inteiros; o último pedido (ordem por `pedido_id`) leva o resto ⇒ Σ == shipment ao centavo.
   Receita total 0 ⇒ rateio igualitário. Dentro do pedido, o rateio por unidades entre itens (`allocateFrete`) segue igual.
 - shipment com 1 pedido: comportamento **idêntico** ao anterior (golden do commit `f9c5fea9` em `tests/fixtures`).
-- pedido **cancelado** continua no rateio (o custo do envio é do shipment; cancelado já sai dos KPIs por status).
+- pedido que **não entra no resultado** (Central: `pedidoEntraNoResultado` sobre o status efetivo = pós-venda || status da Orders API;
+  Sentinel: elegibilidade `excluido`) tem **peso zero**: o custo do shipment vai inteiro para quem entra no resultado (os KPIs
+  conservam o custo). Se todos estiverem fora, rateio pela receita (informativo).
+- `allocateFrete` (rateio entre itens do pedido) agora é em centavos inteiros pelo **maior resto** (sem parcela negativa, Σ exata).
+  Antes, valores pequenos geravam parcela negativa (R$0,02 em 4 itens: 0,01+0,01+0,01−0,01) que o EvidenceAdapter somava em módulo (0,04).
+  Imports antigos com valores de centavos podem ter essa distorção.
 - Central: `obs` dos componentes `frete_seller`/`receita_envio` = "Frete do envio compartilhado por N pedidos, rateado pela receita."
   e `pedido.envioCompartilhadoPor = N` no payload (sem mudança de schema).
 - Sentinel: conhece os irmãos pelo conjunto da janela e, se o pedido tem `pack_id`, por `GET /packs/:id`
@@ -24,11 +29,16 @@ Regra nova (função pura `ratearEnvioCompartilhado`, `server/services/centralVe
   `frete_pack_incompleto` ⇒ provisória, **inconclusiva** para detectores (não gera incidente de margem negativa).
   O `/packs` só lista pedidos **deste** vendedor, e o `senders[].cost` é o do vendedor: o rateio é entre os pedidos dele.
 
+- Central (`centralVendasPackResolver.js`): para cada `pack_id` distinto do run faz **1× GET /packs/:id** (mlFetch da Central com
+  prazo `comPrazoPadrao`, 3 tentativas, Retry-After respeitado, concorrência 5) e busca por `GET /orders/:id` os irmãos que não
+  estão no run (cache por run) — pack A em out + B em nov deixa de dar o valor cheio a cada um. Falha/indisponível (HTTP, timeout,
+  irmão não obtido, pack que não lista o pedido, shipment divergente) ⇒ `frete_seller` e `receita_envio` **NULL** + pendência
+  `frete_pack_incompleto` (nunca cheio, nunca 0). Contagens no resumo do run (`packs`: `packsConsultados`, `packsIncompletos`,
+  `irmaosBuscados`, `chamadas`, `packsComVariosPedidos`) e no log do sync. Pedido sem `pack_id` mantém o agrupamento por shipment.
+  **Custo**: como todo pedido novo tem `pack_id`, são ~1 chamada por pack do run — acompanhe o tempo do sync e o 429.
+
 Limitações conhecidas (documentadas, não corrigidas aqui):
 
-- Central: o rateio vê os pedidos **do run** (`ordersContexto`). Irmão fora do intervalo do run não é conhecido; o pedido
-  recebe o valor cheio como antes (a Central não chama `/packs`). Packs cruzando a virada do mês ficam corretos porque o
-  contexto é o run inteiro, não a competência.
 - Sentinel: se um irmão muda depois (ex.: quantidade), o pedido já gravado só é recalculado quando aparecer de novo
   (janela, provisória ou exceção).
 

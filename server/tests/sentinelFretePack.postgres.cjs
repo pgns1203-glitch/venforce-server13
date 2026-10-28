@@ -270,6 +270,38 @@ async function main() {
     await ciclo(ml84);
     eq("irmão disponível de novo ⇒ A = 20,00 / B = 0,00", [Number((await linha(8101)).frete), Number((await linha(8102)).frete)], [20, 0]);
 
+    console.log("\n▸ grupo ATÔMICO: falha na escrita do irmão ⇒ nada do grupo muda; a retentativa corrige ambos");
+    await limpar(); await setCp();
+    const mlG1 = criarMl({ pedidos: [BA, BB], packs: packs8, fretes: fretes8 });
+    mlG1.janela = [BA, BB];
+    await ciclo(mlG1);
+    const antesA = await linha(8101), antesB = await linha(8102);
+    const escritaClient = criarClient();
+    await escritaClient.connect();
+    let falharIrmao = true;
+    const dbEscritaFalha = { query: (sql, p) => (falharIrmao && /INSERT INTO sentinel_pedidos/.test(sql) && p && p[2] === "8101"
+      ? Promise.reject(new Error("falha injetada na escrita do irmão A")) : escritaClient.query(sql, p)) };
+    const mlG2 = criarMl({ pedidos: [BA, BB2], packs: packs8, fretes: fretes8 });
+    mlG2.janela = [BB2];
+    const cG2 = await ciclo(mlG2, { dbEscrita: dbEscritaFalha });
+    const aposA = await linha(8101), aposB = await linha(8102);
+    eq("pedido B NÃO mudou (rollback: status_ml, frete, hash, updated_at)", [aposB.status_ml, aposB.frete, aposB.payload_hash, aposB.updated_at.getTime()], [antesB.status_ml, antesB.frete, antesB.payload_hash, antesB.updated_at.getTime()]);
+    eq("irmão A NÃO mudou (frete 10,00, hash, updated_at)", [aposA.frete, aposA.payload_hash, aposA.updated_at.getTime()], [antesA.frete, antesA.payload_hash, antesA.updated_at.getTime()]);
+    eq("Σ continua == shipment (10,00 + 10,00), nunca metade gravada", Math.round((Number(aposA.frete) + Number(aposB.frete)) * 100), 2000);
+    ok("erro tratado pelo protocolo de exceção (B retentando) e checkpoint não avançou",
+      (await q("SELECT status FROM sentinel_pedido_excecoes WHERE cliente_conta_id = 10 AND pedido_id = '8102'"))[0]?.status === "retentando" && /SENTINEL_PEDIDO_ERRO/.test(cG2.contas[0].erro || ""));
+    falharIrmao = false;
+    const cG3 = await ciclo(mlG2, { dbEscrita: dbEscritaFalha });
+    eq("retentativa corrige ambos: A = 20,00, B = 0,00, Σ = 20,00", [Number((await linha(8101)).frete), Number((await linha(8102)).frete)], [20, 0]);
+    eq("sem erro e exceção resolvida", [cG3.contas[0].erro, (await q("SELECT status FROM sentinel_pedido_excecoes WHERE cliente_conta_id = 10 AND pedido_id = '8102'"))[0].status], [null, "resolvido"]);
+
+    console.log("\n▸ defesa no caminho 'pulado': irmão gravado fora do rateio atual é regravado");
+    await pool.query("UPDATE sentinel_pedidos SET frete = 10, payload_hash = 'stale' WHERE cliente_conta_id = 10 AND pedido_id = '8101'");
+    const cG4 = await ciclo(mlG2, { dbEscrita: dbEscritaFalha });
+    eq("B (mesma date/hash ⇒ antes 'pulado') regravou o irmão desalinhado: A = 20,00 de novo", [Number((await linha(8101)).frete), Number((await linha(8102)).frete)], [20, 0]);
+    ok("resultado do B marcado como gravado/irmaosCorrigidos (não 'pulado')", (cG4.contas[0].porResultado.pulado || 0) === 0);
+    await escritaClient.end();
+
     console.log("\n▸ endurecimento: seller e shipment do irmão; prazo/orçamento dentro do laço de irmãos");
     for (const [rot, irmao] of [["seller de outra conta", { ...BA, seller: { id: 9999 } }], ["shipment divergente", { ...BA, shipping: { id: 1234 } }]]) {
       await limpar(); await setCp();

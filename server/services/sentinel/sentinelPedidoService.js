@@ -279,21 +279,57 @@ function buscarFretePadrao(args) {
   return freteServicoPadrao.buscarFreteShipment(args);
 }
 
-async function regravarIrmaos({ db, dbW, contaCtx, order, envio, freteEntry, indiceCusto }) {
+// Linhas recalculadas dos irmãos que JÁ existem em sentinel_pedidos (com o grupo resolvido).
+async function linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto }) {
   const irmaos = envio.pedidos.filter((o) => String(o.id) !== String(order.id));
-  if (!irmaos.length) return;
+  if (!irmaos.length) return [];
   const existentes = await db.query(
-    "SELECT pedido_id FROM sentinel_pedidos WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[])",
+    "SELECT pedido_id, payload_hash FROM sentinel_pedidos WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[])",
     [contaCtx.clienteContaId, irmaos.map((o) => String(o.id))]
   );
-  const existe = new Set(existentes.rows.map((r) => String(r.pedido_id)));
+  const gravado = new Map(existentes.rows.map((r) => [String(r.pedido_id), r.payload_hash]));
+  const out = [];
   for (const irmao of irmaos) {
-    if (!existe.has(String(irmao.id))) continue;
-    const linhaIrmao = calcularPedido({
+    if (!gravado.has(String(irmao.id))) continue;
+    const linha = calcularPedido({
       order: irmao, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug,
       grupoEnvio: envio.pedidos, fretePackIncompleto: false,
     });
-    await gravarLinha(dbW, contaCtx, linhaIrmao); // mesma monotonicidade/hash do UPSERT
+    out.push({ linha, hashGravado: gravado.get(String(irmao.id)) });
+  }
+  return out;
+}
+
+// BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
+// inteiro). Regrava os irmãos que já existem (mesma monotonicidade/hash do UPSERT). `w` = a conexão
+// da TRANSAÇÃO do grupo.
+async function regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto }) {
+  for (const { linha } of await linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto })) {
+    await gravarLinha(w, contaCtx, linha);
+  }
+}
+
+// Defesa: os irmãos gravados batem com o rateio ATUAL? (hash gravado ≠ hash recalculado ⇒ não bate)
+async function irmaosDesalinhados(args) {
+  return (await linhasDosIrmaos(args)).some(({ linha, hashGravado }) => hashGravado !== linha.payload_hash);
+}
+
+// Grupo ATÔMICO: pedido + irmãos (+ marcação de pack incompleto) numa única transação, na conexão
+// que detém o advisory lock (BEGIN/COMMIT nela). Qualquer falha ⇒ ROLLBACK e o erro segue o protocolo
+// de exceção (checkpoint não avança). `dbW` pode ser um Pool (testes/avulso): usa uma conexão dele.
+async function comTransacao(dbW, fn) {
+  const usaPool = typeof dbW.connect === "function" && typeof dbW.release !== "function";
+  const c = usaPool ? await dbW.connect() : dbW;
+  try {
+    await c.query("BEGIN");
+    const r = await fn(c);
+    await c.query("COMMIT");
+    return r;
+  } catch (err) {
+    try { await c.query("ROLLBACK"); } catch (_) { /* conexão pode ter caído */ }
+    throw err;
+  } finally {
+    if (usaPool && typeof c.release === "function") c.release();
   }
 }
 
@@ -345,9 +381,6 @@ async function processarPedido(contaCtx, order, deps = {}) {
     }
     // Coleta de frete que FALHOU (401/5xx/timeout/orçamento: o serviço da Central devolve
     // "ausente" com collected:false) ≠ frete que ainda não existe (collected:true).
-    if (fretePackIncompleto && envio.irmaosIds && envio.irmaosIds.length) {
-      await dbW.query(MARCAR_PACK_INCOMPLETO_SQL, [contaCtx.clienteContaId, envio.irmaosIds.map(String)]);
-    }
     const coletaFreteFalhou = !fretePackIncompleto && !!shipmentId && !!freteEntry && freteEntry.status !== "real" && freteEntry.collected === false;
     if (coletaFreteFalhou && row) {
       // Já existe linha: NÃO grava provisória por cima. Quem chama registra a tentativa.
@@ -363,12 +396,24 @@ async function processarPedido(contaCtx, order, deps = {}) {
     // Estado estável, mesma date e cálculo idêntico (custo/frete/imposto não
     // mudaram): nada a gravar.
     if (estavel && mesmaDate && row.payload_hash && row.payload_hash === linha.payload_hash) {
+      // Pedido de pack: um ciclo anterior pode ter gravado este e falhado nos irmãos (ou o grupo mudou).
+      // Confere se os irmãos gravados batem com o rateio atual; se não, regrava o grupo (atômico).
+      if (compartilhado && await irmaosDesalinhados({ db, contaCtx, order, envio, freteEntry, indiceCusto })) {
+        await comTransacao(dbW, (w) => regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto }));
+        return { pedidoId, resultado: "gravado", estado: row.estado_margem, dateLastUpdated, irmaosCorrigidos: true };
+      }
       return { pedidoId, resultado: "pulado", estado: row.estado_margem, dateLastUpdated };
     }
-    const mudou = await gravarLinha(dbW, contaCtx, linha);
-    // BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
-    // inteiro). Recalcula e regrava os irmãos que JÁ existem, com os pedidos do grupo resolvido.
-    if (compartilhado) await regravarIrmaos({ db, dbW, contaCtx, order, envio, freteEntry, indiceCusto });
+    const marcarIrmaos = fretePackIncompleto && envio.irmaosIds && envio.irmaosIds.length;
+    const gravarGrupo = async (w) => {
+      const alterou = await gravarLinha(w, contaCtx, linha);
+      // BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
+      // inteiro). Recalcula e regrava os irmãos que JÁ existem, com os pedidos do grupo resolvido.
+      if (compartilhado) await regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto });
+      if (marcarIrmaos) await w.query(MARCAR_PACK_INCOMPLETO_SQL, [contaCtx.clienteContaId, envio.irmaosIds.map(String)]);
+      return alterou;
+    };
+    const mudou = compartilhado || marcarIrmaos ? await comTransacao(dbW, gravarGrupo) : await gravarGrupo(dbW);
     return { pedidoId, resultado: mudou ? "gravado" : "inalterado", estado: linha.estado_margem, dateLastUpdated };
   } catch (err) {
     const mensagem = String(err?.message || err).slice(0, 500);

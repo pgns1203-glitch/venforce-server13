@@ -52,6 +52,9 @@ Limitações conhecidas (documentadas, não corrigidas aqui):
   puder ser resolvido (irmão não obtido, seller/shipment divergente, prazo/orçamento), o pedido e os irmãos conhecidos pelo `/packs`
   já gravados ficam com frete/margem NULL + `frete_pack_incompleto` (provisória). Limite: se o próprio `/packs` falha, os irmãos
   não são conhecidos e só o pedido corrente é marcado.
+- Sentinel: o grupo é **atômico** — pedido + irmãos (+ marcação de pack incompleto) numa única transação na conexão do lock; falha ⇒ ROLLBACK
+  (nada do grupo muda), erro pelo protocolo de exceção e checkpoint parado. No caminho "pulado" de pedido de pack, os irmãos gravados são
+  conferidos contra o rateio atual e regravados se não baterem.
 - Sentinel: se um irmão muda de quantidade/preço depois, os demais só são recalculados quando algum pedido do pack reaparecer.
 
 ## 1. Identificar o que foi afetado (somente leitura)

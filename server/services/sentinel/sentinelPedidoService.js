@@ -22,9 +22,9 @@ const crypto = require("crypto");
 const { round2 } = require("../../utils/numberUtils");
 const { buildMotorFromOrders } = require("../centralVendas/centralVendasSyncService");
 const { createCentralVendasFreteService } = require("../centralVendas/centralVendasFreteService");
-const { prepararEnvioCompartilhado } = require("../centralVendas/centralVendasEnvioCompartilhado");
+const { prepararEnvioCompartilhado, entraNoRateioEnvio } = require("../centralVendas/centralVendasEnvioCompartilhado");
 const { resolverEnvio } = require("./sentinelEnvioPack");
-const { classificarElegibilidade } = require("./sentinelClassificacao");
+
 const { carregarIndiceCusto, resolverCustoItem, montarCostMap } = require("./sentinelCusto");
 
 // Estados que não mudam sem o ML atualizar o pedido: o skip por
@@ -100,8 +100,8 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
   const freteMap = new Map();
   if (shipmentId && freteEntry) freteMap.set(shipmentId, freteEntry);
 
-  // Fora do resultado (elegibilidade "excluido": cancelado, inválido, não pago...) = peso 0 no rateio.
-  const entraNoRateio = (o) => classificarElegibilidade(o?.status).elegibilidade !== "excluido";
+  // POLÍTICA ÚNICA (a mesma da Central): só paid/partially_refunded têm peso; o resto = peso 0.
+  const entraNoRateio = (o) => entraNoRateioEnvio(o?.status);
   const compartilhado = shipmentId && Array.isArray(grupoEnvio) && grupoEnvio.length > 1
     ? prepararEnvioCompartilhado(grupoEnvio, freteMap, { entra: entraNoRateio }).get(shipmentId) || null
     : null;
@@ -186,6 +186,19 @@ function calcularPedido(args) {
   return { ...linha, payload_hash: calcularPayloadHash(linha) };
 }
 
+// Pack sem todos os pedidos conhecidos: as linhas JÁ gravadas dos irmãos deixam de poder afirmar um
+// frete rateado (o grupo mudou). Marca frete/margem NULL + 'frete_pack_incompleto' (provisória,
+// inconclusiva); hash NULL ⇒ o próximo recálculo completo regrava. Pela dbEscrita (fencing).
+const MARCAR_PACK_INCOMPLETO_SQL = `
+  UPDATE sentinel_pedidos SET
+    frete = NULL, margem_valor = NULL, margem_pct = NULL, payload_hash = NULL,
+    estado_margem = CASE WHEN estado_margem IN ('confirmada', 'provisoria') THEN 'provisoria' ELSE estado_margem END,
+    pendencias = (SELECT COALESCE(jsonb_agg(DISTINCT e), '[]'::jsonb)
+                    FROM jsonb_array_elements(pendencias || '["frete_pack_incompleto"]'::jsonb) e
+                   WHERE e <> '"sem_frete"'::jsonb),
+    calculado_em = NOW(), updated_at = NOW()
+  WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[]) AND estado_margem <> 'erro'`;
+
 const UPSERT_SQL = `
   INSERT INTO sentinel_pedidos (
     cliente_id, cliente_conta_id, pedido_id, competencia, data_pedido, ml_date_last_updated, status_ml,
@@ -266,6 +279,24 @@ function buscarFretePadrao(args) {
   return freteServicoPadrao.buscarFreteShipment(args);
 }
 
+async function regravarIrmaos({ db, dbW, contaCtx, order, envio, freteEntry, indiceCusto }) {
+  const irmaos = envio.pedidos.filter((o) => String(o.id) !== String(order.id));
+  if (!irmaos.length) return;
+  const existentes = await db.query(
+    "SELECT pedido_id FROM sentinel_pedidos WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[])",
+    [contaCtx.clienteContaId, irmaos.map((o) => String(o.id))]
+  );
+  const existe = new Set(existentes.rows.map((r) => String(r.pedido_id)));
+  for (const irmao of irmaos) {
+    if (!existe.has(String(irmao.id))) continue;
+    const linhaIrmao = calcularPedido({
+      order: irmao, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug,
+      grupoEnvio: envio.pedidos, fretePackIncompleto: false,
+    });
+    await gravarLinha(dbW, contaCtx, linhaIrmao); // mesma monotonicidade/hash do UPSERT
+  }
+}
+
 // contaCtx: { clienteId, clienteContaId, clienteSlug, sellerId, baseId }
 // deps: { db, buscarFrete, cacheCusto, forcar }
 // Devolve { pedidoId, resultado: "gravado"|"inalterado"|"pulado"|"erro", estado, dateLastUpdated }.
@@ -314,6 +345,9 @@ async function processarPedido(contaCtx, order, deps = {}) {
     }
     // Coleta de frete que FALHOU (401/5xx/timeout/orçamento: o serviço da Central devolve
     // "ausente" com collected:false) ≠ frete que ainda não existe (collected:true).
+    if (fretePackIncompleto && envio.irmaosIds && envio.irmaosIds.length) {
+      await dbW.query(MARCAR_PACK_INCOMPLETO_SQL, [contaCtx.clienteContaId, envio.irmaosIds.map(String)]);
+    }
     const coletaFreteFalhou = !fretePackIncompleto && !!shipmentId && !!freteEntry && freteEntry.status !== "real" && freteEntry.collected === false;
     if (coletaFreteFalhou && row) {
       // Já existe linha: NÃO grava provisória por cima. Quem chama registra a tentativa.
@@ -332,6 +366,9 @@ async function processarPedido(contaCtx, order, deps = {}) {
       return { pedidoId, resultado: "pulado", estado: row.estado_margem, dateLastUpdated };
     }
     const mudou = await gravarLinha(dbW, contaCtx, linha);
+    // BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
+    // inteiro). Recalcula e regrava os irmãos que JÁ existem, com os pedidos do grupo resolvido.
+    if (compartilhado) await regravarIrmaos({ db, dbW, contaCtx, order, envio, freteEntry, indiceCusto });
     return { pedidoId, resultado: mudou ? "gravado" : "inalterado", estado: linha.estado_margem, dateLastUpdated };
   } catch (err) {
     const mensagem = String(err?.message || err).slice(0, 500);

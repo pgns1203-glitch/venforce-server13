@@ -203,6 +203,11 @@ async function processarConta(contaId, deps = {}) {
   // irmãos buscados (mlFetch noRefresh, no orçamento da conta) e frete por shipment.
   const fetchPack = deps.fetchPackByIdFn || ((c, packId) => fetchPackById(c, packId, { mlFetchFn }));
   pedidoDeps.envio = criarEnvioPack({ ctx, fetchPack, fetchOrder });
+  // prazo do ciclo / orçamento de chamadas: checado DENTRO do laço de irmãos (estouro ⇒ pack incompleto).
+  pedidoDeps.envio.orcamentoOk = () => {
+    if (escopo.chamadas >= escopo.maxChamadas) escopo.orcamentoEsgotado = true; // a conta reporta e para
+    return !(Date.now() > deadlineMs || escopo.tokenIndisponivel || escopo.chamadas >= escopo.maxChamadas);
+  };
 
   if (deps.redefinirCheckpoint) {
     // Redefinição explícita (run-once --since): SOB o lock, pela conexão detentora, antes de ler.

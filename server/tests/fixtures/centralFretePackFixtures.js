@@ -6,6 +6,7 @@ function pedido(id, { shipment, pack = null, itens, status = "paid", dia = 10, l
     id,
     status,
     pack_id: pack,
+    seller: { id: 5551 },
     date_created: iso(dia),
     date_last_updated: iso(dia),
     shipping: shipment == null ? {} : { id: shipment, logistic_type: logistic },

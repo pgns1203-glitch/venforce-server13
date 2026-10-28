@@ -163,14 +163,66 @@ const nov = fx.pedido(6102, { shipment: 7001, pack: 8100, itens: [["MLB200", 1, 
 nov.date_created = "2026-11-01T00:10:00.000-03:00";
 const out = fx.pedido(6101, { shipment: 7001, pack: 8100, itens: [["MLB100", 1, 100, 12.5]] });
 const livre = fx.pedido(6200, { shipment: 7500, itens: [["MLB100", 1, 100, 12.5]] }); // sem pack_id
-const mlOk = mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } }, pedidos: [nov] });
+const novCanc = { ...nov, status: "cancelled" };
+const mlOk = mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } }, pedidos: [novCanc] });
 const r1 = await resolverPacksDoRun({ orders: [out, livre], clienteId: 1, sellerId: "5551", mlFetchFn: mlOk, sleepFn: async () => {} });
 eq("irmão de OUTRO mês entra no contexto (A out + B nov)", r1.ordersContexto.map((o) => String(o.id)), ["6101", "6200", "6102"]);
 eq("1 GET /packs por pack distinto (sem pack_id não consulta) + 1 irmão buscado", [mlOk.log.filter((c) => c.p.startsWith("/packs/")).length, mlOk.log.filter((c) => /^\/orders\//.test(c.p)).length], [1, 1]);
 ok("mlUserId da conta em todas as chamadas", mlOk.log.every((c) => c.o.mlUserId === "5551"));
 eq("resumo do run", [r1.resumo.packsConsultados, r1.resumo.packsIncompletos, r1.resumo.irmaosBuscados, r1.resumo.packsComVariosPedidos], [1, 0, 1, 1]);
 const mOut = buildMotorFromOrders({ orders: [out], ordersContexto: r1.ordersContexto, packsIncompletos: r1.packsIncompletos, costMap, freteMap: new Map([["7001", { status: "real", valor: 20, receitaComprador: 4 }]]), clienteSlug: "cli", competencia: "2026-10" });
-eq("A (out) recebe 10,00, não o valor cheio; receita_envio 2,00", [mOut.componentes.find((c) => c.tipo === "frete_seller").valor, mOut.componentes.find((c) => c.tipo === "receita_envio").valor], [-10, 2]);
+eq("A (out) + B externo CANCELADO (peso 0 certo por status): A leva os 20,00 e a receita de envio 4,00", [mOut.componentes.find((c) => c.tipo === "frete_seller").valor, mOut.componentes.find((c) => c.tipo === "receita_envio").valor], [-20, 4]);
+
+console.log("\n▸ BL2: irmão EXTERNO ao run com status de venda: claims dele não estão no contexto ⇒ pack INCOMPLETO");
+const mlExtPago = mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } }, pedidos: [nov] }); // nov = paid
+const rExt = await resolverPacksDoRun({ orders: [out], clienteId: 1, sellerId: "5551", mlFetchFn: mlExtPago, sleepFn: async () => {} });
+ok("A no run + B externo pago (possível claim/devolução não coletada) ⇒ pack incompleto", rExt.packsIncompletos.has("8100") && rExt.resumo.irmaosExternosComPosVendaIncerto === 1);
+const mExt = buildMotorFromOrders({ orders: [out], ordersContexto: rExt.ordersContexto, packsIncompletos: rExt.packsIncompletos, costMap, freteMap: new Map([["7001", { status: "real", valor: 20, receitaComprador: 4 }]]), clienteSlug: "cli", competencia: "2026-10" });
+ok("não atribui metade silenciosa: frete_seller/receita_envio NULL + frete_pack_incompleto", mExt.componentes.filter((c) => c.tipo === "frete_seller" || c.tipo === "receita_envio").every((c) => c.valor === null) && mExt.pedidos[0].pendencias.includes("frete_pack_incompleto"));
+for (const st of ["partially_refunded"]) {
+  const r = await resolverPacksDoRun({ orders: [out], clienteId: 1, sellerId: "5551", mlFetchFn: mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } }, pedidos: [{ ...nov, status: st }] }), sleepFn: async () => {} });
+  ok(`irmão externo ${st} (venda com ressalva) ⇒ incompleto`, r.packsIncompletos.has("8100"));
+}
+for (const st of ["cancelled", "invalid", "confirmed", "payment_required", "payment_in_process", "partially_paid", "pending_cancel"]) {
+  const r = await resolverPacksDoRun({ orders: [out], clienteId: 1, sellerId: "5551", mlFetchFn: mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } }, pedidos: [{ ...nov, status: st }] }), sleepFn: async () => {} });
+  ok(`irmão externo ${st} (peso 0 por status) ⇒ pack completo`, !r.packsIncompletos.has("8100"));
+}
+
+console.log("\n▸ endurecimento: seller e shipment do irmão; prazo dentro do laço de irmãos");
+const estrangeiro = { ...nov, status: "cancelled", seller: { id: 9999 } };
+const semSeller = { ...nov, status: "cancelled", seller: undefined };
+const outroShip = { ...nov, status: "cancelled", shipping: { id: 8888 } };
+for (const [rot, irmao] of [["seller de outra conta", estrangeiro], ["seller ausente", semSeller], ["shipment divergente", outroShip]]) {
+  const r = await resolverPacksDoRun({ orders: [out], clienteId: 1, sellerId: "5551", mlFetchFn: mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } }, pedidos: [irmao] }), sleepFn: async () => {} });
+  ok(`irmão com ${rot} ⇒ pack incompleto`, r.packsIncompletos.has("8100") && r.resumo.irmaosDivergentes === 1);
+}
+let chamadasPrazo = 0;
+const mlPrazo = mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } }, pedidos: [novCanc] });
+const rPrazo = await resolverPacksDoRun({ orders: [out], clienteId: 1, sellerId: "5551", mlFetchFn: mlPrazo, sleepFn: async () => {}, continuar: () => { chamadasPrazo += 1; return chamadasPrazo <= 1; } });
+ok("prazo estourou entre o /packs e o irmão ⇒ incompleto e o /orders do irmão NÃO foi chamado", rPrazo.packsIncompletos.has("8100") && !mlPrazo.log.some((c) => /^\/orders\//.test(c.p)));
+const rJa = await resolverPacksDoRun({ orders: [out], clienteId: 1, sellerId: "5551", mlFetchFn: mlPack({ packs: {} }), sleepFn: async () => {}, continuar: () => false });
+ok("prazo já estourado ⇒ nenhuma chamada e pack incompleto", rJa.packsIncompletos.has("8100"));
+
+console.log("\n▸ POLÍTICA ÚNICA: entraNoRateioEnvio (Central × Sentinel)");
+const { entraNoRateioEnvio } = require("../services/centralVendas/centralVendasEnvioCompartilhado");
+const { classificarElegibilidade } = require("../services/sentinel/sentinelClassificacao");
+const { calcularPedido } = require("../services/sentinel/sentinelPedidoService");
+const { construirIndiceCusto } = require("../services/sentinel/sentinelCusto");
+const indice = construirIndiceCusto(fx.costRows.map((r) => ({ ...r, id_model: null, sku: "" })));
+const esperado = { paid: true, partially_refunded: true, confirmed: false, payment_required: false, payment_in_process: false, partially_paid: false, invalid: false, cancelled: false, pending_cancel: false, desconhecido: false };
+for (const [st, entra] of Object.entries(esperado)) {
+  eq(`${st} ⇒ ${entra ? "entra (peso)" : "peso 0"}`, entraNoRateioEnvio(st), entra);
+  eq(`${st}: coincide com a elegibilidade do Sentinel`, classificarElegibilidade(st).elegibilidade !== "excluido", entra);
+  // paridade ponta a ponta: pedido X (status st) + irmão pago, shipment 20,00
+  const X = fx.pedido(6301, { shipment: 7301, pack: 8301, status: st, itens: [["MLB100", 1, 100, 12.5]] });
+  const Y = fx.pedido(6302, { shipment: 7301, pack: 8301, itens: [["MLB200", 1, 100, 10]] });
+  const entry = { status: "real", valor: 20, receitaComprador: null };
+  const central = buildMotorFromOrders({ orders: [X, Y], costMap, freteMap: new Map([["7301", entry]]), clienteSlug: "cli", competencia: "2026-10" });
+  const fx_ = central.componentes.find((c) => c.tipo === "frete_seller" && c.pedidoId === "6301").valor;
+  const sent = calcularPedido({ order: X, freteEntry: entry, indiceCusto: indice, clienteSlug: "cli", grupoEnvio: [X, Y] });
+  eq(`${st}: frete do pedido idêntico na Central e no Sentinel`, [Math.abs(fx_), sent.frete], [entra ? 10 : 0, entra ? 10 : 0]);
+}
+eq("status efetivo da Central (pós-venda normalizado): pago entra, cancelado/com_problema não", [entraNoRateioEnvio("pago"), entraNoRateioEnvio("cancelado"), entraNoRateioEnvio("com_problema"), entraNoRateioEnvio(null)], [true, false, false, false]);
 // 2 pedidos do mesmo pack no run ⇒ 1 só GET /packs
 const mlDois = mlPack({ packs: { 8100: { shipment: 7001, orders: [6101, 6102] } } });
 const r2 = await resolverPacksDoRun({ orders: [out, nov], clienteId: 1, sellerId: "5551", mlFetchFn: mlDois, sleepFn: async () => {} });

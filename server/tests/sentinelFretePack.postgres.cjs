@@ -49,7 +49,7 @@ const iso = (ms) => new Date(ms).toISOString();
 
 function pedido(id, { shipment, pack = null, itens, status = "paid", updatedMs = agora - H }) {
   return {
-    id, status, pack_id: pack,
+    id, status, pack_id: pack, seller: { id: 5551 },
     date_created: iso(agora - 3 * H), date_last_updated: iso(updatedMs),
     shipping: { id: shipment, logistic_type: "cross_docking" },
     order_items: itens.map(([mlb, q, preco, taxa]) => ({
@@ -229,6 +229,80 @@ async function main() {
     await limpar(); await setCp();
     await ciclo(mlC);
     eq("só o pago na janela (cancelado buscado por ID) ⇒ também 20,00", Number((await linha(5001)).frete), 20);
+
+    console.log("\n▸ BL1: o rateio dos IRMÃOS acompanha o grupo (2 ciclos)");
+    await limpar(); await setCp();
+    const BA = pedido(8101, { shipment: 7801, pack: 9801, itens: [["MLB100", 1, 100, 12.5]], updatedMs: agora - 2 * H });
+    const BB = pedido(8102, { shipment: 7801, pack: 9801, itens: [["MLB200", 1, 100, 10]], updatedMs: agora - 2 * H });
+    const packs8 = { 9801: { shipment: 7801, orders: [8101, 8102] } };
+    const fretes8 = { 7801: { cost: 20, receita: 0 } };
+    const ml81 = criarMl({ pedidos: [BA, BB], packs: packs8, fretes: fretes8 });
+    ml81.janela = [BA, BB];
+    await ciclo(ml81);
+    eq("ciclo 1: A e B pagos ⇒ 10,00 / 10,00", [Number((await linha(8101)).frete), Number((await linha(8102)).frete)], [10, 10]);
+    const hashA1 = (await linha(8101)).payload_hash;
+    // ciclo 2: SÓ B reaparece, agora cancelado; A não está na janela (é buscado por ID)
+    const BB2 = { ...BB, status: "cancelled", date_last_updated: iso(agora - 30 * 60 * 1000) };
+    const ml82 = criarMl({ pedidos: [BA, BB2], packs: packs8, fretes: fretes8 });
+    ml82.janela = [BB2];
+    await ciclo(ml82);
+    const l81 = await linha(8101), l82 = await linha(8102);
+    eq("ciclo 2: A = 20,00, B = 0,00, Σ = 20,00 (A foi REGRAVADO)", [Number(l81.frete), Number(l82.frete), Math.round((Number(l81.frete) + Number(l82.frete)) * 100)], [20, 0, 2000]);
+    ok("hash do A mudou (regravado por causa do irmão)", l81.payload_hash !== hashA1);
+    ok("irmão buscado por ID com noRefresh", ml82.log.some((c) => c.p === "/orders/8101" && c.opts.noRefresh === true));
+
+    console.log("\n▸ BL1b: irmão NÃO obtido no ciclo 2 ⇒ ambos frete NULL + frete_pack_incompleto (nunca Σ quebrada silenciosa)");
+    await limpar(); await setCp();
+    const ml83a = criarMl({ pedidos: [BA, BB], packs: packs8, fretes: fretes8 });
+    ml83a.janela = [BA, BB];
+    await ciclo(ml83a);
+    const ml83 = criarMl({ pedidos: [BA, BB2], packs: packs8, fretes: fretes8, indisponiveis: new Set(["/orders/8101"]) });
+    ml83.janela = [BB2];
+    await ciclo(ml83);
+    const n81 = await linha(8101), n82 = await linha(8102);
+    eq("A e B: frete NULL", [n81.frete, n82.frete], [null, null]);
+    eq("ambos provisória com frete_pack_incompleto", [n81.estado_margem, n82.estado_margem, n81.pendencias.includes("frete_pack_incompleto"), n82.pendencias.includes("frete_pack_incompleto")], ["provisoria", "provisoria", true, true]);
+    eq("A inconclusivo p/ detector (margem NULL + classificação)", [n81.margem_valor, classificarPedido(n81).confiabilidade], [null, "inconclusivo"]);
+    // quando o irmão volta, tudo se recompõe
+    ml83.janela = [BB2];
+    const ml84 = criarMl({ pedidos: [BA, BB2], packs: packs8, fretes: fretes8 });
+    ml84.janela = [BB2];
+    await ciclo(ml84);
+    eq("irmão disponível de novo ⇒ A = 20,00 / B = 0,00", [Number((await linha(8101)).frete), Number((await linha(8102)).frete)], [20, 0]);
+
+    console.log("\n▸ endurecimento: seller e shipment do irmão; prazo/orçamento dentro do laço de irmãos");
+    for (const [rot, irmao] of [["seller de outra conta", { ...BA, seller: { id: 9999 } }], ["shipment divergente", { ...BA, shipping: { id: 1234 } }]]) {
+      await limpar(); await setCp();
+      const mlH = criarMl({ pedidos: [irmao, BB], packs: packs8, fretes: fretes8 });
+      mlH.janela = [BB];
+      await ciclo(mlH);
+      const lh = await linha(8102);
+      eq(`irmão com ${rot} ⇒ frete NULL + frete_pack_incompleto`, [lh.frete, lh.pendencias.includes("frete_pack_incompleto")], [null, true]);
+    }
+    await limpar(); await setCp();
+    const mlB = criarMl({ pedidos: [BA, BB], packs: packs8, fretes: fretes8 });
+    mlB.janela = [BB];
+    await ciclo(mlB, { config: { ...cfgBase, maxChamadasPorConta: 2 } });
+    ok("orçamento (2) esgota antes do irmão: nenhuma chamada /orders do irmão", mlB.log.length <= 2 && mlB.chamou(/^\/orders\/8101$/) === 0);
+    eq("… e o pedido fica sem frete cheio (NULL + pendência)", [(await linha(8102)).frete, (await linha(8102)).pendencias.includes("frete_pack_incompleto")], [null, true]);
+
+    console.log("\n▸ POLÍTICA ÚNICA no Sentinel: statuses sem peso");
+    for (const st of ["confirmed", "payment_required", "payment_in_process", "partially_paid", "invalid", "pending_cancel"]) {
+      await limpar(); await setCp();
+      const sx = pedido(8201, { shipment: 7802, pack: 9802, status: st, itens: [["MLB100", 1, 100, 12.5]] });
+      const sy = pedido(8202, { shipment: 7802, pack: 9802, itens: [["MLB200", 1, 100, 10]] });
+      const mlS2 = criarMl({ pedidos: [sx, sy], packs: { 9802: { shipment: 7802, orders: [8201, 8202] } }, fretes: { 7802: { cost: 20, receita: 0 } } });
+      mlS2.janela = [sx, sy];
+      await ciclo(mlS2);
+      eq(`${st} ⇒ peso 0 (0,00) e o pago leva 20,00`, [Number((await linha(8201)).frete), Number((await linha(8202)).frete)], [0, 20]);
+    }
+    await limpar(); await setCp();
+    const rx = pedido(8301, { shipment: 7803, pack: 9803, status: "partially_refunded", itens: [["MLB100", 1, 100, 12.5]] });
+    const ry = pedido(8302, { shipment: 7803, pack: 9803, itens: [["MLB200", 1, 100, 10]] });
+    const mlR2 = criarMl({ pedidos: [rx, ry], packs: { 9803: { shipment: 7803, orders: [8301, 8302] } }, fretes: { 7803: { cost: 20, receita: 0 } } });
+    mlR2.janela = [rx, ry];
+    await ciclo(mlR2);
+    eq("partially_refunded (venda com ressalva) entra: 10,00 / 10,00", [Number((await linha(8301)).frete), Number((await linha(8302)).frete)], [10, 10]);
 
     console.log(`\n${checks} verificações passaram (PostgreSQL local ${parsed.hostname}).`);
   } finally {

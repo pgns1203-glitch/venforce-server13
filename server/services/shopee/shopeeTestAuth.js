@@ -28,20 +28,51 @@ const CODES = Object.freeze({
   RESPOSTA_INVALIDA: "SHOPEE_TEST_RESPOSTA_INVALIDA",
 });
 
+// Leitura provável do erro da Shopee, para quem opera o 1º grant. Só constantes:
+// pode ir para o HTML. Não corrige nada, só aponta onde olhar.
+const DIAGNOSTICOS = Object.freeze({
+  ASSINATURA_RECUSADA: "Assinatura recusada: confira Partner ID/Key do app TEST e se o host (SHOPEE_TEST_API_ORIGIN) é o do app.",
+  TIMESTAMP_RECUSADO: "Timestamp recusado: relógio do servidor fora do horário ou link aberto tarde demais.",
+  PARTNER_OU_HOST: "Partner ID não reconhecido neste host: confira SHOPEE_TEST_API_ORIGIN e o Partner ID de TEST.",
+  CODE_RECUSADO: "Código de autorização recusado (expirado ou já usado). Gere um novo link.",
+});
+
+function diagnosticar(shopeeError, mensagem) {
+  const texto = `${shopeeError || ""} ${mensagem || ""}`;
+  if (/sign/i.test(texto)) return "ASSINATURA_RECUSADA";
+  if (/timestamp/i.test(texto)) return "TIMESTAMP_RECUSADO";
+  if (/partner/i.test(texto)) return "PARTNER_OU_HOST";
+  if (/\bcode\b|error_auth/i.test(texto)) return "CODE_RECUSADO";
+  return null;
+}
+
+// Mensagem livre da Shopee reduzida ao seguro: sem o `code` enviado, sem blobs
+// longos (possíveis tokens), só caracteres comuns e no máximo 160. Vai só para log.
+function mensagemSegura(mensagem, code) {
+  if (typeof mensagem !== "string" || !mensagem) return null;
+  let m = mensagem.slice(0, 300);
+  if (code) m = m.split(code).join("[code]");
+  m = m.replace(/[A-Za-z0-9_-]{16,}/g, "[redacted]").replace(/[^\w .,:;'()\/[\]-]/g, "").slice(0, 160).trim();
+  return m || null;
+}
+
 // Só metadados seguros. `shopeeError` é o código curto da Shopee (ex.: error_sign),
-// filtrado por regex; a mensagem livre da Shopee não é guardada.
+// filtrado por regex; `diagnostico` é uma chave de DIAGNOSTICOS. A mensagem da
+// Shopee, já reduzida por mensagemSegura, fica não enumerável e só vai para log.
 class ShopeeAuthError extends Error {
-  constructor(code, message, { upstreamStatus = null, shopeeError = null, shopeeRequestId = null } = {}) {
+  constructor(code, message, { upstreamStatus = null, shopeeError = null, shopeeRequestId = null, shopeeMessage = null } = {}) {
     super(message);
     this.name = "ShopeeAuthError";
     this.code = code;
     this.upstreamStatus = upstreamStatus;
     this.shopeeError = shopeeError;
     this.shopeeRequestId = shopeeRequestId;
+    this.diagnostico = shopeeError || shopeeMessage ? diagnosticar(shopeeError, shopeeMessage) : null;
+    Object.defineProperty(this, "shopeeMessage", { value: shopeeMessage, enumerable: false });
   }
 
   toJSON() {
-    return { name: this.name, code: this.code, message: this.message, upstreamStatus: this.upstreamStatus, shopeeError: this.shopeeError, shopeeRequestId: this.shopeeRequestId };
+    return { name: this.name, code: this.code, message: this.message, upstreamStatus: this.upstreamStatus, shopeeError: this.shopeeError, shopeeRequestId: this.shopeeRequestId, diagnostico: this.diagnostico };
   }
 }
 
@@ -89,9 +120,14 @@ function parseJson(raw) {
 }
 
 // Converte (status HTTP, corpo cru) da Shopee em resultado ou ShopeeAuthError.
-function interpretarTokenGet(status, raw, shopId) {
+function interpretarTokenGet(status, raw, shopId, code) {
   const data = parseJson(raw);
-  const meta = { upstreamStatus: status, shopeeError: safe(data && data.error), shopeeRequestId: safe(data && data.request_id) };
+  const meta = {
+    upstreamStatus: status,
+    shopeeError: safe(data && data.error),
+    shopeeRequestId: safe(data && data.request_id),
+    shopeeMessage: mensagemSegura(data && data.message, code),
+  };
 
   if (status >= 500) throw new ShopeeAuthError(CODES.UPSTREAM_5XX, `Shopee falhou no token/get (${status}).`, meta);
   if (!data) throw new ShopeeAuthError(CODES.RESPOSTA_INVALIDA, "Shopee devolveu resposta em formato inesperado.", meta);
@@ -178,7 +214,7 @@ async function exchangeCodeForToken(config, { code, shopId }, { fetchImpl, gatew
     const doFetch = fetchImpl || (typeof fetch === "function" ? fetch.bind(globalThis) : null);
     resposta = await postDireto(config, url.toString(), body, doFetch);
   }
-  return interpretarTokenGet(resposta.status, resposta.raw, shopId);
+  return interpretarTokenGet(resposta.status, resposta.raw, shopId, code);
 }
 
 module.exports = {
@@ -187,6 +223,7 @@ module.exports = {
   signPublic,
   ShopeeAuthError,
   CODES,
+  DIAGNOSTICOS,
   AUTH_PARTNER_PATH,
   TOKEN_GET_PATH,
 };

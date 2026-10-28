@@ -214,6 +214,9 @@ const tokenOk = () => fakeRes(200, { access_token: ACCESS, refresh_token: REFRES
       assert.strictEqual(code, CODE);
       if (modo === "erro") throw new ShopeeAuthError(CODES.UPSTREAM_4XX, "recusado", { upstreamStatus: 400, shopeeError: "error_auth", shopeeRequestId: "rq" });
       if (modo === "bug") throw new Error(`boom ${FAKE_KEY}`);
+      if (modo === "sign") {
+        return exchangeCodeForToken(config, { code, shopId }, { fetchImpl: async () => fakeRes(403, { error: "error_sign", message: `Wrong sign. code=${CODE} ${ACCESS}`, request_id: "rs" }) });
+      }
       return exchangeCodeForToken(config, { code, shopId }, { fetchImpl: async () => tokenOk() });
     };
     const ctrl = createShopeeController({ stateStore: store, readConfig: (app) => readTestConfig(app, ENV_OK), exchange, logger });
@@ -309,10 +312,69 @@ const tokenOk = () => fakeRes(200, { access_token: ACCESS, refresh_token: REFRES
     srv2.close();
     console.log("  ✓ autorizar sem config → 503; app desconhecido → 400");
 
+    // ── diagnóstico do 1º grant ──
+    const perdido = await get(`?code=${CODE}&shop_id=777`);
+    assert.strictEqual(perdido.status, 400);
+    assert.match(perdido.body, /state perdido na redirect/);
+    assert.ok(logs.some((l) => /state PERDIDO \(code presente e state ausente/.test(l)));
+    console.log("  ✓ state perdido na redirect: mensagem e log próprios");
+
+    const s7 = await novoState();
+    const concat = await get(`?state=${s7}?code=${CODE}&shop_id=777`);
+    assert.strictEqual(concat.status, 400);
+    assert.match(concat.body, /state concatenado na redirect/);
+    semSegredo(concat.body, "HTML state concatenado");
+    assert.ok(logs.some((l) => /state CONCATENADO/.test(l)));
+    console.log("  ✓ state concatenado com '?': detectado, sem ecoar o code");
+
+    modo = "sign";
+    const s8 = await novoState();
+    const sign = await get(`?state=${s8}&code=${CODE}&shop_id=777`);
+    assert.strictEqual(sign.status, 502);
+    assert.match(sign.body, /\(error_sign\)/);
+    assert.match(sign.body, /Assinatura recusada/);
+    assert.ok(!/Wrong sign/.test(sign.body), "mensagem crua da Shopee fica fora do HTML");
+    semSegredo(sign.body, "HTML error_sign");
+    const linhaSign = logs.find((l) => /diagnostico=ASSINATURA_RECUSADA/.test(l));
+    assert.ok(linhaSign, "log com diagnóstico");
+    assert.match(linhaSign, /host=https:\/\/partner\.test-stable\.shopeemobile\.com transport=direct/);
+    assert.match(linhaSign, /shopee_message="Wrong sign\. code\[code\] \[redacted\]"/);
+    console.log("  ✓ error_sign: diagnóstico no HTML; mensagem Shopee só no log, sem code/token; host no log");
+
     semSegredo(logs.join("\n"), "logs");
     assert.ok(logs.some((l) => /grant concluído: app=marketing shop_id=777/.test(l)));
     console.log(`  ✓ nenhum segredo logado (${logs.length} linhas de log conferidas)`);
     srv.close();
+  }
+
+  // ── diagnóstico (unidade) ──
+  {
+    const diag = (body) => exchangeCodeForToken(cfg(), { code: CODE, shopId: 1 }, { fetchImpl: async () => fakeRes(403, body) }).catch((e) => e.diagnostico);
+    assert.strictEqual(await diag({ error: "error_sign", message: "Wrong sign." }), "ASSINATURA_RECUSADA");
+    assert.strictEqual(await diag({ error: "error_param", message: "Invalid timestamp." }), "TIMESTAMP_RECUSADO");
+    assert.strictEqual(await diag({ error: "error_param", message: "Invalid partner_id." }), "PARTNER_OU_HOST");
+    assert.strictEqual(await diag({ error: "error_auth", message: "Invalid code." }), "CODE_RECUSADO");
+    assert.strictEqual(await diag({ error: "error_server", message: "boom" }), null);
+    console.log("  ✓ diagnóstico: sign / timestamp / partner-host / code");
+  }
+
+  // ── sanitizador da observabilidade: code embutido em outro parâmetro ──
+  {
+    const { sanitizeUrl } = require("../utils/observabilitySanitizer");
+    const u = sanitizeUrl(`/shopee/callback?state=${"S".repeat(43)}?code=${CODE}&shop_id=7`);
+    semSegredo(u, "URL sanitizada (state concatenado)");
+    assert.match(u, /shop_id=7/);
+    console.log("  ✓ observabilidade não grava code embutido no state");
+  }
+
+  // ── worker de refresh ML: opt-out só com "false" ──
+  {
+    const { workerHabilitado } = require("../utils/tokenRefreshWorker");
+    assert.strictEqual(workerHabilitado({}), true, "ausente = ligado (main inalterada)");
+    assert.strictEqual(workerHabilitado({ ML_TOKEN_REFRESH_WORKER_ENABLED: "true" }), true);
+    assert.strictEqual(workerHabilitado({ ML_TOKEN_REFRESH_WORKER_ENABLED: "FALSE" }), false);
+    assert.strictEqual(workerHabilitado({ ML_TOKEN_REFRESH_WORKER_ENABLED: "0" }), true, "só 'false' desliga");
+    console.log("  ✓ ML_TOKEN_REFRESH_WORKER_ENABLED: ausente liga, 'false' desliga");
   }
 
   console.log("\n✓ shopeeTestOAuth: todos os testes passaram");

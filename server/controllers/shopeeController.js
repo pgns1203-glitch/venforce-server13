@@ -7,7 +7,7 @@
 // Tokens NÃO são persistidos nesta fase: só confirmamos que chegaram.
 const { readTestConfig } = require("../services/shopee/shopeeTestConfig");
 const { shopeeOAuthStateStore } = require("../services/shopee/shopeeOAuthState");
-const { buildAuthorizationUrl, exchangeCodeForToken, ShopeeAuthError } = require("../services/shopee/shopeeTestAuth");
+const { buildAuthorizationUrl, exchangeCodeForToken, ShopeeAuthError, DIAGNOSTICOS } = require("../services/shopee/shopeeTestAuth");
 
 const LOG = "[Shopee OAuth TEST]";
 
@@ -44,7 +44,26 @@ const MOTIVO_STATE = {
   AUSENTE: "Link sem state. Gere um novo link de autorização.",
   INVALIDO: "State inválido ou já utilizado. Gere um novo link de autorização.",
   EXPIRADO: "State expirado. Gere um novo link de autorização.",
+  // Retorno da Shopee com code mas sem o state que foi na redirect.
+  PERDIDO: "A Shopee voltou sem o state que estava na URL de retorno. Avise o time técnico (state perdido na redirect).",
+  // `state=X?code=...`: a query da redirect foi concatenada com "?" em vez de "&".
+  CONCATENADO: "A Shopee devolveu a URL de retorno em formato inesperado. Avise o time técnico (state concatenado na redirect).",
 };
+
+// Explica no log o que cada recusa de state costuma significar no 1º grant.
+const PISTA_STATE = {
+  AUSENTE: "sem state, sem code",
+  INVALIDO: "desconhecido/já usado: replay, link reaberto ou restart do servidor entre gerar o link e o callback",
+  EXPIRADO: "mais de 10 min entre gerar o link e o callback",
+  PERDIDO: "code presente e state ausente: a Shopee provavelmente descartou a query da redirect",
+  CONCATENADO: "state com '?code='/'shop_id=' dentro: a Shopee concatenou a query com '?'",
+};
+
+function classificarState(state, code, shopId) {
+  if (typeof state === "string" && /[?&](code|shop_id|main_account_id)=/.test(state)) return "CONCATENADO";
+  if ((state === undefined || state === "") && (code !== undefined || shopId !== undefined)) return "PERDIDO";
+  return null;
+}
 
 function lerShopId(valor) {
   if (typeof valor !== "string" || !/^[1-9]\d{0,15}$/.test(valor)) return null;
@@ -69,10 +88,17 @@ function createShopeeController({
       return res.status(200).send(renderPagina("Callback Shopee ativo", "Aguardando redirecionamento de autorização."));
     }
 
+    // Formato do retorno que indica problema na redirect (não no usuário).
+    const formato = classificarState(state, code, shopIdRaw);
+    if (formato) {
+      logger.warn(`${LOG} callback recusado: state ${formato} (${PISTA_STATE[formato]})`);
+      return res.status(400).send(renderPagina("Autorização Shopee recusada", MOTIVO_STATE[formato]));
+    }
+
     // O state é consumido antes de qualquer outra checagem: falhou, não volta.
     const consumo = stateStore.consumir(state);
     if (!consumo.ok) {
-      logger.warn(`${LOG} callback recusado: state ${consumo.motivo}`);
+      logger.warn(`${LOG} callback recusado: state ${consumo.motivo} (${PISTA_STATE[consumo.motivo]})`);
       return res.status(400).send(renderPagina("Autorização Shopee recusada", MOTIVO_STATE[consumo.motivo]));
     }
     const { intencao } = consumo;
@@ -114,10 +140,15 @@ function createShopeeController({
       return res.status(200).send(renderPagina("Autorização Shopee de teste concluída", `Loja autorizada: shop_id ${shopId}`));
     } catch (err) {
       const e = err instanceof ShopeeAuthError ? err : null;
+      // Log: códigos + mensagem da Shopee já reduzida (mensagemSegura) + host usado.
+      // HTML: só códigos e o texto fixo do diagnóstico.
       logger.error(`${LOG} token/get falhou: app=${intencao.app} shop_id=${shopId} code=${e ? e.code : "ERRO_INTERNO"}`
-        + (e ? ` upstream=${e.upstreamStatus} shopee_error=${e.shopeeError} request_id=${e.shopeeRequestId}` : ""));
+        + (e ? ` upstream=${e.upstreamStatus} shopee_error=${e.shopeeError} diagnostico=${e.diagnostico}`
+          + ` request_id=${e.shopeeRequestId} host=${config.apiOrigin} transport=${config.transport}`
+          + ` shopee_message=${JSON.stringify(e.shopeeMessage)}` : ""));
       const detalhe = e ? `Erro: ${e.code}${e.shopeeError ? ` (${e.shopeeError})` : ""}.` : "Erro interno.";
-      return res.status(502).send(renderPagina("Autorização Shopee não concluída", `${detalhe} Gere um novo link e tente de novo.`));
+      const pista = e && e.diagnostico ? ` ${DIAGNOSTICOS[e.diagnostico]}` : " Gere um novo link e tente de novo.";
+      return res.status(502).send(renderPagina("Autorização Shopee não concluída", `${detalhe}${pista}`));
     }
   }
 

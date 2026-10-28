@@ -133,6 +133,17 @@ function repartirCentavos(total, pesos) {
   return base.map((x) => Number(sinal * x) / 100);
 }
 
+// POLÍTICA ÚNICA de peso no rateio do envio (Central e Sentinel usam esta função):
+// entra = venda efetiva — `paid` e `partially_refunded` (venda com ressalva); `pago` é o status
+// normalizado da Central. Qualquer outro (confirmed, payment_required, payment_in_process,
+// partially_paid, invalid, cancelled, pending_cancel, cancelado/com_problema por pós-venda,
+// desconhecido/ausente) ⇒ peso 0. O argumento é o status EFETIVO (pós-venda || status da Orders API).
+const STATUS_ENTRA_NO_RATEIO = new Set(["paid", "partially_refunded", "pago"]);
+function entraNoRateioEnvio(statusEfetivo) {
+  const s = statusEfetivo ? String(statusEfetivo).trim().toLowerCase() : "";
+  return STATUS_ENTRA_NO_RATEIO.has(s);
+}
+
 const OBS_ENVIO_COMPARTILHADO = (n) => `Frete do envio compartilhado por ${n} pedidos, rateado pela receita.`;
 
 module.exports = {
@@ -140,6 +151,7 @@ module.exports = {
   agruparEnvioCompartilhado,
   prepararEnvioCompartilhado,
   repartirCentavos,
+  entraNoRateioEnvio,
   receitaDoPedidoCentavos,
   OBS_ENVIO_COMPARTILHADO,
 };

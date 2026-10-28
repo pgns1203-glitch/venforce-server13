@@ -14,6 +14,8 @@
 // mlFetchFn é o mlFetch da Central COM prazo por chamada (comPrazoPadrao "mlMs"); este módulo não
 // toca mlClient.js. Concorrência limitada; 429/5xx com backoff curto e Retry-After.
 
+const { entraNoRateioEnvio } = require("./centralVendasEnvioCompartilhado");
+
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const sleepPadrao = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -53,7 +55,8 @@ async function emLotes(itens, concorrencia, fn) {
 }
 
 // → { ordersContexto, packsIncompletos: Set<packId>, resumo }
-async function resolverPacksDoRun({ orders, clienteId, sellerId, mlFetchFn, sleepFn = sleepPadrao, concorrencia = 5, maxAttempts = 3 }) {
+// continuar(): false ⇒ prazo/cancelamento do run — o que falta vira pack incompleto (não estoura o prazo).
+async function resolverPacksDoRun({ orders, clienteId, sellerId, mlFetchFn, sleepFn = sleepPadrao, concorrencia = 5, maxAttempts = 3, continuar = () => true }) {
   const lista = Array.isArray(orders) ? orders : [];
   const porId = new Map(lista.map((o) => [String(o.id), o]));
   const packs = new Map(); // packId → pedidos do run
@@ -64,13 +67,14 @@ async function resolverPacksDoRun({ orders, clienteId, sellerId, mlFetchFn, slee
     packs.get(k).push(o);
   }
   const contagem = { chamadas: 0 };
-  const resumo = { packsConsultados: 0, packsIncompletos: 0, irmaosBuscados: 0, chamadas: 0, packsComVariosPedidos: 0 };
+  const resumo = { packsConsultados: 0, packsIncompletos: 0, irmaosBuscados: 0, chamadas: 0, packsComVariosPedidos: 0, irmaosDivergentes: 0, irmaosExternosComPosVendaIncerto: 0 };
   const incompletos = new Set();
   const extras = new Map(); // irmãos fora do run
   const cacheIrmao = new Map(); // orderId → order | null (falha)
   const opts = { maxAttempts, sleepFn, contagem };
 
   await emLotes([...packs.keys()], concorrencia, async (packId) => {
+    if (!continuar()) { incompletos.add(packId); return; }
     resumo.packsConsultados += 1;
     const resp = await getComRetry(mlFetchFn, clienteId, `/packs/${encodeURIComponent(packId)}`, sellerId, opts);
     if (!resp?.ok || !Array.isArray(resp.data?.orders)) { incompletos.add(packId); return; }
@@ -80,8 +84,10 @@ async function resolverPacksDoRun({ orders, clienteId, sellerId, mlFetchFn, slee
     if (doRun.some((o) => !ids.includes(String(o.id)))) { incompletos.add(packId); return; }
     if (shipmentPack && doRun.some((o) => String(o.shipping.id) !== shipmentPack)) { incompletos.add(packId); return; }
     if (ids.length > 1) resumo.packsComVariosPedidos += 1;
+    const shipmentEsperado = shipmentPack || String(doRun[0].shipping.id);
     for (const outro of ids) {
       if (porId.has(outro)) continue;
+      if (!continuar()) { incompletos.add(packId); return; }
       if (!cacheIrmao.has(outro)) {
         resumo.irmaosBuscados += 1;
         const r = await getComRetry(mlFetchFn, clienteId, `/orders/${encodeURIComponent(outro)}`, sellerId, opts);
@@ -89,6 +95,16 @@ async function resolverPacksDoRun({ orders, clienteId, sellerId, mlFetchFn, slee
       }
       const irmao = cacheIrmao.get(outro);
       if (!irmao) { incompletos.add(packId); return; }
+      // O irmão obtido tem de ser DESTE vendedor e do MESMO shipment; divergência ⇒ incompleto.
+      const sellerIrmao = irmao.seller?.id != null ? String(irmao.seller.id) : null;
+      const shipmentIrmao = irmao.shipping?.id != null ? String(irmao.shipping.id) : null;
+      if (sellerIrmao !== String(sellerId) || shipmentIrmao !== shipmentEsperado) { incompletos.add(packId); resumo.irmaosDivergentes += 1; return; }
+      // Irmão EXTERNO ao run: os claims dele não estão no contexto (a coleta de claims é por período e
+      // filtra pelos pedidos do run), então uma venda efetiva por status pode ser, na verdade, devolução/
+      // cancelamento ⇒ não dá para afirmar o peso dele. Conservador: pack INCOMPLETO (frete NULL), em vez de
+      // ampliar a coleta de claims (que é por período e não alcançaria o irmão de outro mês).
+      // Irmão já fora do resultado por STATUS tem peso 0 com certeza (claim só exclui mais) ⇒ ok.
+      if (entraNoRateioEnvio(irmao.status)) { incompletos.add(packId); resumo.irmaosExternosComPosVendaIncerto += 1; return; }
       extras.set(outro, irmao);
     }
   });

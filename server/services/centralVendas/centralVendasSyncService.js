@@ -35,7 +35,7 @@ const {
 } = require("./centralVendasService");
 const { buildResumoCentralVendas } = require("./centralVendasImportService");
 const { buscarFretesEmLote } = require("./centralVendasFreteService");
-const { prepararEnvioCompartilhado, repartirCentavos, OBS_ENVIO_COMPARTILHADO } = require("./centralVendasEnvioCompartilhado");
+const { prepararEnvioCompartilhado, repartirCentavos, entraNoRateioEnvio, OBS_ENVIO_COMPARTILHADO } = require("./centralVendasEnvioCompartilhado");
 const { resolverPacksDoRun } = require("./centralVendasPackResolver");
 const {
   buscarClaimsPorPeriodo,
@@ -486,7 +486,7 @@ function buildMotorFromOrders({
     const cp = Array.isArray(ce) ? ce : ce ? [ce] : [];
     return classificarClaimsDoPedido(cp)?.status || o.status;
   };
-  const entraNoRateio = envioEntraNoResultado || ((o) => pedidoEntraNoResultado({ status: statusEfetivo(o) }));
+  const entraNoRateio = envioEntraNoResultado || ((o) => entraNoRateioEnvio(statusEfetivo(o)));
   const envioCompartilhado = prepararEnvioCompartilhado(ordersContexto, freteMap, { entra: entraNoRateio });
 
   for (const order of orders) {
@@ -997,7 +997,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         ? coletarPaymentsMp({ clienteId: cliente.id, sellerId, orders })
         : Promise.resolve(null),
       // Envio de pack: 1× GET /packs por pack_id distinto + irmãos fora do run (cache por run).
-      resolverPacksDoRun({ orders, clienteId: cliente.id, sellerId, mlFetchFn: mlFetchCentral }).catch((err) => {
+      resolverPacksDoRun({ orders, clienteId: cliente.id, sellerId, mlFetchFn: mlFetchCentral, continuar: () => !(signal && signal.aborted) }).catch((err) => {
         // Falha inesperada: nenhum pack é rateado "no escuro" — todos viram incompletos (frete NULL).
         console.warn("[centralVendas] resolução de packs falhou:", err?.message);
         const todos = new Set(orders.filter((o) => o?.pack_id != null && o?.shipping?.id != null).map((o) => String(o.pack_id)));

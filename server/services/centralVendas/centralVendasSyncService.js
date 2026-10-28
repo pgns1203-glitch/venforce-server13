@@ -35,6 +35,8 @@ const {
 } = require("./centralVendasService");
 const { buildResumoCentralVendas } = require("./centralVendasImportService");
 const { buscarFretesEmLote } = require("./centralVendasFreteService");
+const { prepararEnvioCompartilhado, repartirCentavos, entraNoRateioEnvio, OBS_ENVIO_COMPARTILHADO } = require("./centralVendasEnvioCompartilhado");
+const { resolverPacksDoRun } = require("./centralVendasPackResolver");
 const {
   buscarClaimsPorPeriodo,
   classificarClaimsDoPedido,
@@ -448,24 +450,10 @@ function buildComponent({ pedidoId, itemId, tipo, valor, fonte, confianca, obs }
   };
 }
 
-// Rateia o frete do pedido entre os itens por unidades (último leva o resto).
-// total null ⇒ todos null (ausente). Nunca inventa 0.
+// Rateia o frete do pedido entre os itens por unidades, em centavos inteiros pelo maior resto
+// (nunca parcela negativa, Σ exata). total null ⇒ todos null (ausente). Nunca inventa 0.
 function allocateFrete(total, unitsArr) {
-  if (total == null) return unitsArr.map(() => null);
-  const totalUnits = unitsArr.reduce((s, u) => s + (u || 0), 0);
-  if (totalUnits <= 0) return unitsArr.map((_, i) => (i === 0 ? round2(total) : 0));
-  const out = [];
-  let acc = 0;
-  for (let i = 0; i < unitsArr.length; i++) {
-    if (i === unitsArr.length - 1) {
-      out.push(round2(total - acc));
-    } else {
-      const v = round2((total / totalUnits) * (unitsArr[i] || 0));
-      out.push(v);
-      acc = round2(acc + v);
-    }
-  }
-  return out;
+  return repartirCentavos(total, unitsArr.map((u) => u || 0));
 }
 
 function buildMotorFromOrders({
@@ -478,10 +466,28 @@ function buildMotorFromOrders({
   claimsReturnsNaoResolvidos = 0,
   clienteSlug,
   competencia,
+  // Pedidos usados só para detectar envio compartilhado (carrinho/pack). Padrão = o próprio
+  // lote; o sync passa TODOS os pedidos do run, porque o lote é por competência.
+  ordersContexto = orders,
+  // Packs (pack_id) cujos pedidos NÃO puderam ser todos identificados: frete e receita de envio
+  // NULL + pendência frete_pack_incompleto (nunca o valor cheio, nunca 0).
+  packsIncompletos = new Set(),
+  // O pedido entra no resultado? Fora do resultado ⇒ peso 0 no rateio do envio (padrão: a regra
+  // da Central, status efetivo = pós-venda || status da Orders API).
+  envioEntraNoResultado = null,
 }) {
   const pedidos = [];
   const itens = [];
   const componentes = [];
+  // Shipment com 2+ pedidos: o custo do envio é UM só ⇒ rateado entre os pedidos pela receita
+  // (centavos inteiros, Σ exata). Shipment com 1 pedido: sem entrada aqui (valor cheio, como antes).
+  const statusEfetivo = (o) => {
+    const ce = claimsMap.get(String(o.id));
+    const cp = Array.isArray(ce) ? ce : ce ? [ce] : [];
+    return classificarClaimsDoPedido(cp)?.status || o.status;
+  };
+  const entraNoRateio = envioEntraNoResultado || ((o) => entraNoRateioEnvio(statusEfetivo(o)));
+  const envioCompartilhado = prepararEnvioCompartilhado(ordersContexto, freteMap, { entra: entraNoRateio });
 
   for (const order of orders) {
     const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
@@ -528,7 +534,14 @@ function buildMotorFromOrders({
 
     // Frete real do pedido (shipments API), rateado por unidades entre os itens.
     const freteEntry = pedido.shipmentId ? freteMap.get(pedido.shipmentId) : null;
-    const orderFrete = freteEntry && freteEntry.status === "real" ? freteEntry.valor : null;
+    const compartilhado = pedido.shipmentId ? envioCompartilhado.get(pedido.shipmentId) : null;
+    if (compartilhado) pedido.envioCompartilhadoPor = compartilhado.n;
+    const packIncompleto = !!pedido.shipmentId && order.pack_id != null && packsIncompletos.has(String(order.pack_id));
+    const orderFrete = packIncompleto
+      ? null
+      : compartilhado
+        ? compartilhado.frete.get(pedidoId) ?? null
+        : freteEntry && freteEntry.status === "real" ? freteEntry.valor : null;
     const freteAlloc = allocateFrete(orderFrete, orderItems.map((oi) => toNumber(oi.quantity)));
 
     orderItems.forEach((oi, idx) => {
@@ -569,6 +582,7 @@ function buildMotorFromOrders({
       if (!hasTarifa) pendencias.push("tarifa_venda_ausente");
       if (!hasTax) pendencias.push("imposto_interno_ausente");
       if (!hasFrete) pendencias.push("frete_seller_ausente");
+      if (!hasFrete && packIncompleto) pendencias.push("frete_pack_incompleto");
 
       const bloqueado = !hasProduct || !hasCost;
       const parcial = !bloqueado && (!hasTax || !hasTarifa || !hasFrete);
@@ -648,7 +662,11 @@ function buildMotorFromOrders({
           valor: hasFrete ? -freteItem : null,
           fonte: hasFrete ? "shipments_api" : "ausente",
           confianca: hasFrete ? "real" : "ausente",
-          obs: hasFrete ? null : "Frete real indisponível para este envio (shipment).",
+          obs: hasFrete
+            ? (compartilhado ? OBS_ENVIO_COMPARTILHADO(compartilhado.n) : null)
+            : packIncompleto
+              ? "Frete do envio de pack não rateado: pedidos do pack não identificados com segurança."
+              : "Frete real indisponível para este envio (shipment).",
         })
       );
 
@@ -672,7 +690,11 @@ function buildMotorFromOrders({
     // contrapartida nem fallback de `frete_seller` e NÃO entra na fórmula do
     // Resultado Parcial — fica persistida e exposta no payload para conciliação.
     if (pedido.shipmentId) {
-      const receitaEnvio = freteEntry ? freteEntry.receitaComprador ?? null : null;
+      const receitaEnvio = packIncompleto
+        ? null
+        : compartilhado
+          ? compartilhado.receita.get(pedidoId) ?? null
+          : freteEntry ? freteEntry.receitaComprador ?? null : null;
       const temReceitaEnvio = receitaEnvio !== null;
       if (temReceitaEnvio) pedido.receitaEnvio = round2(Math.abs(receitaEnvio));
       componentes.push(
@@ -683,7 +705,9 @@ function buildMotorFromOrders({
           valor: temReceitaEnvio ? Math.abs(receitaEnvio) : null,
           fonte: temReceitaEnvio ? "shipments_api" : "ausente",
           confianca: temReceitaEnvio ? "real" : "ausente",
-          obs: temReceitaEnvio ? null : "receiver.cost ausente na resposta de /shipments/:id/costs.",
+          obs: temReceitaEnvio
+            ? (compartilhado ? OBS_ENVIO_COMPARTILHADO(compartilhado.n) : null)
+            : "receiver.cost ausente na resposta de /shipments/:id/costs.",
         })
       );
     }
@@ -960,7 +984,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
     // igual a Frete) — não amplia pressão sobre o rate limit do Mercado
     // Livre. Reaproveita os MESMOS `orders` já carregados: nenhuma segunda
     // chamada a /orders/search (seção 13 do spec MP1).
-    const [freteLote, claimsLote, paymentsLote] = await Promise.all([
+    const [freteLote, claimsLote, paymentsLote, packLote] = await Promise.all([
       buscarFretesEmLote({ clienteId: cliente.id, sellerId, shipmentIds }),
       // `orders`: só para o índice em memória shipmentId->orderIds (RUN 7 —
       // claim.resource="shipment" vinculado por order.shipping.id). Nenhuma
@@ -972,6 +996,13 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       sourceService
         ? coletarPaymentsMp({ clienteId: cliente.id, sellerId, orders })
         : Promise.resolve(null),
+      // Envio de pack: 1× GET /packs por pack_id distinto + irmãos fora do run (cache por run).
+      resolverPacksDoRun({ orders, clienteId: cliente.id, sellerId, mlFetchFn: mlFetchCentral, continuar: () => !(signal && signal.aborted) }).catch((err) => {
+        // Falha inesperada: nenhum pack é rateado "no escuro" — todos viram incompletos (frete NULL).
+        console.warn("[centralVendas] resolução de packs falhou:", err?.message);
+        const todos = new Set(orders.filter((o) => o?.pack_id != null && o?.shipping?.id != null).map((o) => String(o.pack_id)));
+        return { ordersContexto: orders, packsIncompletos: todos, resumo: { packsConsultados: 0, packsIncompletos: todos.size, irmaosBuscados: 0, chamadas: 0, erro: String(err?.message || err) } };
+      }),
     ]);
     const freteMap = freteLote.freteMap;
     const claimsMap = claimsLote.claimsMap;
@@ -1253,6 +1284,8 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         claimsReturnsNaoResolvidos: claimsLote.returnsNaoResolvidos || 0,
         clienteSlug: slug,
         competencia: comp,
+        ordersContexto: packLote.ordersContexto,
+        packsIncompletos: packLote.packsIncompletos,
       });
       // M4, seção 8: NÃO pular competências com 0 pedidos — um snapshot
       // vazio (Orders 0/0, completude complete) é um resultado válido e
@@ -1339,6 +1372,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         ` shipments=${freteLote.buscados}/${freteLote.total} comFrete=${freteLote.comFrete}` +
         ` semFrete=${freteLote.ausentes} erros=${freteLote.erros} lotes=${freteLote.lotes}`
         + ` comReceitaEnvio=${freteLote.comReceitaEnvio}`
+        + ` packs=${packLote.resumo.packsConsultados} packsIncompletos=${packLote.resumo.packsIncompletos} irmaosBuscados=${packLote.resumo.irmaosBuscados}`
         + ` claims=${claimsLote.claims.length} pedidosComClaims=${claimsMap.size}`
         + ` claimsPaginas=${claimsLote.pages} claimsIndisponivel=${claimsLote.indisponivel ? 1 : 0}`
         + ` claimsJanela=${claimsLote.janela ? `${claimsLote.janela.from}..${claimsLote.janela.to}` : "n/d"}`
@@ -1368,6 +1402,8 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
       },
       baseVinculada: base ? { id: base.id, nome: base.nome, custos: custos.length } : null,
       ordersEncontrados: orders.length,
+      // Envio de pack (GET /packs por pack_id distinto): contagens do run.
+      packs: packLote.resumo,
       ordersCompleteness,
       completude: completenessSnapshot,
       frete: {

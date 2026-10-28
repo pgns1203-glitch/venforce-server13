@@ -178,7 +178,25 @@ async function fetchOrderById(contaCtx, pedidoId, opts = {}) {
   return resp.data;
 }
 
+// Um pack (GET /packs/:id — documentacao_api_meli/gestao-packs.md). Devolve só o que o rateio
+// de envio precisa: shipment e ids dos pedidos DESTE vendedor.
+async function fetchPackById(contaCtx, packId, opts = {}) {
+  const { mlFetchFn = mlFetchSentinel, sleepFn = sleep } = opts;
+  const resp = await mlGetComRetry(
+    contaCtx.clienteId, `/packs/${encodeURIComponent(String(packId))}`, contaCtx.sellerId, { mlFetchFn, sleepFn }
+  );
+  if (!resp?.ok || !Array.isArray(resp.data?.orders)) {
+    throw criarErro("SENTINEL_PACK_HTTP_ERROR", `GET /packs/${packId} respondeu HTTP ${resp?.status ?? "?"}.`, { mlStatus: resp?.status ?? null });
+  }
+  return {
+    packId: String(packId),
+    shipmentId: resp.data.shipment?.id != null ? String(resp.data.shipment.id) : null,
+    orderIds: resp.data.orders.map((o) => String(o.id)).filter((x) => x && x !== "undefined"),
+  };
+}
+
 module.exports = {
+  fetchPackById,
   fetchOrdersUpdatedSince,
   iterarOrdersUpdatedSince,
   fetchOrderById,

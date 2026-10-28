@@ -22,6 +22,9 @@ const crypto = require("crypto");
 const { round2 } = require("../../utils/numberUtils");
 const { buildMotorFromOrders } = require("../centralVendas/centralVendasSyncService");
 const { createCentralVendasFreteService } = require("../centralVendas/centralVendasFreteService");
+const { prepararEnvioCompartilhado, entraNoRateioEnvio } = require("../centralVendas/centralVendasEnvioCompartilhado");
+const { resolverEnvio } = require("./sentinelEnvioPack");
+
 const { carregarIndiceCusto, resolverCustoItem, montarCostMap } = require("./sentinelCusto");
 
 // Estados que não mudam sem o ML atualizar o pedido: o skip por
@@ -72,7 +75,10 @@ function calcularPayloadHash(linha) {
 }
 
 // Pura: pedido + frete + índice de custo → linha de sentinel_pedidos.
-function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, coletaFreteFalhou = false }) {
+// grupoEnvio: pedidos do MESMO shipment (inclui `order`) quando há envio compartilhado; o frete e a
+// receita de envio do shipment são rateados pela função pura da Central. fretePackIncompleto: não
+// foi possível conhecer todos os pedidos do pack ⇒ frete NULL (nunca o valor cheio).
+function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, coletaFreteFalhou = false, grupoEnvio = null, fretePackIncompleto = false }) {
   const pedidoId = String(order.id);
   const competencia = competenciaDoPedido(order);
   const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
@@ -94,6 +100,11 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
   const freteMap = new Map();
   if (shipmentId && freteEntry) freteMap.set(shipmentId, freteEntry);
 
+  // POLÍTICA ÚNICA (a mesma da Central): só paid/partially_refunded têm peso; o resto = peso 0.
+  const entraNoRateio = (o) => entraNoRateioEnvio(o?.status);
+  const compartilhado = shipmentId && Array.isArray(grupoEnvio) && grupoEnvio.length > 1
+    ? prepararEnvioCompartilhado(grupoEnvio, freteMap, { entra: entraNoRateio }).get(shipmentId) || null
+    : null;
   const motor = buildMotorFromOrders({
     orders: [order],
     costMap,
@@ -101,13 +112,22 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
     claimsMap: new Map(),
     clienteSlug,
     competencia,
+    ordersContexto: compartilhado ? grupoEnvio : [order],
+    envioEntraNoResultado: entraNoRateio,
   });
   const pedido = motor.pedidos[0];
   const componentes = motor.componentes;
 
-  const freteReal = freteEntry && freteEntry.status === "real" ? round2(freteEntry.valor) : null;
-  // "frete ainda não existe" (sem_frete) ≠ "a coleta falhou" (frete_coleta_falhou).
-  if (freteReal === null) pendencias.push(coletaFreteFalhou ? "frete_coleta_falhou" : "sem_frete");
+  let freteReal = freteEntry && freteEntry.status === "real" ? round2(freteEntry.valor) : null;
+  if (compartilhado) {
+    const parte = compartilhado.frete.get(pedidoId);
+    freteReal = parte === null || parte === undefined ? null : round2(parte); // parcela do pedido, não o shipment
+  }
+  // "frete ainda não existe" (sem_frete) ≠ "a coleta falhou" (frete_coleta_falhou) ≠ pack sem
+  // todos os pedidos conhecidos (frete_pack_incompleto).
+  if (freteReal === null) {
+    pendencias.push(fretePackIncompleto ? "frete_pack_incompleto" : coletaFreteFalhou ? "frete_coleta_falhou" : "sem_frete");
+  }
   const comissao = somaComponente(componentes, "tarifa_venda");
   if (comissao === null) pendencias.push("sem_comissao");
 
@@ -165,6 +185,19 @@ function calcularPedido(args) {
   const linha = calcularPedidoSemHash(args);
   return { ...linha, payload_hash: calcularPayloadHash(linha) };
 }
+
+// Pack sem todos os pedidos conhecidos: as linhas JÁ gravadas dos irmãos deixam de poder afirmar um
+// frete rateado (o grupo mudou). Marca frete/margem NULL + 'frete_pack_incompleto' (provisória,
+// inconclusiva); hash NULL ⇒ o próximo recálculo completo regrava. Pela dbEscrita (fencing).
+const MARCAR_PACK_INCOMPLETO_SQL = `
+  UPDATE sentinel_pedidos SET
+    frete = NULL, margem_valor = NULL, margem_pct = NULL, payload_hash = NULL,
+    estado_margem = CASE WHEN estado_margem IN ('confirmada', 'provisoria') THEN 'provisoria' ELSE estado_margem END,
+    pendencias = (SELECT COALESCE(jsonb_agg(DISTINCT e), '[]'::jsonb)
+                    FROM jsonb_array_elements(pendencias || '["frete_pack_incompleto"]'::jsonb) e
+                   WHERE e <> '"sem_frete"'::jsonb),
+    calculado_em = NOW(), updated_at = NOW()
+  WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[]) AND estado_margem <> 'erro'`;
 
 const UPSERT_SQL = `
   INSERT INTO sentinel_pedidos (
@@ -246,6 +279,60 @@ function buscarFretePadrao(args) {
   return freteServicoPadrao.buscarFreteShipment(args);
 }
 
+// Linhas recalculadas dos irmãos que JÁ existem em sentinel_pedidos (com o grupo resolvido).
+async function linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto }) {
+  const irmaos = envio.pedidos.filter((o) => String(o.id) !== String(order.id));
+  if (!irmaos.length) return [];
+  const existentes = await db.query(
+    "SELECT pedido_id, payload_hash FROM sentinel_pedidos WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[])",
+    [contaCtx.clienteContaId, irmaos.map((o) => String(o.id))]
+  );
+  const gravado = new Map(existentes.rows.map((r) => [String(r.pedido_id), r.payload_hash]));
+  const out = [];
+  for (const irmao of irmaos) {
+    if (!gravado.has(String(irmao.id))) continue;
+    const linha = calcularPedido({
+      order: irmao, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug,
+      grupoEnvio: envio.pedidos, fretePackIncompleto: false,
+    });
+    out.push({ linha, hashGravado: gravado.get(String(irmao.id)) });
+  }
+  return out;
+}
+
+// BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
+// inteiro). Regrava os irmãos que já existem (mesma monotonicidade/hash do UPSERT). `w` = a conexão
+// da TRANSAÇÃO do grupo.
+async function regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto }) {
+  for (const { linha } of await linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto })) {
+    await gravarLinha(w, contaCtx, linha);
+  }
+}
+
+// Defesa: os irmãos gravados batem com o rateio ATUAL? (hash gravado ≠ hash recalculado ⇒ não bate)
+async function irmaosDesalinhados(args) {
+  return (await linhasDosIrmaos(args)).some(({ linha, hashGravado }) => hashGravado !== linha.payload_hash);
+}
+
+// Grupo ATÔMICO: pedido + irmãos (+ marcação de pack incompleto) numa única transação, na conexão
+// que detém o advisory lock (BEGIN/COMMIT nela). Qualquer falha ⇒ ROLLBACK e o erro segue o protocolo
+// de exceção (checkpoint não avança). `dbW` pode ser um Pool (testes/avulso): usa uma conexão dele.
+async function comTransacao(dbW, fn) {
+  const usaPool = typeof dbW.connect === "function" && typeof dbW.release !== "function";
+  const c = usaPool ? await dbW.connect() : dbW;
+  try {
+    await c.query("BEGIN");
+    const r = await fn(c);
+    await c.query("COMMIT");
+    return r;
+  } catch (err) {
+    try { await c.query("ROLLBACK"); } catch (_) { /* conexão pode ter caído */ }
+    throw err;
+  } finally {
+    if (usaPool && typeof c.release === "function") c.release();
+  }
+}
+
 // contaCtx: { clienteId, clienteContaId, clienteSlug, sellerId, baseId }
 // deps: { db, buscarFrete, cacheCusto, forcar }
 // Devolve { pedidoId, resultado: "gravado"|"inalterado"|"pulado"|"erro", estado, dateLastUpdated }.
@@ -277,29 +364,56 @@ async function processarPedido(contaCtx, order, deps = {}) {
 
     const estavel = !!row && ESTADOS_ESTAVEIS.has(row.estado_margem);
     const shipmentId = order.shipping?.id != null ? String(order.shipping.id) : null;
+    // Envio compartilhado (pack): sem `deps.envio` (chamada avulsa) = pedido único, como antes.
+    const envio = shipmentId && deps.envio ? await resolverEnvio(order, deps.envio) : { tipo: "unico" };
+    const fretePackIncompleto = envio.tipo === "incompleto";
+    const compartilhado = envio.tipo === "compartilhado";
     let freteEntry = null;
-    if (shipmentId) {
-      const reaproveitado = !deps.forcar && estavel && mesmaDate ? freteGravado(row) : null;
-      freteEntry = reaproveitado
+    if (fretePackIncompleto) {
+      console.warn(`[sentinel] pedido ${pedidoId}: pack/shipment ${shipmentId} sem todos os pedidos conhecidos (${envio.motivo}); frete NULL.`);
+    } else if (shipmentId) {
+      // O frete gravado de um pedido de pack é a PARCELA dele — nunca reaproveitar como shipment.
+      const reaproveitado = !compartilhado && !deps.forcar && estavel && mesmaDate ? freteGravado(row) : null;
+      const cacheFrete = compartilhado ? deps.envio.cacheFrete : null;
+      freteEntry = reaproveitado || (cacheFrete && cacheFrete.get(shipmentId))
         || await buscarFrete({ clienteId: contaCtx.clienteId, sellerId: contaCtx.sellerId, shipmentId });
+      if (cacheFrete && freteEntry && freteEntry.collected !== false) cacheFrete.set(shipmentId, freteEntry);
     }
     // Coleta de frete que FALHOU (401/5xx/timeout/orçamento: o serviço da Central devolve
     // "ausente" com collected:false) ≠ frete que ainda não existe (collected:true).
-    const coletaFreteFalhou = !!shipmentId && !!freteEntry && freteEntry.status !== "real" && freteEntry.collected === false;
+    const coletaFreteFalhou = !fretePackIncompleto && !!shipmentId && !!freteEntry && freteEntry.status !== "real" && freteEntry.collected === false;
     if (coletaFreteFalhou && row) {
       // Já existe linha: NÃO grava provisória por cima. Quem chama registra a tentativa.
       const motivo = `frete: coleta falhou (${freteEntry.motivo || "sem motivo"}${freteEntry.httpStatus ? ` HTTP ${freteEntry.httpStatus}` : ""})`;
       return { pedidoId, resultado: "erro", estado: row.estado_margem, dateLastUpdated, erro: motivo, codigo: "SENTINEL_FRETE_COLETA_FALHOU", mantida: true };
     }
     const indiceCusto = await carregarIndiceCusto(contaCtx.baseId, db, deps.cacheCusto || null);
-    const linha = calcularPedido({ order, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug, coletaFreteFalhou });
+    const linha = calcularPedido({
+      order, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug, coletaFreteFalhou,
+      grupoEnvio: compartilhado ? envio.pedidos : null, fretePackIncompleto,
+    });
 
     // Estado estável, mesma date e cálculo idêntico (custo/frete/imposto não
     // mudaram): nada a gravar.
     if (estavel && mesmaDate && row.payload_hash && row.payload_hash === linha.payload_hash) {
+      // Pedido de pack: um ciclo anterior pode ter gravado este e falhado nos irmãos (ou o grupo mudou).
+      // Confere se os irmãos gravados batem com o rateio atual; se não, regrava o grupo (atômico).
+      if (compartilhado && await irmaosDesalinhados({ db, contaCtx, order, envio, freteEntry, indiceCusto })) {
+        await comTransacao(dbW, (w) => regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto }));
+        return { pedidoId, resultado: "gravado", estado: row.estado_margem, dateLastUpdated, irmaosCorrigidos: true };
+      }
       return { pedidoId, resultado: "pulado", estado: row.estado_margem, dateLastUpdated };
     }
-    const mudou = await gravarLinha(dbW, contaCtx, linha);
+    const marcarIrmaos = fretePackIncompleto && envio.irmaosIds && envio.irmaosIds.length;
+    const gravarGrupo = async (w) => {
+      const alterou = await gravarLinha(w, contaCtx, linha);
+      // BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
+      // inteiro). Recalcula e regrava os irmãos que JÁ existem, com os pedidos do grupo resolvido.
+      if (compartilhado) await regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto });
+      if (marcarIrmaos) await w.query(MARCAR_PACK_INCOMPLETO_SQL, [contaCtx.clienteContaId, envio.irmaosIds.map(String)]);
+      return alterou;
+    };
+    const mudou = compartilhado || marcarIrmaos ? await comTransacao(dbW, gravarGrupo) : await gravarGrupo(dbW);
     return { pedidoId, resultado: mudou ? "gravado" : "inalterado", estado: linha.estado_margem, dateLastUpdated };
   } catch (err) {
     const mensagem = String(err?.message || err).slice(0, 500);

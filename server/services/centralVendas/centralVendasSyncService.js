@@ -35,6 +35,7 @@ const {
 } = require("./centralVendasService");
 const { buildResumoCentralVendas } = require("./centralVendasImportService");
 const { buscarFretesEmLote } = require("./centralVendasFreteService");
+const { prepararEnvioCompartilhado, OBS_ENVIO_COMPARTILHADO } = require("./centralVendasEnvioCompartilhado");
 const {
   buscarClaimsPorPeriodo,
   classificarClaimsDoPedido,
@@ -478,10 +479,16 @@ function buildMotorFromOrders({
   claimsReturnsNaoResolvidos = 0,
   clienteSlug,
   competencia,
+  // Pedidos usados só para detectar envio compartilhado (carrinho/pack). Padrão = o próprio
+  // lote; o sync passa TODOS os pedidos do run, porque o lote é por competência.
+  ordersContexto = orders,
 }) {
   const pedidos = [];
   const itens = [];
   const componentes = [];
+  // Shipment com 2+ pedidos: o custo do envio é UM só ⇒ rateado entre os pedidos pela receita
+  // (centavos inteiros, Σ exata). Shipment com 1 pedido: sem entrada aqui (valor cheio, como antes).
+  const envioCompartilhado = prepararEnvioCompartilhado(ordersContexto, freteMap);
 
   for (const order of orders) {
     const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
@@ -528,7 +535,11 @@ function buildMotorFromOrders({
 
     // Frete real do pedido (shipments API), rateado por unidades entre os itens.
     const freteEntry = pedido.shipmentId ? freteMap.get(pedido.shipmentId) : null;
-    const orderFrete = freteEntry && freteEntry.status === "real" ? freteEntry.valor : null;
+    const compartilhado = pedido.shipmentId ? envioCompartilhado.get(pedido.shipmentId) : null;
+    if (compartilhado) pedido.envioCompartilhadoPor = compartilhado.n;
+    const orderFrete = compartilhado
+      ? compartilhado.frete.get(pedidoId) ?? null
+      : freteEntry && freteEntry.status === "real" ? freteEntry.valor : null;
     const freteAlloc = allocateFrete(orderFrete, orderItems.map((oi) => toNumber(oi.quantity)));
 
     orderItems.forEach((oi, idx) => {
@@ -648,7 +659,9 @@ function buildMotorFromOrders({
           valor: hasFrete ? -freteItem : null,
           fonte: hasFrete ? "shipments_api" : "ausente",
           confianca: hasFrete ? "real" : "ausente",
-          obs: hasFrete ? null : "Frete real indisponível para este envio (shipment).",
+          obs: hasFrete
+            ? (compartilhado ? OBS_ENVIO_COMPARTILHADO(compartilhado.n) : null)
+            : "Frete real indisponível para este envio (shipment).",
         })
       );
 
@@ -672,7 +685,9 @@ function buildMotorFromOrders({
     // contrapartida nem fallback de `frete_seller` e NÃO entra na fórmula do
     // Resultado Parcial — fica persistida e exposta no payload para conciliação.
     if (pedido.shipmentId) {
-      const receitaEnvio = freteEntry ? freteEntry.receitaComprador ?? null : null;
+      const receitaEnvio = compartilhado
+        ? compartilhado.receita.get(pedidoId) ?? null
+        : freteEntry ? freteEntry.receitaComprador ?? null : null;
       const temReceitaEnvio = receitaEnvio !== null;
       if (temReceitaEnvio) pedido.receitaEnvio = round2(Math.abs(receitaEnvio));
       componentes.push(
@@ -683,7 +698,9 @@ function buildMotorFromOrders({
           valor: temReceitaEnvio ? Math.abs(receitaEnvio) : null,
           fonte: temReceitaEnvio ? "shipments_api" : "ausente",
           confianca: temReceitaEnvio ? "real" : "ausente",
-          obs: temReceitaEnvio ? null : "receiver.cost ausente na resposta de /shipments/:id/costs.",
+          obs: temReceitaEnvio
+            ? (compartilhado ? OBS_ENVIO_COMPARTILHADO(compartilhado.n) : null)
+            : "receiver.cost ausente na resposta de /shipments/:id/costs.",
         })
       );
     }
@@ -1253,6 +1270,7 @@ function createCentralVendasSyncService(repository = getRepository(), db = pool)
         claimsReturnsNaoResolvidos: claimsLote.returnsNaoResolvidos || 0,
         clienteSlug: slug,
         competencia: comp,
+        ordersContexto: orders,
       });
       // M4, seção 8: NÃO pular competências com 0 pedidos — um snapshot
       // vazio (Orders 0/0, completude complete) é um resultado válido e

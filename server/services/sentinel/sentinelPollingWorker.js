@@ -28,7 +28,8 @@ const { configConexao } = require("../../config/databaseConexao");
 const { Client } = require("pg");
 const { resolveMarketplaceAccountContext } = require("../clienteContas/clienteContaService");
 const { createCentralVendasFreteService } = require("../centralVendas/centralVendasFreteService");
-const { iterarOrdersUpdatedSince, fetchOrderById } = require("./sentinelOrdersFetch");
+const { iterarOrdersUpdatedSince, fetchOrderById, fetchPackById } = require("./sentinelOrdersFetch");
+const { criarEnvioPack } = require("./sentinelEnvioPack");
 const { processarPedido } = require("./sentinelPedidoService");
 const { criarMlFetchSentinel, criarEscopoMl } = require("./sentinelMlClient");
 const { incidentesDisponiveis } = require("./sentinelSchema");
@@ -198,6 +199,11 @@ async function processarConta(contaId, deps = {}) {
     return resumo;
   }
 
+  // Envio compartilhado (pack): contexto da conta neste ciclo — pedidos conhecidos, /packs e
+  // irmãos buscados (mlFetch noRefresh, no orçamento da conta) e frete por shipment.
+  const fetchPack = deps.fetchPackByIdFn || ((c, packId) => fetchPackById(c, packId, { mlFetchFn }));
+  pedidoDeps.envio = criarEnvioPack({ ctx, fetchPack, fetchOrder });
+
   if (deps.redefinirCheckpoint) {
     // Redefinição explícita (run-once --since): SOB o lock, pela conexão detentora, antes de ler.
     await verificarLock();
@@ -264,6 +270,7 @@ async function processarConta(contaId, deps = {}) {
       await verificarLock();
       let falhou = false;
       let parar = false;
+      for (const o of janela.orders) pedidoDeps.envio.conhecidos.set(String(o.id), o);
       for (const order of janela.orders) {
         const id = String(order.id);
         if (excecoes.quarentena.has(id)) continue; // quarentena: não reprocessa nem conta
@@ -331,6 +338,7 @@ async function processarConta(contaId, deps = {}) {
       let r;
       try {
         const order = await fetchOrder(ctx, id);
+        pedidoDeps.envio.conhecidos.set(String(order.id), order);
         r = await processarPedido(ctx, order, { ...pedidoDeps, forcar: true });
       } catch (err) {
         if (err && err.code === "SENTINEL_LOCK_PERDIDO") throw err;

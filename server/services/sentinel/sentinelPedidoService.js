@@ -22,6 +22,8 @@ const crypto = require("crypto");
 const { round2 } = require("../../utils/numberUtils");
 const { buildMotorFromOrders } = require("../centralVendas/centralVendasSyncService");
 const { createCentralVendasFreteService } = require("../centralVendas/centralVendasFreteService");
+const { prepararEnvioCompartilhado } = require("../centralVendas/centralVendasEnvioCompartilhado");
+const { resolverEnvio } = require("./sentinelEnvioPack");
 const { carregarIndiceCusto, resolverCustoItem, montarCostMap } = require("./sentinelCusto");
 
 // Estados que não mudam sem o ML atualizar o pedido: o skip por
@@ -72,7 +74,10 @@ function calcularPayloadHash(linha) {
 }
 
 // Pura: pedido + frete + índice de custo → linha de sentinel_pedidos.
-function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, coletaFreteFalhou = false }) {
+// grupoEnvio: pedidos do MESMO shipment (inclui `order`) quando há envio compartilhado; o frete e a
+// receita de envio do shipment são rateados pela função pura da Central. fretePackIncompleto: não
+// foi possível conhecer todos os pedidos do pack ⇒ frete NULL (nunca o valor cheio).
+function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, coletaFreteFalhou = false, grupoEnvio = null, fretePackIncompleto = false }) {
   const pedidoId = String(order.id);
   const competencia = competenciaDoPedido(order);
   const orderItems = Array.isArray(order.order_items) ? order.order_items : [];
@@ -94,6 +99,9 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
   const freteMap = new Map();
   if (shipmentId && freteEntry) freteMap.set(shipmentId, freteEntry);
 
+  const compartilhado = shipmentId && Array.isArray(grupoEnvio) && grupoEnvio.length > 1
+    ? prepararEnvioCompartilhado(grupoEnvio, freteMap).get(shipmentId) || null
+    : null;
   const motor = buildMotorFromOrders({
     orders: [order],
     costMap,
@@ -101,13 +109,21 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
     claimsMap: new Map(),
     clienteSlug,
     competencia,
+    ordersContexto: compartilhado ? grupoEnvio : [order],
   });
   const pedido = motor.pedidos[0];
   const componentes = motor.componentes;
 
-  const freteReal = freteEntry && freteEntry.status === "real" ? round2(freteEntry.valor) : null;
-  // "frete ainda não existe" (sem_frete) ≠ "a coleta falhou" (frete_coleta_falhou).
-  if (freteReal === null) pendencias.push(coletaFreteFalhou ? "frete_coleta_falhou" : "sem_frete");
+  let freteReal = freteEntry && freteEntry.status === "real" ? round2(freteEntry.valor) : null;
+  if (compartilhado) {
+    const parte = compartilhado.frete.get(pedidoId);
+    freteReal = parte === null || parte === undefined ? null : round2(parte); // parcela do pedido, não o shipment
+  }
+  // "frete ainda não existe" (sem_frete) ≠ "a coleta falhou" (frete_coleta_falhou) ≠ pack sem
+  // todos os pedidos conhecidos (frete_pack_incompleto).
+  if (freteReal === null) {
+    pendencias.push(fretePackIncompleto ? "frete_pack_incompleto" : coletaFreteFalhou ? "frete_coleta_falhou" : "sem_frete");
+  }
   const comissao = somaComponente(componentes, "tarifa_venda");
   if (comissao === null) pendencias.push("sem_comissao");
 
@@ -277,22 +293,34 @@ async function processarPedido(contaCtx, order, deps = {}) {
 
     const estavel = !!row && ESTADOS_ESTAVEIS.has(row.estado_margem);
     const shipmentId = order.shipping?.id != null ? String(order.shipping.id) : null;
+    // Envio compartilhado (pack): sem `deps.envio` (chamada avulsa) = pedido único, como antes.
+    const envio = shipmentId && deps.envio ? await resolverEnvio(order, deps.envio) : { tipo: "unico" };
+    const fretePackIncompleto = envio.tipo === "incompleto";
+    const compartilhado = envio.tipo === "compartilhado";
     let freteEntry = null;
-    if (shipmentId) {
-      const reaproveitado = !deps.forcar && estavel && mesmaDate ? freteGravado(row) : null;
-      freteEntry = reaproveitado
+    if (fretePackIncompleto) {
+      console.warn(`[sentinel] pedido ${pedidoId}: pack/shipment ${shipmentId} sem todos os pedidos conhecidos (${envio.motivo}); frete NULL.`);
+    } else if (shipmentId) {
+      // O frete gravado de um pedido de pack é a PARCELA dele — nunca reaproveitar como shipment.
+      const reaproveitado = !compartilhado && !deps.forcar && estavel && mesmaDate ? freteGravado(row) : null;
+      const cacheFrete = compartilhado ? deps.envio.cacheFrete : null;
+      freteEntry = reaproveitado || (cacheFrete && cacheFrete.get(shipmentId))
         || await buscarFrete({ clienteId: contaCtx.clienteId, sellerId: contaCtx.sellerId, shipmentId });
+      if (cacheFrete && freteEntry && freteEntry.collected !== false) cacheFrete.set(shipmentId, freteEntry);
     }
     // Coleta de frete que FALHOU (401/5xx/timeout/orçamento: o serviço da Central devolve
     // "ausente" com collected:false) ≠ frete que ainda não existe (collected:true).
-    const coletaFreteFalhou = !!shipmentId && !!freteEntry && freteEntry.status !== "real" && freteEntry.collected === false;
+    const coletaFreteFalhou = !fretePackIncompleto && !!shipmentId && !!freteEntry && freteEntry.status !== "real" && freteEntry.collected === false;
     if (coletaFreteFalhou && row) {
       // Já existe linha: NÃO grava provisória por cima. Quem chama registra a tentativa.
       const motivo = `frete: coleta falhou (${freteEntry.motivo || "sem motivo"}${freteEntry.httpStatus ? ` HTTP ${freteEntry.httpStatus}` : ""})`;
       return { pedidoId, resultado: "erro", estado: row.estado_margem, dateLastUpdated, erro: motivo, codigo: "SENTINEL_FRETE_COLETA_FALHOU", mantida: true };
     }
     const indiceCusto = await carregarIndiceCusto(contaCtx.baseId, db, deps.cacheCusto || null);
-    const linha = calcularPedido({ order, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug, coletaFreteFalhou });
+    const linha = calcularPedido({
+      order, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug, coletaFreteFalhou,
+      grupoEnvio: compartilhado ? envio.pedidos : null, fretePackIncompleto,
+    });
 
     // Estado estável, mesma date e cálculo idêntico (custo/frete/imposto não
     // mudaram): nada a gravar.

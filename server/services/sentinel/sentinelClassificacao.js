@@ -49,6 +49,11 @@ function classificarConfiabilidade(linha, eleg = classificarElegibilidade(linha?
   if (estado === "sem_custo" || estado === "custo_ambiguo" || estado === "erro") {
     return { confiabilidade: "inconclusivo", motivos: [estado] };
   }
+  // Pack sem todos os pedidos conhecidos: o frete do pedido é DESCONHECIDO (nunca o cheio) ⇒
+  // margem inconclusiva (não gera incidente de margem negativa).
+  if (Array.isArray(linha?.pendencias) && linha.pendencias.includes("frete_pack_incompleto")) {
+    return { confiabilidade: "inconclusivo", motivos: ["frete_pack_incompleto"] };
+  }
   if (estado === "provisoria") {
     const pend = Array.isArray(linha.pendencias) ? linha.pendencias : [];
     return { confiabilidade: "pendente", motivos: pend.length ? [...pend] : ["provisoria"] };

@@ -24,6 +24,7 @@ const { buildMotorFromOrders } = require("../centralVendas/centralVendasSyncServ
 const { createCentralVendasFreteService } = require("../centralVendas/centralVendasFreteService");
 const { prepararEnvioCompartilhado } = require("../centralVendas/centralVendasEnvioCompartilhado");
 const { resolverEnvio } = require("./sentinelEnvioPack");
+const { classificarElegibilidade } = require("./sentinelClassificacao");
 const { carregarIndiceCusto, resolverCustoItem, montarCostMap } = require("./sentinelCusto");
 
 // Estados que não mudam sem o ML atualizar o pedido: o skip por
@@ -99,8 +100,10 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
   const freteMap = new Map();
   if (shipmentId && freteEntry) freteMap.set(shipmentId, freteEntry);
 
+  // Fora do resultado (elegibilidade "excluido": cancelado, inválido, não pago...) = peso 0 no rateio.
+  const entraNoRateio = (o) => classificarElegibilidade(o?.status).elegibilidade !== "excluido";
   const compartilhado = shipmentId && Array.isArray(grupoEnvio) && grupoEnvio.length > 1
-    ? prepararEnvioCompartilhado(grupoEnvio, freteMap).get(shipmentId) || null
+    ? prepararEnvioCompartilhado(grupoEnvio, freteMap, { entra: entraNoRateio }).get(shipmentId) || null
     : null;
   const motor = buildMotorFromOrders({
     orders: [order],
@@ -110,6 +113,7 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
     clienteSlug,
     competencia,
     ordersContexto: compartilhado ? grupoEnvio : [order],
+    envioEntraNoResultado: entraNoRateio,
   });
   const pedido = motor.pedidos[0];
   const componentes = motor.componentes;

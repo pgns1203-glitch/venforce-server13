@@ -5014,6 +5014,49 @@
     return Object.keys(TRF.resultados).filter(function (id) { return TRF.resultados[id].status === "falha"; });
   }
 
+  // Sugestão para a virada de mês: "Vendex - <mês seguinte>", do dia 1 ao último dia.
+  function trfNovoPadrao() {
+    var hoje = new Date();
+    var ano = hoje.getFullYear(), mes = hoje.getMonth() + 1; // mês seguinte (0-based)
+    if (mes > 11) { mes = 0; ano++; }
+    var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+    var ultimo = new Date(ano, mes + 1, 0).getDate();
+    var nomeMes = new Date(ano, mes, 1).toLocaleDateString("pt-BR", { month: "long" });
+    nomeMes = nomeMes.charAt(0).toUpperCase() + nomeMes.slice(1);
+    return {
+      nome: "Vendex - " + nomeMes,
+      inicio: ano + "-" + pad(mes + 1) + "-01",
+      fim: ano + "-" + pad(mes + 1) + "-" + pad(ultimo),
+    };
+  }
+
+  function criarPromocaoTransf() {
+    var t = TRF;
+    if (t.criandoEnvio) return;
+    t.criandoEnvio = true; t.erroCriar = null;
+    renderTransf();
+    api("/anuncios-meli/promocoes-transferir/promocoes", {
+      method: "POST", body: rebCorpo({ nome: t.novo.nome, inicio: t.novo.inicio, fim: t.novo.fim }),
+    }).then(function (r) {
+      if (TRF !== t) return;
+      t.criandoEnvio = false;
+      var d = r.data || {};
+      if (d.ok && d.promocao) {
+        var p = d.promocao;
+        p.tipoLabel = p.tipoLabel || "Campanha própria";
+        t.promocoes = (t.promocoes || []).filter(function (x) { return x.id !== p.id; }).concat([p]);
+        t.destinoId = p.id;
+        t.criando = false; t.erro = null;
+        t.novo = trfNovoPadrao();
+        renderTransf();
+        trfFocar("#am-trf-destino");
+        return;
+      }
+      t.erroCriar = rebMotivoResposta(r, "Não foi possível criar a promoção.");
+      renderTransf();
+    });
+  }
+
   function abrirTransf() {
     if (!AM.clienteAtual || TRF || REB || (CUSTOS && CUSTOS.modo)) return;
     var overlay = document.createElement("div");
@@ -5028,6 +5071,7 @@
       overlay: overlay, focoAnterior: document.activeElement, passo: "selecao",
       promocoes: null, erroPromos: null, origemId: "", destinoId: "", remover: true,
       itens: [], marcados: {}, erro: null, confirmando: false,
+      criando: false, novo: trfNovoPadrao(), criandoEnvio: false, erroCriar: null,
       resultados: {}, fila: [], alvos: [], total: 0, feitos: 0, enviando: false, executou: false,
     };
     overlay.addEventListener("click", onCliqueTransf);
@@ -5065,6 +5109,9 @@
       case "fechar": fecharTransf(false); break;
       case "recarregar": carregarPromocoesTransf(); break;
       case "buscar": buscarItensTransf(); break;
+      case "criar-abrir": TRF.criando = true; TRF.erroCriar = null; renderTransf(); trfFocar("#am-trf-novo-nome"); break;
+      case "criar-cancelar": TRF.criando = false; TRF.erroCriar = null; renderTransf(); trfFocar("#am-trf-criar-abrir"); break;
+      case "criar-enviar": criarPromocaoTransf(); break;
       case "voltar":
         TRF.passo = "selecao"; TRF.erro = null; TRF.itens = []; TRF.marcados = {}; TRF.confirmando = false;
         renderTransf(); trfFocar("#am-trf-titulo");
@@ -5084,6 +5131,10 @@
     var t = e.target;
     if (t.id === "am-trf-origem") { TRF.origemId = t.value; if (TRF.destinoId === t.value) TRF.destinoId = ""; renderTransf(); return; }
     if (t.id === "am-trf-destino") { TRF.destinoId = t.value; renderTransf(); return; }
+    // Campos do formulário de nova promoção: só guarda (sem render, para não perder o foco).
+    if (t.id === "am-trf-novo-nome") { TRF.novo.nome = t.value; return; }
+    if (t.id === "am-trf-novo-inicio") { TRF.novo.inicio = t.value; return; }
+    if (t.id === "am-trf-novo-fim") { TRF.novo.fim = t.value; return; }
     if (t.id === "am-trf-remover") { TRF.remover = t.checked; TRF.confirmando = false; renderTransf(); return; }
     if (t.hasAttribute("data-trf-todos")) {
       TRF.itens.forEach(function (it) { TRF.marcados[it.itemId] = t.checked; });
@@ -5201,6 +5252,31 @@
       }).join("") + "</select></div>";
   }
 
+  // Criar a promoção de destino sem sair da tela (campanha do vendedor).
+  function trfCriarHtml() {
+    var t = TRF;
+    if (!t.criando) {
+      return '<div class="am-reb-campo"><button type="button" class="am-reb-link" id="am-trf-criar-abrir" data-trf-acao="criar-abrir">+ Criar nova promoção</button></div>';
+    }
+    var n = t.novo;
+    var dis = t.criandoEnvio ? " disabled" : "";
+    var pode = n.nome.trim() && n.inicio && n.fim && !t.criandoEnvio;
+    return '<fieldset class="am-trf-criar"><legend class="vf-field__label">Nova promoção (campanha do vendedor)</legend>' +
+      '<div class="vf-field"><label class="vf-field__label" for="am-trf-novo-nome">Nome</label>' +
+        '<input type="text" id="am-trf-novo-nome" class="vf-input" maxlength="120" value="' + escapeAttr(n.nome) + '"' + dis + "></div>" +
+      '<div class="am-trf-criar__datas">' +
+        '<div class="vf-field"><label class="vf-field__label" for="am-trf-novo-inicio">Início</label>' +
+          '<input type="date" id="am-trf-novo-inicio" class="vf-input" value="' + escapeAttr(n.inicio) + '"' + dis + "></div>" +
+        '<div class="vf-field"><label class="vf-field__label" for="am-trf-novo-fim">Fim</label>' +
+          '<input type="date" id="am-trf-novo-fim" class="vf-input" value="' + escapeAttr(n.fim) + '"' + dis + "></div></div>" +
+      '<p class="vf-field__hint">O Mercado Livre usa o início e o fim do dia. O preço de cada anúncio é o que ele já tem na origem.</p>' +
+      (t.erroCriar ? rebBannerHtml("danger", t.erroCriar) : "") +
+      '<div class="am-reb-cluster">' +
+        '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-trf-acao="criar-cancelar"' + dis + ">Cancelar</button>" +
+        '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" id="am-trf-criar-enviar" data-trf-acao="criar-enviar"' + (pode ? "" : " disabled") + ">" +
+          (t.criandoEnvio ? "Criando…" : "Criar promoção") + "</button></div></fieldset>";
+  }
+
   function trfCorpoSelecaoHtml() {
     var t = TRF;
     var html = '<p class="am-reb-intro">Move os anúncios de uma promoção para outra — por exemplo, na virada do mês, da Vendex que acaba para a do mês seguinte. Cada anúncio entra primeiro no destino e só depois sai da origem; se a entrada falhar, nada muda. Nas promoções de preço do vendedor, o preço da origem é repetido no destino.</p>';
@@ -5210,12 +5286,9 @@
       return html + rebBannerHtml("danger", t.erroPromos) +
         '<div class="am-reb-cluster"><button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-trf-acao="recarregar">Tentar de novo</button></div>';
     }
-    if (t.promocoes.length < 2) {
-      return html + estadoHtml("empty", "É preciso ter pelo menos duas promoções ativas ou programadas",
-        "A transferência usa uma promoção de origem e outra de destino, ambas desta conta.");
-    }
     html += trfSelectHtml("am-trf-origem", "Promoção de origem (de onde sai)", t.origemId, "");
     html += trfSelectHtml("am-trf-destino", "Promoção de destino (para onde vai)", t.destinoId, t.origemId);
+    html += trfCriarHtml();
     html += '<label class="am-reb-campo" style="display:flex;gap:8px;align-items:flex-start">' +
       '<input type="checkbox" id="am-trf-remover"' + (t.remover ? " checked" : "") + ' style="margin-top:3px">' +
       "<span>Tirar o anúncio da promoção de origem depois que entrar no destino</span></label>";

@@ -4671,6 +4671,21 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   box-shadow: none;
 }
 
+.am-trf-criar {
+  display: grid;
+  gap: var(--vf-sp-3);
+  margin: 0 0 var(--vf-sp-3);
+  padding: var(--vf-sp-3);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.am-trf-criar__datas {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--vf-sp-3);
+}
+
 .am-trf-lista {
   display: grid;
   gap: 4px;

@@ -21,6 +21,10 @@
 const { TIPOS_ESCRITA_PRECO, TIPOS_ESCRITA_ACEITE } = require("./promocaoTiposSuportados");
 
 const MAX_ITENS_POR_LOTE = 15;
+// Cada anúncio faz ~10 chamadas ao ML (releituras + escritas): o ML devolve 429
+// com facilidade. Falha transitória é refeita com espera antes de virar erro.
+const MAX_TENTATIVAS = 4;
+const PAUSA_ENTRE_ITENS_MS = 300;
 const STATUS_PARTICIPA = new Set(["started", "active", "pending"]);
 
 function falha(codigo, motivo, extra = {}) {
@@ -32,7 +36,7 @@ function defaults(deps = {}) {
     mlFetch: deps.mlFetch || ((...a) => require("../../utils/mlClient").mlFetch(...a)),
     sleep: deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms))),
     logger: deps.logger || console,
-    listarPromocoesDoItem: deps.listarPromocoesDoItem || ((...a) => require("./meliPromocoesService").listarPromocoesDoItem(...a)),
+    listarPromocoesDoItemDetalhado: deps.listarPromocoesDoItemDetalhado || ((...a) => require("./meliPromocoesService").listarPromocoesDoItemDetalhado(...a)),
     aplicarPromocao: deps.aplicarPromocao || ((...a) => require("./meliPromocoesEscritaService").aplicarPromocao(...a)),
     participarPromocaoAceite: deps.participarPromocaoAceite || ((...a) => require("./meliPromocoesEscritaService").participarPromocaoAceite(...a)),
     sairPromocao: deps.sairPromocao || ((...a) => require("./meliPromocoesEscritaService").sairPromocao(...a)),
@@ -107,8 +111,51 @@ async function listarItens({ clienteId, mlUserId, origem }, deps = {}) {
 
 // ─── Um anúncio ──────────────────────────────────────────────────────────────
 
+function esperaMs(r, tentativa) {
+  const ra = Number(r && r.retryAfter);
+  if (Number.isFinite(ra) && ra >= 0) return Math.min(ra * 1000, 15000);
+  return Math.min(1500 * 2 ** (tentativa - 1), 10000);
+}
+
+// Falha que costuma passar sozinha: limite de requisições, erro 5xx do ML, ou
+// a releitura que o serviço de escrita faz por dentro e que, num 429, vem como
+// "promoção não encontrada". Nunca refaz escrita que pode ter chegado ao ML
+// (timeout com envio = `incerto`/`enviado`).
+function ehTransitoria(r) {
+  if (!r || r.ok || r.incerto || r.enviado === true) return false;
+  return /^ML_HTTP_(429|5\d\d)$/.test(String(r.codigo || "")) ||
+    ["PROMOCAO_NAO_ENCONTRADA", "ML_TIMEOUT_LEITURA", "ML_DEADLINE_EXCEEDED", "ML_LEITURA_FALHOU"].includes(r.codigo);
+}
+
+async function comRetry(d, fn) {
+  let r;
+  for (let t = 1; t <= MAX_TENTATIVAS; t += 1) {
+    r = await fn();
+    if (!r || r.ok || !ehTransitoria(r)) return r;
+    if (t < MAX_TENTATIVAS) await d.sleep(esperaMs(r, t));
+  }
+  return r;
+}
+
+// Lê as promoções do anúncio SEM engolir a falha (listarPromocoesDoItem devolve
+// lista vazia num 429 — o que aqui viraria "fora da origem" por engano).
+async function lerPromocoes(d, args) {
+  let r = null;
+  for (let t = 1; t <= MAX_TENTATIVAS; t += 1) {
+    r = await d.listarPromocoesDoItemDetalhado(args);
+    if (r && r.ok) return { ok: true, lista: r.promocoes };
+    const st = r && r.status;
+    const transitorio = st == null || st === 429 || st >= 500;
+    if (!transitorio) break;
+    if (t < MAX_TENTATIVAS) await d.sleep(esperaMs(r, t));
+  }
+  return falha("ML_LEITURA_FALHOU", `Não foi possível ler as promoções do anúncio no Mercado Livre${r && r.status ? ` (HTTP ${r.status})` : ""}.`);
+}
+
 async function transferirItem(d, { clienteId, mlUserId, itemId, origem, destino, removerOrigem }) {
-  const lista = await d.listarPromocoesDoItem({ clienteId, itemId, mlUserId });
+  const leitura = await lerPromocoes(d, { clienteId, itemId, mlUserId });
+  if (!leitura.ok) return { ...leitura, transitorio: true };
+  const lista = leitura.lista;
   const mesma = (p, ref) => String(p.id) === ref.id && p.tipo === ref.tipo;
   const naOrigem = lista.find((p) => mesma(p, origem) && STATUS_PARTICIPA.has(p.status));
   if (!naOrigem) return falha("FORA_DA_ORIGEM", "O anúncio não participa mais da promoção de origem.");
@@ -127,19 +174,20 @@ async function transferirItem(d, { clienteId, mlUserId, itemId, origem, destino,
       if (!(naOrigem.precoFinal > 0)) {
         return falha("PRECO_ORIGEM_INDISPONIVEL", "Não foi possível ler o preço do anúncio na origem para repeti-lo no destino.");
       }
-      entrada = await d.aplicarPromocao({
+      entrada = await comRetry(d, () => d.aplicarPromocao({
         clienteId, itemId, mlUserId, promotionId: noDestino.id, precoNovo: naOrigem.precoFinal,
-      });
+      }));
     } else if (TIPOS_ESCRITA_ACEITE.has(noDestino.tipo)) {
-      entrada = await d.participarPromocaoAceite({
+      entrada = await comRetry(d, () => d.participarPromocaoAceite({
         clienteId, itemId, mlUserId, promotionId: noDestino.id, tipo: noDestino.tipo,
-      });
+      }));
     } else {
       return falha("TIPO_SEM_ESCRITA", "Este tipo de promoção de destino não aceita participação automática por aqui.");
     }
     if (!entrada || !entrada.ok) {
       return falha((entrada && entrada.codigo) || "FALHA_AO_ENTRAR", (entrada && entrada.motivo) || "Não foi possível entrar na promoção de destino.", {
         incerto: Boolean(entrada && entrada.incerto),
+        transitorio: ehTransitoria(entrada),
       });
     }
     precoConfirmado = entrada.precoConfirmado ?? null;
@@ -151,7 +199,9 @@ async function transferirItem(d, { clienteId, mlUserId, itemId, origem, destino,
       : { ok: true, resultado: "ok", precoConfirmado };
   }
 
-  const saida = await d.sairPromocao({ clienteId, itemId, mlUserId, promotionId: naOrigem.id, tipo: naOrigem.tipo });
+  const saida = await comRetry(d, () => d.sairPromocao({ clienteId, itemId, mlUserId, promotionId: naOrigem.id, tipo: naOrigem.tipo }));
+  // Já fora da origem (ex.: tentativa anterior chegou ao ML): objetivo cumprido.
+  if (saida && !saida.ok && saida.codigo === "PROMOCAO_NAO_PARTICIPA") return { ok: true, resultado: "ok", precoConfirmado };
   if (!saida || !saida.ok) {
     return {
       ok: true,
@@ -159,6 +209,7 @@ async function transferirItem(d, { clienteId, mlUserId, itemId, origem, destino,
       codigo: (saida && saida.codigo) || "FALHA_AO_SAIR",
       motivo: `${jaNoDestino ? "Já estava no destino" : "Entrou no destino"}, mas não saiu da origem: ${(saida && saida.motivo) || "erro desconhecido"}`,
       precoConfirmado,
+      transitorio: ehTransitoria(saida),
     };
   }
   return { ok: true, resultado: "ok", precoConfirmado };
@@ -193,6 +244,7 @@ async function transferir({ cliente, contexto, body, user, ip = null } = {}, dep
 
   const resultados = [];
   for (const itemId of itemIds) {
+    if (resultados.length) await d.sleep(PAUSA_ENTRE_ITENS_MS);
     let r;
     try {
       r = await transferirItem(d, { clienteId: cliente.id, mlUserId: contexto.mlUserId, itemId, origem, destino, removerOrigem });
@@ -207,6 +259,7 @@ async function transferir({ cliente, contexto, body, user, ip = null } = {}, dep
       motivo: r.motivo || null,
       precoConfirmado: r.precoConfirmado ?? null,
       ...(r.incerto ? { incerto: true } : {}),
+      ...(r.transitorio ? { transitorio: true } : {}),
     });
 
     try {

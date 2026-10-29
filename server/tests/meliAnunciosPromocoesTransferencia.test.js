@@ -15,15 +15,26 @@ const svc = require("../services/meliAnuncios/meliPromocoesTransferenciaService"
 const ORIGEM = { id: "C-OUT", tipo: "SELLER_CAMPAIGN" };
 const DESTINO = { id: "C-NOV", tipo: "SELLER_CAMPAIGN" };
 
-function criarDeps({ promos, entrada, saida } = {}) {
+// leituras/entradas/saidas: listas de respostas consumidas em ordem (a última se repete).
+function sequencia(v, padrao) {
+  const lista = Array.isArray(v) ? v : [v === undefined ? padrao : v];
+  let i = 0;
+  return () => lista[Math.min(i++, lista.length - 1)];
+}
+
+function criarDeps({ promos, leituras, entrada, saida } = {}) {
   const chamadas = [];
+  const proxLeitura = sequencia(leituras, { ok: true, status: 200, promocoes: promos });
+  const proxEntrada = sequencia(entrada, null);
+  const proxSaida = sequencia(saida, { ok: true });
   return {
     chamadas,
     deps: {
-      listarPromocoesDoItem: async () => promos,
-      aplicarPromocao: async (a) => { chamadas.push(["aplicar", a]); return entrada || { ok: true, precoConfirmado: a.precoNovo }; },
-      participarPromocaoAceite: async (a) => { chamadas.push(["participar", a]); return entrada || { ok: true, precoConfirmado: 90 }; },
-      sairPromocao: async (a) => { chamadas.push(["sair", a]); return saida || { ok: true }; },
+      sleep: async (ms) => { chamadas.push(["sleep", ms]); },
+      listarPromocoesDoItemDetalhado: async () => proxLeitura(),
+      aplicarPromocao: async (a) => { chamadas.push(["aplicar", a]); return proxEntrada() || { ok: true, precoConfirmado: a.precoNovo }; },
+      participarPromocaoAceite: async (a) => { chamadas.push(["participar", a]); return proxEntrada() || { ok: true, precoConfirmado: 90 }; },
+      sairPromocao: async (a) => { chamadas.push(["sair", a]); return proxSaida(); },
       registrarLog: async (l) => { chamadas.push(["log", l]); },
     },
   };
@@ -41,7 +52,7 @@ const ctx = { cliente: { id: 1, slug: "c" }, contexto: { mlUserId: "99", contaId
     const out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["mlb1"] } }, deps);
     assert.strictEqual(out.ok, true);
     assert.strictEqual(out.resultados[0].status, "ok");
-    const ordem = chamadas.map((c) => c[0]).filter((x) => x !== "log");
+    const ordem = chamadas.map((c) => c[0]).filter((x) => x !== "log" && x !== "sleep");
     assert.deepStrictEqual(ordem, ["aplicar", "sair"]);
     assert.strictEqual(chamadas[0][1].precoNovo, 79.9);
     assert.strictEqual(chamadas[0][1].promotionId, "C-NOV");
@@ -58,7 +69,7 @@ const ctx = { cliente: { id: 1, slug: "c" }, contexto: { mlUserId: "99", contaId
     const out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: { id: "S-1", tipo: "SMART" }, itemIds: ["MLB1"] } }, deps);
     assert.strictEqual(out.resultados[0].status, "falha");
     assert.strictEqual(out.resultados[0].codigo, "ML_RECUSOU");
-    assert.deepStrictEqual(chamadas.map((c) => c[0]).filter((x) => x !== "log"), ["participar"]);
+    assert.deepStrictEqual(chamadas.map((c) => c[0]).filter((x) => x !== "log" && x !== "sleep"), ["participar"]);
   }
 
   // 3. já no destino
@@ -67,12 +78,12 @@ const ctx = { cliente: { id: 1, slug: "c" }, contexto: { mlUserId: "99", contaId
     let r = criarDeps({ promos });
     let out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["MLB1"] } }, r.deps);
     assert.strictEqual(out.resultados[0].status, "ok");
-    assert.deepStrictEqual(r.chamadas.map((c) => c[0]).filter((x) => x !== "log"), ["sair"]);
+    assert.deepStrictEqual(r.chamadas.map((c) => c[0]).filter((x) => x !== "log" && x !== "sleep"), ["sair"]);
 
     r = criarDeps({ promos });
     out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["MLB1"], removerOrigem: false } }, r.deps);
     assert.strictEqual(out.resultados[0].status, "ignorado");
-    assert.strictEqual(r.chamadas.filter((c) => c[0] !== "log").length, 0);
+    assert.strictEqual(r.chamadas.filter((c) => c[0] !== "log" && c[0] !== "sleep").length, 0);
   }
 
   // 4. entrou mas não saiu
@@ -94,7 +105,43 @@ const ctx = { cliente: { id: 1, slug: "c" }, contexto: { mlUserId: "99", contaId
     r = criarDeps({ promos: [promo({ id: "C-OUT", status: "started", precoFinal: null }), promo({ id: "C-NOV", status: "candidate" })] });
     out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["MLB1"] } }, r.deps);
     assert.strictEqual(out.resultados[0].codigo, "PRECO_ORIGEM_INDISPONIVEL");
-    assert.strictEqual(r.chamadas.filter((c) => c[0] !== "log").length, 0);
+    assert.strictEqual(r.chamadas.filter((c) => c[0] !== "log" && c[0] !== "sleep").length, 0);
+  }
+
+  // 4c. instabilidade do ML: 429 na leitura e na entrada é refeito, sem falsa "fora da origem"
+  {
+    const promos = [promo({ id: "C-OUT", status: "started", precoFinal: 79.9 }), promo({ id: "C-NOV", status: "candidate" })];
+    const r = criarDeps({
+      leituras: [{ ok: false, status: 429, retryAfter: 1, promocoes: [] }, { ok: true, status: 200, promocoes: promos }],
+      entrada: [{ ok: false, codigo: "PROMOCAO_NAO_ENCONTRADA", motivo: "x" }, { ok: false, codigo: "ML_HTTP_429", motivo: "x" }, { ok: true, precoConfirmado: 79.9 }],
+      saida: [{ ok: false, codigo: "ML_HTTP_503", motivo: "x" }, { ok: true }],
+    });
+    const out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["MLB1"] } }, r.deps);
+    assert.strictEqual(out.resultados[0].status, "ok");
+    assert.strictEqual(r.chamadas.filter((c) => c[0] === "aplicar").length, 3);
+    assert.strictEqual(r.chamadas.filter((c) => c[0] === "sair").length, 2);
+    assert.ok(r.chamadas.some((c) => c[0] === "sleep" && c[1] === 1000), "respeita o retry-after do ML");
+  }
+
+  // 4d. esgotou as tentativas: falha marcada como transitória; escrita incerta nunca é refeita
+  {
+    const promos = [promo({ id: "C-OUT", status: "started", precoFinal: 79.9 }), promo({ id: "C-NOV", status: "candidate" })];
+    let r = criarDeps({ leituras: { ok: false, status: 429, promocoes: [] } });
+    let out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["MLB1"] } }, r.deps);
+    assert.strictEqual(out.resultados[0].status, "falha");
+    assert.strictEqual(out.resultados[0].codigo, "ML_LEITURA_FALHOU");
+    assert.strictEqual(out.resultados[0].transitorio, true);
+
+    r = criarDeps({ promos, entrada: { ok: false, codigo: "ML_TIMEOUT", motivo: "x", enviado: true, incerto: true } });
+    out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["MLB1"] } }, r.deps);
+    assert.strictEqual(r.chamadas.filter((c) => c[0] === "aplicar").length, 1);
+    assert.strictEqual(out.resultados[0].incerto, true);
+    assert.notStrictEqual(out.resultados[0].transitorio, true);
+
+    // sair devolvendo "já não participa" = objetivo cumprido
+    r = criarDeps({ promos, saida: { ok: false, codigo: "PROMOCAO_NAO_PARTICIPA", motivo: "x" } });
+    out = await svc.transferir({ ...ctx, body: { origem: ORIGEM, destino: DESTINO, itemIds: ["MLB1"] } }, r.deps);
+    assert.strictEqual(out.resultados[0].status, "ok");
   }
 
   // 5. validação

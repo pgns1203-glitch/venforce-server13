@@ -4987,7 +4987,12 @@
   // entrada falha, nada muda. Reaproveita o painel lateral do Radar (am-reb-*).
   // ===========================================================================
   var TRF = null;
-  var TRF_LOTE = 10;
+  // Lotes pequenos: cada anúncio faz ~10 chamadas ao ML, e uma requisição longa
+  // demais cai por tempo. O que o servidor marca como transitório (limite de
+  // requisições do ML) é refeito sozinho, até TRF_RODADAS_AUTO vezes.
+  var TRF_LOTE = 5;
+  var TRF_RODADAS_AUTO = 2;
+  var TRF_PAUSA_RODADA_MS = 4000;
 
   function atualizarBotaoTransf() {
     var b = el("am-transf-abrir");
@@ -5011,7 +5016,8 @@
   }
 
   function trfFalhas() {
-    return Object.keys(TRF.resultados).filter(function (id) { return TRF.resultados[id].status === "falha"; });
+    // "parcial" (entrou no destino, não saiu da origem) também se refaz: o servidor só tira da origem.
+    return Object.keys(TRF.resultados).filter(function (id) { var st = TRF.resultados[id].status; return st === "falha" || st === "parcial"; });
   }
 
   // Sugestão para a virada de mês: "Vendex - <mês seguinte>", do dia 1 ao último dia.
@@ -5210,12 +5216,23 @@
     if (!o || !dst || !ids.length || t.enviando) return;
     ids.forEach(function (id) { delete t.resultados[id]; });
     t.passo = "execucao"; t.confirmando = false; t.enviando = true;
-    t.fila = ids.slice(); t.alvos = ids.slice(); t.total = ids.length; t.feitos = 0;
+    t.fila = ids.slice(); t.alvos = ids.slice(); t.total = ids.length; t.feitos = 0; t.rodada = 0; t.refazendo = 0;
     renderTransf();
     (function proximo() {
       if (TRF !== t) return;
       var lote = t.fila.splice(0, TRF_LOTE);
-      if (!lote.length) { t.enviando = false; renderTransf(); trfFocar(trfFalhas().length ? "#am-trf-retentar" : "#am-trf-fechar-final"); return; }
+      if (!lote.length) {
+        var refazer = t.alvos.filter(function (id) { var r = t.resultados[id]; return r && r.transitorio && !r.incerto && (r.status === "falha" || r.status === "parcial"); });
+        if (refazer.length && t.rodada < TRF_RODADAS_AUTO) {
+          t.rodada++; t.refazendo = refazer.length; t.fila = refazer;
+          renderTransf();
+          setTimeout(proximo, TRF_PAUSA_RODADA_MS);
+          return;
+        }
+        t.refazendo = 0; t.enviando = false; renderTransf();
+        trfFocar(trfFalhas().length ? "#am-trf-retentar" : "#am-trf-fechar-final");
+        return;
+      }
       api("/anuncios-meli/promocoes-transferir/executar", {
         method: "POST",
         body: rebCorpo({
@@ -5234,7 +5251,8 @@
               motivo: rebMotivoResposta(r, "Não foi possível transferir este lote.") };
           });
         }
-        t.feitos += lote.length; t.executou = true;
+        if (!t.refazendo) t.feitos += lote.length;
+        t.executou = true;
         renderTransf();
         proximo();
       });
@@ -5337,6 +5355,7 @@
       if (r && cont[r.status] !== undefined) cont[r.status]++;
     });
     var html = rebProgressoHtml(t.feitos, t.total, "Progresso da transferência");
+    if (t.refazendo) html += rebBannerHtml("info", "O Mercado Livre limitou algumas chamadas. Refazendo " + t.refazendo + (t.refazendo === 1 ? " anúncio" : " anúncios") + " automaticamente…");
     html += '<p class="am-reb-intro">' + (cont.ok + cont.ignorado) + " transferidos" +
       (cont.parcial ? " · " + cont.parcial + " ficaram também na origem" : "") +
       (cont.falha ? " · " + cont.falha + " com falha" : "") + ".</p>";

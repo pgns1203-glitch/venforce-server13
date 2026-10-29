@@ -4698,6 +4698,91 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   gap: var(--vf-sp-3);
 }
 
+/* Transferência em andamento: anúncios fluem da origem para o destino. */
+.am-trf-fluxo {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: var(--vf-sp-2);
+  width: min(460px, 100%);
+  margin-bottom: var(--vf-sp-3);
+}
+
+.am-trf-fluxo__ponta {
+  flex: none;
+  display: grid;
+  justify-items: center;
+  gap: var(--vf-sp-2);
+  width: 104px;
+}
+
+.am-trf-fluxo__no {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 1px solid var(--vf-info-border);
+  background: var(--vf-info-bg);
+  color: var(--vf-info-strong);
+  font-family: var(--vf-font-display);
+  font-weight: var(--vf-fw-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.am-trf-fluxo__no--destino {
+  animation: am-trf-chegada 2s ease-out infinite;
+}
+
+.am-trf-fluxo__nome {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.am-trf-fluxo__trilho {
+  position: relative;
+  flex: 1 1 auto;
+  height: 64px;
+  min-width: 80px;
+  background: linear-gradient(var(--vf-info-border), var(--vf-info-border)) center / 100% 2px no-repeat;
+  overflow: hidden;
+}
+
+.am-trf-fluxo__pacote {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 18px;
+  height: 12px;
+  margin-top: -6px;
+  border-radius: 3px;
+  background: var(--vf-info);
+  opacity: 0;
+  animation: am-trf-pacote 2s linear infinite;
+}
+
+@keyframes am-trf-pacote {
+  0% { left: 0; opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { left: calc(100% - 18px); opacity: 0; }
+}
+
+@keyframes am-trf-chegada {
+  0%, 70% { box-shadow: 0 0 0 0 transparent; }
+  85% { box-shadow: 0 0 0 8px var(--vf-info-bg); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .am-trf-fluxo__pacote { animation: none; opacity: 1; left: 50%; }
+  .am-trf-fluxo__no--destino { animation: none; }
+}
+
 .am-trf-lista {
   display: grid;
   gap: 4px;

@@ -5344,6 +5344,54 @@
       '<ul class="am-trf-lista">' + t.itens.map(function (it) { return trfLinhaHtml(it, "previa"); }).join("") + "</ul>";
   }
 
+  // Placar ao vivo, no mesmo formato do Radar (am-reb-placar).
+  function trfPlacarHtml(cont) {
+    var item = function (n, rotulo, classe) {
+      return '<div class="am-reb-placar__item' + (classe ? " " + classe : "") + '">' +
+        '<span class="am-reb-placar__n">' + n + '</span><span class="am-reb-placar__rotulo">' + rotulo + "</span></div>";
+    };
+    return '<div class="am-reb-placar" aria-label="Resultado até agora">' +
+      item(cont.ok + cont.ignorado, "transferidos", "is-ganho") +
+      item(cont.parcial, "ficaram na origem") +
+      item(cont.falha, "com falha") + "</div>";
+  }
+
+  function icPromo() {
+    return '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M2.5 10.2V3.5a1 1 0 0 1 1-1h6.7a1 1 0 0 1 .7.3l6.6 6.6a1 1 0 0 1 0 1.4l-6.7 6.7a1 1 0 0 1-1.4 0l-6.6-6.6a1 1 0 0 1-.3-.7Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><circle cx="6.5" cy="6.5" r="1.3" fill="currentColor"/></svg>';
+  }
+
+  // Enquanto roda: anúncios fluindo da promoção de origem para a de destino
+  // (o % mora no nó de destino). Reaproveita só o título/texto/barra/placar do Radar.
+  function trfAnimacaoHtml(cont) {
+    var t = TRF;
+    var total = t.total || 0, p = Math.min(t.feitos, total || Infinity);
+    var pct = total > 0 ? Math.round((p / total) * 100) : 0;
+    // O corpo é recriado a cada lote: o atraso negativo mantém o fluxo contínuo.
+    var base = Date.now() % 2000;
+    var pacotes = "";
+    for (var i = 0; i < 4; i++) pacotes += '<i class="am-trf-fluxo__pacote" style="animation-delay:' + -(base + i * 500) + 'ms"></i>';
+    var o = trfPromo(t.origemId), dst = trfPromo(t.destinoId);
+    var seta = '<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M3 10h12M11 5l5 5-5 5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    var titulo = t.refazendo ? "Refazendo o que o Mercado Livre limitou" : "Transferindo anúncios";
+    var txt = t.refazendo
+      ? t.refazendo + (t.refazendo === 1 ? " anúncio" : " anúncios") + " em nova tentativa"
+      : (total > 0 ? p + " de " + total + " anúncios" : "Preparando…");
+    return '<div class="am-reb-radar-an" data-trf-progresso>' +
+        '<div class="am-trf-fluxo" aria-hidden="true">' +
+          '<div class="am-trf-fluxo__ponta"><span class="am-trf-fluxo__no">' + icPromo() + '</span>' +
+            '<span class="am-trf-fluxo__nome">' + escapeHtml((o && o.nome) || "Origem") + "</span></div>" +
+          '<span class="am-trf-fluxo__trilho">' + pacotes + "</span>" +
+          '<div class="am-trf-fluxo__ponta"><span class="am-trf-fluxo__no am-trf-fluxo__no--destino">' + (total > 0 ? pct + "%" : seta) + "</span>" +
+            '<span class="am-trf-fluxo__nome">' + escapeHtml((dst && dst.nome) || "Destino") + "</span></div></div>" +
+        '<p class="am-reb-radar-an__titulo">' + titulo + "</p>" +
+        '<p class="am-reb-radar-an__txt" aria-live="polite">' + txt + "</p>" +
+        '<div class="vf-progress am-reb-radar-an__barra" role="progressbar" aria-label="Progresso da transferência" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + p + '">' +
+          '<div class="vf-progress__bar" style="width:' + pct + '%"></div></div>' +
+      "</div>" +
+      trfPlacarHtml(cont) +
+      '<p class="am-reb-radar-an__nota">Cada anúncio entra no destino antes de sair da origem. Aguarde: fechar o painel só é possível ao terminar.</p>';
+  }
+
   function trfCorpoExecucaoHtml() {
     var t = TRF;
     var porId = {};
@@ -5354,15 +5402,11 @@
       var r = t.resultados[id];
       if (r && cont[r.status] !== undefined) cont[r.status]++;
     });
-    var html = rebProgressoHtml(t.feitos, t.total, "Progresso da transferência");
-    if (t.refazendo) html += rebBannerHtml("info", "O Mercado Livre limitou algumas chamadas. Refazendo " + t.refazendo + (t.refazendo === 1 ? " anúncio" : " anúncios") + " automaticamente…");
-    html += '<p class="am-reb-intro">' + (cont.ok + cont.ignorado) + " transferidos" +
-      (cont.parcial ? " · " + cont.parcial + " ficaram também na origem" : "") +
-      (cont.falha ? " · " + cont.falha + " com falha" : "") + ".</p>";
-    html += '<ul class="am-trf-lista">' + linhas.map(function (id) {
-      return trfLinhaHtml(porId[id] || { itemId: id }, "execucao");
-    }).join("") + "</ul>";
-    return html;
+    if (t.enviando) return trfAnimacaoHtml(cont);
+    return trfPlacarHtml(cont) +
+      '<ul class="am-trf-lista">' + linhas.map(function (id) {
+        return trfLinhaHtml(porId[id] || { itemId: id }, "execucao");
+      }).join("") + "</ul>";
   }
 
   function renderTransf() {

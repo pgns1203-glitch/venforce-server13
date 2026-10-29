@@ -54,13 +54,15 @@ console.log("  ✓ GET /matriz/status: authMiddleware + requireAdmin + controlle
   console.log("  ✓ com ENV: configured=true, sem segredo/URL na resposta");
 }
 
-// callback Shopee preservado (casca)
-{
-  const a = fakeRes(); callbackShopeeController({ query: {} }, a);
-  const b = fakeRes(); callbackShopeeController({ query: { code: "abc" } }, b);
+// callback Shopee: sem parâmetros segue "ativo"; com code mas sem state agora é
+// recusado (OAuth TEST — ver shopeeTestOAuth.test.js) e nunca ecoa o code.
+(async () => {
+  const comSet = () => Object.assign(fakeRes(), { set() { return this; } });
+  const a = comSet(); await callbackShopeeController({ query: {} }, a);
+  const b = comSet(); await callbackShopeeController({ query: { code: "abc" } }, b);
   assert.strictEqual(a.statusCode, 200); assert.ok(a.body.includes("Callback Shopee ativo"));
-  assert.strictEqual(b.statusCode, 200); assert.ok(b.body.includes("Callback Shopee recebido"));
+  assert.strictEqual(b.statusCode, 400); assert.ok(b.body.includes("Autorização Shopee recusada"));
   assert.ok(!b.body.includes("abc"));
-  console.log("  ✓ callback Shopee inalterado");
-}
-console.log("\n✓ integracoesMatrizRoutes.test.js");
+  console.log("  ✓ callback Shopee: ativo sem parâmetros; code sem state recusado");
+  console.log("\n✓ integracoesMatrizRoutes.test.js");
+})().catch((e) => { console.error(e); process.exit(1); });

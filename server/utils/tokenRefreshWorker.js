@@ -39,8 +39,19 @@ async function runRefreshCycle() {
   }
 }
 
+// Opt-out para instâncias temporárias (ex.: teste do OAuth Shopee) ligadas ao
+// mesmo banco: sem as credenciais ML elas gravariam erro nos grants reais.
+// Ausente = ligado (comportamento de sempre); só "false" desliga.
+function workerHabilitado(env = process.env) {
+  return String(env.ML_TOKEN_REFRESH_WORKER_ENABLED || "").trim().toLowerCase() !== "false";
+}
+
 function startTokenRefreshWorker() {
   if (workerTimer) return;
+  if (!workerHabilitado()) {
+    console.log(JSON.stringify({ event: "ml_token_worker_disabled", reason: "ML_TOKEN_REFRESH_WORKER_ENABLED=false" }));
+    return;
+  }
   console.log(JSON.stringify({
     event: "ml_token_worker_started",
     interval_minutes: INTERVAL_MS / 60000,
@@ -63,4 +74,5 @@ module.exports = {
   stopTokenRefreshWorker,
   runRefreshCycle,
   refreshTokenRow,
+  workerHabilitado,
 };

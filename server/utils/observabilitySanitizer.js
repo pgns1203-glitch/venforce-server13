@@ -205,7 +205,9 @@ function sanitizeUrl(rawUrl, base) {
   const params = url.searchParams;
   for (const key of Array.from(new Set(params.keys()))) {
     const values = params.getAll(key);
-    if (isSensitiveKey(key) || values.some(looksSensitiveValue)) {
+    // scrubSecrets pega par sensível embutido no valor (ex.: redirect concatenada
+    // com "?" vira `state=X?code=Y` e o code ficaria dentro do valor de `state`).
+    if (isSensitiveKey(key) || values.some((v) => looksSensitiveValue(v) || scrubSecrets(v) !== v)) {
       params.delete(key);
       params.set(key, REDACTED);
     }

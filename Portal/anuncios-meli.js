@@ -5075,7 +5075,7 @@
     document.body.classList.add("vf-no-scroll");
     TRF = {
       overlay: overlay, focoAnterior: document.activeElement, passo: "selecao",
-      promocoes: null, erroPromos: null, origemId: "", destinoId: "", remover: true,
+      promocoes: null, erroPromos: null, origemId: "", destinoId: "", remover: false,
       itens: [], marcados: {}, erro: null, confirmando: false,
       criando: false, novo: trfNovoPadrao(), criandoEnvio: false, erroCriar: null,
       resultados: {}, fila: [], alvos: [], total: 0, feitos: 0, enviando: false, executou: false,

@@ -29,6 +29,7 @@ const precoService = require("../services/meliAnuncios/meliPrecoService");
 const promocoesService = require("../services/meliAnuncios/meliPromocoesService");
 const promocoesEscritaService = require("../services/meliAnuncios/meliPromocoesEscritaService");
 const promocoesRebateService = require("../services/meliAnuncios/meliPromocoesRebateService");
+const promocoesTransferenciaService = require("../services/meliAnuncios/meliPromocoesTransferenciaService");
 const metricas7dService = require("../services/meliAnuncios/meliMetricas7dService");
 const precoAoVivoService = require("../services/meliAnuncios/meliPrecoAoVivoService");
 const custosLoteService = require("../services/meliAnuncios/meliCustosLoteService");
@@ -2348,6 +2349,47 @@ async function promocoesRebateExecutar(req, res) {
 }
 
 // ----------------------------------------------------------------------------
+// "Transferir promoção" (meliPromocoesTransferenciaService): move anúncios de
+// uma promoção para outra (virada de mês). Mesma fiação do Radar.
+//   GET  /anuncios-meli/promocoes-transferir/itens?clienteSlug=&clienteContaId=&origemId=&origemTipo=
+//   POST /anuncios-meli/promocoes-transferir/executar
+//        body: { clienteSlug, clienteContaId?, origem:{id,tipo}, destino:{id,tipo}, itemIds, removerOrigem? }
+// As promoções da conta vêm de GET /promocoes-transferir/promocoes (mesma
+// leitura do seletor do Radar).
+// ----------------------------------------------------------------------------
+async function promocoesTransferirItens(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "query", true);
+    if (!r) return undefined;
+    const out = await promocoesTransferenciaService.listarItens({
+      clienteId: r.cliente.id,
+      mlUserId: r.contexto.mlUserId,
+      origem: { id: req.query.origemId, tipo: req.query.origemTipo },
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesTransferirItens");
+  }
+}
+
+async function promocoesTransferirExecutar(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "body", true);
+    if (!r) return undefined;
+    const out = await promocoesTransferenciaService.transferir({
+      cliente: r.cliente,
+      contexto: r.contexto,
+      body: req.body || {},
+      user: req.user || null,
+      ip: req.headers ? extrairIp(req) : null,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesTransferirExecutar");
+  }
+}
+
+// ----------------------------------------------------------------------------
 // PATCH /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque
 //   body: { clienteSlug, clienteContaId?, estoque }
 //
@@ -4026,6 +4068,9 @@ module.exports = {
   promocoesRebateIniciarAnalise,
   promocoesRebateLerAnalise,
   promocoesRebateExecutar,
+  promocoesTransferirReferencias: promocoesRebateReferencias,
+  promocoesTransferirItens,
+  promocoesTransferirExecutar,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,
   adicionarImagem,

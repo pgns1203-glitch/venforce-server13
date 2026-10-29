@@ -237,7 +237,85 @@ async function transferir({ cliente, contexto, body, user, ip = null } = {}, dep
   return { ok: true, resultados };
 }
 
+// ─── POST /promocoes-transferir/promocoes (criar campanha do vendedor) ───────
+
+function dataValida(s) {
+  if (typeof s !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s;
+}
+
+/**
+ * Cria uma SELLER_CAMPAIGN (FLEXIBLE_PERCENTAGE — o único sub_type da doc,
+ * campanhas-do-vendedor.md) para servir de destino. body: { nome, inicio, fim }
+ * com datas "AAAA-MM-DD"; o ML considera início/fim do dia. Nome repetido,
+ * data passada etc. voltam como falha do próprio ML.
+ */
+async function criarPromocao({ cliente, contexto, body, user, ip = null } = {}, deps = {}) {
+  const d = defaults(deps);
+  const b = body || {};
+  const nome = typeof b.nome === "string" ? b.nome.trim() : "";
+  if (!nome) return falha("NOME_INVALIDO", "Informe o nome da promoção.", { httpStatus: 400 });
+  if (nome.length > 120) return falha("NOME_INVALIDO", "O nome da promoção pode ter no máximo 120 caracteres.", { httpStatus: 400 });
+  if (!dataValida(b.inicio) || !dataValida(b.fim)) {
+    return falha("DATAS_INVALIDAS", "Informe as datas de início e fim (AAAA-MM-DD).", { httpStatus: 400 });
+  }
+  if (b.fim < b.inicio) return falha("DATAS_INVALIDAS", "A data de fim não pode ser anterior à de início.", { httpStatus: 400 });
+  if (!contexto || !contexto.mlUserId) return falha("CONTA_SEM_GRANT_ML", "A conta não tem conexão do Mercado Livre vinculada.");
+
+  const { motivoDoErroMl, codigoDoErroMl } = deps.erros || require("./meliConteudoService");
+  const resp = await d.mlFetch(cliente.id, "/seller-promotions/promotions?app_version=v2", {
+    method: "POST",
+    body: JSON.stringify({
+      promotion_type: "SELLER_CAMPAIGN",
+      name: nome,
+      sub_type: "FLEXIBLE_PERCENTAGE",
+      start_date: `${b.inicio}T00:00:00`,
+      finish_date: `${b.fim}T00:00:00`,
+    }),
+    mlUserId: contexto.mlUserId,
+  });
+  const ok = Boolean(resp && resp.ok && resp.data && resp.data.id);
+  const codigo = ok ? null : codigoDoErroMl(resp && resp.data, resp && resp.status);
+  const motivo = ok ? null : motivoDoErroMl(resp && resp.data, resp && resp.status);
+
+  try {
+    await d.registrarLog({
+      userId: user ? user.id ?? null : null,
+      userEmail: user ? user.email ?? null : null,
+      userNome: user ? user.nome ?? null : null,
+      acao: "anuncios_meli.promocoes.criar",
+      detalhes: {
+        cliente_slug: cliente.slug,
+        cliente_conta_id: contexto.contaId ?? null,
+        nome, inicio: b.inicio, fim: b.fim,
+        promotion_id: ok ? String(resp.data.id) : null,
+        codigo, motivo,
+      },
+      ip,
+      status: ok ? "sucesso" : "erro",
+    });
+  } catch (_) {
+    // falha de log não derruba a criação
+  }
+  if (!ok) return falha(codigo || "FALHA_AO_CRIAR", motivo || "Não foi possível criar a promoção no Mercado Livre.");
+
+  const p = resp.data;
+  return {
+    ok: true,
+    promocao: {
+      id: String(p.id),
+      tipo: p.type || "SELLER_CAMPAIGN",
+      nome: p.name || nome,
+      status: String(p.status || "pending").toLowerCase(),
+      inicio: p.start_date || null,
+      fim: p.finish_date || null,
+    },
+  };
+}
+
 module.exports = {
+  criarPromocao,
   listarItens,
   transferir,
   transferirItem,

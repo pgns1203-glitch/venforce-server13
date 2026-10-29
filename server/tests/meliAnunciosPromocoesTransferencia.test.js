@@ -108,5 +108,38 @@ const ctx = { cliente: { id: 1, slug: "c" }, contexto: { mlUserId: "99", contaId
     assert.strictEqual((await svc.transferir({ ...ctx, body: { ...base, origem: null } }, deps)).codigo, "ORIGEM_INVALIDA");
   }
 
+  // 6. criar promoção de destino (campanha do vendedor)
+  {
+    const erros = { codigoDoErroMl: (d) => (d && d.error) || "ERRO_ML", motivoDoErroMl: (d) => (d && d.message) || "erro" };
+    const chamadas = [];
+    const mk = (resp) => ({
+      erros,
+      mlFetch: async (cid, path, o) => { chamadas.push({ path, body: JSON.parse(o.body) }); return resp; },
+      registrarLog: async () => {},
+    });
+    const body = { nome: "  Vendex - Novembro ", inicio: "2026-11-01", fim: "2026-11-30" };
+
+    let out = await svc.criarPromocao({ ...ctx, body }, mk({ ok: true, status: 201, data: { id: "C-MLB1", type: "SELLER_CAMPAIGN", status: "pending", name: "Vendex - Novembro" } }));
+    assert.strictEqual(out.ok, true);
+    assert.strictEqual(out.promocao.id, "C-MLB1");
+    assert.strictEqual(chamadas[0].path, "/seller-promotions/promotions?app_version=v2");
+    assert.deepStrictEqual(chamadas[0].body, {
+      promotion_type: "SELLER_CAMPAIGN", name: "Vendex - Novembro", sub_type: "FLEXIBLE_PERCENTAGE",
+      start_date: "2026-11-01T00:00:00", finish_date: "2026-11-30T00:00:00",
+    });
+
+    out = await svc.criarPromocao({ ...ctx, body }, mk({ ok: false, status: 400, data: { error: "NOME_JA_EXISTE", message: "The name already exists." } }));
+    assert.strictEqual(out.ok, false);
+    assert.strictEqual(out.codigo, "NOME_JA_EXISTE");
+
+    const n = chamadas.length;
+    for (const ruim of [{ nome: "" }, { inicio: "01/11/2026" }, { inicio: "2026-02-30" }, { fim: "2026-10-01" }]) {
+      out = await svc.criarPromocao({ ...ctx, body: { ...body, ...ruim } }, mk({ ok: true, data: {} }));
+      assert.strictEqual(out.ok, false);
+      assert.strictEqual(out.httpStatus, 400);
+    }
+    assert.strictEqual(chamadas.length, n, "entrada inválida não chama o ML");
+  }
+
   console.log("meliAnunciosPromocoesTransferencia.test.js: ok");
 })().catch((e) => { console.error(e); process.exit(1); });

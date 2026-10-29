@@ -2372,6 +2372,23 @@ async function promocoesTransferirItens(req, res) {
   }
 }
 
+async function promocoesTransferirCriar(req, res) {
+  try {
+    const r = await resolverClienteEContaRebate(req, res, "body", true);
+    if (!r) return undefined;
+    const out = await promocoesTransferenciaService.criarPromocao({
+      cliente: r.cliente,
+      contexto: r.contexto,
+      body: req.body || {},
+      user: req.user || null,
+      ip: req.headers ? extrairIp(req) : null,
+    });
+    return responderRebate(res, out);
+  } catch (err) {
+    return tratarErroRebate(res, err, "promocoesTransferirCriar");
+  }
+}
+
 async function promocoesTransferirExecutar(req, res) {
   try {
     const r = await resolverClienteEContaRebate(req, res, "body", true);
@@ -4070,6 +4087,7 @@ module.exports = {
   promocoesRebateExecutar,
   promocoesTransferirReferencias: promocoesRebateReferencias,
   promocoesTransferirItens,
+  promocoesTransferirCriar,
   promocoesTransferirExecutar,
   atualizarEstoqueVariacaoLegado,
   atualizarConteudo,

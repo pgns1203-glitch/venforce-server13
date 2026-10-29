@@ -41,6 +41,7 @@
 //   GET    /anuncios-meli/promocoes-rebate/analises/:jobId           (Promoções com rebate: progresso/resultado)
 //   POST   /anuncios-meli/promocoes-rebate/analises/:jobId/executar  (Promoções com rebate: escrita real, confirmada)
 //   GET    /anuncios-meli/promocoes-transferir/promocoes             (Transferir promoção: seletor origem/destino)
+//   POST   /anuncios-meli/promocoes-transferir/promocoes             (Transferir promoção: cria a campanha de destino)
 //   GET    /anuncios-meli/promocoes-transferir/itens                 (Transferir promoção: anúncios da origem)
 //   POST   /anuncios-meli/promocoes-transferir/executar              (Transferir promoção: escrita real, lote)
 //   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
@@ -208,6 +209,7 @@ router.post("/promocoes-rebate/analises/:jobId/executar", ctrl.promocoesRebateEx
 // "Transferir promoção" (meliPromocoesTransferenciaService): move anúncios de
 // uma promoção para outra. Também antes de "/:itemId".
 router.get("/promocoes-transferir/promocoes", ctrl.promocoesTransferirReferencias);
+router.post("/promocoes-transferir/promocoes", ctrl.promocoesTransferirCriar);
 router.get("/promocoes-transferir/itens", ctrl.promocoesTransferirItens);
 router.post("/promocoes-transferir/executar", ctrl.promocoesTransferirExecutar);
 

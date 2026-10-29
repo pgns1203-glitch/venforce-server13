@@ -4646,6 +4646,60 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   }
 }
 
+/* "Transferir promoção": mesmo botão do Radar, na cor de informação. */
+.am-transf-abrir {
+  background: var(--vf-info);
+  box-shadow: 0 6px 16px -6px rgba(29, 95, 184, 0.5);
+}
+
+.am-transf-abrir:hover:not(:disabled) {
+  background: var(--vf-info-strong);
+}
+
+.am-transf-abrir:disabled {
+  background: var(--vf-disabled-bg);
+  box-shadow: none;
+}
+
+.am-trf-lista {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.am-trf-linha {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+.am-trf-linha > .am-reb-anuncio {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.am-trf-linha__preco {
+  flex: none;
+  font-size: 0.85rem;
+  color: var(--vf-text-muted);
+}
+
+.am-trf-linha__res {
+  flex: none;
+  max-width: 45%;
+  font-size: 0.8rem;
+  text-align: right;
+}
+
+.am-trf-linha__res.is-ok { color: var(--vf-success-strong); }
+.am-trf-linha__res.is-parcial { color: var(--vf-warning-strong); }
+.am-trf-linha__res.is-falha { color: var(--vf-danger-strong, var(--vf-danger)); }
+
 .am-reb-overlay {
   position: fixed;
   inset: 0;

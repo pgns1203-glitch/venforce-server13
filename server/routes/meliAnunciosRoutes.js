@@ -40,6 +40,9 @@
 //   POST   /anuncios-meli/promocoes-rebate/analises                  (Promoções com rebate: inicia a análise, job)
 //   GET    /anuncios-meli/promocoes-rebate/analises/:jobId           (Promoções com rebate: progresso/resultado)
 //   POST   /anuncios-meli/promocoes-rebate/analises/:jobId/executar  (Promoções com rebate: escrita real, confirmada)
+//   GET    /anuncios-meli/promocoes-transferir/promocoes             (Transferir promoção: seletor origem/destino)
+//   GET    /anuncios-meli/promocoes-transferir/itens                 (Transferir promoção: anúncios da origem)
+//   POST   /anuncios-meli/promocoes-transferir/executar              (Transferir promoção: escrita real, lote)
 //   PATCH  /anuncios-meli/:itemId/variacoes-legado/:variationId/estoque (escrita real)
 //   POST   /anuncios-meli/:itemId/imagens       (adiciona uma imagem, anúncio sem variação)
 //   GET    /anuncios-meli/:itemId/fotos/variacoes (editor de fotos: leitura ao vivo)
@@ -202,6 +205,11 @@ router.get("/promocoes-rebate/referencias", ctrl.promocoesRebateReferencias);
 router.post("/promocoes-rebate/analises", ctrl.promocoesRebateIniciarAnalise);
 router.get("/promocoes-rebate/analises/:jobId", ctrl.promocoesRebateLerAnalise);
 router.post("/promocoes-rebate/analises/:jobId/executar", ctrl.promocoesRebateExecutar);
+// "Transferir promoção" (meliPromocoesTransferenciaService): move anúncios de
+// uma promoção para outra. Também antes de "/:itemId".
+router.get("/promocoes-transferir/promocoes", ctrl.promocoesTransferirReferencias);
+router.get("/promocoes-transferir/itens", ctrl.promocoesTransferirItens);
+router.post("/promocoes-transferir/executar", ctrl.promocoesTransferirExecutar);
 
 // Criação de anúncios (escrita no Mercado Livre via POST /items).
 router.get("/criacao/status", ctrl.criacaoStatus);

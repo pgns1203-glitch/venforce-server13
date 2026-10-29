@@ -562,6 +562,7 @@
     // Promoções com rebate: a análise é de UMA conta. O job continua no
     // servidor; aqui só se para de acompanhar.
     if (REB) fecharRebate(true, true);
+    if (TRF) fecharTransf(true, true);
 
     if (!ctx) { AM.clienteAtual = null; AM.contaMlId = ""; atualizarBotaoRebate(); return; }
 
@@ -609,6 +610,7 @@
     bindCustos(el("am-catalogo-container"));
     bindBarrasCustos();
     if (el("am-reb-abrir")) el("am-reb-abrir").addEventListener("click", abrirRebate);
+    if (el("am-transf-abrir")) el("am-transf-abrir").addEventListener("click", abrirTransf);
     // O botão mora no cabeçalho da lista, que é recriado a cada render.
     el("am-catalogo-container").addEventListener("click", function (e) {
       if (e.target.closest("#am-expandir-todos")) alternarTodosGrupos();
@@ -4975,6 +4977,361 @@
   }
 
   // ===========================================================================
+  // TRANSFERIR PROMOÇÃO — move anúncios de uma promoção (origem) para outra
+  // (destino); o caso típico é a virada de mês. Só por clique.
+  //   1. Seleção   GET  /anuncios-meli/promocoes-transferir/promocoes
+  //   2. Prévia    GET  /anuncios-meli/promocoes-transferir/itens (anúncios da origem)
+  //   3. Execução  POST /anuncios-meli/promocoes-transferir/executar em lotes
+  //                de TRF_LOTE anúncios, sequenciais, com progresso.
+  // No servidor cada anúncio ENTRA no destino e só depois SAI da origem; se a
+  // entrada falha, nada muda. Reaproveita o painel lateral do Radar (am-reb-*).
+  // ===========================================================================
+  var TRF = null;
+  var TRF_LOTE = 10;
+
+  function atualizarBotaoTransf() {
+    var b = el("am-transf-abrir");
+    if (!b) return;
+    var semConta = !AM.clienteAtual;
+    var editando = !!(CUSTOS && CUSTOS.modo);
+    b.disabled = semConta || editando;
+    b.title = semConta ? "Escolha um cliente e uma conta para transferir"
+      : editando ? "Saia da edição de custos para transferir promoções"
+      : "Mover anúncios de uma promoção para outra (ex.: virada de mês)";
+  }
+
+  function trfPromo(id) {
+    var l = (TRF && TRF.promocoes) || [];
+    for (var i = 0; i < l.length; i++) if (l[i].id === id) return l[i];
+    return null;
+  }
+
+  function trfMarcados() {
+    return TRF.itens.filter(function (it) { return TRF.marcados[it.itemId]; }).map(function (it) { return it.itemId; });
+  }
+
+  function trfFalhas() {
+    return Object.keys(TRF.resultados).filter(function (id) { return TRF.resultados[id].status === "falha"; });
+  }
+
+  function abrirTransf() {
+    if (!AM.clienteAtual || TRF || REB || (CUSTOS && CUSTOS.modo)) return;
+    var overlay = document.createElement("div");
+    overlay.className = "am-reb-overlay";
+    overlay.setAttribute("role", "dialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "am-trf-titulo");
+    overlay.innerHTML = '<aside class="am-reb-box" aria-label="Transferir promoção"></aside>';
+    document.body.appendChild(overlay);
+    document.body.classList.add("vf-no-scroll");
+    TRF = {
+      overlay: overlay, focoAnterior: document.activeElement, passo: "selecao",
+      promocoes: null, erroPromos: null, origemId: "", destinoId: "", remover: true,
+      itens: [], marcados: {}, erro: null, confirmando: false,
+      resultados: {}, fila: [], alvos: [], total: 0, feitos: 0, enviando: false, executou: false,
+    };
+    overlay.addEventListener("click", onCliqueTransf);
+    overlay.addEventListener("change", onMudancaTransf);
+    overlay.addEventListener("keydown", onTeclaTransf);
+    renderTransf();
+    trfFocar("#am-trf-titulo");
+    carregarPromocoesTransf();
+  }
+
+  function fecharTransf(forcar, trocaDeConta) {
+    if (!TRF) return;
+    var t = TRF;
+    if (t.enviando && !forcar) return; // o lote em andamento não é interrompido
+    t.fila = [];
+    if (t.overlay.parentNode) t.overlay.parentNode.removeChild(t.overlay);
+    document.body.classList.remove("vf-no-scroll");
+    TRF = null;
+    if (t.executou && !trocaDeConta) carregarAnuncios();
+    if (!trocaDeConta && t.focoAnterior && t.focoAnterior.focus && document.contains(t.focoAnterior)) t.focoAnterior.focus();
+  }
+
+  function trfFocar(sel) {
+    if (!TRF) return;
+    var n = TRF.overlay.querySelector(sel);
+    if (n) n.focus();
+  }
+
+  function onCliqueTransf(e) {
+    if (!TRF) return;
+    if (e.target === TRF.overlay) { if (TRF.passo === "selecao") fecharTransf(false); return; }
+    var b = e.target.closest("[data-trf-acao]");
+    if (!b || b.disabled) return;
+    switch (b.getAttribute("data-trf-acao")) {
+      case "fechar": fecharTransf(false); break;
+      case "recarregar": carregarPromocoesTransf(); break;
+      case "buscar": buscarItensTransf(); break;
+      case "voltar":
+        TRF.passo = "selecao"; TRF.erro = null; TRF.itens = []; TRF.marcados = {}; TRF.confirmando = false;
+        renderTransf(); trfFocar("#am-trf-titulo");
+        break;
+      case "transferir":
+        if (!trfMarcados().length) return;
+        TRF.confirmando = true; renderTransf(); trfFocar("#am-trf-confirmar");
+        break;
+      case "cancelar-confirmacao": TRF.confirmando = false; renderTransf(); trfFocar("#am-trf-transferir"); break;
+      case "confirmar": executarTransf(trfMarcados()); break;
+      case "retentar": { var f = trfFalhas(); if (f.length) executarTransf(f); break; }
+    }
+  }
+
+  function onMudancaTransf(e) {
+    if (!TRF) return;
+    var t = e.target;
+    if (t.id === "am-trf-origem") { TRF.origemId = t.value; if (TRF.destinoId === t.value) TRF.destinoId = ""; renderTransf(); return; }
+    if (t.id === "am-trf-destino") { TRF.destinoId = t.value; renderTransf(); return; }
+    if (t.id === "am-trf-remover") { TRF.remover = t.checked; TRF.confirmando = false; renderTransf(); return; }
+    if (t.hasAttribute("data-trf-todos")) {
+      TRF.itens.forEach(function (it) { TRF.marcados[it.itemId] = t.checked; });
+      TRF.confirmando = false; renderTransf(); return;
+    }
+    var id = t.getAttribute("data-trf-marcar");
+    if (id) { TRF.marcados[id] = t.checked; TRF.confirmando = false; renderTransf(); }
+  }
+
+  function onTeclaTransf(e) {
+    if (!TRF) return;
+    if (e.key === "Escape") {
+      e.preventDefault();
+      if (TRF.confirmando) { TRF.confirmando = false; renderTransf(); trfFocar("#am-trf-transferir"); return; }
+      fecharTransf(false);
+      return;
+    }
+    if (e.key === "Tab") {
+      var foc = Array.prototype.filter.call(
+        TRF.overlay.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled])'),
+        function (n) { return n.offsetParent !== null; });
+      if (!foc.length) return;
+      var primeiro = foc[0], ultimo = foc[foc.length - 1];
+      if (e.shiftKey && (document.activeElement === primeiro || !TRF.overlay.contains(document.activeElement))) { e.preventDefault(); ultimo.focus(); }
+      else if (!e.shiftKey && document.activeElement === ultimo) { e.preventDefault(); primeiro.focus(); }
+    }
+  }
+
+  function carregarPromocoesTransf() {
+    var t = TRF;
+    t.promocoes = null; t.erroPromos = null;
+    renderTransf();
+    api("/anuncios-meli/promocoes-transferir/promocoes?" + rebQs()).then(function (r) {
+      if (TRF !== t) return;
+      var d = r.data || {};
+      if (!d.ok) {
+        t.erroPromos = rebMotivoResposta(r, "Não foi possível carregar as promoções da conta.");
+        t.promocoes = [];
+      } else {
+        t.promocoes = Array.isArray(d.referencias) ? d.referencias : [];
+      }
+      renderTransf();
+    });
+  }
+
+  function buscarItensTransf() {
+    var t = TRF;
+    var o = trfPromo(t.origemId);
+    if (!o || !t.destinoId || t.passo === "carregando") return;
+    t.passo = "carregando"; t.erro = null;
+    renderTransf();
+    api("/anuncios-meli/promocoes-transferir/itens?" + rebQs() +
+      "&origemId=" + encodeURIComponent(o.id) + "&origemTipo=" + encodeURIComponent(o.tipo)).then(function (r) {
+      if (TRF !== t) return;
+      var d = r.data || {};
+      if (!d.ok) {
+        t.passo = "selecao";
+        t.erro = rebMotivoResposta(r, "Não foi possível listar os anúncios da promoção de origem.");
+      } else {
+        t.itens = Array.isArray(d.itens) ? d.itens : [];
+        t.marcados = {};
+        t.itens.forEach(function (it) { t.marcados[it.itemId] = true; });
+        t.passo = "previa";
+      }
+      renderTransf();
+      trfFocar("#am-trf-titulo");
+    });
+  }
+
+  function executarTransf(ids) {
+    var t = TRF;
+    var o = trfPromo(t.origemId), dst = trfPromo(t.destinoId);
+    if (!o || !dst || !ids.length || t.enviando) return;
+    ids.forEach(function (id) { delete t.resultados[id]; });
+    t.passo = "execucao"; t.confirmando = false; t.enviando = true;
+    t.fila = ids.slice(); t.alvos = ids.slice(); t.total = ids.length; t.feitos = 0;
+    renderTransf();
+    (function proximo() {
+      if (TRF !== t) return;
+      var lote = t.fila.splice(0, TRF_LOTE);
+      if (!lote.length) { t.enviando = false; renderTransf(); trfFocar(trfFalhas().length ? "#am-trf-retentar" : "#am-trf-fechar-final"); return; }
+      api("/anuncios-meli/promocoes-transferir/executar", {
+        method: "POST",
+        body: rebCorpo({
+          origem: { id: o.id, tipo: o.tipo }, destino: { id: dst.id, tipo: dst.tipo },
+          itemIds: lote, removerOrigem: t.remover,
+        }),
+      }).then(function (r) {
+        if (TRF !== t) return;
+        var d = r.data || {};
+        if (d.ok && Array.isArray(d.resultados)) {
+          d.resultados.forEach(function (x) { t.resultados[x.itemId] = x; });
+        } else {
+          // Sem resposta (rede) o lote pode ter sido aplicado: marca como incerto.
+          lote.forEach(function (id) {
+            t.resultados[id] = { itemId: id, status: "falha", incerto: r.status === 0,
+              motivo: rebMotivoResposta(r, "Não foi possível transferir este lote.") };
+          });
+        }
+        t.feitos += lote.length; t.executou = true;
+        renderTransf();
+        proximo();
+      });
+    })();
+  }
+
+  // --- Render ------------------------------------------------------------------------
+  function trfSelectHtml(id, rotulo, valor, excluirId) {
+    return '<div class="vf-field am-reb-campo"><label class="vf-field__label" for="' + id + '">' + rotulo + "</label>" +
+      '<select id="' + id + '" class="vf-select">' +
+      (valor ? "" : '<option value="" selected>Escolha a promoção…</option>') +
+      TRF.promocoes.filter(function (x) { return x.id !== excluirId; }).map(function (x) {
+        var txt = (x.nome || x.id) + " · " + (x.tipoLabel || x.tipo || "") + " · " + rebVigencia(x);
+        return '<option value="' + escapeAttr(x.id) + '"' + (x.id === valor ? " selected" : "") + ">" + escapeHtml(txt) + "</option>";
+      }).join("") + "</select></div>";
+  }
+
+  function trfCorpoSelecaoHtml() {
+    var t = TRF;
+    var html = '<p class="am-reb-intro">Move os anúncios de uma promoção para outra — por exemplo, na virada do mês, da Vendex que acaba para a do mês seguinte. Cada anúncio entra primeiro no destino e só depois sai da origem; se a entrada falhar, nada muda. Nas promoções de preço do vendedor, o preço da origem é repetido no destino.</p>';
+    if (t.passo === "carregando") return html + estadoHtml("loading", "Buscando os anúncios da promoção de origem…");
+    if (t.promocoes === null) return html + estadoHtml("loading", "Carregando promoções da conta…");
+    if (t.erroPromos) {
+      return html + rebBannerHtml("danger", t.erroPromos) +
+        '<div class="am-reb-cluster"><button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-trf-acao="recarregar">Tentar de novo</button></div>';
+    }
+    if (t.promocoes.length < 2) {
+      return html + estadoHtml("empty", "É preciso ter pelo menos duas promoções ativas ou programadas",
+        "A transferência usa uma promoção de origem e outra de destino, ambas desta conta.");
+    }
+    html += trfSelectHtml("am-trf-origem", "Promoção de origem (de onde sai)", t.origemId, "");
+    html += trfSelectHtml("am-trf-destino", "Promoção de destino (para onde vai)", t.destinoId, t.origemId);
+    html += '<label class="am-reb-campo" style="display:flex;gap:8px;align-items:flex-start">' +
+      '<input type="checkbox" id="am-trf-remover"' + (t.remover ? " checked" : "") + ' style="margin-top:3px">' +
+      "<span>Tirar o anúncio da promoção de origem depois que entrar no destino</span></label>";
+    if (t.erro) html += rebBannerHtml("danger", t.erro);
+    return html;
+  }
+
+  function trfLinhaHtml(it, modo) {
+    var preco = it.preco != null ? formatMoeda(it.preco) : "—";
+    var lado;
+    if (modo === "previa") {
+      lado = '<span class="am-trf-linha__preco">' + preco + "</span>";
+      return '<li class="am-trf-linha"><input type="checkbox" data-trf-marcar="' + escapeAttr(it.itemId) + '"' +
+        (TRF.marcados[it.itemId] ? " checked" : "") + ' aria-label="Transferir ' + escapeAttr(it.itemId) + '">' +
+        rebAnuncioHtml(it) + lado + "</li>";
+    }
+    var r = TRF.resultados[it.itemId];
+    if (!r) lado = '<span class="am-trf-linha__res">aguardando…</span>';
+    else if (r.status === "ok") lado = '<span class="am-trf-linha__res is-ok">Transferido</span>';
+    else if (r.status === "ignorado") lado = '<span class="am-trf-linha__res is-ok">' + escapeHtml(r.motivo || "Já estava no destino") + "</span>";
+    else if (r.status === "parcial") lado = '<span class="am-trf-linha__res is-parcial">' + escapeHtml(r.motivo || "Entrou no destino, mas não saiu da origem") + "</span>";
+    else lado = '<span class="am-trf-linha__res is-falha">' + escapeHtml(r.motivo || "Falhou") + (r.incerto ? " Confira o anúncio antes de tentar de novo." : "") + "</span>";
+    return '<li class="am-trf-linha">' + rebAnuncioHtml(it) + lado + "</li>";
+  }
+
+  function trfCorpoPreviaHtml() {
+    var t = TRF;
+    if (!t.itens.length) {
+      return estadoHtml("empty", "Nenhum anúncio nesta promoção", "A promoção de origem não tem anúncios participando agora.");
+    }
+    var marcados = trfMarcados().length;
+    return '<label class="am-reb-campo" style="display:flex;gap:8px;align-items:center">' +
+        '<input type="checkbox" data-trf-todos' + (marcados === t.itens.length ? " checked" : "") + ">" +
+        "<strong>Selecionar todos</strong> <span>(" + marcados + " de " + t.itens.length + ")</span></label>" +
+      '<ul class="am-trf-lista">' + t.itens.map(function (it) { return trfLinhaHtml(it, "previa"); }).join("") + "</ul>";
+  }
+
+  function trfCorpoExecucaoHtml() {
+    var t = TRF;
+    var porId = {};
+    t.itens.forEach(function (it) { porId[it.itemId] = it; });
+    var linhas = t.alvos;
+    var cont = { ok: 0, parcial: 0, falha: 0, ignorado: 0 };
+    linhas.forEach(function (id) {
+      var r = t.resultados[id];
+      if (r && cont[r.status] !== undefined) cont[r.status]++;
+    });
+    var html = rebProgressoHtml(t.feitos, t.total, "Progresso da transferência");
+    html += '<p class="am-reb-intro">' + (cont.ok + cont.ignorado) + " transferidos" +
+      (cont.parcial ? " · " + cont.parcial + " ficaram também na origem" : "") +
+      (cont.falha ? " · " + cont.falha + " com falha" : "") + ".</p>";
+    html += '<ul class="am-trf-lista">' + linhas.map(function (id) {
+      return trfLinhaHtml(porId[id] || { itemId: id }, "execucao");
+    }).join("") + "</ul>";
+    return html;
+  }
+
+  function renderTransf() {
+    if (!TRF) return;
+    var t = TRF;
+    var box = t.overlay.querySelector(".am-reb-box");
+    var focoId = document.activeElement && t.overlay.contains(document.activeElement) ? document.activeElement.id : "";
+    var o = trfPromo(t.origemId), dst = trfPromo(t.destinoId);
+    var sub = t.passo === "selecao" || t.passo === "carregando" ? "Escolha de onde e para onde mover os anúncios."
+      : "<strong>" + escapeHtml((o && o.nome) || "origem") + "</strong> → <strong>" + escapeHtml((dst && dst.nome) || "destino") + "</strong>";
+    var corpo, rodape;
+    if (t.passo === "previa") {
+      var n = trfMarcados().length;
+      corpo = trfCorpoPreviaHtml();
+      if (t.confirmando) {
+        rodape = '<div class="am-reb-confirma" role="alert"><p class="am-reb-confirma__txt">Transferir ' + n + (n === 1 ? " anúncio" : " anúncios") +
+          " para <strong>" + escapeHtml((dst && dst.nome) || "o destino") + "</strong>" +
+          (t.remover ? " e tirá-" + (n === 1 ? "lo" : "los") + " de <strong>" + escapeHtml((o && o.nome) || "a origem") + "</strong>" : "") +
+          "? Isso grava no Mercado Livre.</p>" +
+          '<div class="am-reb-confirma__acoes">' +
+          '<button type="button" class="vf-btn vf-btn--secondary" data-trf-acao="cancelar-confirmacao">Cancelar</button>' +
+          '<button type="button" class="vf-btn vf-btn--primary" id="am-trf-confirmar" data-trf-acao="confirmar">Confirmar transferência</button></div></div>';
+      } else {
+        rodape = '<div class="am-reb-rodape__acoes">' +
+          '<button type="button" class="vf-btn vf-btn--secondary" data-trf-acao="voltar">Voltar</button>' +
+          '<button type="button" class="vf-btn vf-btn--primary" id="am-trf-transferir" data-trf-acao="transferir"' + (n ? "" : " disabled") + ">" +
+          "Transferir " + n + (n === 1 ? " anúncio" : " anúncios") + "</button></div>";
+      }
+    } else if (t.passo === "execucao") {
+      corpo = trfCorpoExecucaoHtml();
+      var falhas = trfFalhas().length;
+      rodape = '<div class="am-reb-rodape__acoes">' +
+        (falhas && !t.enviando ? '<button type="button" class="vf-btn vf-btn--secondary" id="am-trf-retentar" data-trf-acao="retentar">Tentar de novo as falhas (' + falhas + ")</button>" : "") +
+        '<button type="button" class="vf-btn vf-btn--primary" id="am-trf-fechar-final" data-trf-acao="fechar"' + (t.enviando ? " disabled" : "") + ">" +
+        (t.enviando ? "Transferindo…" : "Concluir") + "</button></div>";
+    } else {
+      corpo = trfCorpoSelecaoHtml();
+      var pode = !!o && !!dst && t.passo === "selecao";
+      rodape = '<div class="am-reb-rodape__acoes">' +
+        '<button type="button" class="vf-btn vf-btn--secondary" data-trf-acao="fechar">Cancelar</button>' +
+        '<button type="button" class="vf-btn vf-btn--primary" id="am-trf-buscar" data-trf-acao="buscar"' + (pode ? "" : " disabled") + ">Ver anúncios</button></div>";
+    }
+
+    var scroll = box.querySelector(".am-reb-corpo");
+    var scrollTop = scroll ? scroll.scrollTop : 0;
+    box.innerHTML = '<header class="am-reb-head"><div class="am-reb-head__topo"><div class="am-reb-head__txt">' +
+        '<h2 class="am-reb-titulo" id="am-trf-titulo" tabindex="-1">Transferir promoção</h2>' +
+        '<p class="am-reb-sub">' + sub + "</p></div>" +
+        '<button type="button" class="am-reb-x" id="am-trf-x" data-trf-acao="fechar" aria-label="Fechar"' + (t.enviando ? " disabled" : "") + ">" + icFechar() + "</button></div></header>" +
+      '<div class="am-reb-corpo">' + corpo + "</div>" +
+      '<footer class="am-reb-rodape">' + rodape + "</footer>";
+    var novo = box.querySelector(".am-reb-corpo");
+    if (novo && t.ultimoPasso === t.passo) novo.scrollTop = scrollTop;
+    t.ultimoPasso = t.passo;
+    if (focoId) {
+      var n2 = document.getElementById(focoId);
+      if (n2 && t.overlay.contains(n2)) n2.focus();
+    }
+  }
+
+  // ===========================================================================
   // PROMOÇÕES COM REBATE — docs/specs/2026-10-15-anuncios-ml-promocoes-rebate.md
   //
   // Para os anúncios ATIVOS numa promoção de referência (em geral a Vendex do
@@ -5011,6 +5368,7 @@
   }
 
   function atualizarBotaoRebate() {
+    atualizarBotaoTransf();
     var b = el("am-reb-abrir");
     if (!b) return;
     var semConta = !AM.clienteAtual;
@@ -5175,7 +5533,7 @@
 
   // --- Abrir / fechar --------------------------------------------------------------
   function abrirRebate() {
-    if (!AM.clienteAtual || REB || (CUSTOS && CUSTOS.modo)) return;
+    if (!AM.clienteAtual || REB || TRF || (CUSTOS && CUSTOS.modo)) return;
     var overlay = document.createElement("div");
     overlay.className = "am-reb-overlay";
     overlay.setAttribute("role", "dialog");

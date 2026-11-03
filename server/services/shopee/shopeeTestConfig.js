@@ -75,4 +75,4 @@ function readTestConfig(app, env = process.env) {
   return config;
 }
 
-module.exports = { readTestConfig, APPS, TEST_ORIGINS, DEFAULT_ORIGIN, DEFAULT_TIMEOUT_MS };
+module.exports = { readTestConfig, readRedirectUrl, APPS, TEST_ORIGINS, DEFAULT_ORIGIN, DEFAULT_TIMEOUT_MS };

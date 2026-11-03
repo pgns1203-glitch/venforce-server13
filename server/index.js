@@ -135,6 +135,7 @@ const {
   ensurePromoSnapshotSchema,
   ensurePromocoesRebateSchema,
   ensureFinanceiroAdsCacheSchema,
+  ensureShopeeGrantsSchema,
 } = require("./services/schema/schemaEnsure");
 const { logReadinessNoBoot, verificarSchemaV3 } = require("./services/schema/schemaReadiness");
 const {
@@ -2137,6 +2138,12 @@ const server = app.listen(PORT, () => {
   // serializada por advisory lock; o serviço chama o mesmo runner como proteção.
   ensureFinanceiroAdsCacheSchema().catch((err) => {
     console.error("[schema] erro ao garantir schema de financeiro_ads_cache no boot:", err.message);
+  });
+
+  // Shopee LIVE — grants por Conta (tokens cifrados). Aditiva, serializada por
+  // advisory lock; o serviço de grants chama o mesmo runner como proteção.
+  ensureShopeeGrantsSchema().catch((err) => {
+    console.error("[schema] erro ao garantir schema de shopee_grants no boot:", err.message);
   });
 
   // /setup é desabilitado em produção — as colunas novas de `custos`

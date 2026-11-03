@@ -30,15 +30,18 @@ const CODES = Object.freeze({
 
 // Leitura provável do erro da Shopee, para quem opera o 1º grant. Só constantes:
 // pode ir para o HTML. Não corrige nada, só aponta onde olhar.
+// Os textos valem para TEST e LIVE (cada ambiente tem suas SHOPEE_<AMBIENTE>_*).
 const DIAGNOSTICOS = Object.freeze({
-  ASSINATURA_RECUSADA: "Assinatura recusada: confira Partner ID/Key do app TEST e se o host (SHOPEE_TEST_API_ORIGIN) é o do app.",
+  IP_NAO_PERMITIDO: "IP de saída recusado pela Shopee: o app provavelmente exige allowlist de IP (avaliar o gateway de IP fixo).",
+  ASSINATURA_RECUSADA: "Assinatura recusada: confira Partner ID/Key do app e se o host (SHOPEE_*_API_ORIGIN) é o do app.",
   TIMESTAMP_RECUSADO: "Timestamp recusado: relógio do servidor fora do horário ou link aberto tarde demais.",
-  PARTNER_OU_HOST: "Partner ID não reconhecido neste host: confira SHOPEE_TEST_API_ORIGIN e o Partner ID de TEST.",
+  PARTNER_OU_HOST: "Partner ID não reconhecido neste host: confira SHOPEE_*_API_ORIGIN e o Partner ID do ambiente.",
   CODE_RECUSADO: "Código de autorização recusado (expirado ou já usado). Gere um novo link.",
 });
 
 function diagnosticar(shopeeError, mensagem) {
   const texto = `${shopeeError || ""} ${mensagem || ""}`;
+  if (/\bip\b|whitelist|allowlist|ip_not/i.test(texto)) return "IP_NAO_PERMITIDO";
   if (/sign/i.test(texto)) return "ASSINATURA_RECUSADA";
   if (/timestamp/i.test(texto)) return "TIMESTAMP_RECUSADO";
   if (/partner/i.test(texto)) return "PARTNER_OU_HOST";
@@ -206,6 +209,11 @@ async function exchangeCodeForToken(config, { code, shopId }, { fetchImpl, gatew
   const body = { code, shop_id: shopId, partner_id: config.partnerId };
 
   let resposta;
+  if (config.ambiente === "live" && config.transport !== "gateway") {
+    // Defesa em profundidade: o LIVE nunca chama a Shopee direto (IP do Render
+    // fora da allowlist), mesmo com uma config montada fora de readLiveConfig.
+    throw new ShopeeAuthError(CODES.NAO_CONFIGURADO, "LIVE exige SHOPEE_LIVE_TRANSPORT=gateway.");
+  }
   if (config.transport === "gateway") {
     resposta = await postViaGateway(config, query, body, gateway);
   } else {

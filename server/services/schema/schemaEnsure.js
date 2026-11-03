@@ -325,6 +325,21 @@ async function ensureFinanceiroAdsCacheSchema(db = pool) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// Shopee LIVE — grants (tokens cifrados) por Conta. Mesmo desenho das trilhas acima.
+const SHOPEE_GRANTS_MIGRATION = "20261029_shopee_grants.sql";
+const SHOPEE_GRANTS_LOCK_KEY = "vf:schema:shopee_grants";
+const shopeeGrantsEmCurso = new WeakMap();
+
+function shopeeGrantsDdl() {
+  return fs.readFileSync(path.join(migrationsDir, SHOPEE_GRANTS_MIGRATION), "utf8");
+}
+
+async function ensureShopeeGrantsSchema(db = pool) {
+  return singleFlight(shopeeGrantsEmCurso, db, (chave) =>
+    aplicarMigrationSerializada(chave, shopeeGrantsDdl(), SHOPEE_GRANTS_LOCK_KEY));
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // BLOCO 18 — GOVERNANÇA DE MIGRATIONS (inventário legível por máquina)
 // ───────────────────────────────────────────────────────────────────────────
 // `auto: true`  → aplicada por um `ensure*` no boot (idempotente, aditiva).
@@ -526,6 +541,21 @@ const MIGRATIONS_INVENTARIO = [
       "subindo ao mesmo tempo",
     rollback: "DROP TABLE financeiro_ads_cache (nenhuma tabela existente é alterada)",
   },
+  {
+    arquivo: SHOPEE_GRANTS_MIGRATION,
+    descricao:
+      "cria shopee_grants — autorização Shopee LIVE por Conta (shop_id + tokens cifrados " +
+      "AES-256-GCM, expiração do access_token), uma loja por Conta",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensureShopeeGrantsSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito:
+      "nenhum (FK para cliente_contas guardada por to_regclass). Serializado por " +
+      "pg_advisory_xact_lock: seguro com duas instâncias subindo ao mesmo tempo",
+    rollback: "DROP TABLE shopee_grants (nenhuma tabela existente é alterada)",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -553,6 +583,10 @@ module.exports = {
   financeiroAdsCacheDdl,
   FINANCEIRO_ADS_CACHE_MIGRATION,
   FINANCEIRO_ADS_CACHE_LOCK_KEY,
+  ensureShopeeGrantsSchema,
+  shopeeGrantsDdl,
+  SHOPEE_GRANTS_MIGRATION,
+  SHOPEE_GRANTS_LOCK_KEY,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,
   migrationsDir,

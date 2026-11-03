@@ -212,6 +212,16 @@ function ultimoClientErro(pool) {
   pool.ultimoClient.emit("error", new Error("Connection terminated unexpectedly"));
 }
 
+function testeE() {
+  // Revisão do Codex: os ALTER de custos (ACCESS EXCLUSIVE) não podem dividir a
+  // transação com a construção de índice.
+  const src = fs.readFileSync(path.join(__dirname, "..", "services", "bases", "baseCustosService.js"), "utf8");
+  const colunas = src.slice(src.indexOf("const CUSTOS_COLUNAS_DDL"), src.indexOf("const CUSTOS_INDICES_DDL"));
+  const indices = src.slice(src.indexOf("const CUSTOS_INDICES_DDL"), src.indexOf("async function ensureColunasCustos"));
+  ok("E1: custos — ALTERs sem nenhum índice na mesma transação", /ALTER TABLE custos ADD COLUMN/.test(colunas) && !/INDEX/i.test(colunas.replace(/--.*$/gm, "")));
+  ok("E1: custos — índices em transação separada, sem ALTER ADD COLUMN", /CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id/.test(indices) && !/ADD COLUMN/.test(indices));
+}
+
 function testeD() {
   const { semTransacaoPropria } = require("../services/schema/schemaVersionado");
   const sql = "BEGIN;\nSELECT 1;\nDO $$\nBEGIN\n  PERFORM 1;\nEND\n$$;\n  COMMIT;\nbegin ;\n";
@@ -248,7 +258,8 @@ function testeC() {
     ["services/centralVendas/centralVendasRepository.js", /aplicarSchemaVersionado\(/],
     ["services/schema/schemaEnsure.js", /aplicarSchemaVersionado\(\{ db, chave: lockKey/],
     ["services/schema/schemaEnsure.js", /chave: "entregas_cliente"/],
-    ["services/bases/baseCustosService.js", /aplicarSchemaVersionado\(\{\s*db: pool, chave: "custos_colunas"[^}]*removerTransacaoPropria: true/],
+    ["services/bases/baseCustosService.js", /chave: "custos_colunas", sql: CUSTOS_COLUNAS_DDL/],
+    ["services/bases/baseCustosService.js", /chave: "custos_indices", sql: sqlIndices[^}]*removerTransacaoPropria: true/],
     ["services/squads/squadsRepository.js", /aplicarSchemaVersionado\(\{ db, chave: nome, sql, lockKey: `vf:schema:\$\{nome\}`, removerTransacaoPropria: true \}\)/],
     ["services/motorMargem/marginSnapshotRepository.js", /aplicarSchemaVersionado\(/],
   ];
@@ -260,6 +271,7 @@ function testeC() {
   await testeB();
   testeC();
   testeD();
+  testeE();
   console.log(`\n✓ pgEstabilidadeUnitario: ${checks} checks`);
 })().catch((err) => {
   console.error(err);

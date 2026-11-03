@@ -170,15 +170,17 @@ async function run() {
     const pool = criarPoolFake();
     await repository.ensureCentralVendasTables(pool);
     // Desde 03/11/2026 (P0 estabilidade do PostgreSQL): leitura do marcador de
-    // versão no pool (SELECT puro) → conexão dedicada: tabela de versões numa
-    // transação curta própria → BEGIN → statement_timeout → LOCK → releitura
-    // do marcador → lock_timeout → SCHEMA → grava marcador → COMMIT → RELEASE.
+    // versão no pool (SELECT puro) → conexão dedicada com a tabela de versões
+    // numa transação curta própria → transação do schema (abaixo).
     eq(
       "lock: sequência com marcador de versão, todos no mesmo client",
       pool.eventos.map((e) => `${e.client}:${e.cmd}`),
+      // garantirTabelaVersoes: teto na espera do lock → lock → timeouts do CREATE.
+      // Transação do schema: teto na espera → lock → statement_timeout do DDL →
+      // releitura do marcador → lock_timeout → SCHEMA → marcador → COMMIT.
       ["null:POOL_QUERY",
-        "1:BEGIN", "1:LOCK", "1:CREATE", "1:COMMIT",
-        "1:BEGIN", "1:SET", "1:LOCK", "1:/*", "1:SET", "1:SCHEMA", "1:INSERT", "1:COMMIT", "1:RELEASE"]
+        "1:BEGIN", "1:SET", "1:LOCK", "1:SET", "1:SET", "1:CREATE", "1:COMMIT",
+        "1:BEGIN", "1:SET", "1:LOCK", "1:SET", "1:/*", "1:SET", "1:SCHEMA", "1:INSERT", "1:COMMIT", "1:RELEASE"]
     );
     const locks = pool.eventos.filter((e) => e.cmd === "LOCK");
     ok("lock: chave estável e específica do domínio", JSON.stringify(locks[1].params).includes("venforce:central-vendas:schema"));

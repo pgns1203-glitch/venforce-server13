@@ -28,6 +28,7 @@
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
 
+const { ehDialogoDeSchema, connectDelegandoAoQuery } = require("./helpers/schemaVersionadoNoMock");
 const assert = require("assert");
 const pool = require("../config/database");
 const squadsRepo = require("../services/squads/squadsRepository");
@@ -60,6 +61,8 @@ const LIMPO = {
 
 async function comAuditoria(overrides, fn) {
   const original = pool.query;
+  const originalConnect = pool.connect;
+  pool.connect = connectDelegandoAoQuery(pool);
   const originalEnsure = squadsRepo.ensureSquadsTables;
   squadsRepo.ensureSquadsTables = async () => {};
   const fixture = { ...LIMPO, ...overrides };
@@ -71,7 +74,7 @@ async function comAuditoria(overrides, fn) {
     // ensureSquadsTables reaplica os arquivos de migration (idempotentes) antes
     // de auditar; aqui eles sao no-op.
     if (!marca) {
-      if (/CREATE TABLE|ALTER TABLE|CREATE INDEX|^--/m.test(q)) return { rows: [] };
+      if (/CREATE TABLE|ALTER TABLE|CREATE INDEX|^--/m.test(q) || ehDialogoDeSchema(q)) return { rows: [] };
       throw new Error(`Query de auditoria nao mockada: ${q.slice(0, 80)}`);
     }
     if (!(marca in fixture)) throw new Error(`Query de auditoria nao mockada: ${marca}`);
@@ -79,6 +82,7 @@ async function comAuditoria(overrides, fn) {
   };
   try { return await fn(vistas); } finally {
     pool.query = original;
+    pool.connect = originalConnect;
     squadsRepo.ensureSquadsTables = originalEnsure;
   }
 }
@@ -161,6 +165,8 @@ async function run() {
   // ----------------------------------- a auditoria NAO escreve nada
   {
     const original = pool.query;
+    const originalConnect = pool.connect;
+    pool.connect = connectDelegandoAoQuery(pool);
     const originalEnsure = squadsRepo.ensureSquadsTables;
     squadsRepo.ensureSquadsTables = async () => {};
     const sqls = [];
@@ -176,6 +182,7 @@ async function run() {
       ok("auditoria e 100% somente-leitura (nenhum INSERT/UPDATE/DELETE)", !escreve);
     } finally {
       pool.query = original;
+      pool.connect = originalConnect;
       squadsRepo.ensureSquadsTables = originalEnsure;
     }
   }

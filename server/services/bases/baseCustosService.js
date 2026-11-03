@@ -471,6 +471,12 @@ const CUSTOS_COLUNAS_DDL = `
     ALTER TABLE custos DROP CONSTRAINT IF EXISTS custos_base_id_produto_id_key;
   EXCEPTION WHEN undefined_object THEN NULL;
   END $$;
+`;
+
+// Índices numa transação SEPARADA dos ALTER (revisão do Codex): assim o ACCESS
+// EXCLUSIVE dos ALTER termina antes; construir um índice ausente segura só
+// SHARE (bloqueia escrita, não leitura), como antes desta mudança.
+const CUSTOS_INDICES_DDL = `
   DROP INDEX IF EXISTS uq_custos_base_produto_sku;
   -- TikTok: uma linha por variação.
   CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
@@ -482,9 +488,12 @@ async function ensureColunasCustos() {
   // inclui o Model ID, para as variações Shopee do mesmo Item coexistirem. O
   // ensure aplica o PRÓPRIO arquivo da migration (uma fonte só); ele troca o
   // antigo uq_custos_base_produto_sku_legado, que achatava as variações.
-  const sql = CUSTOS_COLUNAS_DDL + "\n" + fs.readFileSync(MIGRATION_CUSTOS_ITEM_MODEL, "utf8");
   await aplicarSchemaVersionado({
-    db: pool, chave: "custos_colunas", sql, lockKey: "vf:schema:custos", removerTransacaoPropria: true,
+    db: pool, chave: "custos_colunas", sql: CUSTOS_COLUNAS_DDL, lockKey: "vf:schema:custos",
+  });
+  const sqlIndices = CUSTOS_INDICES_DDL + "\n" + fs.readFileSync(MIGRATION_CUSTOS_ITEM_MODEL, "utf8");
+  await aplicarSchemaVersionado({
+    db: pool, chave: "custos_indices", sql: sqlIndices, lockKey: "vf:schema:custos", removerTransacaoPropria: true,
   });
 }
 

@@ -5,6 +5,7 @@ const { classificarComponenteFinanceiro } = require("./centralVendasComponenteLe
 const { comRetryTransitorio } = require("./centralVendasTransientRetry");
 const { comPrazo } = require("../../utils/comPrazo");
 const { prazos } = require("./centralVendasPrazos");
+const { aplicarSchemaVersionado } = require("../schema/schemaVersionado");
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "central_vendas_schema.sql");
 
@@ -54,31 +55,25 @@ function isPoolLike(db) {
   return typeof db?.connect === "function" && typeof db?.release !== "function";
 }
 
+// 03/11/2026 (P0 estabilidade do PostgreSQL): com um pool, o schema passa por
+// aplicarSchemaVersionado — se o marcador já tem o hash deste arquivo, NADA
+// roda (antes: 14 ALTER TABLE com ACCESS EXCLUSIVE + varredura completa de
+// componentes em todo boot). Quando roda: mesma conexão dedicada, mesmo
+// advisory lock de transação (chave e função inalteradas, exclusão mútua com
+// o código anterior no deploy), statement_timeout e lock_timeout.
 async function executarSchemaComLock(db) {
   const sql = fs.readFileSync(schemaPath, "utf8");
   if (!isPoolLike(db)) {
     await db.query(sql);
     return;
   }
-  const client = await db.connect();
-  let descartar;
-  try {
-    await client.query("BEGIN");
-    // hashtextextended → bigint estável; a forma de chave única (bigint) não
-    // colide com as chaves (int,int) usadas por outros domínios.
-    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [SCHEMA_ADVISORY_LOCK_KEY]);
-    await client.query(sql);
-    await client.query("COMMIT");
-  } catch (err) {
-    try {
-      await client.query("ROLLBACK");
-    } catch (rollbackErr) {
-      descartar = rollbackErr; // conexão em estado desconhecido: não volta ao pool
-    }
-    throw err;
-  } finally {
-    client.release(descartar);
-  }
+  await aplicarSchemaVersionado({
+    db,
+    chave: "central_vendas_schema",
+    sql,
+    lockKey: SCHEMA_ADVISORY_LOCK_KEY,
+    lockFn: "hashtextextended",
+  });
 }
 
 async function ensureCentralVendasTables(db = pool) {

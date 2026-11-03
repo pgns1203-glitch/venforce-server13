@@ -22,6 +22,15 @@ const ROLES_INTERNAS = ROLES_COBRADAS_NA_AUDITORIA.lista;
  *   modo ZERO-WRITE (BLOQUEADOR T-3): não aplica DDL, só confere o schema com
  *   `to_regclass`. O default mantém o comportamento histórico.
  */
+// P0 03/11/2026: as 9 consultas da auditoria rodavam com Promise.all — 9
+// conexões do pool (máx. 10) de uma vez, no primeiro instante do boot. Uma por
+// vez: são agregados pequenos (clientes/usuários) e a diferença é de ms.
+async function emSequencia(fabricas) {
+  const resultados = [];
+  for (const f of fabricas) resultados.push(await f());
+  return resultados;
+}
+
 async function auditoria(db = pool, { garantirSchema = true } = {}) {
   const schema = await prepararSchemaSquads(db, { garantirSchema });
   if (!schema.ok) {
@@ -43,8 +52,8 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
     responsaveisForaDoSquad,
     membrosDeUsuarioInativo,
     totaisVacuidade,
-  ] = await Promise.all([
-    db.query(`/* squads:AUDIT_CLIENTES */
+  ] = await emSequencia([
+    () => db.query(`/* squads:AUDIT_CLIENTES */
       SELECT
         COUNT(*) FILTER (WHERE c.ativo = true)::int AS ativos,
         COUNT(*) FILTER (WHERE c.ativo = true AND s.id IS NOT NULL AND s.ativo = true)::int AS com_squad_ativo,
@@ -55,7 +64,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
         ON csh.cliente_id = c.id AND csh.fim_em IS NULL
       LEFT JOIN squads s ON s.id = csh.squad_id`),
 
-    db.query(`/* squads:AUDIT_CLIENTES_SEM_SQUAD */
+    () => db.query(`/* squads:AUDIT_CLIENTES_SEM_SQUAD */
       SELECT c.id, c.slug, c.nome
         FROM clientes c
         LEFT JOIN cliente_squad_history csh
@@ -63,7 +72,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
        WHERE c.ativo = true AND csh.cliente_id IS NULL
        ORDER BY c.nome ASC`),
 
-    db.query(`/* squads:AUDIT_CLIENTES_SQUAD_INATIVO */
+    () => db.query(`/* squads:AUDIT_CLIENTES_SQUAD_INATIVO */
       SELECT c.id, c.slug, c.nome, s.id AS squad_id, s.slug AS squad_slug, s.nome AS squad_nome
         FROM clientes c
         JOIN cliente_squad_history csh
@@ -72,7 +81,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
        WHERE c.ativo = true AND s.ativo = false
        ORDER BY c.nome ASC`),
 
-    db.query(`/* squads:AUDIT_USUARIOS */
+    () => db.query(`/* squads:AUDIT_USUARIOS */
       SELECT
         COUNT(*)::int AS internos,
         COUNT(*) FILTER (WHERE m.total_ativas > 0)::int AS com_membership,
@@ -94,7 +103,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
 
     // Principal duplicado é bloqueado pelo indice parcial unico, mas
     // checamos por seguranca (dados legados inseridos fora do service).
-    db.query(`/* squads:AUDIT_PRINCIPAL_DUPLICADO */
+    () => db.query(`/* squads:AUDIT_PRINCIPAL_DUPLICADO */
       SELECT sm.user_id, COUNT(*)::int AS principais
         FROM squad_members sm
        WHERE sm.ativo = true AND sm.is_primary = true
@@ -106,7 +115,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
     // fim_em IS NULL, e so pode existir UMA. Duas linhas abertas significam que
     // o mesmo cliente pertence a dois Squads ao mesmo tempo — a carteira fica
     // nao-deterministica e o rollout NAO pode acontecer nesse estado.
-    db.query(`/* squads:AUDIT_VINCULOS_DUPLICADOS */
+    () => db.query(`/* squads:AUDIT_VINCULOS_DUPLICADOS */
       SELECT csh.cliente_id, c.slug, c.nome, COUNT(*)::int AS vinculos_abertos,
              ARRAY_AGG(csh.squad_id ORDER BY csh.squad_id) AS squad_ids
         FROM cliente_squad_history csh
@@ -123,7 +132,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
     // pessoa deixa de conseguir abrir justamente o cliente pelo qual ela e
     // responsavel. Corrigir e decisao humana (mover o cliente de Squad ou a
     // pessoa para o Squad) — a auditoria so mostra.
-    db.query(`/* squads:AUDIT_RESPONSAVEL_FORA_DO_SQUAD */
+    () => db.query(`/* squads:AUDIT_RESPONSAVEL_FORA_DO_SQUAD */
       SELECT cr.cliente_id, c.slug, c.nome, cr.user_id, cr.papel,
              u.nome AS user_nome, u.email AS user_email
         FROM cliente_responsaveis cr
@@ -144,7 +153,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
     // P2.8 BLOCO Y — membership ATIVA de usuario DESATIVADO. Nao concede
     // acesso (o login ja barra), mas suja a contagem de membros do Squad e
     // esconde que o Squad pode estar sem gente de verdade.
-    db.query(`/* squads:AUDIT_MEMBRO_USUARIO_INATIVO */
+    () => db.query(`/* squads:AUDIT_MEMBRO_USUARIO_INATIVO */
       SELECT sm.user_id, sm.squad_id, u.nome AS user_nome, s.slug AS squad_slug
         FROM squad_members sm
         JOIN users u ON u.id = sm.user_id
@@ -157,7 +166,7 @@ async function auditoria(db = pool, { garantirSchema = true } = {}) {
     // são 0 e o gate declarava GO sem que existisse migração nenhuma. Estas
     // contagens existem para que "não há nada errado" nunca mais seja
     // confundido com "está pronto".
-    db.query(`/* squads:AUDIT_TOTAIS_VACUIDADE */
+    () => db.query(`/* squads:AUDIT_TOTAIS_VACUIDADE */
       SELECT
         (SELECT COUNT(*) FROM squads WHERE ativo = true)::int          AS squads_ativos,
         (SELECT COUNT(*) FROM squad_members WHERE ativo = true)::int   AS memberships_ativas`),

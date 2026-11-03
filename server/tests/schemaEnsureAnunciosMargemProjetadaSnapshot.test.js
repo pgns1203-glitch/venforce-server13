@@ -100,7 +100,13 @@ async function run() {
   // ---- idempotência: 2ª chamada no MESMO pool é no-op (latch) ----
   mod._resetAmpsEnsuredParaTeste();
   const original = pool.query;
+  // Desde 03/11/2026 o ensure no pool passa por aplicarSchemaVersionado
+  // (SELECT do marcador + conexão dedicada): o client fake delega ao
+  // pool.query interceptado, então o DDL continua sendo contado aqui.
+  const originalConnect = pool.connect;
+  const conectarFake = async () => ({ query: (...a) => pool.query(...a), release() {} });
   let chamadasNoPool = 0;
+  pool.connect = conectarFake;
   pool.query = async () => { chamadasNoPool += 1; return { rows: [] }; };
   try {
     await mod.ensureAnunciosMargemProjetadaSnapshotSchema();   // db === pool → roda, seta latch
@@ -110,6 +116,7 @@ async function run() {
       chamadasNoPool === depoisDaPrimeira && depoisDaPrimeira >= 1);
   } finally {
     pool.query = original;
+    pool.connect = originalConnect;
     mod._resetAmpsEnsuredParaTeste();
   }
 
@@ -124,6 +131,7 @@ async function run() {
   mod._resetAmpsEnsuredParaTeste();
   let chamadasEntregas = 0;
   let chamadasAmps = 0;
+  pool.connect = conectarFake;
   pool.query = async (sql2) => {
     if (/entregas_cliente/i.test(String(sql2))) chamadasEntregas += 1;
     if (/anuncios_margem_projetada_snapshot/i.test(String(sql2))) chamadasAmps += 1;
@@ -136,6 +144,7 @@ async function run() {
       "(rodar um não pula o outro)", chamadasEntregas >= 1 && chamadasAmps >= 1);
   } finally {
     pool.query = original;
+    pool.connect = originalConnect;
     mod._resetEnsuredParaTeste();
     mod._resetAmpsEnsuredParaTeste();
   }

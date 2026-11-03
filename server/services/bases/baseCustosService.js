@@ -4,6 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
+const { comMarcadorDeVersao, hashDoSql } = require("../schema/schemaVersionado");
 const {
   MARKETPLACES_SUPORTADOS,
   isMarketplaceSuportado,
@@ -446,7 +447,17 @@ function chaveDadosCusto(row, marketplace) {
 // na rota /setup sem quebrar bases já existentes. Espelha a migration
 // 20260810_add_sku_id_tiktok.sql (colunas/índice TikTok) e aplica a
 // 20261014_custos_shopee_item_model.sql (FIN-508) — precisam continuar equivalentes.
+//
+// 03/11/2026 (P0 estabilidade do PostgreSQL): cada ALTER TABLE custos abaixo
+// pede ACCESS EXCLUSIVE mesmo quando a coluna já existe. Agora o bloco só roda
+// quando o marcador de versão (venforce_schema_versoes, chave custos_colunas)
+// não tem o hash deste código + da migration — nos boots seguintes, 1 SELECT.
 async function ensureColunasCustos() {
+  const hash = hashDoSql(aplicarColunasCustos.toString() + fs.readFileSync(MIGRATION_CUSTOS_ITEM_MODEL, "utf8"));
+  await comMarcadorDeVersao({ db: pool, chave: "custos_colunas", hash, aplicar: aplicarColunasCustos });
+}
+
+async function aplicarColunasCustos() {
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS produto_nome TEXT`);
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS variacao_nome TEXT`);
   await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);

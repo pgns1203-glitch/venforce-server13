@@ -18,6 +18,8 @@ const {
 } = require("./utils/fechamento/curvaAbcEntrada");
 const { mlFetch } = require("./utils/mlClient");
 const { startTokenRefreshWorker } = require("./utils/tokenRefreshWorker");
+const { executarEtapasDeBoot } = require("./services/boot/bootSequencial");
+const { estadoDoPool } = require("./config/databaseObservabilidade");
 const { authMiddleware, requireAdmin } = require("./middlewares/authMiddleware");
 const {
   apiKeyMiddleware,
@@ -575,6 +577,14 @@ function gerarApiKey() {
 // ROTAS BÁSICAS
 app.get("/", (req, res) => res.send("API VenForce rodando 🚀"));
 app.get("/health", (req, res) => res.json({ ok: true, mensagem: `VENFORCE OK porta ${PORT}` }));
+
+// P0 03/11/2026 — retrato do pool do PostgreSQL deste processo (contagens,
+// degradação em curso, última recuperação). NÃO consulta o banco: é o que o
+// processo observou nas aquisições de conexão. Sem dado de negócio nem PII.
+app.get("/health/db", (req, res) => {
+  const estado = estadoDoPool(pool);
+  res.status(estado?.degradado ? 503 : 200).json({ ok: !estado?.degradado, pool: estado });
+});
 
 // BLOCO 17 — readiness de SCHEMA. Só booleanos estruturais (presença de
 // coluna/tabela) + nome da migration correspondente; NENHUM dado, token ou
@@ -2098,186 +2108,207 @@ try {
   process.exit(1);
 }
 
+// P0 03/11/2026 (estabilidade do PostgreSQL): as inicializações de banco
+// deixaram de disparar todas juntas no app.listen. Rodam UMA POR VEZ (ver
+// services/boot/bootSequencial.js), com retry/backoff para erro transitório
+// (banco em recovery, conexão perdida, lock_timeout), e os workers/schedulers
+// só depois do schema de que dependem. Os ensure* de schema usam o marcador
+// de versão (services/schema/schemaVersionado.js): com o schema em dia, cada
+// um é 1 SELECT — sem DDL, sem lock em tabela de negócio. A ordem põe
+// primeiro o que protege requisições (gate de Squads, entregas_cliente,
+// observabilidade) e por último cleanups e workers.
+let encerrandoBoot = false;
+
+function etapasDeBoot() {
+  return [
+    {
+      // P2.2 (+ HARDENING) — ROLLOUT GATE: cruza a intenção do operador
+      // (SQUADS_ENFORCEMENT) com o estado real dos dados (auditoria de migração).
+      // O arme é síncrono: enquanto a auditoria não responde, o gate mantém o
+      // enforcement OFF, então não existe janela em que o processo já atende
+      // requisições sem saber se os dados estão migrados. `armarRolloutGate`
+      // não rejeita (o fail-safe do gate mora lá dentro).
+      nome: "squads-rollout-gate",
+      executar: () => require("./services/squads/rolloutGateBoot").armarRolloutGate({
+        ensureSquadsTables,
+        auditoria: () => require("./services/squads/squadsMigracaoService").auditoria(),
+      }),
+      aoConcluir: ({ auditoria: a, erro }) => {
+        if (erro) {
+          console.error("[squads] erro ao garantir tabelas / auditoria no boot:", erro.message);
+        }
+        const { describeEnforcement } = require("./config/squadsEnforcement");
+        const enf = describeEnforcement();
+        const dados = a
+          ? `clientes sem squad=${a.clientesAtivos.semSquad}/${a.clientesAtivos.total} | ` +
+            `internos sem membership=${a.usuariosInternos.semMembership}/${a.usuariosInternos.total} | ` +
+            `internos sem principal=${a.usuariosInternos.semPrincipal} | ` +
+            `auditoria.pronto=${a.pronto}`
+          : "auditoria indisponível";
+        console.log(
+          `[squads] enforcement=${enf.enabled ? "ON" : "OFF"} ` +
+          `(SQUADS_ENFORCEMENT=${enf.envRaw ?? "<ausente>"}, gate=${enf.gate}` +
+          `${enf.overrideAtivo ? ", override=ON" : ""}) | ${dados}`
+        );
+        // Flag pede ON mas o gate segurou: o enforcement NÃO subiu. Dizer isso
+        // alto evita o diagnóstico errado de "liguei e não aconteceu nada".
+        if (enf.flagLigada && !enf.enabled) {
+          console.warn(
+            `[squads] ⚠ SQUADS_ENFORCEMENT pede ON, mas o rollout gate está "${enf.gate}" — ` +
+            `enforcement permanece OFF. Motivo: ${enf.motivo}. Complete a migração ` +
+            `(GET /squads/migracao/auditoria); para exceções aceitas, use ` +
+            `SQUADS_ENFORCEMENT_ALLOW_INCOMPLETE=on.`
+          );
+        }
+      },
+      aoFalhar: (err) => console.error("[squads] erro ao reportar o estado do rollout gate no boot:", err.message),
+    },
+    {
+      // BLOCO 4 — `entregas_cliente.cliente_conta_id` (V3 P2.6 D1). A checagem
+      // de readiness é uma etapa própria DEPOIS deste e do schema da Central
+      // (ela confere colunas dos dois) — sem falso-positivo de coluna "ausente"
+      // que ainda ia ser criada.
+      nome: "entregas-cliente",
+      executar: () => ensureEntregasClienteSchema(),
+      aoFalhar: (err) => console.error("[schema] erro ao garantir schema de entregas_cliente / readiness no boot:", err.message),
+    },
+    {
+      // Só as tabelas: o cleanup e o job de retenção ficam para o fim do boot.
+      nome: "observability-tabelas",
+      executar: () => ensureObservabilityTables(),
+      aoFalhar: (err) => console.error("[observability] erro ao preparar tabelas no boot:", err.message),
+    },
+    {
+      // Scheduler noturno da Central de Vendas: só depois do schema da Central
+      // pronto, e só com CENTRAL_VENDAS_NOTURNO_ENABLED=true. No boot apenas
+      // recupera runs pendentes de uma rodada interrompida e agenda o próximo
+      // horário; nunca cria uma rodada inédita fora da agenda.
+      nome: "central-vendas-schema",
+      executar: () => ensureCentralVendasTables(),
+      aoConcluir: () => {
+        if (centralVendasNoturnoScheduler.iniciar()) {
+          centralVendasNoturnoScheduler.recuperarPendencias().catch((err) => {
+            console.error("[sync-scheduler] erro ao recuperar rodada interrompida:", err.message);
+          });
+        }
+      },
+      aoFalhar: (err) => {
+        console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
+        if (centralVendasNoturnoScheduler.habilitado()) {
+          console.error("[sync-scheduler] não iniciado: schema da Central indisponível no boot");
+        }
+      },
+    },
+    {
+      // Só leitura (to_regclass/information_schema): loga o que falta.
+      nome: "schema-readiness",
+      executar: () => logReadinessNoBoot(),
+      aoFalhar: (err) => console.error("[schema] readiness: erro na checagem do boot:", err.message),
+    },
+    {
+      // Scheduler interno da margem projetada global: só depois do schema do
+      // snapshot pronto, e só com MARGEM_PROJETADA_SCHEDULER_ENABLED=true. Não
+      // roda no boot — apenas agenda o próximo horário.
+      nome: "anuncios-margem-projetada-snapshot",
+      executar: () => ensureAnunciosMargemProjetadaSnapshotSchema(),
+      aoConcluir: () => margemProjetadaScheduler.iniciar(),
+      aoFalhar: (err) => {
+        console.error("[schema] erro ao garantir schema de anuncios_margem_projetada_snapshot no boot:", err.message);
+        if (margemProjetadaScheduler.habilitado()) {
+          console.error("[margem-projetada-scheduler] não iniciado: schema do snapshot indisponível no boot");
+        }
+      },
+    },
+    {
+      // Central de Margem — trilha de precificação (preview → aplicação).
+      // Migration versionada serializada por advisory lock; o repositório chama
+      // o mesmo runner como proteção.
+      nome: "margem-precificacao",
+      executar: () => ensureMargemPrecificacaoSchema(),
+      aoFalhar: (err) => console.error("[schema] erro ao garantir schema de margem_precificacao_aplicacoes no boot:", err.message),
+    },
+    {
+      // Anúncios ML — "Promoções com rebate": tabela de jobs.
+      nome: "promocoes-rebate",
+      executar: () => ensurePromocoesRebateSchema(),
+      aoFalhar: (err) => console.error("[schema] erro ao garantir schema de promocoes_rebate_jobs no boot:", err.message),
+    },
+    {
+      // Financeiro V3 — cache do Mercado Ads do campo ADS do Fechamento.
+      nome: "financeiro-ads-cache",
+      executar: () => ensureFinanceiroAdsCacheSchema(),
+      aoFalhar: (err) => console.error("[schema] erro ao garantir schema de financeiro_ads_cache no boot:", err.message),
+    },
+    {
+      // Shopee LIVE — grants por Conta (tokens cifrados).
+      nome: "shopee-grants",
+      executar: () => ensureShopeeGrantsSchema(),
+      aoFalhar: (err) => console.error("[schema] erro ao garantir schema de shopee_grants no boot:", err.message),
+    },
+    {
+      // /setup é desabilitado em produção — as colunas novas de `custos`
+      // (produto_nome, variacao_nome, updated_at) são garantidas aqui.
+      nome: "custos-colunas",
+      executar: () => ensureColunasCustos(),
+      aoFalhar: (err) => console.error("[bases] erro ao garantir colunas de custos no boot:", err.message),
+    },
+    {
+      nome: "diagnostico-inicial",
+      executar: () => ensureDiagnosticoInicialTables(),
+      aoFalhar: (err) => console.error("[diagnosticoInicial] erro ao garantir tabelas no boot:", err.message),
+    },
+    {
+      nome: "design-studio",
+      executar: () => designStudioService.initialize(),
+      aoFalhar: (err) => console.error("[design-studio] erro ao garantir tabelas no boot:", err.message),
+    },
+    {
+      nome: "fechamento-incidentes-tabelas",
+      executar: () => ensureFechamentoIncidenteTables(),
+      aoConcluir: () => fechamentoIncidentStorageService.runCleanup()
+        .then(() => fechamentoIncidentStorageService.startRetentionJob())
+        .catch((err) => console.error("[fechamento-incidentes] erro no cleanup do boot:", err.message)),
+      aoFalhar: (err) => console.error("[fechamento-incidentes] erro ao preparar tabelas no boot:", err.message),
+    },
+    {
+      // Promo Snapshot por conta (promoções do ML mantidas pelo backend, SOMENTE
+      // LEITURA no ML). Migration versionada aplicada sempre; worker +
+      // orquestrador só com PROMO_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO.
+      nome: "promo-snapshot",
+      executar: () => ensurePromoSnapshotSchema(),
+      aoConcluir: () => promoSnapshotRuntime.iniciarSeHabilitado()
+        .catch((err) => console.error("[promoSnapshot] worker não iniciado:", err.message)),
+      aoFalhar: (err) => console.error("[promoSnapshot] schema/worker não iniciado:", err.message),
+    },
+    {
+      // Margin Snapshot Worker (Central de Margem lida do banco): só sobe com
+      // MARGIN_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO. Sem a flag, nada roda —
+      // nenhuma tabela garantida, nenhum timer. Com a flag: garante o schema
+      // (marcador de versão) e inicia o polling de runs. Erro transitório no
+      // schema repete com backoff (iniciarSeHabilitado é reentrante).
+      nome: "margin-snapshot-worker",
+      executar: () => marginSnapshotRuntime.iniciarSeHabilitado(),
+      aoFalhar: (err) => console.error("[marginSnapshot] worker não iniciado:", err.message),
+    },
+    {
+      // Cleanup da observabilidade (DELETE limitado de linhas antigas) e o job
+      // de retenção: por último, depois de tudo que é schema.
+      nome: "observability-cleanup",
+      executar: () => observabilityService.runCleanup(),
+      aoConcluir: () => observabilityService.startRetentionJob(),
+      aoFalhar: (err) => console.error("[observability] erro ao preparar tabelas no boot:", err.message),
+    },
+  ];
+}
+
 const server = app.listen(PORT, () => {
   console.log(`VenForce rodando em http://localhost:${PORT}`);
 
-  // Scheduler noturno da Central de Vendas: só depois do schema da Central
-  // pronto, e só com CENTRAL_VENDAS_NOTURNO_ENABLED=true. No boot apenas
-  // recupera runs pendentes de uma rodada interrompida e agenda o próximo
-  // horário; nunca cria uma rodada inédita fora da agenda.
-  ensureCentralVendasTables().then(
-    () => {
-      if (centralVendasNoturnoScheduler.iniciar()) {
-        centralVendasNoturnoScheduler.recuperarPendencias().catch((err) => {
-          console.error("[sync-scheduler] erro ao recuperar rodada interrompida:", err.message);
-        });
-      }
-    },
-    (err) => {
-      console.error("[centralVendas] erro ao garantir tabelas no boot:", err.message);
-      if (centralVendasNoturnoScheduler.habilitado()) {
-        console.error("[sync-scheduler] não iniciado: schema da Central indisponível no boot");
-      }
-    }
-  );
-
-  // BLOCO 4 — `entregas_cliente.cliente_conta_id` (V3 P2.6 D1) só existia no
-  // DDL da rota `/setup`, desabilitada em produção → a tela do Financeiro V3
-  // quebrava com `column "cliente_conta_id" does not exist`. Este ensure é o
-  // caminho automático que faltava. Idempotente, aditivo, NÃO aplica o índice
-  // UNIQUE de D4. A checagem de readiness roda LOGO DEPOIS dele para não
-  // acusar falso-positivo enquanto a coluna está sendo criada.
-  ensureEntregasClienteSchema()
-    .then(() => logReadinessNoBoot())
-    .catch((err) => {
-      console.error("[schema] erro ao garantir schema de entregas_cliente / readiness no boot:", err.message);
-    });
-
-  // FASE 1 do plano de ordenação global por margem PROJETADA (Anúncios ML) —
-  // ver docs/AUDITORIA_ANUNCIOS_ML_MARGEM_PROJETADA_GLOBAL_PLANO_TECNICO.md.
-  // Só cria a fundação de persistência (tabela vazia, sem consumidor ainda) —
-  // registrado aqui para não repetir o erro histórico de `entregas_cliente`
-  // (migration existindo só em documentação/`/setup`, nunca aplicada em
-  // produção).
-  // Scheduler interno da margem projetada global: só depois do schema do
-  // snapshot pronto, e só com MARGEM_PROJETADA_SCHEDULER_ENABLED=true. Não
-  // roda no boot — apenas agenda o próximo horário (ver
-  // margemProjetadaScheduler). Desligado por padrão; não ativado em produção
-  // nesta missão.
-  ensureAnunciosMargemProjetadaSnapshotSchema().then(
-    () => margemProjetadaScheduler.iniciar(),
-    (err) => {
-      console.error("[schema] erro ao garantir schema de anuncios_margem_projetada_snapshot no boot:", err.message);
-      if (margemProjetadaScheduler.habilitado()) {
-        console.error("[margem-projetada-scheduler] não iniciado: schema do snapshot indisponível no boot");
-      }
-    }
-  );
-
-  // Central de Margem — trilha de precificação (preview → aplicação). A
-  // migration versionada é aplicada aqui, serializada por advisory lock (duas
-  // instâncias subindo juntas não disputam o CREATE TABLE). O repositório
-  // chama o mesmo runner como proteção, nunca como mecanismo principal.
-  ensureMargemPrecificacaoSchema().catch((err) => {
-    console.error("[schema] erro ao garantir schema de margem_precificacao_aplicacoes no boot:", err.message);
-  });
-
-  // Anúncios ML — "Promoções com rebate": tabela de jobs (análise/execução
-  // disparadas por clique). Aditiva, serializada por advisory lock; o serviço
-  // chama o mesmo runner como proteção.
-  ensurePromocoesRebateSchema().catch((err) => {
-    console.error("[schema] erro ao garantir schema de promocoes_rebate_jobs no boot:", err.message);
-  });
-
-  // Financeiro V3 — cache do Mercado Ads do campo ADS do Fechamento. Aditiva,
-  // serializada por advisory lock; o serviço chama o mesmo runner como proteção.
-  ensureFinanceiroAdsCacheSchema().catch((err) => {
-    console.error("[schema] erro ao garantir schema de financeiro_ads_cache no boot:", err.message);
-  });
-
-  // Shopee LIVE — grants por Conta (tokens cifrados). Aditiva, serializada por
-  // advisory lock; o serviço de grants chama o mesmo runner como proteção.
-  ensureShopeeGrantsSchema().catch((err) => {
-    console.error("[schema] erro ao garantir schema de shopee_grants no boot:", err.message);
-  });
-
-  // /setup é desabilitado em produção — as colunas novas de `custos`
-  // (produto_nome, variacao_nome, updated_at) são garantidas aqui.
-  ensureColunasCustos().catch((err) => {
-    console.error("[bases] erro ao garantir colunas de custos no boot:", err.message);
-  });
-
-  ensureDiagnosticoInicialTables().catch((err) => {
-    console.error(
-      "[diagnosticoInicial] erro ao garantir tabelas no boot:",
-      err.message
-    );
-  });
-
-  designStudioService.initialize().catch((err) => {
-    console.error("[design-studio] erro ao garantir tabelas no boot:", err.message);
-  });
-
-  // P2.2 (+ HARDENING) — ROLLOUT GATE: cruza a intenção do operador
-  // (SQUADS_ENFORCEMENT) com o estado real dos dados (auditoria de migração).
-  // O arme é síncrono: enquanto a auditoria não responde, o gate mantém o
-  // enforcement OFF, então não existe janela em que o processo já atende
-  // requisições sem saber se os dados estão migrados.
-  require("./services/squads/rolloutGateBoot")
-    .armarRolloutGate({
-      ensureSquadsTables,
-      auditoria: () => require("./services/squads/squadsMigracaoService").auditoria(),
-    })
-    .then(({ auditoria: a, erro }) => {
-      if (erro) {
-        console.error("[squads] erro ao garantir tabelas / auditoria no boot:", erro.message);
-      }
-      const { describeEnforcement } = require("./config/squadsEnforcement");
-      const enf = describeEnforcement();
-      const dados = a
-        ? `clientes sem squad=${a.clientesAtivos.semSquad}/${a.clientesAtivos.total} | ` +
-          `internos sem membership=${a.usuariosInternos.semMembership}/${a.usuariosInternos.total} | ` +
-          `internos sem principal=${a.usuariosInternos.semPrincipal} | ` +
-          `auditoria.pronto=${a.pronto}`
-        : "auditoria indisponível";
-      console.log(
-        `[squads] enforcement=${enf.enabled ? "ON" : "OFF"} ` +
-        `(SQUADS_ENFORCEMENT=${enf.envRaw ?? "<ausente>"}, gate=${enf.gate}` +
-        `${enf.overrideAtivo ? ", override=ON" : ""}) | ${dados}`
-      );
-      // Flag pede ON mas o gate segurou: o enforcement NÃO subiu. Dizer isso
-      // alto evita o diagnóstico errado de "liguei e não aconteceu nada".
-      if (enf.flagLigada && !enf.enabled) {
-        console.warn(
-          `[squads] ⚠ SQUADS_ENFORCEMENT pede ON, mas o rollout gate está "${enf.gate}" — ` +
-          `enforcement permanece OFF. Motivo: ${enf.motivo}. Complete a migração ` +
-          `(GET /squads/migracao/auditoria); para exceções aceitas, use ` +
-          `SQUADS_ENFORCEMENT_ALLOW_INCOMPLETE=on.`
-        );
-      }
-    })
-    // Rede de segurança: este bloco é DIAGNÓSTICO e não pode derrubar o boot.
-    // `armarRolloutGate` já não rejeita (o fail-safe do gate mora lá dentro),
-    // mas um erro no log não pode virar unhandled rejection — o Node encerra o
-    // processo nesse caso. Mesmo padrão das outras cadeias de boot aqui.
-    .catch((err) => {
-      console.error("[squads] erro ao reportar o estado do rollout gate no boot:", err.message);
-    });
-
-  ensureObservabilityTables()
-    .then(() => observabilityService.runCleanup())
-    .then(() => observabilityService.startRetentionJob())
-    .catch((err) => {
-      console.error("[observability] erro ao preparar tabelas no boot:", err.message);
-    });
-
-  ensureFechamentoIncidenteTables()
-    .then(() => fechamentoIncidentStorageService.runCleanup())
-    .then(() => fechamentoIncidentStorageService.startRetentionJob())
-    .catch((err) => {
-      console.error("[fechamento-incidentes] erro ao preparar tabelas no boot:", err.message);
-    });
-
+  // Sem banco: só agenda (30 s após o boot, depois a cada 5 min).
   startTokenRefreshWorker();
 
-  // Margin Snapshot Worker (Central de Margem lida do banco): só sobe com
-  // MARGIN_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO. Sem a flag, nada roda —
-  // nenhuma tabela garantida, nenhum timer. Com a flag: garante o schema
-  // (margin_snapshot_schema.sql, idempotente) e inicia o polling de runs.
-  marginSnapshotRuntime.iniciarSeHabilitado().catch((err) => {
-    console.error("[marginSnapshot] worker não iniciado:", err.message);
-  });
-
-  // Promo Snapshot por conta (promoções do ML mantidas pelo backend, SOMENTE
-  // LEITURA no ML). A migration versionada é aditiva e aplicada sempre,
-  // serializada por advisory lock. Worker + orquestrador só com
-  // PROMO_SNAPSHOT_WORKER_ENABLED=true EXPLÍCITO; sem a flag nenhum timer
-  // existe e a Central continua lendo o último snapshot (ou o legado).
-  ensurePromoSnapshotSchema()
-    .then(() => promoSnapshotRuntime.iniciarSeHabilitado())
-    .catch((err) => {
-      console.error("[promoSnapshot] schema/worker não iniciado:", err.message);
-    });
+  executarEtapasDeBoot(etapasDeBoot(), { pool, deveParar: () => encerrandoBoot })
+    .catch((err) => console.error("[boot] erro inesperado na sequência de inicialização:", err.message));
 });
 
 // Encerramento: tenta drenar a fila de observabilidade sem travar o processo.
@@ -2285,6 +2316,7 @@ let encerrando = false;
 async function encerrarComGraca(sinal) {
   if (encerrando) return;
   encerrando = true;
+  encerrandoBoot = true;
   console.log(`[server] ${sinal} recebido, encerrando…`);
   const prazo = setTimeout(() => process.exit(0), 25000);
   if (typeof prazo.unref === "function") prazo.unref();

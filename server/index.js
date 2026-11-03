@@ -18,7 +18,7 @@ const {
 } = require("./utils/fechamento/curvaAbcEntrada");
 const { mlFetch } = require("./utils/mlClient");
 const { startTokenRefreshWorker } = require("./utils/tokenRefreshWorker");
-const { executarEtapasDeBoot } = require("./services/boot/bootSequencial");
+const { executarEtapasDeBoot, ehErroTransitorioDeBanco } = require("./services/boot/bootSequencial");
 const { estadoDoPool } = require("./config/databaseObservabilidade");
 const { authMiddleware, requireAdmin } = require("./middlewares/authMiddleware");
 const {
@@ -2129,10 +2129,18 @@ function etapasDeBoot() {
       // requisições sem saber se os dados estão migrados. `armarRolloutGate`
       // não rejeita (o fail-safe do gate mora lá dentro).
       nome: "squads-rollout-gate",
-      executar: () => require("./services/squads/rolloutGateBoot").armarRolloutGate({
-        ensureSquadsTables,
-        auditoria: () => require("./services/squads/squadsMigracaoService").auditoria(),
-      }),
+      // armarRolloutGate não rejeita: devolve { erro } com o gate fechado
+      // (enforcement OFF). Erro TRANSITÓRIO (banco em recovery, lock_timeout)
+      // vira exceção aqui para o executor rearmar com backoff — o gate pode ser
+      // rearmado (iniciarArme → armarGate), e fica OFF enquanto isso.
+      executar: async () => {
+        const r = await require("./services/squads/rolloutGateBoot").armarRolloutGate({
+          ensureSquadsTables,
+          auditoria: () => require("./services/squads/squadsMigracaoService").auditoria(),
+        });
+        if (r.erro && ehErroTransitorioDeBanco(r.erro)) throw r.erro;
+        return r;
+      },
       aoConcluir: ({ auditoria: a, erro }) => {
         if (erro) {
           console.error("[squads] erro ao garantir tabelas / auditoria no boot:", erro.message);

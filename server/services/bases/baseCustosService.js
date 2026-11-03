@@ -4,7 +4,7 @@
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
-const { comMarcadorDeVersao, hashDoSql } = require("../schema/schemaVersionado");
+const { aplicarSchemaVersionado } = require("../schema/schemaVersionado");
 const {
   MARKETPLACES_SUPORTADOS,
   isMarketplaceSuportado,
@@ -448,62 +448,50 @@ function chaveDadosCusto(row, marketplace) {
 // 20260810_add_sku_id_tiktok.sql (colunas/índice TikTok) e aplica a
 // 20261014_custos_shopee_item_model.sql (FIN-508) — precisam continuar equivalentes.
 //
-// 03/11/2026 (P0 estabilidade do PostgreSQL): cada ALTER TABLE custos abaixo
-// pede ACCESS EXCLUSIVE mesmo quando a coluna já existe. Agora o bloco só roda
-// quando o marcador de versão (venforce_schema_versoes, chave custos_colunas)
-// não tem o hash deste código + da migration — nos boots seguintes, 1 SELECT.
-async function ensureColunasCustos() {
-  const hash = hashDoSql(aplicarColunasCustos.toString() + fs.readFileSync(MIGRATION_CUSTOS_ITEM_MODEL, "utf8"));
-  await comMarcadorDeVersao({ db: pool, chave: "custos_colunas", hash, aplicar: aplicarColunasCustos });
-}
+// 03/11/2026 (P0 estabilidade do PostgreSQL): cada ALTER TABLE custos pede
+// ACCESS EXCLUSIVE mesmo quando a coluna já existe. Agora o DDL inteiro (colunas
+// + índices + a migration FIN-508) é UM script aplicado por
+// aplicarSchemaVersionado: com o marcador em dia (chave custos_colunas) é só 1
+// SELECT; senão conexão dedicada, advisory lock, lock_timeout/statement_timeout
+// e o marcador na mesma transação. O BEGIN;/COMMIT; próprios da migration são
+// neutralizados (o advisory lock 508202610 dela continua valendo).
+const CUSTOS_COLUNAS_DDL = `
+  ALTER TABLE custos ADD COLUMN IF NOT EXISTS produto_nome TEXT;
+  ALTER TABLE custos ADD COLUMN IF NOT EXISTS variacao_nome TEXT;
+  ALTER TABLE custos ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+  -- LEGADO: SKU textual. MELI/Shopee nunca preenchem (fica ''); TikTok deixou
+  -- de usar quando a identidade passou a ser sku_id.
+  ALTER TABLE custos ADD COLUMN IF NOT EXISTS sku TEXT NOT NULL DEFAULT '';
+  -- TikTok Shop: sku_id = ID DO SKU (id da variação, 18–19 dígitos, TEXT).
+  -- É a identidade de custo do TikTok — o mesmo produto_id repete entre as
+  -- variações. MELI/Shopee nunca preenchem esta coluna (fica '').
+  ALTER TABLE custos ADD COLUMN IF NOT EXISTS sku_id TEXT NOT NULL DEFAULT '';
+  DO $$
+  BEGIN
+    ALTER TABLE custos DROP CONSTRAINT IF EXISTS custos_base_id_produto_id_key;
+  EXCEPTION WHEN undefined_object THEN NULL;
+  END $$;
+  DROP INDEX IF EXISTS uq_custos_base_produto_sku;
+  -- TikTok: uma linha por variação.
+  CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
+    ON custos (base_id, sku_id) WHERE sku_id <> '';
+`;
 
-async function aplicarColunasCustos() {
-  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS produto_nome TEXT`);
-  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS variacao_nome TEXT`);
-  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`);
-  // LEGADO: SKU textual. MELI/Shopee nunca preenchem (fica ''); TikTok deixou
-  // de usar quando a identidade passou a ser sku_id.
-  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS sku TEXT NOT NULL DEFAULT ''`);
-  // TikTok Shop: sku_id = ID DO SKU (id da variação, 18–19 dígitos, TEXT).
-  // É a identidade de custo do TikTok — o mesmo produto_id repete entre as
-  // variações. MELI/Shopee nunca preenchem esta coluna (fica '').
-  await pool.query(`ALTER TABLE custos ADD COLUMN IF NOT EXISTS sku_id TEXT NOT NULL DEFAULT ''`);
-  await pool.query(`
-    DO $$
-    BEGIN
-      ALTER TABLE custos DROP CONSTRAINT IF EXISTS custos_base_id_produto_id_key;
-    EXCEPTION WHEN undefined_object THEN NULL;
-    END $$;
-  `);
-  await pool.query(`DROP INDEX IF EXISTS uq_custos_base_produto_sku`);
-  // TikTok: uma linha por variação.
-  await pool.query(
-    `CREATE UNIQUE INDEX IF NOT EXISTS uq_custos_base_sku_id
-       ON custos (base_id, sku_id) WHERE sku_id <> ''`
-  );
+async function ensureColunasCustos() {
   // MELI/Shopee (e linhas TikTok legadas sem sku_id): FIN-508 — a identidade
   // inclui o Model ID, para as variações Shopee do mesmo Item coexistirem. O
   // ensure aplica o PRÓPRIO arquivo da migration (uma fonte só); ele troca o
   // antigo uq_custos_base_produto_sku_legado, que achatava as variações.
-  await aplicarMigrationCustosItemModel();
+  const sql = CUSTOS_COLUNAS_DDL + "\n" + fs.readFileSync(MIGRATION_CUSTOS_ITEM_MODEL, "utf8");
+  await aplicarSchemaVersionado({
+    db: pool, chave: "custos_colunas", sql, lockKey: "vf:schema:custos", removerTransacaoPropria: true,
+  });
 }
 
 const MIGRATION_CUSTOS_ITEM_MODEL = path.join(
   __dirname, "..", "..", "sql", "migrations", "20261014_custos_shopee_item_model.sql"
 );
 
-async function aplicarMigrationCustosItemModel() {
-  const sql = fs.readFileSync(MIGRATION_CUSTOS_ITEM_MODEL, "utf8");
-  const client = await pool.connect();
-  try {
-    await client.query(sql);
-  } catch (err) {
-    await client.query("ROLLBACK").catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
-}
 
 // Marca a base como atualizada agora sempre que um custo é criado/alterado.
 async function tocarUpdatedAtBase(baseId) {

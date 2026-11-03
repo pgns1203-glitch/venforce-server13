@@ -313,6 +313,50 @@ async function main() {
       ok("erro NÃO transitório (42P01) não repete, não inicia o worker dependente e não impede a etapa seguinte");
     }
 
+    // ── 7b. achados da revisão do Codex ────────────────────────────────────
+    {
+      const migr = (f) => fs.readFileSync(path.join(__dirname, "..", "sql", "migrations", f), "utf8");
+      // (a) BEGIN;/COMMIT; do próprio arquivo não podem encerrar a transação protegida
+      const sqlComTx = "BEGIN;\nCREATE TABLE t_teste_tx (id int);\nCOMMIT;\nSELECT 1/0;\n";
+      const r = await cronometrar(() => aplicarSchemaVersionado({ db: novoPool(), chave: "teste_tx", sql: sqlComTx, removerTransacaoPropria: true, logger: silencioso }));
+      assert.strictEqual(r.erro?.code, "22012");
+      assert.ok(!(await existeIndice(setup, "t_teste_tx")), "COMMIT do arquivo encerrou a transação antes da hora");
+      assert.strictEqual(await lerVersao(setup, "teste_tx"), null);
+      ok("migration com BEGIN;/COMMIT; próprios: tudo na transação protegida (erro depois do COMMIT do arquivo desfaz tudo, sem marcador)");
+
+      // (b) Squads: arquivos reais, aplicados 1x; com leitura longa em cliente_responsaveis e
+      //     DDL pendente, desiste por lock_timeout em vez de travar o boot inteiro
+      for (const f of ["20260827_squads_foundation.sql", "20260828_cliente_responsaveis_p24.sql", "20261015_squad_members_funcao_gestor.sql"]) {
+        await aplicarSchemaVersionado({ db: novoPool(), chave: f, sql: migr(f), lockKey: `vf:schema:${f}`, removerTransacaoPropria: true, logger: silencioso });
+      }
+      await setup.query("UPDATE venforce_schema_versoes SET hash = 'antigo' WHERE chave = '20260828_cliente_responsaveis_p24.sql'");
+      const leitor = await novoClient();
+      await leitor.query("BEGIN");
+      await leitor.query("SELECT count(*) FROM cliente_responsaveis");
+      const f = "20260828_cliente_responsaveis_p24.sql";
+      const r2 = await cronometrar(() => aplicarSchemaVersionado({ db: novoPool(), chave: f, sql: migr(f), lockKey: `vf:schema:${f}`, removerTransacaoPropria: true, lockTimeoutMs: 1000, logger: silencioso }));
+      await leitor.query("COMMIT"); await leitor.end();
+      assert.strictEqual(r2.erro?.code, "55P03", String(r2.erro));
+      assert.ok(r2.ms < 3000, `${r2.ms} ms`);
+      ok(`Squads com DDL pendente e leitura longa em cliente_responsaveis: desiste em ${r2.ms} ms (55P03, transitório) em vez de travar o boot`);
+
+      // (c) advisory lock ocupado por outra instância (de schema ou da tabela de versões): teto próprio
+      const outra = await novoClient();
+      await outra.query("SELECT pg_advisory_lock(hashtextextended('venforce:central-vendas:schema', 0))");
+      await setup.query("UPDATE venforce_schema_versoes SET hash = 'antigo' WHERE chave = 'central_vendas_schema'");
+      const r3 = await cronometrar(() => aplicarSchemaVersionado({ db: novoPool(), chave: "central_vendas_schema", sql: SCHEMA_CENTRAL, lockKey: "venforce:central-vendas:schema", esperaLockMs: 700, logger: silencioso }));
+      await outra.query("SELECT pg_advisory_unlock_all()");
+      await outra.query("SELECT pg_advisory_lock(hashtextextended('vf:schema:venforce_schema_versoes', 0))");
+      const r4 = await cronometrar(() => aplicarSchemaVersionado({ db: novoPool(), chave: "central_vendas_schema", sql: SCHEMA_CENTRAL, lockKey: "venforce:central-vendas:schema", esperaLockMs: 700, logger: silencioso }));
+      await outra.end();
+      assert.strictEqual(r3.erro?.code, "VF_SCHEMA_LOCK_OCUPADO", String(r3.erro));
+      assert.strictEqual(r4.erro?.code, "VF_SCHEMA_LOCK_OCUPADO", String(r4.erro));
+      assert.ok(r3.ms < 2500 && r4.ms < 2500, `${r3.ms}/${r4.ms}`);
+      const r5 = await aplicarSchemaVersionado({ db: novoPool(), chave: "central_vendas_schema", sql: SCHEMA_CENTRAL, lockKey: "venforce:central-vendas:schema", logger: silencioso });
+      assert.strictEqual(r5.motivo, "aplicado");
+      ok(`advisory lock de schema / da tabela de versões preso por outra sessão: desiste em ${r3.ms}/${r4.ms} ms (VF_SCHEMA_LOCK_OCUPADO, transitório); liberado, aplica`);
+    }
+
     // ── 8. PostgreSQL em crash-recovery (kill -9 num backend) ──────────────
     if (process.env.VF_PG_ESTABILIDADE_PERMITE_CRASH === "1") {
       const logs = [];

@@ -30,6 +30,7 @@ const CODIGOS_TRANSITORIOS = new Set([
   "53300", // too_many_connections
   "55P03", // lock_not_available (lock_timeout do DDL)
   "40P01", // deadlock_detected
+  "VF_SCHEMA_LOCK_OCUPADO", // outra instância aplicando o mesmo DDL (schemaVersionado)
   "08000", "08001", "08003", "08004", "08006", // connection_exception
   "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "EPIPE", "ENOTFOUND", "EAI_AGAIN",
 ]);
@@ -90,9 +91,16 @@ async function executarEtapasDeBoot(etapas, {
           `tentativa ${tentativas + 1} em ${espera} ms${linhaPool(pool)}`
         );
         await sleep(espera);
+        // SIGTERM durante o backoff: não tenta de novo (nem inicia worker).
+        if (deveParar()) break;
       }
     }
     const ms = Date.now() - t0;
+    if (deveParar()) {
+      logger.log?.(`[boot] ${etapa.nome}: interrompida pelo encerramento (${tentativas} tentativa(s))`);
+      resultados.push({ nome: etapa.nome, ok: false, tentativas, ms, interrompida: true, erro: erroFinal });
+      break;
+    }
     if (!erroFinal) {
       logger.log?.(`[boot] ${etapa.nome}: ok em ${ms} ms${tentativas > 1 ? ` (${tentativas} tentativas)` : ""}${linhaPool(pool)}`);
       resultados.push({ nome: etapa.nome, ok: true, tentativas, ms });

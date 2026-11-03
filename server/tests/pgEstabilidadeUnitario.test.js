@@ -104,9 +104,32 @@ async function testeA() {
     ], { logger: silencioso, deveParar: () => parar });
     ok("A6: com deveParar() verdadeiro, nenhuma etapa nova começa", rodou.join() === "a" && res.length === 1);
   }
+  // A6b — SIGTERM DURANTE o backoff (achado da revisão do Codex): não há nova
+  // tentativa nem aoConcluir (worker não inicia depois do shutdown).
+  {
+    let parar = false;
+    let execucoes = 0;
+    const eventos = [];
+    const res = await executarEtapasDeBoot([
+      { nome: "schema", executar: async () => { execucoes += 1; if (execucoes === 1) throw erroPg("57P03"); return "ok"; },
+        aoConcluir: () => eventos.push("worker-iniciado"), aoFalhar: () => eventos.push("aoFalhar") },
+      { nome: "seguinte", executar: async () => eventos.push("seguinte") },
+    ], { logger: silencioso, esperasMs: [5, 5], sleep: async () => { parar = true; }, deveParar: () => parar });
+    ok("A6b: SIGTERM no backoff → sem nova tentativa, sem worker, sem etapas seguintes",
+      execucoes === 1 && eventos.length === 0 && res.length === 1 && res[0].interrompida === true);
+  }
+  // A6c — SIGTERM depois do executar ok e antes do aoConcluir: worker não inicia.
+  {
+    let parar = false;
+    const eventos = [];
+    await executarEtapasDeBoot([
+      { nome: "schema", executar: async () => { parar = true; return 1; }, aoConcluir: () => eventos.push("worker-iniciado") },
+    ], { logger: silencioso, deveParar: () => parar });
+    ok("A6c: encerramento entre o schema e o worker → worker não inicia", eventos.length === 0);
+  }
   // A7 — classificação de erros.
   ok("A7: transitórios reconhecidos", [
-    erroPg("57P03"), erroPg("57P01"), erroPg("55P03"), erroPg("53300"), erroPg("08006"), erroPg("ECONNREFUSED"),
+    erroPg("57P03"), erroPg("57P01"), erroPg("55P03"), erroPg("VF_SCHEMA_LOCK_OCUPADO"), erroPg("53300"), erroPg("08006"), erroPg("ECONNREFUSED"),
     new Error("Connection terminated unexpectedly"), new Error("timeout exceeded when trying to connect"),
     new Error("the database system is in recovery mode"),
   ].every(ehErroTransitorioDeBanco));
@@ -189,6 +212,18 @@ function ultimoClientErro(pool) {
   pool.ultimoClient.emit("error", new Error("Connection terminated unexpectedly"));
 }
 
+function testeD() {
+  const { semTransacaoPropria } = require("../services/schema/schemaVersionado");
+  const sql = "BEGIN;\nSELECT 1;\nDO $$\nBEGIN\n  PERFORM 1;\nEND\n$$;\n  COMMIT;\nbegin ;\n";
+  const out = semTransacaoPropria(sql);
+  ok("D1: BEGIN;/COMMIT; de nível superior neutralizados; BEGIN de bloco DO intacto",
+    !/^\s*(BEGIN|COMMIT)\s*;\s*$/im.test(out) && /DO \$\$\nBEGIN\n  PERFORM 1;/.test(out) && /SELECT 1;/.test(out));
+  for (const arq of ["20260827_squads_foundation.sql", "20260828_cliente_responsaveis_p24.sql", "20261015_squad_members_funcao_gestor.sql", "20261014_custos_shopee_item_model.sql"]) {
+    const conteudo = semTransacaoPropria(fs.readFileSync(path.join(__dirname, "..", "sql", "migrations", arq), "utf8"));
+    ok(`D2: ${arq} sem BEGIN;/COMMIT; de nível superior depois do filtro`, !/^\s*(BEGIN|COMMIT|ROLLBACK)\s*;\s*$/im.test(conteudo));
+  }
+}
+
 function testeC() {
   const raiz = path.join(__dirname, "..");
   const schema = fs.readFileSync(path.join(raiz, "sql", "central_vendas_schema.sql"), "utf8");
@@ -213,7 +248,8 @@ function testeC() {
     ["services/centralVendas/centralVendasRepository.js", /aplicarSchemaVersionado\(/],
     ["services/schema/schemaEnsure.js", /aplicarSchemaVersionado\(\{ db, chave: lockKey/],
     ["services/schema/schemaEnsure.js", /chave: "entregas_cliente"/],
-    ["services/bases/baseCustosService.js", /comMarcadorDeVersao\(/],
+    ["services/bases/baseCustosService.js", /aplicarSchemaVersionado\(\{\s*db: pool, chave: "custos_colunas"[^}]*removerTransacaoPropria: true/],
+    ["services/squads/squadsRepository.js", /aplicarSchemaVersionado\(\{ db, chave: nome, sql, lockKey: `vf:schema:\$\{nome\}`, removerTransacaoPropria: true \}\)/],
     ["services/motorMargem/marginSnapshotRepository.js", /aplicarSchemaVersionado\(/],
   ];
   for (const [arq, re] of usos) ok(`C4: ${arq} usa o marcador de versão`, re.test(fs.readFileSync(path.join(raiz, arq), "utf8")));
@@ -223,6 +259,7 @@ function testeC() {
   await testeA();
   await testeB();
   testeC();
+  testeD();
   console.log(`\n✓ pgEstabilidadeUnitario: ${checks} checks`);
 })().catch((err) => {
   console.error(err);

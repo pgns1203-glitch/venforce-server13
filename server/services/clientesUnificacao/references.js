@@ -57,6 +57,9 @@ const authoritative = [
   "sentinel_pedido_excecoes",
   "sentinel_incidentes",
   "sentinel_incidente_eventos",
+  // Shopee: grant chaveado só pela Conta (sem cliente_id); a Conta sobrevive à
+  // unificação com o mesmo id ⇒ o grant segue junto, nada a mover.
+  "shopee_grants",
 ];
 const registry = Object.fromEntries([
   ...move.map((t) => [t, "MOVE_TO_CANONICAL"]),

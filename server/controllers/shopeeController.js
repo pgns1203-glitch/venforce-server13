@@ -1,13 +1,17 @@
-// OAuth Shopee — ambiente de TESTE (prova do primeiro grant).
+// OAuth Shopee — TEST (prova de grant, sem persistir) e LIVE (grant por Conta).
 // - POST /shopee/test/autorizar (admin): emite `state` de uso único e devolve a
 //   URL oficial de autorização (auth_partner) assinada.
+// - POST /shopee/live/autorizar (admin): idem, preso a uma Conta Shopee validada.
 // - GET  /shopee/callback (público, chamado pela Shopee): valida o `state`,
-//   troca `code` por token no servidor e mostra só o shop_id.
-// - GET  /shopee/test/status (admin): config sem segredo + último grant (sem tokens).
-// Tokens NÃO são persistidos nesta fase: só confirmamos que chegaram.
+//   troca `code` por token no servidor e mostra só o shop_id. TEST × LIVE e a
+//   Conta saem SÓ do state server-side.
+// - GET  /shopee/test/status | /shopee/live/status (admin): sem segredo nem token.
+// TEST não persiste tokens. LIVE grava cifrado em shopee_grants (shopeeGrantService).
 const { readTestConfig } = require("../services/shopee/shopeeTestConfig");
 const { shopeeOAuthStateStore } = require("../services/shopee/shopeeOAuthState");
 const { buildAuthorizationUrl, exchangeCodeForToken, ShopeeAuthError, DIAGNOSTICOS } = require("../services/shopee/shopeeTestAuth");
+const { readLiveConfig } = require("../services/shopee/shopeeLiveConfig");
+const shopeeGrantService = require("../services/shopee/shopeeGrantService");
 
 const LOG = "[Shopee OAuth TEST]";
 
@@ -74,6 +78,8 @@ function lerShopId(valor) {
 function createShopeeController({
   stateStore = shopeeOAuthStateStore,
   readConfig = readTestConfig,
+  readLive = readLiveConfig,
+  grants = shopeeGrantService,
   exchange = exchangeCodeForToken,
   logger = console,
 } = {}) {
@@ -117,11 +123,15 @@ function createShopeeController({
       return res.status(400).send(renderPagina("Autorização Shopee não concluída", msg));
     }
 
-    const config = readConfig(intencao.app);
-    if (!config.configured || config.ambiente !== "test") {
-      logger.error(`${LOG} app ${intencao.app} não configurado no callback`);
-      return res.status(503).send(renderPagina("Autorização Shopee não concluída", "Integração de teste não configurada no servidor."));
+    // Ambiente, app e Conta vêm SÓ do state server-side; nada da query decide isso.
+    const ambiente = intencao.ambiente === "live" ? "live" : "test";
+    const config = ambiente === "live" ? readLive(intencao.app) : readConfig(intencao.app);
+    if (!config.configured || config.ambiente !== ambiente) {
+      logger.error(`${LOG} app ${intencao.app} (${ambiente}) não configurado no callback`);
+      return res.status(503).send(renderPagina("Autorização Shopee não concluída", `Integração ${ambiente === "live" ? "LIVE" : "de teste"} não configurada no servidor.`));
     }
+
+    if (ambiente === "live") return concluirLive(res, { intencao, config, code, shopId });
 
     try {
       const grant = await exchange(config, { code, shopId });
@@ -139,17 +149,131 @@ function createShopeeController({
       logger.log(`${LOG} grant concluído: app=${intencao.app} shop_id=${shopId} expire_in=${grant.expireIn}`);
       return res.status(200).send(renderPagina("Autorização Shopee de teste concluída", `Loja autorizada: shop_id ${shopId}`));
     } catch (err) {
-      const e = err instanceof ShopeeAuthError ? err : null;
-      // Log: códigos + mensagem da Shopee já reduzida (mensagemSegura) + host usado.
-      // HTML: só códigos e o texto fixo do diagnóstico.
-      logger.error(`${LOG} token/get falhou: app=${intencao.app} shop_id=${shopId} code=${e ? e.code : "ERRO_INTERNO"}`
-        + (e ? ` upstream=${e.upstreamStatus} shopee_error=${e.shopeeError} diagnostico=${e.diagnostico}`
-          + ` request_id=${e.shopeeRequestId} host=${config.apiOrigin} transport=${config.transport}`
-          + ` shopee_message=${JSON.stringify(e.shopeeMessage)}` : ""));
-      const detalhe = e ? `Erro: ${e.code}${e.shopeeError ? ` (${e.shopeeError})` : ""}.` : "Erro interno.";
-      const pista = e && e.diagnostico ? ` ${DIAGNOSTICOS[e.diagnostico]}` : " Gere um novo link e tente de novo.";
-      return res.status(502).send(renderPagina("Autorização Shopee não concluída", `${detalhe}${pista}`));
+      return falhaTokenGet(res, err, { intencao, config, shopId });
     }
+  }
+
+  function falhaTokenGet(res, err, { intencao, config, shopId }) {
+    const e = err instanceof ShopeeAuthError ? err : null;
+    // Os códigos do módulo de auth têm prefixo SHOPEE_TEST_; no LIVE vira SHOPEE_
+    // para não sugerir ao operador que o ambiente de teste foi usado.
+    const codigo = e ? (config.ambiente === "live" ? e.code.replace(/^SHOPEE_TEST_/, "SHOPEE_") : e.code) : "ERRO_INTERNO";
+    // Log: códigos + mensagem da Shopee já reduzida (mensagemSegura) + host usado.
+    // HTML: só códigos e o texto fixo do diagnóstico.
+    logger.error(`${LOG} token/get falhou: ambiente=${config.ambiente} app=${intencao.app} shop_id=${shopId} code=${codigo}`
+      + (e ? ` upstream=${e.upstreamStatus} shopee_error=${e.shopeeError} diagnostico=${e.diagnostico}`
+        + ` request_id=${e.shopeeRequestId} host=${config.apiOrigin} transport=${config.transport}`
+        + ` shopee_message=${JSON.stringify(e.shopeeMessage)}` : ""));
+    const detalhe = e ? `Erro: ${codigo}${e.shopeeError ? ` (${e.shopeeError})` : ""}.` : "Erro interno.";
+    const pista = e && e.diagnostico ? ` ${DIAGNOSTICOS[e.diagnostico]}` : " Gere um novo link e tente de novo.";
+    return res.status(502).send(renderPagina("Autorização Shopee não concluída", `${detalhe}${pista}`));
+  }
+
+  // LIVE: token/get e persistência cifrada na Conta do state. Sucesso só depois
+  // do COMMIT; qualquer falha de persistência vira página de erro (500).
+  async function concluirLive(res, { intencao, config, code, shopId }) {
+    let token;
+    try {
+      token = await exchange(config, { code, shopId });
+    } catch (err) {
+      return falhaTokenGet(res, err, { intencao, config, shopId });
+    }
+    try {
+      const salvo = await grants.salvarGrantLive({
+        clienteContaId: intencao.clienteContaId,
+        app: intencao.app,
+        shopId,
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken,
+        expireIn: token.expireIn,
+        userId: intencao.userId ?? null,
+        shopeeRequestId: token.shopeeRequestId,
+        chaveCifra: config.chaveCifra,
+      });
+      logger.log(`${LOG} grant LIVE salvo: app=${intencao.app} conta=${salvo.clienteContaId} shop_id=${shopId}`
+        + ` grant=${salvo.grantId} reautorizacao=${salvo.reautorizacao} expire_in=${token.expireIn}`);
+      return res.status(200).send(renderPagina(
+        "Autorização Shopee concluída",
+        `Loja shop_id ${shopId} autorizada e vinculada à Conta #${salvo.clienteContaId}.`
+      ));
+    } catch (err) {
+      const conhecido = err instanceof shopeeGrantService.ShopeeGrantError;
+      const codigo = conhecido ? err.code : "GRANT_NAO_PERSISTIDO";
+      logger.error(`${LOG} grant LIVE NÃO salvo: app=${intencao.app} conta=${intencao.clienteContaId} shop_id=${shopId} code=${codigo}`);
+      const msg = conhecido && err.status < 500
+        ? `${err.message} Nada foi gravado. (${codigo})`
+        : `A autorização foi recebida, mas não pôde ser gravada. Nada foi salvo; gere um novo link. (${codigo})`;
+      return res.status(conhecido && err.status < 500 ? 409 : 500).send(renderPagina("Autorização Shopee não concluída", msg));
+    }
+  }
+
+  function erroGrantJson(res, err, contexto) {
+    if (err instanceof shopeeGrantService.ShopeeGrantError) {
+      return res.status(err.status).json({ ok: false, code: err.code, erro: err.message });
+    }
+    logger.error(`${LOG} ${contexto}: ${(err && err.code) || "ERRO_INTERNO"}`);
+    return res.status(500).json({ ok: false, erro: "Erro interno." });
+  }
+
+  // POST /shopee/live/autorizar {clienteContaId, app?}. Admin. O link nasce preso
+  // à Conta validada aqui; o callback não aceita Conta vinda do navegador/Shopee.
+  async function iniciarAutorizacaoLiveController(req, res) {
+    const app = String((req.body && req.body.app) || "marketing").trim().toLowerCase();
+    const config = readLive(app);
+    if (!config.appValido) return res.status(400).json({ ok: false, erro: "App Shopee desconhecido." });
+    if (!config.configured) {
+      return res.status(503).json({ ok: false, erro: "App Shopee LIVE não configurado.", faltando: config.faltando });
+    }
+    let conta;
+    try {
+      conta = await grants.validarContaShopee(req.body && req.body.clienteContaId);
+    } catch (err) {
+      return erroGrantJson(res, err, "validar Conta LIVE");
+    }
+    const clienteContaId = Number(conta.id);
+    const { state, expiresAt } = stateStore.emitir({ app, ambiente: "live", userId: req.user ? req.user.id : null, clienteContaId });
+    try {
+      const url = buildAuthorizationUrl(config, state);
+      logger.log(`${LOG} link LIVE emitido: app=${app} conta=${clienteContaId} user=${req.user ? req.user.id : "?"}`);
+      return res.json({
+        ok: true,
+        app,
+        ambiente: "live",
+        clienteContaId,
+        lojaJaVinculada: conta.external_account_id ? String(conta.external_account_id) : null,
+        url,
+        stateExpiraEm: new Date(expiresAt).toISOString(),
+      });
+    } catch (err) {
+      stateStore.consumir(state);
+      logger.error(`${LOG} falha ao montar URL LIVE: ${err && err.code ? err.code : "ERRO_INTERNO"}`);
+      return res.status(500).json({ ok: false, erro: "Falha ao montar a URL de autorização." });
+    }
+  }
+
+  // GET /shopee/live/status[?clienteContaId=]. Admin. Só metadados, nunca token.
+  async function statusLiveController(req, res) {
+    const config = readLive("marketing");
+    const clienteContaId = req.query && req.query.clienteContaId !== undefined ? req.query.clienteContaId : null;
+    let lista;
+    try {
+      lista = await grants.statusGrantsLive({ clienteContaId });
+    } catch (err) {
+      return erroGrantJson(res, err, "status LIVE");
+    }
+    return res.json({
+      ok: true,
+      ambiente: "live",
+      marketing: {
+        configured: config.configured,
+        faltando: config.faltando,
+        apiOrigin: config.apiOrigin || null,
+        redirectUrl: config.redirectUrl || null,
+        transport: config.transport || null,
+      },
+      ...(clienteContaId !== null ? { clienteContaId: Number(clienteContaId), autorizado: lista.some((g) => g.status === "active") } : {}),
+      grants: lista,
+    });
   }
 
   function iniciarAutorizacaoTestController(req, res) {
@@ -189,7 +313,13 @@ function createShopeeController({
     });
   }
 
-  return { callbackShopeeController, iniciarAutorizacaoTestController, statusTestController };
+  return {
+    callbackShopeeController,
+    iniciarAutorizacaoTestController,
+    statusTestController,
+    iniciarAutorizacaoLiveController,
+    statusLiveController,
+  };
 }
 
 const padrao = createShopeeController();
@@ -199,4 +329,6 @@ module.exports = {
   callbackShopeeController: padrao.callbackShopeeController,
   iniciarAutorizacaoTestController: padrao.iniciarAutorizacaoTestController,
   statusTestController: padrao.statusTestController,
+  iniciarAutorizacaoLiveController: padrao.iniciarAutorizacaoLiveController,
+  statusLiveController: padrao.statusLiveController,
 };

@@ -54,6 +54,7 @@ const TABELAS_DEPENDENTES = [
   // tipo "conta": linhas chaveadas pela Conta do cliente (sem cliente_id).
   ["Incidentes do Sentinel", "sentinel_incidentes", "cliente_conta_id", "conta"],
   ["Checkpoints de leitura do Sentinel", "sentinel_checkpoints", "cliente_conta_id", "conta"],
+  ["Autorizações Shopee", "shopee_grants", "cliente_conta_id", "conta"],
 ];
 
 async function tabelaExiste(tabela) {

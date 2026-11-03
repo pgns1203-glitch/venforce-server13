@@ -458,7 +458,88 @@ function clearSession() {
   window.location.replace("index.html");
 }
 
+/* ── MODAL ADICIONAR PESSOA ──────────────────────────────── */
+let _ADD_ABERTO = false;
+
+function abaAdicionar(nome) {
+  document.querySelectorAll("#vf-add-pessoa-tabs .vf-tab").forEach(t => {
+    const ativa = t.dataset.tab === nome;
+    t.classList.toggle("is-active", ativa);
+    t.setAttribute("aria-selected", ativa ? "true" : "false");
+  });
+  document.querySelectorAll("#vf-add-pessoa-form [data-panel]").forEach(p => {
+    p.hidden = p.dataset.panel !== nome;
+  });
+  const campo = { email: "add-pessoa-email", senha: "add-pessoa-senha", cargo: "add-pessoa-cargo" }[nome];
+  document.getElementById(campo)?.focus();
+}
+
+function erroAdicionar(msg) {
+  const el = document.getElementById("vf-add-pessoa-error");
+  if (!el) return;
+  el.style.display = msg ? "block" : "none";
+  el.textContent = msg || "";
+}
+
+function abrirModalAdicionar() {
+  document.getElementById("vf-add-pessoa-form").reset();
+  erroAdicionar("");
+  const btn = document.getElementById("vf-add-pessoa-confirm");
+  btn.disabled = false; btn.textContent = "Adicionar";
+  document.getElementById("vf-add-pessoa-modal").classList.add("is-open");
+  document.body.classList.add("vf-no-scroll");
+  _ADD_ABERTO = true;
+  abaAdicionar("email");
+}
+
+function fecharModalAdicionar() {
+  document.getElementById("vf-add-pessoa-modal").classList.remove("is-open");
+  document.body.classList.remove("vf-no-scroll");
+  _ADD_ABERTO = false;
+}
+
+async function submeterAdicionar(e) {
+  e.preventDefault();
+  const email = document.getElementById("add-pessoa-email").value.trim();
+  const password = document.getElementById("add-pessoa-senha").value;
+  const role = document.getElementById("add-pessoa-cargo").value;
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) { abaAdicionar("email"); erroAdicionar("Informe um e-mail válido."); return; }
+  if (password.length < 6) { abaAdicionar("senha"); erroAdicionar("A senha deve ter ao menos 6 caracteres."); return; }
+
+  erroAdicionar("");
+  const btn = document.getElementById("vf-add-pessoa-confirm");
+  btn.disabled = true; btn.textContent = "Adicionando…";
+  try {
+    const res = await fetch(`${API_BASE}/usuarios`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: "Bearer " + TOKEN },
+      body: JSON.stringify({ email, password, role }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401) { clearSession(); return; }
+    if (!res.ok) throw new Error(data.erro || `HTTP ${res.status}`);
+    fecharModalAdicionar();
+    toast("Pessoa adicionada com sucesso.", "ok");
+    loadUsuarios();
+  } catch (err) {
+    erroAdicionar(err.message);
+    btn.disabled = false; btn.textContent = "Adicionar";
+  }
+}
+
 /* ── EVENTOS FIXOS ───────────────────────────────────────── */
+document.getElementById("btn-add-pessoa")?.addEventListener("click", abrirModalAdicionar);
+document.getElementById("vf-add-pessoa-close")?.addEventListener("click", fecharModalAdicionar);
+document.getElementById("vf-add-pessoa-cancel")?.addEventListener("click", fecharModalAdicionar);
+document.getElementById("vf-add-pessoa-form")?.addEventListener("submit", submeterAdicionar);
+document.getElementById("vf-add-pessoa-tabs")?.addEventListener("click", e => {
+  const t = e.target.closest(".vf-tab");
+  if (t) abaAdicionar(t.dataset.tab);
+});
+document.getElementById("vf-add-pessoa-modal")?.addEventListener("click", e => {
+  if (e.target?.id === "vf-add-pessoa-modal") fecharModalAdicionar();
+});
 document.getElementById("btn-retry")?.addEventListener("click", loadUsuarios);
 document.getElementById("vf-remover-usuario-close")?.addEventListener("click", fecharModalRemoverUsuario);
 document.getElementById("vf-remover-usuario-cancel")?.addEventListener("click", fecharModalRemoverUsuario);
@@ -467,7 +548,8 @@ document.getElementById("vf-remover-usuario-modal")?.addEventListener("click", e
   if (e.target?.id === "vf-remover-usuario-modal") fecharModalRemoverUsuario();
 });
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && _MODAL_ABERTO) fecharModalRemoverUsuario();
+  if (e.key === "Escape" && _ADD_ABERTO) fecharModalAdicionar();
+  else if (e.key === "Escape" && _MODAL_ABERTO) fecharModalRemoverUsuario();
 });
 
 /* ── BOOT ────────────────────────────────────────────────── */

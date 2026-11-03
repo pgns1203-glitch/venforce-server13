@@ -1863,6 +1863,41 @@ app.get("/usuarios", authMiddleware, requireAdmin, async (req, res) => {
   }
 });
 
+app.post("/usuarios", authMiddleware, requireAdmin, async (req, res) => {
+  try {
+    const email = String(req.body.email || "").trim().toLowerCase();
+    const senha = String(req.body.password || "");
+    const role = String(req.body.role || "membro");
+    const nome = String(req.body.nome || "").trim() || email.split("@")[0];
+    const rolesPermitidas = ['admin', 'membro', 'seller', 'shopee_reviewer'];
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ ok: false, erro: "E-mail inválido." });
+    }
+    if (senha.length < 6) {
+      return res.status(400).json({ ok: false, erro: "A senha deve ter ao menos 6 caracteres." });
+    }
+    if (!rolesPermitidas.includes(role)) {
+      return res.status(400).json({ ok: false, erro: `Cargo inválido. Permitidos: ${rolesPermitidas.join(', ')}.` });
+    }
+    const hashed = await bcrypt.hash(senha, 10);
+    const result = await pool.query(
+      "INSERT INTO users (email, password, nome, role, ativo) VALUES ($1, $2, $3, $4, true) RETURNING id, nome, email, role, ativo, created_at",
+      [email, hashed, nome, role]
+    );
+    registrarLog({
+      ...dadosUsuarioDeReq(req),
+      acao: "admin.usuario.criar",
+      detalhes: { target_user_id: result.rows[0].id, role },
+      ip: extrairIp(req),
+      status: "sucesso"
+    });
+    res.status(201).json({ ok: true, usuario: result.rows[0] });
+  } catch (err) {
+    if (err.code === "23505") return res.status(409).json({ ok: false, erro: "E-mail já cadastrado." });
+    res.status(500).json({ ok: false, erro: err.message });
+  }
+});
+
 app.patch("/usuarios/:id", authMiddleware, requireAdmin, async (req, res) => {
   try {
     const targetId = parseInt(req.params.id);

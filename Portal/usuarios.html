@@ -29,6 +29,9 @@
                 Quem tem acesso ao portal, agrupado por papel. Admin altera o papel, ativa e remove o acesso.
               </p>
             </div>
+            <div class="vf-page-header__actions">
+              <button type="button" id="btn-add-pessoa" class="vf-btn vf-btn--primary">+ Adicionar pessoa</button>
+            </div>
           </header>
 
           <div id="usuarios-feedback" class="vf-banner" role="status" aria-live="polite" hidden></div>
@@ -116,6 +119,49 @@
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- Modal: adicionar pessoa -->
+  <div id="vf-add-pessoa-modal" class="vf-overlay">
+    <form class="vf-modal vf-modal--sm" id="vf-add-pessoa-form" role="dialog" aria-modal="true" aria-labelledby="vf-add-pessoa-title" novalidate>
+      <div class="vf-modal__header">
+        <h2 id="vf-add-pessoa-title" class="vf-modal__title">Adicionar pessoa</h2>
+        <button type="button" id="vf-add-pessoa-close" class="vf-btn vf-btn--ghost vf-btn--icon vf-btn--sm" aria-label="Fechar">×</button>
+      </div>
+      <div class="vf-modal__body">
+        <nav class="vf-tabs" id="vf-add-pessoa-tabs" role="tablist" aria-label="Dados da pessoa">
+          <button type="button" role="tab" class="vf-tab is-active" data-tab="email" aria-selected="true">E-mail</button>
+          <button type="button" role="tab" class="vf-tab" data-tab="senha" aria-selected="false">Senha</button>
+          <button type="button" role="tab" class="vf-tab" data-tab="cargo" aria-selected="false">Cargo</button>
+        </nav>
+
+        <div class="vf-field" data-panel="email" role="tabpanel" style="margin-top:16px;">
+          <label class="vf-field__label" for="add-pessoa-email">E-mail <span class="vf-field__required">*</span></label>
+          <input id="add-pessoa-email" class="vf-input" type="email" autocomplete="off" placeholder="pessoa@empresa.com">
+        </div>
+
+        <div class="vf-field" data-panel="senha" role="tabpanel" style="margin-top:16px;" hidden>
+          <label class="vf-field__label" for="add-pessoa-senha">Senha <span class="vf-field__required">*</span></label>
+          <input id="add-pessoa-senha" class="vf-input" type="password" autocomplete="new-password" placeholder="Mínimo 6 caracteres">
+        </div>
+
+        <div class="vf-field" data-panel="cargo" role="tabpanel" style="margin-top:16px;" hidden>
+          <label class="vf-field__label" for="add-pessoa-cargo">Cargo <span class="vf-field__required">*</span></label>
+          <select id="add-pessoa-cargo" class="vf-select">
+            <option value="membro">Membro</option>
+            <option value="admin">Admin</option>
+            <option value="seller">Seller</option>
+            <option value="shopee_reviewer">Shopee Reviewer</option>
+          </select>
+        </div>
+
+        <div id="vf-add-pessoa-error" class="vf-banner is-danger" style="display:none;margin-top:12px;"></div>
+      </div>
+      <div class="vf-modal__footer">
+        <button type="button" id="vf-add-pessoa-cancel" class="vf-btn vf-btn--secondary">Cancelar</button>
+        <button type="submit" id="vf-add-pessoa-confirm" class="vf-btn vf-btn--primary">Adicionar</button>
+      </div>
+    </form>
   </div>
 
   <!-- Modal: remover pessoa -->

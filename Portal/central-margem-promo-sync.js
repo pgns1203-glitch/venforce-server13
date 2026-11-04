@@ -225,6 +225,26 @@
   }
 
   /**
+   * Aviso do fim do run acompanhado. Verde ("leitura nova") SÓ quando o run
+   * terminou e promoveu um snapshot novo; run falho, parcial rejeitado
+   * (`promovido:false`) ou conta em estado de falha → aviso de falha: a lista
+   * continua com a última leitura válida, nunca apresentada como nova.
+   */
+  function avisoDeConclusao(atual, runPedido) {
+    var u = atual && atual.ultimaTentativa;
+    var sync = atual && atual.sync;
+    var doPedido = !runPedido || (u && u.runId === runPedido);
+    var promoveu = Boolean(u && doPedido && u.promovido === true && u.status !== "failed" && !(sync && sync.state === "failed"));
+    if (promoveu) return { tom: "ok", texto: "Atualização concluída. Lista e indicadores recarregados com a leitura nova." };
+    var motivo = u && doPedido ? (u.erroMotivo || (u.status === "partial" ? "muitos anúncios sem leitura" : null)) : null;
+    return {
+      tom: "danger",
+      texto: "A atualização terminou sem leitura nova" + (motivo ? " (" + motivo + ")" : "") +
+        "; a lista continua com a última leitura válida.",
+    };
+  }
+
+  /**
    * Quando reler o status sem run ativo: só no cooldown (o botão volta a
    * habilitar sozinho quando ele vence). null = não precisa.
    */
@@ -241,6 +261,7 @@
     resultadoDoPedido: resultadoDoPedido,
     terminou: terminou,
     releituraEmMs: releituraEmMs,
+    avisoDeConclusao: avisoDeConclusao,
     progressoDoRun: progressoDoRun,
     idadeTexto: idadeTexto,
   };

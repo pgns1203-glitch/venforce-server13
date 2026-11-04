@@ -156,6 +156,9 @@
     // falhas seguidas ao reler o status (retentativa limitada com espera).
     promoSyncRunPedido: null,
     promoSyncFalhas: 0,
+    // Cada GET de status ganha um número; só a resposta do MAIS RECENTE vale
+    // (GETs simultâneos na mesma conta nunca agendam dois timers).
+    promoSyncReqSeq: 0,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
@@ -2036,7 +2039,10 @@
       return;
     }
     if (!poll) state.promoSyncPolls = 0;
-    var contexto = promoSyncContexto();
+    state.promoSyncReqSeq += 1;
+    var req = state.promoSyncReqSeq;
+    var contextoConta = promoSyncContexto();
+    var contexto = function () { return req === state.promoSyncReqSeq && contextoConta(); };
     if (!state.promoSyncState) {
       state.promoSyncState = { status: "loading" };
       renderPromoSync();
@@ -2045,6 +2051,7 @@
       if (!contexto()) return;
       var anterior = state.promoSyncState && state.promoSyncState.data;
       var agendar = function (ms) {
+        if (state.promoSyncTimer) root.clearTimeout(state.promoSyncTimer);
         state.promoSyncTimer = root.setTimeout(function () {
           state.promoSyncTimer = null;
           if (!contexto()) return;
@@ -2055,7 +2062,10 @@
         // Falha transitória: mantém a última leitura na tela e tenta de novo
         // (limitado) se havia algo a acompanhar.
         state.promoSyncFalhas += 1;
-        var acompanhando = Boolean(state.promoSyncRunPedido || (anterior && anterior.sync && anterior.sync.activeRun));
+        // Retenta se havia algo a acompanhar: run ativo/pedido ou o fim de um
+        // cooldown (senão o botão ficaria desabilitado até reabrir a aba).
+        var acompanhando = Boolean(state.promoSyncRunPedido || (anterior && anterior.sync && anterior.sync.activeRun) ||
+          (anterior && promoSync.releituraEmMs(anterior)));
         var retenta = acompanhando && state.promoSyncFalhas <= PROMO_SYNC_FALHAS_MAX && state.view === "promotions";
         state.promoSyncState = { status: "error", error: result.error || "Falha ao ler o estado.", data: anterior || null, retentando: retenta };
         renderPromoSync();
@@ -2067,11 +2077,7 @@
       if (promoSync.terminou(anterior, result, state.promoSyncRunPedido)) {
         var pedido = state.promoSyncRunPedido;
         state.promoSyncRunPedido = null;
-        var u = result.ultimaTentativa;
-        var doPedido = !pedido || !u || u.runId === pedido;
-        state.promoSyncAviso = u && u.status === "failed" && doPedido
-          ? { tom: "danger", texto: "A atualização terminou com falha; a lista continua com a última leitura válida." }
-          : { tom: "ok", texto: "Atualização concluída. Lista e indicadores recarregados com a leitura nova." };
+        state.promoSyncAviso = promoSync.avisoDeConclusao(result, pedido);
         // Recarrega a conta: lista (página 1) e resumo das promoções.
         state.oppsPage = 1;
         loadOpportunities(false, { semStatus: true });
@@ -2080,6 +2086,8 @@
       renderPromoSync();
       if (state.view !== "promotions") return;
       var m = promoSync.modelo(result, { formatDate: formatShortDateTime });
+      // Run "parado" (worker desligado): não há o que acompanhar — para.
+      if (m.estado === "parado") state.promoSyncRunPedido = null;
       if ((m.acompanhar || state.promoSyncRunPedido) && state.promoSyncPolls < PROMO_SYNC_POLL_MAX) {
         state.promoSyncPolls += 1;
         agendar(PROMO_SYNC_POLL_MS);

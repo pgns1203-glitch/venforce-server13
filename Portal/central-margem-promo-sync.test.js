@@ -169,4 +169,19 @@ check("releituraEmMs: só no cooldown, até 16 min", () => {
   assert.strictEqual(S.releituraEmMs(status({ atualizacao: { disponivel: false, motivo: "WORKER_DESABILITADO" } })), null);
 });
 
+check("aviso de conclusão: verde só com snapshot novo promovido; parcial rejeitado/falha → nunca 'leitura nova'", () => {
+  const ok = S.avisoDeConclusao({ sync: { state: "fresh" }, ultimaTentativa: { runId: 7, status: "completed", promovido: true } }, 7);
+  assert.strictEqual(ok.tom, "ok");
+  const parcial = S.avisoDeConclusao({ sync: { state: "failed" }, ultimaTentativa: { runId: 7, status: "partial", promovido: false, erroMotivo: "muitos anúncios sem leitura" } }, 7);
+  assert.strictEqual(parcial.tom, "danger");
+  assert.ok(!/leitura nova\./.test(parcial.texto) && /sem leitura nova \(muitos anúncios sem leitura\)/.test(parcial.texto), parcial.texto);
+  const falha = S.avisoDeConclusao({ sync: { state: "failed" }, ultimaTentativa: { runId: 7, status: "failed", promovido: false, erroMotivo: "erro do Mercado Livre" } }, 7);
+  assert.strictEqual(falha.tom, "danger");
+  // Parcial PROMOVIDO (dentro do limite) é leitura nova.
+  const parcialOk = S.avisoDeConclusao({ sync: { state: "partial" }, ultimaTentativa: { runId: 7, status: "partial", promovido: true } }, 7);
+  assert.strictEqual(parcialOk.tom, "ok");
+  // Última tentativa de OUTRO run: não afirma que o pedido promoveu.
+  assert.strictEqual(S.avisoDeConclusao({ sync: { state: "fresh" }, ultimaTentativa: { runId: 8, status: "completed", promovido: true } }, 7).tom, "danger");
+});
+
 console.log(`# ${checks} testes da barra de atualização das promoções`);

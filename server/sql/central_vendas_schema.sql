@@ -188,8 +188,8 @@ CREATE TABLE IF NOT EXISTS central_vendas_sync_runs (
 -- o bug possa ter deixado ativas: mantém só o run mais recente de cada
 -- grupo como queued/running e marca os demais como failed (nunca deleta —
 -- o histórico continua auditável). Idempotente: sem duplicatas, é um
--- no-op. Roda toda vez que ensureCentralVendasTables() é chamado, mas o
--- custo é proporcional ao número de runs ativos (tabela pequena).
+-- no-op. Desde 03/11/2026 o arquivo inteiro só roda quando o seu hash muda
+-- (ver services/schema/schemaVersionado.js), não mais a cada boot.
 WITH duplicados_legado AS (
   SELECT id,
          ROW_NUMBER() OVER (
@@ -331,30 +331,15 @@ ALTER TABLE central_vendas_componentes ADD COLUMN IF NOT EXISTS escopo TEXT;
 ALTER TABLE central_vendas_componentes ADD COLUMN IF NOT EXISTS efeito TEXT;
 ALTER TABLE central_vendas_componentes ADD COLUMN IF NOT EXISTS incluido_no_resultado BOOLEAN;
 
--- Backfill idempotente das linhas legadas (anteriores ao M6): só toca linhas
--- ainda não classificadas (escopo IS NULL) — nunca reescreve valor/tipo/
--- fonte/confianca, e não roda de novo depois da primeira classificação.
--- Mesma regra determinística de classificarComponenteFinanceiro() — nunca
--- duplicada com lógica diferente. Segura para dado legado: escopo e tipo já
--- são fatos persistidos, nunca uma adivinhação nova criada aqui.
-UPDATE central_vendas_componentes c
-   SET escopo = CASE WHEN c.item_id IS NULL THEN 'pedido' ELSE 'item' END,
-       efeito = CASE c.tipo
-                  WHEN 'receita_produto' THEN 'credito'
-                  WHEN 'receita_envio' THEN 'credito'
-                  WHEN 'tarifa_venda' THEN 'debito'
-                  WHEN 'custo_produto' THEN 'debito'
-                  WHEN 'imposto_interno' THEN 'debito'
-                  WHEN 'frete_seller' THEN 'debito'
-                  WHEN 'cancelamento_reembolso' THEN 'debito'
-                  ELSE NULL
-                END,
-       incluido_no_resultado = CASE
-                  WHEN c.tipo IN ('receita_produto', 'tarifa_venda', 'custo_produto', 'imposto_interno', 'frete_seller') THEN TRUE
-                  WHEN c.tipo IN ('receita_envio', 'cancelamento_reembolso') THEN FALSE
-                  ELSE NULL
-                END
- WHERE c.escopo IS NULL;
+-- Backfill das linhas legadas (anteriores ao M6, escopo IS NULL): SAIU daqui
+-- em 03/11/2026 (P0 estabilidade do PostgreSQL). Ele rodava em TODO boot, na
+-- mesma transação dos ALTER TABLE acima (ACCESS EXCLUSIVE em imports,
+-- componentes e sync_runs), e varria central_vendas_componentes INTEIRA (sem
+-- índice em escopo) para não achar nenhuma linha — insertComponente sempre
+-- grava escopo/efeito/incluido_no_resultado desde o M6. Base legada que ainda
+-- tenha linhas sem classificação: rodar UMA vez, em lotes, o procedimento
+--   node server/scripts/central-vendas-backfill-escopo-componentes.js
+-- (dry-run por padrão; mesma regra de classificarComponenteFinanceiro()).
 
 -- ---------------------------------------------------------------------------
 -- MP1 — Ingestão canônica de Mercado Pago Payments + charges_details

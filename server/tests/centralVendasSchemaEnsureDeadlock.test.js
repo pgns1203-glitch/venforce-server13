@@ -78,7 +78,7 @@ function criarPoolFake({ aoExecutar = null, schemaGate = null } = {}) {
     // Um pool que recebesse .query direto para o schema usaria conexões
     // diferentes para lock e schema — é justamente o que NÃO pode acontecer.
     async query(sql) {
-      eventos.push({ client: null, cmd: "POOL_QUERY", sql: String(sql).slice(0, 40) });
+      eventos.push({ client: null, cmd: "POOL_QUERY", sql: String(sql).slice(0, 60) });
       return { rows: [] };
     },
   };
@@ -169,14 +169,23 @@ async function run() {
   {
     const pool = criarPoolFake();
     await repository.ensureCentralVendasTables(pool);
+    // Desde 03/11/2026 (P0 estabilidade do PostgreSQL): leitura do marcador de
+    // versão no pool (SELECT puro) → conexão dedicada com a tabela de versões
+    // numa transação curta própria → transação do schema (abaixo).
     eq(
-      "lock: sequência BEGIN → LOCK → SCHEMA → COMMIT → RELEASE, todos no mesmo client",
+      "lock: sequência com marcador de versão, todos no mesmo client",
       pool.eventos.map((e) => `${e.client}:${e.cmd}`),
-      ["1:BEGIN", "1:LOCK", "1:SCHEMA", "1:COMMIT", "1:RELEASE"]
+      // garantirTabelaVersoes: teto na espera do lock → lock → timeouts do CREATE.
+      // Transação do schema: teto na espera → lock → statement_timeout do DDL →
+      // releitura do marcador → lock_timeout → SCHEMA → marcador → COMMIT.
+      ["null:POOL_QUERY",
+        "1:BEGIN", "1:SET", "1:LOCK", "1:SET", "1:SET", "1:CREATE", "1:COMMIT",
+        "1:BEGIN", "1:SET", "1:LOCK", "1:SET", "1:/*", "1:SET", "1:SCHEMA", "1:INSERT", "1:COMMIT", "1:RELEASE"]
     );
-    const lock = pool.eventos.find((e) => e.cmd === "LOCK");
-    ok("lock: chave estável e específica do domínio", JSON.stringify(lock.params).includes("venforce:central-vendas:schema"));
-    ok("lock: nada foi enviado ao pool fora da conexão dedicada", !pool.eventos.some((e) => e.cmd === "POOL_QUERY"));
+    const locks = pool.eventos.filter((e) => e.cmd === "LOCK");
+    ok("lock: chave estável e específica do domínio", JSON.stringify(locks[1].params).includes("venforce:central-vendas:schema"));
+    ok("lock: no pool, fora da conexão dedicada, só a LEITURA do marcador",
+      pool.eventos.filter((e) => e.cmd === "POOL_QUERY").every((e) => /schema:VERSAO/.test(e.sql)));
   }
 
   // Erro no schema: ROLLBACK, release e o erro sobe.
@@ -186,10 +195,11 @@ async function run() {
     });
     await rejeita("lock: erro do schema propaga", repository.ensureCentralVendasTables(pool), (e) => /ddl quebrou/.test(e.message));
     eq(
-      "lock: erro → ROLLBACK e release (sem COMMIT, sem conexão presa)",
-      pool.eventos.map((e) => `${e.client}:${e.cmd}`),
-      ["1:BEGIN", "1:LOCK", "1:SCHEMA", "1:ROLLBACK", "1:RELEASE"]
+      "lock: erro → ROLLBACK e release (sem COMMIT do schema, sem marcador, sem conexão presa)",
+      pool.eventos.map((e) => `${e.client}:${e.cmd}`).slice(-5),
+      ["1:/*", "1:SET", "1:SCHEMA", "1:ROLLBACK", "1:RELEASE"]
     );
+    ok("lock: erro → marcador NÃO gravado", !pool.eventos.some((e) => e.cmd === "INSERT"));
   }
 
   // ROLLBACK que também falha: a conexão é descartada (release(err)).

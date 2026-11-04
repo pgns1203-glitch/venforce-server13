@@ -14,6 +14,7 @@ process.env.SQUADS_ENFORCEMENT = "on";
 
 const assert = require("assert");
 const pool = require("../config/database");
+const { connectDelegandoAoQuery } = require("./helpers/schemaVersionadoNoMock");
 const { obterContexto, obterPortfolio } = require("../services/meService");
 
 let checks = 0;
@@ -127,9 +128,12 @@ class MockDb {
 
 function withMockDb(dbOpts, fn) {
   const original = pool.query;
+  const originalConnect = pool.connect;
   const db = new MockDb(dbOpts);
   pool.query = (sql, params) => db.query(sql, params);
-  return Promise.resolve().then(() => fn(db)).finally(() => { pool.query = original; });
+  // ensure* no pool passam pelo marcador de versão (conexão dedicada).
+  pool.connect = connectDelegandoAoQuery(pool);
+  return Promise.resolve().then(() => fn(db)).finally(() => { pool.query = original; pool.connect = originalConnect; });
 }
 
 function grantRow({ cliente_id, id, marketplace, nome, external_account_id, ativo = true, metadata_json = {}, grant_id = null, grant_ml_user_id = null, grant_token_status = null, grant_expires_at = null, vinculo_id = null, vinculo_base_id = null, vinculo_base_slug = null, vinculo_base_nome = null }) {

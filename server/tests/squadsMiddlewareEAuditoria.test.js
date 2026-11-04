@@ -5,6 +5,7 @@
 
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://localhost/vf-test";
 
+const { connectDelegandoAoQuery } = require("./helpers/schemaVersionadoNoMock");
 const assert = require("assert");
 const pool = require("../config/database");
 
@@ -24,6 +25,10 @@ function fakeRes() {
 
 async function run() {
   const originalQuery = pool.query;
+  // ensureSquadsTables no pool passa pelo marcador de versão (conexão dedicada):
+  // o connect fake delega ao pool.query mockado de cada bloco.
+  const originalConnect = pool.connect;
+  pool.connect = connectDelegandoAoQuery(pool);
 
   // ── middleware: cliente fora da carteira -> 403 { code } ──
   pool.query = async (sql) => {
@@ -103,6 +108,7 @@ async function run() {
   }
 
   pool.query = originalQuery;
+  pool.connect = originalConnect;
   console.log(`\nsquadsMiddlewareEAuditoria.test.js: ${checks} verificações passaram.`);
 }
 

@@ -15,6 +15,7 @@
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
+const { aplicarSchemaVersionado } = require("../schema/schemaVersionado");
 
 const migrationsDir = path.join(__dirname, "..", "..", "sql", "migrations");
 const migrationFiles = [
@@ -28,11 +29,22 @@ let _ensured = false;
 // Idempotente. Os arquivos de migration são a fonte canônica do schema —
 // este boot só os reaplica (CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT
 // EXISTS / índices parciais).
+//
+// 03/11/2026 (P0 estabilidade do PostgreSQL): no pool do processo cada arquivo
+// passa por aplicarSchemaVersionado — com o marcador em dia é só 1 SELECT (antes:
+// `ALTER TABLE cliente_responsaveis ... IF NOT EXISTS` com ACCESS EXCLUSIVE e sem
+// lock_timeout a cada boot, travando a 1ª etapa do boot atrás de qualquer leitura
+// longa). O BEGIN;/COMMIT; próprios dos arquivos são neutralizados (a transação
+// é a do aplicador). db injetado (teste / tooling): caminho direto de sempre.
 async function ensureSquadsTables(db = pool) {
   if (_ensured && db === pool) return;
   for (const nome of migrationFiles) {
     const sql = fs.readFileSync(path.join(migrationsDir, nome), "utf8");
-    await db.query(sql);
+    if (db === pool) {
+      await aplicarSchemaVersionado({ db, chave: nome, sql, lockKey: `vf:schema:${nome}`, removerTransacaoPropria: true });
+    } else {
+      await db.query(sql);
+    }
   }
   if (db === pool) _ensured = true;
 }

@@ -443,7 +443,8 @@ async function run() {
   {
     const index = fs.readFileSync(path.join(__dirname, "../index.js"), "utf8");
     ok("index: importa o scheduler", index.includes('require("./services/centralVendas/centralVendasNoturnoScheduler")'));
-    ok("index: inicia só depois de ensureCentralVendasTables", /ensureCentralVendasTables\(\)\.then\(\s*\(\) => \{[\s\S]*centralVendasNoturnoScheduler\.iniciar\(\)/.test(index));
+    // Boot em etapas (P0 03/11/2026): aoConcluir só roda depois de executar() dar certo.
+    ok("index: inicia só depois de ensureCentralVendasTables", /executar: \(\) => ensureCentralVendasTables\(\),\s*aoConcluir: \(\) => \{\s*if \(centralVendasNoturnoScheduler\.iniciar\(\)\)/.test(index));
     ok("index: recupera pendências depois de iniciar", index.includes("centralVendasNoturnoScheduler.recuperarPendencias()"));
     const encerrar = index.slice(index.indexOf("function encerrarComGraca"), index.indexOf('process.on("SIGTERM"'));
     ok("index: encerrarComGraca drena o scheduler com prazo", encerrar.includes("centralVendasNoturnoScheduler.parar({ aguardarMs: 20000 })"));

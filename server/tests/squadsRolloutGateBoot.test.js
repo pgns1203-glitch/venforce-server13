@@ -159,11 +159,20 @@ async function run() {
     // pode lançar — e sem `.catch()` isso vira unhandled rejection, que o Node
     // trata encerrando o processo (não há handler global neste projeto).
     // Todas as outras cadeias de boot deste mesmo bloco têm `.catch()`.
+    // Desde 03/11/2026 (P0 estabilidade do PostgreSQL) o boot é uma lista de
+    // etapas em sequência (services/boot/bootSequencial.js): o log do gate é o
+    // `aoConcluir` da etapa e o executor envolve `aoConcluir`/`aoFalhar` em
+    // try/catch e nunca rejeita — mesma garantia do `.catch()` de antes.
     const i = fonteIndex.indexOf("armarRolloutGate");
-    const fim = fonteIndex.indexOf("ensureObservabilityTables", i);
+    const fim = fonteIndex.indexOf("ensureEntregasClienteSchema", i);
     const bloco = fonteIndex.slice(i, fim > i ? fim : undefined);
-    ok("a cadeia de boot do rollout gate termina em .catch() (não derruba o boot)",
-      /\.catch\(/.test(bloco));
+    ok("o log do rollout gate é o aoConcluir de uma etapa de boot (com aoFalhar)",
+      /aoConcluir:/.test(bloco) && /aoFalhar:/.test(bloco));
+    const fonteBoot = require("fs").readFileSync(require("path").join(__dirname, "..", "services", "boot", "bootSequencial.js"), "utf8");
+    ok("o executor de boot protege aoConcluir com try/catch (não derruba o boot)",
+      /try \{\s*await etapa\.aoConcluir\(resultado\);\s*\} catch/.test(fonteBoot));
+    ok("index.js: a sequência de boot termina em .catch()",
+      /executarEtapasDeBoot\(etapasDeBoot\(\)[^\n]*\)\s*\.catch\(/.test(fonteIndex));
   }
 
   cfg._resetParaTeste();

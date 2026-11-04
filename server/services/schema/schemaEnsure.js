@@ -51,6 +51,7 @@
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
+const { aplicarSchemaVersionado } = require("./schemaVersionado");
 
 const migrationsDir = path.join(__dirname, "..", "..", "sql", "migrations");
 
@@ -114,9 +115,16 @@ const ENTREGAS_CLIENTE_DDL = `
 let _ensured = false;
 
 // Idempotente. `db` injetável para teste (mesmo padrão de squadsRepository).
+// No pool do processo: marcador de versão (só roda quando o DDL muda) +
+// lock_timeout — `ALTER TABLE entregas_cliente ... IF NOT EXISTS` pede ACCESS
+// EXCLUSIVE mesmo quando a coluna já existe (P0 03/11/2026).
 async function ensureEntregasClienteSchema(db = pool) {
   if (_ensured && db === pool) return;
-  await db.query(ENTREGAS_CLIENTE_DDL);
+  if (db === pool) {
+    await aplicarSchemaVersionado({ db, chave: "entregas_cliente", sql: ENTREGAS_CLIENTE_DDL, lockKey: "vf:schema:entregas_cliente" });
+  } else {
+    await db.query(ENTREGAS_CLIENTE_DDL);
+  }
   if (db === pool) _ensured = true;
 }
 
@@ -209,7 +217,14 @@ let _ensuredAmps = false;
 // Sem consumidor ainda — a tabela fica vazia até a Fase 2 (job) existir.
 async function ensureAnunciosMargemProjetadaSnapshotSchema(db = pool) {
   if (_ensuredAmps && db === pool) return;
-  await db.query(ANUNCIOS_MARGEM_PROJETADA_SNAPSHOT_DDL);
+  if (db === pool) {
+    await aplicarSchemaVersionado({
+      db, chave: "anuncios_margem_projetada_snapshot", sql: ANUNCIOS_MARGEM_PROJETADA_SNAPSHOT_DDL,
+      lockKey: "vf:schema:anuncios_margem_projetada_snapshot",
+    });
+  } else {
+    await db.query(ANUNCIOS_MARGEM_PROJETADA_SNAPSHOT_DDL);
+  }
   if (db === pool) _ensuredAmps = true;
 }
 
@@ -238,10 +253,19 @@ function margemPrecificacaoDdl() {
 
 // Runner comum das migrations versionadas aplicadas no boot: BEGIN → advisory
 // lock de transação → DDL do arquivo → COMMIT.
+//
+// 03/11/2026 (P0 estabilidade do PostgreSQL): com um pool real, passa por
+// aplicarSchemaVersionado — marcador por arquivo (o DDL só roda quando o hash
+// do .sql muda), mesma chave/função de advisory lock de antes, e
+// statement_timeout/lock_timeout no DDL. Client/fake de teste: caminho antigo.
 async function aplicarMigrationSerializada(db, ddl, lockKey) {
   // Pool real: uma conexão dedicada para a transação inteira. Client/fake de
   // teste (sem connect): a própria `db` é a sessão.
   const usaPool = typeof db.connect === "function" && typeof db.release !== "function";
+  if (usaPool) {
+    await aplicarSchemaVersionado({ db, chave: lockKey, sql: ddl, lockKey, lockFn: "hashtext" });
+    return;
+  }
   const client = usaPool ? await db.connect() : db;
   try {
     await client.query("BEGIN");

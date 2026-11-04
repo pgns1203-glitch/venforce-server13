@@ -119,7 +119,7 @@ function ordenarPorOrderBy(sql, linhas, params = []) {
     }
     // P0 04/11/2026: margem/lucro "confiáveis" — linha com comissão/frete
     // assumidos como 0 (assumed_json) ordena como sem margem.
-    const cf = texto.match(/^\(CASE WHEN \(assumed_json \?\| ARRAY\['commission','freight'\]\) THEN NULL ELSE (\w+) END\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
+    const cf = texto.match(/^\(CASE WHEN \(assumed_json \? 'commission' OR \(assumed_json \? 'freight' AND quality_json->>'freteAplicavel' = 'true'\)\) THEN NULL ELSE (\w+) END\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
     if (cf) {
       return { valor: (row) => (custoMarketplaceAssumido(row) ? null : row[cf[1]]), dir: cf[2], nulls: cf[3] || (cf[2] === "ASC" ? "LAST" : "FIRST") };
     }
@@ -143,9 +143,13 @@ function ordenarPorOrderBy(sql, linhas, params = []) {
   });
 }
 
+// Mesma regra de services/motorMargem/margemConfiavel (SQL_CUSTO_MARKETPLACE_AUSENTE):
+// comissão assumida sempre; frete só quando quality_json.freteAplicavel = true.
 function custoMarketplaceAssumido(row) {
   const a = Array.isArray(row.assumed_json) ? row.assumed_json : [];
-  return a.includes("commission") || a.includes("freight");
+  if (a.includes("commission")) return true;
+  const q = row.quality_json && typeof row.quality_json === "object" ? row.quality_json : {};
+  return a.includes("freight") && q.freteAplicavel === true;
 }
 
 function makeMarginSnapshotFakeDb() {
@@ -196,7 +200,7 @@ function makeMarginSnapshotFakeDb() {
         && r.marketplace === marketplace && !r.catalog_missing_since && ids.includes(r.item_id)).map((r) => ({ ...r })) };
     }
     if (sql.includes("/* ms:projecoes */")) {
-      return { rows: filtrarPorWhere(sql, snapshots, params).map((r) => ({ ...r })) };
+      return { rows: filtrarPorWhere(sql, snapshots, params).map((r) => ({ ...r, custo_marketplace_ausente: custoMarketplaceAssumido(r) })) };
     }
     if (sql.includes("/* ms:count */")) {
       const linhas = filtrarPorWhere(sql, snapshots, params);

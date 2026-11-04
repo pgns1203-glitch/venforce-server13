@@ -346,6 +346,110 @@ cenario("promoção/simulação: comissão ausente bloqueia o cenário (nunca ap
   ok(r2.ok === false, JSON.stringify(r2));
 });
 
+// ── 6. Revisão do Codex: todos os caminhos que exibem/usam a margem ──────
+async function itemAoVivo({ comissao = true, itemId = "MLB201" } = {}) {
+  const w = mundoMl(comissao ? {} : { listing: async () => ({ ok: false, status: 403, data: null }) });
+  const r = await motorMargem.enrichBatch(prepared(SELLER_2), { itemIds: [itemId] }, depsMundo(w));
+  return r.itens[0];
+}
+
+cenario("Central AO VIVO: item sem comissão não mostra margem nem ordena como 46%; combinável sem frete continua com margem", async () => {
+  const inc = await itemAoVivo({ comissao: false });
+  const l = motorMargem.comAliasesDeCompatibilidade(inc);
+  ok(l.projected.margin === null && l.projected.profit === null && l.projected.incompleta === true, JSON.stringify(l.projected));
+  const comb = await itemAoVivo({ itemId: "MLB202" }); // not_specified: frete não aplicável
+  ok(comb.margin.projected.assumed.includes("freight"), "frete entrou como 0 (não aplicável)");
+  const lc = motorMargem.comAliasesDeCompatibilidade(comb);
+  ok(lc.projected.margin !== null && lc.projected.incompleta === false, "frete NÃO aplicável não esconde a margem");
+});
+
+cenario("Anúncios ao vivo (montarMapaMargem): célula sem número quando falta comissão; com rebate também", async () => {
+  const { _paraTeste } = require("../controllers/meliAnunciosController");
+  const inc = await itemAoVivo({ comissao: false });
+  const { margem } = _paraTeste.montarMapaMargem([inc], false, { itemId: "MLB201", valor: 5 });
+  const m = margem.MLB201;
+  ok(m.marginPercent === null && m.margin === null && m.profit === null && m.margemIncompleta === true, JSON.stringify(m));
+  const okItem = await itemAoVivo();
+  const m2 = _paraTeste.montarMapaMargem([okItem], false, null).margem.MLB201;
+  ok(m2.marginPercent !== null && m2.margemIncompleta === false);
+});
+
+cenario("'Você recebe' e POST simular-margem: sem comissão/frete → sem margem (R$ 45 nunca vira 41%)", async () => {
+  const ctrl = require("../controllers/meliAnunciosController");
+  const anunciosService = require("../services/meliAnuncios/meliAnunciosService");
+  const origMontar = motorMargem.montarItens;
+  const origResolver = anunciosService.resolverCliente;
+  try {
+    const inc = await itemAoVivo({ comissao: false });
+    motorMargem.montarItens = async () => ({ itens: [inc] });
+    const linhas = await ctrl._paraTeste.anexarVoceRecebe({ cliente: { slug: "alianza_jeans" }, clienteContaId: 87, itemId: "MLB201",
+      promocoesItem: [{ id: "P1", precoFinal: 45, subsidioMl: 0 }] });
+    ok(linhas[0].voceRecebe.computable === false && linhas[0].voceRecebe.marginPercent === null && linhas[0].voceRecebe.motivo === "comissao_ou_frete_ausente", JSON.stringify(linhas[0].voceRecebe));
+
+    anunciosService.resolverCliente = async () => ({ id: 7, slug: "alianza_jeans" });
+    const res = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+    await ctrl.simularMargem({ params: { itemId: "MLB201" }, body: { clienteSlug: "alianza_jeans", clienteContaId: 87, preco: 45 } }, res);
+    ok(res.body && res.body.ok === true && res.body.resultado.computable === false && res.body.resultado.marginPercent === null, JSON.stringify(res.body));
+
+    const bom = await itemAoVivo();
+    motorMargem.montarItens = async () => ({ itens: [bom] });
+    const res2 = { statusCode: 200, body: null, status(c) { this.statusCode = c; return this; }, json(b) { this.body = b; return this; } };
+    await ctrl.simularMargem({ params: { itemId: "MLB201" }, body: { clienteSlug: "alianza_jeans", clienteContaId: 87, preco: 45 } }, res2);
+    ok(res2.body.resultado.computable === true && res2.body.resultado.marginPercent !== null, "com a cotação completa a simulação continua");
+  } finally {
+    motorMargem.montarItens = origMontar;
+    anunciosService.resolverCliente = origResolver;
+  }
+});
+
+cenario("pipeline B (legado): grava sem o número inflado; leitura não aceita linha antiga 'Dado suspeito' como calculável", async () => {
+  const repoB = require("../services/motorMargem/margemProjetadaSnapshotRepository");
+  const inc = await itemAoVivo({ comissao: false });
+  let params = null;
+  await repoB.upsertSnapshot({ clienteId: 7, clienteContaId: 87, itemId: "MLB201", item: inc, origemJob: "teste" },
+    { query: async (_sql, p) => { params = p; return { rows: [{ inserted: true }] }; } });
+  ok(params[3] === null && params[4] === null && params[5] === false, `margin_percent/profit/computable gravados: ${params.slice(3, 6)}`);
+  ok(JSON.parse(params[9]).includes("commission"), "faltantes registra a comissão");
+  const lido = await repoB.lerSnapshotPorItens({ clienteId: 7, itemIds: ["MLB9"] }, { query: async () => ({ rows: [
+    { item_id: "MLB9", margin_percent: "46.00", profit: "23", computable: true, status: "SUSPECT_DATA", calculado_em: null, origem_job: "x" },
+  ] }) });
+  ok(lido.get("MLB9").computable === false, "46% antigo no legado não volta à célula/ranking");
+});
+
+cenario("fonte de Anúncios: frete NÃO aplicável (combinável) mantém a margem; frete aplicável ausente esconde; desconhecido mantém", async () => {
+  const fonte = require("../services/motorMargem/anunciosMargemProjetadaFonte");
+  const db = { async query() { return { rows: [
+    { item_id: "A", margin_percent: "20", profit: "10", status: "SUSPECT_DATA", calculated_at: null, assumed_json: ["freight"], refresh_status: "fresh", frete_aplicavel: "false" },
+    { item_id: "B", margin_percent: "40", profit: "20", status: "SUSPECT_DATA", calculated_at: null, assumed_json: ["freight"], refresh_status: "fresh", frete_aplicavel: "true" },
+    { item_id: "C", margin_percent: "18", profit: "9", status: "SUSPECT_DATA", calculated_at: null, assumed_json: ["freight"], refresh_status: "fresh", frete_aplicavel: null },
+  ] }; } };
+  const m = await fonte.lerMarginSnapshotPorItens({ clienteId: 7, clienteContaId: 87, itemIds: ["A", "B", "C"] }, db);
+  ok(m.get("A").computable === true && m.get("A").marginPercent === 20, "combinável: margem válida");
+  ok(m.get("B").computable === false && m.get("B").marginPercent === null, "frete aplicável ausente: escondida");
+  ok(m.get("C").computable === true, "aplicabilidade desconhecida (linha antiga): não esconde — status já é Dado suspeito");
+});
+
+cenario("desvio projetada × realizada (/realizado): projeção inflada não entra (mapProjectionsForItems)", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const base = { clienteId: 7, clienteSlug: "alianza_jeans", clienteContaId: 87, marketplace: "meli", confidenceLevel: "HIGH",
+    quality: {}, missing: [], divergences: [], calculatedAt: new Date(), runId: null, refreshStatus: "fresh" };
+  await snapshotRepository.upsertProjectionSnapshot({ ...base, itemId: "MLB1", price: 50, profit: 23, margin: 0.46, marginPercent: 46, status: "SUSPECT_DATA", assumed: ["commission", "freight"] }, db);
+  await snapshotRepository.upsertProjectionSnapshot({ ...base, itemId: "MLB2", price: 80, profit: 8, margin: 0.1, marginPercent: 10, status: "HEALTHY", assumed: [] }, db);
+  const mapa = await snapshotRepository.mapProjectionsForItems({ clienteId: 7, clienteContaId: 87, itemIds: ["MLB1", "MLB2"], db });
+  ok(mapa.get("MLB1").margin === null && mapa.get("MLB1").margemIncompleta === true);
+  ok(mapa.get("MLB2").margin === 0.1);
+});
+
+cenario("processor grava freteAplicavel/logística no quality_json (a leitura distingue não aplicável de ausente)", async () => {
+  const w = mundoMl();
+  const { db, erro } = await rodarProcessor(w);
+  ok(!erro, String(erro && erro.message));
+  const s201 = await snapshotRepository.getProjectionSnapshot({ clienteContaId: 87, itemId: "MLB201", db });
+  const s202 = await snapshotRepository.getProjectionSnapshot({ clienteContaId: 87, itemId: "MLB202", db });
+  ok(s201.quality.freteAplicavel === true && s201.quality.logisticType === "fulfillment", JSON.stringify(s201.quality.freteAplicavel));
+  ok(s202.quality.freteAplicavel === false && (s202.assumed || []).includes("freight"), "combinável gravado e marcado como frete não aplicável");
+});
+
 (async () => {
   let falhas = 0;
   for (const { nome, fn } of casos) {

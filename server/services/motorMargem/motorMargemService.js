@@ -26,6 +26,7 @@ const { LEVELS } = require("./core/marginConfidence");
 const { STATUS, DEFAULT_TARGET_MARGIN } = require("./core/marginStatus");
 const baseCustos = require("./adapters/baseCustosEvidenceAdapter");
 const meliApi = require("./adapters/meliApiEvidenceAdapter");
+const margemConfiavel = require("./margemConfiavel");
 const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const extensao = require("./adapters/extensionEvidenceAdapter");
@@ -496,6 +497,8 @@ const ORDENACOES = {
 // não pode competir com "-5%".
 function valorOrdenacao(item) {
   const displayed = item.margin.realized.computable ? item.margin.realized : item.margin.projected;
+  // Projetada com comissão/frete assumidos 0 é "não sei", não "46%" (P0 04/11/2026).
+  if (displayed === item.margin.projected && margemConfiavel.margemProjetadaIncompleta(item)) return Number.POSITIVE_INFINITY;
   return displayed.margin === null ? Number.POSITIVE_INFINITY : displayed.margin;
 }
 
@@ -614,15 +617,21 @@ function comAliasesDeCompatibilidade(item) {
     confianca: item.quality.confidence,
     problema: item.quality.statusReasons[0] || null,
     targetMargin: item.margin.target.marginTarget,
-    projected: {
-      margin: item.margin.projected.margin,
-      profit: item.margin.projected.profit,
-      // `estimated` = alguma variável entrou no cálculo assumida como 0.
-      estimated: item.margin.projected.strict === false,
-      note: item.margin.projected.assumed.length
-        ? `Assumido 0 para: ${item.margin.projected.assumed.join(", ")}.`
-        : null,
-    },
+    projected: (() => {
+      const incompleta = margemConfiavel.margemProjetadaIncompleta(item);
+      return {
+        margin: incompleta ? null : item.margin.projected.margin,
+        profit: incompleta ? null : item.margin.projected.profit,
+        // `estimated` = alguma variável entrou no cálculo assumida como 0.
+        estimated: !incompleta && item.margin.projected.strict === false,
+        incompleta,
+        note: incompleta
+          ? margemConfiavel.NOTA_MARGEM_INCOMPLETA
+          : item.margin.projected.assumed.length
+            ? `Assumido 0 para: ${item.margin.projected.assumed.join(", ")}.`
+            : null,
+      };
+    })(),
     realized: {
       margin: item.margin.realized.margin,
       profit: item.margin.realized.profit,

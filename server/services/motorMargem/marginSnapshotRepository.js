@@ -9,6 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
+const { SQL_CUSTO_MARKETPLACE_AUSENTE } = require("./margemConfiavel");
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "margin_snapshot_schema.sql");
 
@@ -371,7 +372,8 @@ function montarFiltroSnapshots({
 // trava de cotação incompleta) tem margem inflada. Para ordenar e contar, ela é
 // "sem margem" — nunca sobe para o topo de uma ordenação por margem nem entra
 // em `comMargem`. A linha continua lá (preservada), com o status do Motor.
-const SQL_CUSTO_MARKETPLACE_ASSUMIDO = "(assumed_json ?| ARRAY['commission','freight'])";
+// Regra única (margemConfiavel): comissão assumida sempre; frete só se aplicável.
+const SQL_CUSTO_MARKETPLACE_ASSUMIDO = SQL_CUSTO_MARKETPLACE_AUSENTE;
 const SQL_MARGEM_CONFIAVEL_PCT = `(CASE WHEN ${SQL_CUSTO_MARKETPLACE_ASSUMIDO} THEN NULL ELSE margin_percent END)`;
 const SQL_LUCRO_CONFIAVEL = `(CASE WHEN ${SQL_CUSTO_MARKETPLACE_ASSUMIDO} THEN NULL ELSE profit END)`;
 
@@ -525,20 +527,25 @@ async function mapProjectionsForItems({ clienteId, clienteContaId, marketplace =
   const ids = Array.from(new Set((itemIds || []).filter(Boolean).map(String)));
   if (!ids.length) return new Map();
   const result = await db.query(
-    `/* ms:projecoes */ SELECT item_id, titulo, price, profit, margin, margin_percent, status, calculated_at
+    `/* ms:projecoes */ SELECT item_id, titulo, price, profit, margin, margin_percent, status, calculated_at,
+            ${SQL_CUSTO_MARKETPLACE_AUSENTE} AS custo_marketplace_ausente
        FROM margin_projection_snapshots
       WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3 AND item_id = ANY($4::text[])`,
     [clienteId, clienteContaId, marketplace, ids]
   );
   const mapa = new Map();
   for (const row of result.rows) {
+    // Margem gravada sem comissão/frete (assumidos 0): não entra em desvio
+    // projetada × realizada nem nos "piores" (P0 04/11/2026).
+    const incompleta = row.custo_marketplace_ausente === true;
     mapa.set(row.item_id, {
       itemId: row.item_id,
       titulo: row.titulo || null,
       price: row.price != null ? Number(row.price) : null,
-      profit: row.profit != null ? Number(row.profit) : null,
-      margin: row.margin != null ? Number(row.margin) : null,
-      marginPercent: row.margin_percent != null ? Number(row.margin_percent) : null,
+      profit: !incompleta && row.profit != null ? Number(row.profit) : null,
+      margin: !incompleta && row.margin != null ? Number(row.margin) : null,
+      marginPercent: !incompleta && row.margin_percent != null ? Number(row.margin_percent) : null,
+      margemIncompleta: incompleta,
       status: row.status || null,
       calculatedAt: row.calculated_at || null,
     });

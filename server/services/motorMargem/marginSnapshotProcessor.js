@@ -43,6 +43,7 @@
 
 const pool = require("../../config/database");
 const motorMargem = require("./motorMargemService");
+const margemConfiavel = require("./margemConfiavel");
 const snapshotRepository = require("./marginSnapshotRepository");
 const runRepository = require("./marginSnapshotRunRepository");
 const meliApi = require("./adapters/meliApiEvidenceAdapter");
@@ -177,6 +178,10 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
       faltantesMeliApi: item.diagnostico ? item.diagnostico.faltantesMeliApi || [] : [],
       temCustoNaBase: item.diagnostico ? item.diagnostico.temCustoNaBase === true : null,
       statusAnuncio: item.diagnostico ? item.diagnostico.statusAnuncio || null : null,
+      // Para a leitura distinguir frete AUSENTE (falha) de NÃO APLICÁVEL
+      // (logística combinável) — ver margemConfiavel. null = desconhecido.
+      logisticType: item.diagnostico ? (item.diagnostico.logisticType ?? null) : null,
+      freteAplicavel: item.diagnostico ? margemConfiavel.freteAplicavelDaLogistica(item.diagnostico.logisticType ?? undefined) : null,
     },
     missing: item.margin.projected.missing,
     assumed: item.margin.projected.assumed,

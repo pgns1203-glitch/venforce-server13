@@ -26,6 +26,7 @@ const snapshotRepository = require("./marginSnapshotRepository");
 const runRepository = require("./marginSnapshotRunRepository");
 const api = require("./marginSnapshotApiService");
 const core = require("./core");
+const margemConfiavel = require("./margemConfiavel");
 const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const { flagLigada } = require("./marginSnapshotConfig");
@@ -378,7 +379,10 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
   // da trava de cotação incompleta) ⇒ margem inflada (ex.: R$ 50 com 45%). O
   // número não é exibido nem usado como margem; a linha e o status do Motor
   // ("Dado suspeito") continuam, com o motivo explícito.
-  const custoMarketplaceAssumido = (row.assumed || []).some((k) => k === core.FIELDS.COMMISSION || k === core.FIELDS.FREIGHT);
+  const custoMarketplaceAssumido = margemConfiavel.custoMarketplaceAusente({
+    assumed: row.assumed || [],
+    freteAplicavel: row.quality && typeof row.quality.freteAplicavel === "boolean" ? row.quality.freteAplicavel : null,
+  });
   const projected = {
     profit: custoMarketplaceAssumido ? null : atual.profit,
     margin: custoMarketplaceAssumido ? null : atual.margin,
@@ -505,7 +509,7 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
       // Comissão/frete do ML ausentes nesta linha: margem não exibida (≠ margem ruim).
       incompleta: custoMarketplaceAssumido,
       note: custoMarketplaceAssumido
-        ? "Comissão e/ou frete do Mercado Livre não foram obtidos para esta linha: margem não exibida até um recálculo completo."
+        ? margemConfiavel.NOTA_MARGEM_INCOMPLETA
         : projected.assumed.length ? `Assumido 0 para: ${projected.assumed.join(", ")}.` : null,
       // Retorno ML da promoção em andamento já somado à margem acima (null = nenhum).
       rebate: atual.rebate,

@@ -752,10 +752,12 @@ async function run() {
       const txt = await cdp.evaluate("document.getElementById('cm-opps-host').innerText");
       assert.ok(txt.includes("Produto Y") && txt.includes("Oferta Y"), txt);
       const cab = (await cdp.evaluate("document.querySelector('.cm-opps-table > thead').innerText")).replace(/\s+/g, " ");
-      for (const coluna of ["Produto", "Promo", "Preço → promo", "Seller / ML", "Frete", "LC/un", "Margem", "Veredito"]) {
+      // Colunas na ordem da decisão (inspirada em Anúncios ML): o frete saiu da linha e mora no detalhe.
+      for (const coluna of ["Anúncio", "Promoção", "Preço", "ML banca", "Lucro/un", "Margem", "Veredito"]) {
         assert.ok(cab.toLowerCase().includes(coluna.toLowerCase()), `coluna ${coluna} ausente: ${cab}`);
       }
-      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.cm-opps-table > thead th').length"), 8, "oito colunas; Veredito leva as ações");
+      assert.ok(!/frete/i.test(cab), `o frete não é coluna da linha: ${cab}`);
+      assert.strictEqual(await cdp.evaluate("document.querySelectorAll('.cm-opps-table > thead th').length"), 8, "sete colunas + ações");
       assert.ok(!(await cdp.evaluate("Boolean(document.querySelector('#cm-opps-host [data-cm-flag=estimado]'))")), "depois da cotação ao vivo nada é 'estimado'");
       await shot("11-promocoes");
       // Simular abre o drawer (mesmo fora da página) JÁ com a promoção escolhida
@@ -767,21 +769,30 @@ async function run() {
     });
 
     await check("Promoções: colunas, chips de veredito, flags (faixa de frete, sem histórico, bloqueado · motivo) e '+N opções' expansível", async () => {
-      const por = await cdp.evaluate("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('#cm-opps-host tr[data-opp]'), function (tr) { return { id: tr.getAttribute('data-opp'), veredito: (tr.querySelector('[data-cm-veredito]') || {}).getAttribute && tr.querySelector('[data-cm-veredito]').getAttribute('data-cm-veredito'), flags: Array.prototype.map.call(tr.querySelectorAll('[data-cm-flag]'), function (f) { return f.getAttribute('data-cm-flag'); }), frete: tr.querySelector('[data-cm-frete]').innerText.replace(/\\s+/g, ' ').trim(), lc: tr.querySelector('[data-cm-lc]').innerText.replace(/\\s+/g, ' ').trim(), banca: tr.querySelector('[data-cm-banca]').innerText.replace(/\\s+/g, ' ').trim() }; }))");
+      const por = await cdp.evaluate("JSON.stringify(Array.prototype.map.call(document.querySelectorAll('#cm-opps-host tr[data-opp]'), function (tr) { return { id: tr.getAttribute('data-opp'), veredito: (tr.querySelector('[data-cm-veredito]') || {}).getAttribute && tr.querySelector('[data-cm-veredito]').getAttribute('data-cm-veredito'), flags: Array.prototype.map.call(tr.querySelectorAll('[data-cm-flag]'), function (f) { return f.getAttribute('data-cm-flag'); }), lc: tr.querySelector('[data-cm-lc]').innerText.replace(/\\s+/g, ' ').trim(), banca: tr.querySelector('[data-cm-banca]').innerText.replace(/\\s+/g, ' ').trim() }; }))");
       const linhas = Object.fromEntries(JSON.parse(por).map((l) => [l.id, l]));
       // ordem refeita dentro da página: bloqueado por último
       assert.deepStrictEqual(JSON.parse(por).map((l) => l.id), ["MLB1002", "MLB7777", "MLB9999"]);
       assert.strictEqual(linhas.MLB1002.veredito, "entrar_se_girar");
       assert.ok(linhas.MLB1002.flags.includes("faixa-frete"), "⚠ muda faixa de frete");
-      assert.ok(/12,00\s+R\$\s0,00/.test(linhas.MLB1002.frete), `frete antes e depois em duas linhas: ${linhas.MLB1002.frete}`);
       assert.ok(linhas.MLB1002.flags.includes("empate"), "precisa vender +X%");
-      assert.ok(/37,10\s+R\$\s35,00.*Δ/.test(linhas.MLB1002.lc), linhas.MLB1002.lc);
-      assert.ok(/14,80\s+R\$\s5,20/.test(linhas.MLB1002.banca), `Seller / ML em duas linhas: ${linhas.MLB1002.banca}`);
+      // Lucro/un: o da promoção forte, a diferença por unidade em chip e, embaixo, o período (o mock não traz
+      // impacto_lc: a linha diz as unidades, nunca inventa o impacto).
+      assert.ok(/R\$\s35,00\s+[−-]2,10\s+84 un\. no período/.test(linhas.MLB1002.lc), linhas.MLB1002.lc);
+      // ML banca primeiro (o que o gestor procura), "você" embaixo.
+      assert.ok(/R\$\s5,20\s+você 14,80/.test(linhas.MLB1002.banca), `ML banca / você: ${linhas.MLB1002.banca}`);
       assert.ok(linhas.MLB7777.flags.includes("sem-historico"));
       assert.strictEqual(linhas.MLB9999.veredito, "bloqueado");
       assert.ok(linhas.MLB9999.flags.includes("bloqueado"));
-      assert.ok((await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB9999\"] [data-cm-flag=bloqueado]').textContent")).includes("bloqueado · tarifa do Mercado Livre indisponível"));
-      assert.ok(/indisponível/.test(linhas.MLB9999.frete), "frete depois indisponível, sem estimar");
+      assert.ok((await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB9999\"] [data-cm-flag=bloqueado]').textContent")).includes("tarifa do Mercado Livre indisponível"));
+      assert.ok(/indisponível/.test(linhas.MLB9999.lc), "lucro indisponível, sem estimar");
+      // O frete (hoje → promoção) continua acessível: no detalhe da linha.
+      await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB9999\"] .cm-c-produto').click()");
+      assert.ok(/Frete: R\$\s12,00 hoje → indisponível neste preço na promoção/.test((await cdp.evaluate("document.querySelector('tr[data-promo-detail=\"MLB9999\"] [data-cm-frete]').innerText")).replace(/\u00a0/g, " ")), "frete indisponível no detalhe, sem estimar");
+      await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB9999\"] .cm-c-produto').click()");
+      await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB1002\"] .cm-c-produto').click()");
+      assert.ok(/Frete: R\$\s12,00 hoje → R\$\s0,00 na promoção/.test((await cdp.evaluate("document.querySelector('tr[data-promo-detail=\"MLB1002\"] [data-cm-frete]').innerText")).replace(/\u00a0/g, " ")), "frete antes → depois no detalhe");
+      await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB1002\"] .cm-c-produto').click()");
       // +N opções
       assert.strictEqual(await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB1002\"] [data-promo-more]').textContent"), "+2 opções");
       assert.strictEqual(await cdp.evaluate("document.querySelector('tr[data-promo-options=\"MLB1002\"]').hidden"), true);
@@ -816,10 +827,12 @@ async function run() {
       await cdp.evaluate("window.__pc.oppsVivaFalha = true; document.getElementById('cm-promos').scrollIntoView(); (function(){var s=document.getElementById('cm-promo-veredito');s.value='todos';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
       await waitFor(cdp, "document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'error'", "falha da cotação ao vivo não foi sinalizada");
       const badge = await cdp.evaluate("document.getElementById('cm-promos-live').textContent");
-      assert.ok(/^Números: estimativa — a cotação ao vivo está indisponível/.test(badge), badge);
-      assert.ok(!/cotação ao vivo ·/.test(badge), "nunca diz 'cotação ao vivo' quando a cotação falhou");
+      assert.ok(/^≈ Valores estimados — a cotação no Mercado Livre está indisponível/.test(badge), badge);
+      assert.ok(!/cotados agora/.test(badge), "nunca diz 'cotados' quando a cotação falhou");
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('#cm-opps-host [data-cm-flag=estimado]'))"), "linhas seguem marcadas como estimativa");
+      await cdp.evaluate("document.querySelector('#cm-opps-host tr.cm-promo-row .cm-c-produto').click()");
       assert.ok(/a cotar/.test(await cdp.evaluate("document.querySelector('#cm-opps-host [data-cm-frete]').innerText")), "frete depois: 'a cotar', nunca um número inventado");
+      await cdp.evaluate("document.querySelector('#cm-opps-host tr.cm-promo-row .cm-c-produto').click()");
       await cdp.evaluate("window.__pc.oppsVivaFalha = false; (function(){var s=document.getElementById('cm-promo-veredito');s.value='';s.dispatchEvent(new Event('change',{bubbles:true}));})()");
       await waitFor(cdp, "document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'");
     });
@@ -1332,8 +1345,8 @@ async function run() {
       // A lista é do diagnóstico legado: o simulador não a lê, então NADA é "cotação ao vivo" — mesmo com a cotação feita.
       await waitFor(cdp, "document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'", "a cotação da página legada não terminou");
       const numerosLegado = await cdp.evaluate("document.getElementById('cm-promos-live').textContent");
-      assert.ok(/^Números: estimativa — a promoção vem do diagnóstico legado/.test(numerosLegado), numerosLegado);
-      assert.ok(!/cotação ao vivo ·/.test(numerosLegado), "lista legada nunca diz 'cotação ao vivo'");
+      assert.ok(/^≈ Valores estimados — a promoção vem do diagnóstico legado/.test(numerosLegado), numerosLegado);
+      assert.ok(!/cotados agora/.test(numerosLegado), "lista legada nunca diz 'cotados no Mercado Livre'");
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-promos-live').getAttribute('data-cm-numeros')"), "estimativa");
       assert.ok(await cdp.evaluate("Boolean(document.querySelector('#cm-opps-host tr[data-opp] [data-cm-flag=estimado]'))"), "a linha é marcada como estimativa");
       const linha = await cdp.evaluate("document.querySelector('#cm-opps-host tr[data-opp]').textContent");
@@ -1381,7 +1394,7 @@ async function run() {
       const lista = await cdp.evaluate("document.getElementById('cm-opps-meta').textContent");
       assert.ok(/^Lista: Promo Snapshot · 29\/09 \d{2}:\d{2}/.test(lista), lista);
       const numeros = await cdp.evaluate("document.getElementById('cm-promos-live').textContent");
-      assert.ok(/^Números: cotação ao vivo · comissão e frete reais em cada preço/.test(numeros), numeros);
+      assert.ok(/^Valores cotados agora no Mercado Livre · comissão e frete reais no preço da promoção/.test(numeros), numeros);
       assert.ok(/1 linha bloqueada \(a cotação não veio completa\)/.test(numeros), `a linha bloqueada é dita à parte: ${numeros}`);
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-promos-live').getAttribute('data-cm-numeros')"), "simular");
       // MLB9999 teve a cotação tentada e incompleta: bloqueado, nunca rotulado ao vivo nem estimado
@@ -1390,7 +1403,7 @@ async function run() {
       await cdp.evaluate("window.__pc.oppsModo = 'misto'; window.VF.context.setConta(11)");
       await waitFor(cdp, "document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok' && document.querySelectorAll('#cm-opps-host tr[data-opp]').length === 2", "lista mista não terminou");
       const misto = await cdp.evaluate("document.getElementById('cm-promos-live').textContent");
-      assert.ok(/^Números: cotação ao vivo em 1 de 2 linhas · 1 marcada como estimativa/.test(misto), misto);
+      assert.ok(/^Cotados no Mercado Livre em 1 de 2 linhas · 1 estimada \(≈\)/.test(misto), misto);
       assert.strictEqual(await cdp.evaluate("document.getElementById('cm-promos-live').getAttribute('data-cm-numeros')"), "estimativa");
       assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('tr[data-opp=\"MLBM1\"] [data-cm-flag=estimado]'))"), false);
       assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('tr[data-opp=\"MLBM2\"] [data-cm-flag=estimado]'))"), true, "só a linha que não é do simulador é marcada");
@@ -1432,10 +1445,11 @@ async function run() {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
-    await check("ações por linha: Simular (abre o drawer na promoção) e Participar (primário; só entrar/entrar_se_girar no grupo 'Pode participar pelo VenForce'; nos demais desabilitado com tooltip)", async () => {
+    await check("ações por linha: Simular (abre o drawer na promoção) e Participar (contornado; só entrar/entrar_se_girar no grupo 'Pode participar pelo VenForce'; nos demais desabilitado com tooltip)", async () => {
       // MLB1002: DEAL elegível, entrar_se_girar → Participar liberado; MLB9999: bloqueado → desabilitado com o motivo
       assert.strictEqual(await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB1002\"] [data-opp-participar]').disabled"), false);
-      assert.ok(await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB1002\"] [data-opp-participar]').classList.contains('vf-btn--primary')"), "Participar é o botão primário");
+      // Central decide, a execução cheia é na Bancada: na linha, Participar é contornado (nunca o elemento mais forte).
+      assert.ok(await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB1002\"] [data-opp-participar]').classList.contains('cm-promo-acoes__participar') && !document.querySelector('#cm-opps-host tr.cm-promo-row .vf-btn--primary')"), "Participar contornado; nenhum botão primário cheio na tabela");
       assert.ok(await cdp.evaluate("!document.querySelector('tr[data-opp=\"MLB1002\"] [data-opp-item]').classList.contains('vf-btn--primary')"), "Simular é secundário");
       assert.strictEqual(await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB9999\"] [data-opp-participar]').disabled"), true);
       assert.ok((await cdp.evaluate("document.querySelector('tr[data-opp=\"MLB9999\"] [data-opp-participar]').title")).includes("Bloqueado: tarifa do Mercado Livre indisponível"));
@@ -1464,7 +1478,7 @@ async function run() {
       await cdp.evaluate("window.VFCentralMargemUi.closeDrawer()");
     });
 
-    await check("tabela de promoções: larguras (28/12/11/11/9/11/9/9%), células 12×16px, números à direita tabulares, cabeçalho sticky, altura uniforme, veredito em chip", async () => {
+    await check("tabela de promoções: Anúncio com a sobra, linha densa e uniforme, números à direita tabulares, veredito em texto + bolinha", async () => {
       // As larguras-alvo valem em tela larga (1920): em tela estreita o piso em px do conteúdo prevalece (a tabela rola dentro do contêiner).
       await cdp.send("Emulation.setDeviceMetricsOverride", { width: 1920, height: 1000, deviceScaleFactor: 1, mobile: false });
       await sleep(200);
@@ -1477,15 +1491,14 @@ async function run() {
         var linhas = Array.prototype.map.call(t.querySelectorAll('tbody tr.cm-promo-row'), function (tr) { return Math.round(tr.getBoundingClientRect().height); });
         var chip = getComputedStyle(t.querySelector('tbody tr.cm-promo-row [data-cm-veredito]'));
         return { larguras: larguras, pad: [cs.paddingTop, cs.paddingBottom, cs.paddingLeft, cs.paddingRight], numAlign: num.textAlign, numFv: num.fontVariantNumeric, sticky: getComputedStyle(ths[0]).position, linhas: linhas, chipBg: chip.backgroundColor,
-          clamp: getComputedStyle(t.querySelector('.cm-clamp2')).webkitLineClamp, rows: linhas.length };
+          clamp: getComputedStyle(t.querySelector('.cm-c-produto .cm-prod-title')).webkitLineClamp, rows: linhas.length };
       })())`));
-      const esperado = [28, 12, 11, 11, 9, 11, 9, 9];
-      m.larguras.forEach((l, i) => assert.ok(Math.abs(l - esperado[i]) <= 3, `coluna ${i + 1}: ${l}% (esperado ~${esperado[i]}%) — ${m.larguras.join("/")}`));
-      assert.deepStrictEqual(m.pad, ["12px", "12px", "16px", "16px"], "células com 12px vertical e 16px horizontal");
+      // Anúncio leva a sobra; as numéricas têm largura fixa (iguais em qualquer tela).
+      assert.ok(m.larguras[0] >= 35, `Anúncio com a sobra em 1920: ${m.larguras.join("/")}`);
+      assert.deepStrictEqual(m.pad.slice(0, 2), ["8px", "8px"], "linha densa (8px vertical)");
       assert.strictEqual(m.numAlign, "right");
       assert.ok(/tabular-nums/.test(m.numFv), m.numFv);
-      assert.strictEqual(m.sticky, "sticky", "cabeçalho fixo");
-      assert.ok(m.rows >= 2 && new Set(m.linhas).size === 1, `altura uniforme: ${m.linhas.join(",")}`);
+      assert.ok(m.rows >= 2 && Math.max(...m.linhas) - Math.min(...m.linhas) <= 6 && Math.max(...m.linhas) <= 72, `altura uniforme e densa: ${m.linhas.join(",")}`);
       // Mockup: sem chip colorido — o veredito é texto + bolinha (vf-status do Portal).
       assert.strictEqual(m.chipBg, "rgba(0, 0, 0, 0)", "veredito sem fundo colorido");
       assert.strictEqual(m.clamp, "2", "título em até 2 linhas");
@@ -1565,8 +1578,9 @@ async function run() {
         await fecharDrawer();
       }
       await lerLinhaAba(FP_CASOS[0].fp);
-      const host = normalizar(await cdp.evaluate("document.getElementById('cm-opps-host').textContent"));
+      const host = normalizar(await cdp.evaluate("document.querySelector('#cm-opps-host [data-cm-opps=indisponivel]').textContent"));
       assert.strictEqual(host, "Primeira sincronização pendente", "no lugar da tabela: a mesma frase");
+      assert.ok(/Peça a leitura na barra acima/.test(await cdp.evaluate("document.getElementById('cm-opps-host').textContent")), "e o próximo passo");
     });
 
     await check("Bancada com promoções do diagnóstico legado: ESTIMATIVA marcada e Revisar entrada (Participar) desabilitado; com snapshot, habilitado", async () => {

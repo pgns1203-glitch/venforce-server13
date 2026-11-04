@@ -345,7 +345,7 @@ async function run() {
       await waitFor(cdp, "document.querySelector('#cm-opps-host tr[data-opp]') && document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'", "promoções não apareceram");
       assert.ok(await semRolagemHorizontal(), "sem rolagem horizontal");
       const badge = (await texto("#cm-opps-meta")) + " | " + (await texto("#cm-promos-live"));
-      assert.ok(/^Lista: Promo Snapshot · /.test(badge) && /Números: cotação ao vivo/.test(badge), badge);
+      assert.ok(/^Lista: Promo Snapshot · /.test(badge) && /Valores cotados agora no Mercado Livre/.test(badge), badge);
       await shot("02-promocoes");
     });
 

@@ -2157,7 +2157,7 @@
       var slug = String(params.clientSlug || "").trim();
       return call(precificacaoBase(slug) + "/oportunidades" + buildQuery({
         clienteContaId: params.clienteContaId, periodo: params.periodo, page: params.page, limit: params.limit,
-        veredito: params.veredito, tipo: params.tipo, cotacao: params.cotacao,
+        veredito: params.veredito, tipo: params.tipo, busca: params.busca, ordem: params.ordem, cotacao: params.cotacao,
       }), { signal: signal })
         .then(function (result) { return pricingResult(result, "Não foi possível carregar as oportunidades."); });
     }

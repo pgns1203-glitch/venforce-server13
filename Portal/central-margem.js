@@ -131,7 +131,8 @@
     oppsPolls: 0,
     // Página pedida ao servidor (a paginação acontece no banco).
     oppsPage: 1,
-    oppsFilters: { veredito: "", tipo: "" },
+    oppsFilters: { veredito: "", tipo: "", busca: "", ordem: "" },
+    oppsBuscaTimer: null,
     oppsTipos: [],
     bancada: null,
     promoSummary: null,
@@ -368,6 +369,12 @@
     refs.promosLive = el("cm-promos-live");
     refs.promoVeredito = el("cm-promo-veredito");
     refs.promoTipo = el("cm-promo-tipo");
+    refs.promoBusca = el("cm-promo-busca");
+    refs.promoOrdem = el("cm-promo-ordem");
+    refs.promoSeg = el("cm-promo-seg");
+    refs.promoTotal = el("cm-promo-total");
+    refs.promoResumo = el("cm-promo-resumo");
+    refs.promoExecutar = el("cm-promo-executar");
     refs.sheetToolbar = el("cm-sheet-toolbar");
     refs.oppsHost = el("cm-opps-host");
     refs.promoSyncHost = el("cm-promo-sync");
@@ -581,7 +588,7 @@
       var ir = event.target.closest("[data-top-go]");
       if (ir) {
         // "Promos com +LC" abre a aba Promoções já no veredito "Entrar".
-        state.oppsFilters = { veredito: "entrar", tipo: "" };
+        state.oppsFilters = { veredito: "entrar", tipo: "", busca: "", ordem: "" };
         state.oppsPage = 1;
         state.promoExpanded = {};
         state.promoDetail = {};
@@ -615,6 +622,25 @@
     }
 
     refs.oppsHost.addEventListener("click", function (event) {
+      // Cabeçalho ordenável: o mesmo <select> "Ordenar por" (uma ordem só, sempre visível).
+      var ordenar = event.target.closest("[data-cm-ordenar]");
+      if (ordenar) {
+        var alvo = ordenar.getAttribute("data-cm-ordenar");
+        refs.promoOrdem.value = refs.promoOrdem.value === alvo ? "" : alvo;
+        refs.promoOrdem.dispatchEvent(new Event("change", { bubbles: true }));
+        return;
+      }
+      if (event.target.closest("[data-cm-limpar-busca]")) {
+        if (refs.promoBusca) refs.promoBusca.value = "";
+        state.oppsFilters.busca = "";
+        recarregarRecorte();
+        return;
+      }
+      if (event.target.closest("[data-cm-ver-todos]")) {
+        refs.promoVeredito.value = "todos";
+        refs.promoVeredito.dispatchEvent(new Event("change", { bubbles: true }));
+        return;
+      }
       var pager = event.target.closest("[data-opps-page]");
       if (pager) {
         if (pager.disabled) return;
@@ -666,6 +692,41 @@
       state.promoDetail = {};
       loadOpportunities(false, { semStatus: true });
     });
+    // Recorte da lista mudou (veredito, tipo, busca ou ordem): página 1, sem
+    // linhas abertas, uma leitura ao servidor — que filtra, ordena e pagina.
+    function recarregarRecorte() {
+      state.oppsPage = 1;
+      state.promoExpanded = {};
+      state.promoDetail = {};
+      loadOpportunities(false, { semStatus: true });
+    }
+    if (refs.promoSeg) {
+      // Os botões de veredito só pilotam o <select> oculto (fonte da verdade).
+      refs.promoSeg.addEventListener("click", function (event) {
+        var b = event.target.closest("[data-cm-seg]");
+        if (!b) return;
+        refs.promoVeredito.value = b.getAttribute("data-cm-seg");
+        refs.promoVeredito.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    }
+    if (refs.promoBusca) {
+      refs.promoBusca.addEventListener("input", function () {
+        if (state.oppsBuscaTimer) root.clearTimeout(state.oppsBuscaTimer);
+        state.oppsBuscaTimer = root.setTimeout(function () {
+          state.oppsBuscaTimer = null;
+          var termo = refs.promoBusca.value.trim();
+          if (termo === (state.oppsFilters.busca || "")) return;
+          state.oppsFilters.busca = termo;
+          recarregarRecorte();
+        }, 300);
+      });
+    }
+    if (refs.promoOrdem) {
+      refs.promoOrdem.addEventListener("change", function () {
+        state.oppsFilters.ordem = refs.promoOrdem.value || "";
+        recarregarRecorte();
+      });
+    }
     refs.promoTipo.addEventListener("change", function () {
       state.oppsFilters.tipo = refs.promoTipo.value || "";
       state.oppsPage = 1;
@@ -831,8 +892,11 @@
     state.promoSummary = null;
     state.promoSummarySeq += 1;
     state.promoTop = {};
-    state.oppsFilters = { veredito: "", tipo: "" };
+    state.oppsFilters = { veredito: "", tipo: "", busca: "", ordem: "" };
+    if (state.oppsBuscaTimer) { root.clearTimeout(state.oppsBuscaTimer); state.oppsBuscaTimer = null; }
     state.oppsTipos = [];
+    state.oppsContagem = null;
+    if (refs.promoBusca) refs.promoBusca.value = "";
     state.promoExpanded = {};
     state.promoDetail = {};
     state.pendingPromoId = null;
@@ -1949,6 +2013,8 @@
       limit: OPPS_LIMIT,
       veredito: state.oppsFilters.veredito || undefined,
       tipo: state.oppsFilters.tipo || undefined,
+      busca: state.oppsFilters.busca || undefined,
+      ordem: state.oppsFilters.ordem || undefined,
       cotacao: cotacao || undefined,
     };
   }
@@ -2165,7 +2231,9 @@
         aviso +
       "</div>" +
       (botao.visivel
-        ? '<button type="button" class="vf-btn vf-btn--sm' + (habilitado ? " vf-btn--primary" : " vf-btn--ghost") + '" data-cm-promo-sync-acao' +
+        // Primário só quando a leitura precisa de ação (sem leitura, antiga, falhou); em dia,
+        // secundário — não compete com o "Atualizar leitura" do topo da Central.
+        ? '<button type="button" class="vf-btn vf-btn--sm' + (!habilitado ? " vf-btn--ghost" : m.estado === "atualizado" ? " vf-btn--secondary" : " vf-btn--primary") + '" data-cm-promo-sync-acao' +
           (habilitado ? "" : " disabled") + ' title="' + escapeHtml(botao.titulo || "") + '">' + escapeHtml(rotulo) + "</button>"
         : "");
   }
@@ -2268,9 +2336,41 @@
     });
   }
 
+  // Recortes por veredito (botões com a contagem do servidor, do mesmo recorte de busca/tipo).
+  var SEG_PROMO = [
+    { valor: "", rotulo: "Oportunidades", conta: function (c) { return c.entrar + c.entrar_se_girar; }, titulo: "Vale entrar + Só se vender mais" },
+    { valor: "entrar", rotulo: "Vale entrar", conta: function (c) { return c.entrar; }, tom: "is-success" },
+    { valor: "entrar_se_girar", rotulo: "Só se vender mais", conta: function (c) { return c.entrar_se_girar; }, tom: "is-warning" },
+    { valor: "nao_entrar", rotulo: "Não vale", conta: function (c) { return c.nao_entrar; }, tom: "is-danger" },
+    { valor: "bloqueado", rotulo: "Bloqueado", conta: function (c) { return c.bloqueado; }, tom: "is-neutral", titulo: "Sem números completos para decidir — o motivo está na linha" },
+    { valor: "todos", rotulo: "Todas", conta: function (c) { return c.entrar + c.entrar_se_girar + c.nao_entrar + c.bloqueado; } },
+  ];
+
+  function renderPromoSeg() {
+    if (!refs.promoSeg) return;
+    if (state.opps && state.opps.status === "ok" && state.opps.contagem) state.oppsContagem = state.opps.contagem;
+    var bruta = state.oppsContagem || null;
+    var c = bruta ? {
+      entrar: Number(bruta.entrar) || 0, entrar_se_girar: Number(bruta.entrar_se_girar) || 0,
+      nao_entrar: Number(bruta.nao_entrar) || 0, bloqueado: Number(bruta.bloqueado) || 0,
+    } : null;
+    var atual = state.oppsFilters.veredito || "";
+    refs.promoSeg.innerHTML = SEG_PROMO.map(function (s) {
+      var ativo = s.valor === atual;
+      var n = c ? s.conta(c) : null;
+      return '<button type="button" class="cm-seg' + (ativo ? " is-active" : "") + (s.tom ? " " + s.tom : "") + '" data-cm-seg="' + s.valor + '" aria-pressed="' + (ativo ? "true" : "false") + '"' +
+        (s.titulo ? ' title="' + escapeHtml(s.titulo) + '"' : "") + ">" +
+        (s.tom ? '<span class="cm-seg__dot" aria-hidden="true"></span>' : "") + escapeHtml(s.rotulo) +
+        (n === null ? "" : '<span class="cm-seg__n">' + escapeHtml(formatInt(n)) + "</span>") + "</button>";
+    }).join("");
+  }
+
   function setPromotionsFilters() {
     if (!refs.promoVeredito) return;
     refs.promoVeredito.value = state.oppsFilters.veredito || "";
+    if (refs.promoOrdem) refs.promoOrdem.value = state.oppsFilters.ordem || "";
+    if (refs.promoBusca && document.activeElement !== refs.promoBusca && refs.promoBusca.value.trim() !== (state.oppsFilters.busca || "")) refs.promoBusca.value = state.oppsFilters.busca || "";
+    renderPromoSeg();
     // Mantém os tipos da última resposta boa enquanto uma nova leitura carrega
     // (o seletor não pode perder as opções no meio de uma troca de filtro).
     if (state.opps && state.opps.status === "ok" && state.opps.tipos) state.oppsTipos = state.opps.tipos;
@@ -2313,22 +2413,31 @@
     return contagem;
   }
 
-  // Segunda linha do badge: "Números: …" — só diz "cotação ao vivo" quando TODA linha da página é do simulador.
+  // Legenda de onde vêm os NÚMEROS da página (uma linha discreta acima da tabela).
+  // Só diz "cotados no Mercado Livre" quando TODA linha da página é do simulador; o
+  // que não é cotado leva "≈" na própria linha e é dito aqui como estimativa.
   function renderPromotionsLive() {
     if (!refs.promosLive) return;
     var c = numerosDaPagina();
     var texto = "";
-    if (state.oppsLive === "loading") texto = "Números: cotando a página ao vivo no Mercado Livre…";
-    else if (state.oppsLive === "error") texto = "Números: estimativa — a cotação ao vivo está indisponível agora";
-    else if (state.oppsLive === "ok") {
+    var tom = "";
+    if (state.oppsLive === "loading") {
+      texto = "Cotando os valores desta página no Mercado Livre…";
+      tom = "is-loading";
+    } else if (state.oppsLive === "error") {
+      texto = "≈ Valores estimados — a cotação no Mercado Livre está indisponível agora";
+      tom = "is-est";
+    } else if (state.oppsLive === "ok") {
       var bloqueadas = c.bloqueado ? " · " + c.bloqueado + (c.bloqueado === 1 ? " linha bloqueada" : " linhas bloqueadas") + " (a cotação não veio completa)" : "";
-      if (c.simular > 0 && c.estimativa === 0) texto = "Números: cotação ao vivo · comissão e frete reais em cada preço (mesmo cálculo do simulador)" + bloqueadas;
-      else if (c.simular > 0) texto = "Números: cotação ao vivo em " + c.simular + " de " + c.total + " linhas · " + c.estimativa + (c.estimativa === 1 ? " marcada" : " marcadas") + " como estimativa" + bloqueadas;
-      else if (c.total) texto = "Números: estimativa — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || "não vieram do simulador");
+      if (c.simular > 0 && c.estimativa === 0) { texto = "Valores cotados agora no Mercado Livre · comissão e frete reais no preço da promoção (mesmo cálculo da Bancada)" + bloqueadas; tom = "is-cotado"; }
+      else if (c.simular > 0) { texto = "Cotados no Mercado Livre em " + c.simular + " de " + c.total + " linhas · " + c.estimativa + (c.estimativa === 1 ? " estimada" : " estimadas") + " (≈)" + bloqueadas; tom = "is-est"; }
+      else if (c.total) { texto = "≈ Valores estimados — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || "não vieram do simulador"); tom = "is-est"; }
     } else if (c.total) {
-      texto = "Números: estimativa — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || NUMEROS_MOTIVO_UI.comissao_e_frete_do_snapshot);
+      texto = "≈ Valores estimados — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || NUMEROS_MOTIVO_UI.comissao_e_frete_do_snapshot);
+      tom = "is-est";
     }
     refs.promosLive.textContent = texto;
+    refs.promosLive.className = "cm-promos__live" + (tom ? " " + tom : "");
     refs.promosLive.setAttribute("data-cm-live", state.oppsLive || "idle");
     refs.promosLive.setAttribute("data-cm-numeros", c.simular > 0 && c.estimativa === 0 && state.oppsLive === "ok" ? "simular" : c.total ? "estimativa" : "");
   }
@@ -2338,7 +2447,7 @@
     return '<span class="vf-status ' + ui.tone + '" data-cm-veredito="' + escapeHtml(veredito || "bloqueado") + '">' + escapeHtml(ui.label) + "</span>";
   }
 
-  // "antes → depois" em duas linhas: antes em cinza, depois forte; o Δ vai em chip (verde/vermelho) quando existe.
+  // "antes → depois" em duas linhas (usado no detalhe): antes em cinza, depois forte; o Δ vai em chip.
   function antesDepois(antes, depois, extraHtml, depoisClasse) {
     return '<span class="cm-2l"><span class="cm-2l__antes">' + escapeHtml(antes || "—") + '</span><span class="cm-2l__depois' + (depoisClasse ? " " + depoisClasse : "") + '">' + escapeHtml(depois || "—") + "</span>" + (extraHtml || "") + "</span>";
   }
@@ -2363,7 +2472,7 @@
     return ' <span class="cm-promo-flag is-warn" data-cm-banca-aviso="' + escapeHtml(codigo) + '" title="' + escapeHtml(motivoTexto(codigo)) + '">⚠</span>';
   }
 
-  // Marcas que explicam a linha (só o essencial na linha; o resto vai no detalhe expandido).
+  // Marcas que explicam a linha (no detalhe expandido).
   function promoFlagsHtml(op) {
     var flags = op.flags || {};
     var itens = [];
@@ -2382,18 +2491,17 @@
     return itens.length ? '<div class="cm-promo-flags">' + itens.join("") + "</div>" : "";
   }
 
-  function freteCelula(op) {
+  // Frete hoje → na promoção (saiu da linha; mora no detalhe). "a cotar" só enquanto
+  // não foi cotado; cotação tentada que falhou diz "indisponível" (nada é estimado).
+  function freteDetalheHtml(op) {
     var atual = op.atual || {};
     var cen = op.cenario || {};
-    // "a cotar" só enquanto o frete não foi cotado; cotação tentada que falhou diz "indisponível" (nada é estimado).
     var viva = op.cotacao && (op.cotacao.ao_vivo === true || op.cotacao.falhou === true);
-    var aviso = op.flags && op.flags.mudou_faixa_frete === true
-      ? ' <span class="cm-promo-flag is-warn" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠</span>' : "";
-    if (!viva) {
-      return antesDepois(formatMoney(atual.frete), "a cotar", "", "is-pendente");
-    }
-    var depois = cen.frete === null || cen.frete === undefined ? "indisponível" : formatMoney(cen.frete);
-    return '<span class="cm-2l"><span class="cm-2l__antes">' + escapeHtml(formatMoney(atual.frete) || "—") + '</span><span class="cm-2l__depois">' + escapeHtml(depois) + aviso + "</span></span>";
+    var depois = !viva ? "a cotar (a cotação ao vivo confirma)" : cen.frete === null || cen.frete === undefined ? "indisponível neste preço" : formatMoney(cen.frete);
+    var faixa = op.flags && op.flags.mudou_faixa_frete === true
+      ? ' <span class="cm-promo-flag is-warn" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço.">⚠ muda de faixa</span>' : "";
+    return '<p class="cm-banc__banca-linha" data-cm-frete>Frete: <strong>' + escapeHtml(formatMoney(atual.frete) || "—") + "</strong> hoje → <strong>" +
+      escapeHtml(depois) + "</strong> na promoção" + faixa + "</p>";
   }
 
   // Por que o Participar está (ou não) liberado: só entrar / entrar_se_girar E "Pode participar pelo VenForce".
@@ -2411,12 +2519,14 @@
     return { disabled: false, title: "Abre o preview da participação (relê a promoção ao vivo e avalia os gates)." };
   }
 
+  // Ações da linha: "Simular" (abre a Bancada já na promoção — investigar) e "Participar" (atalho
+  // para o preview na Bancada; contornado, nunca o elemento mais forte da linha).
   function acoesPromoHtml(itemId, promo, veredito, motivo, ghost) {
     var spec = participarSpec(promo, veredito, motivo);
     var promoId = promo && promo.id ? promo.id : "";
     return '<span class="cm-promo-acoes">' +
-      '<button class="vf-btn vf-btn--sm' + (ghost ? " vf-btn--ghost" : "") + '" type="button" data-opp-item="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '">Simular</button>' +
-      '<button class="vf-btn vf-btn--sm vf-btn--primary" type="button" data-opp-participar="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '"' +
+      '<button class="vf-btn vf-btn--sm' + (ghost ? " vf-btn--ghost" : " vf-btn--secondary") + '" type="button" data-opp-item="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '" title="Abre a Bancada do anúncio já nesta promoção">Simular</button>' +
+      '<button class="vf-btn vf-btn--sm' + (spec.disabled ? " vf-btn--ghost cm-promo-acoes__off" : ghost ? " vf-btn--secondary" : " vf-btn--secondary cm-promo-acoes__participar") + '" type="button" data-opp-participar="' + escapeHtml(itemId) + '" data-promo-id="' + escapeHtml(promoId) + '"' +
         (spec.disabled ? " disabled" : "") + ' title="' + escapeHtml(spec.title) + '">Participar</button></span>';
   }
 
@@ -2435,19 +2545,53 @@
   }
 
   // Detalhe expansível: o MESMO componente de detalhe da Bancada (resposta → Hoje × Cenário →
-  // de onde sai a diferença → Ver conta completa); à direita, quem banca, empate e a origem da linha.
+  // de onde sai a diferença → Ver conta completa); à direita, a promoção, quem banca, o frete,
+  // o empate e a origem da linha — tudo o que saiu da linha principal continua aqui.
   function promoDetalheConteudoHtml(op) {
     // `op` (oportunidades) usa `veredito_motivo`; o detalhe espera `motivo` (/simular) — normaliza na borda.
     var r = Object.assign({}, op, { motivo: op.veredito_motivo });
+    var promo = op.promocao || {};
+    var promoLinha = '<p class="cm-promo-detail__promo"><strong>' + escapeHtml(promo.nome || promo.tipo || "Promoção") + "</strong>" +
+      (promoMetaTexto(promo) ? " · " + escapeHtml(promoMetaTexto(promo)) : "") +
+      (op.retornoMl ? " · retorno ML de " + escapeHtml(formatMoney(op.retornoMl)) + " por unidade" : "") + "</p>";
     return '<div class="cm-promo-detail__grid">' +
       '<div class="cm-promo-detail__esq">' + cenarioDetalheHtml(r, op.atual, null, { bancaFora: true }) + "</div>" +
-      '<div class="cm-promo-detail__dir">' + bancaRodapeHtml(op) + empateHtml(op) + promoFlagsHtml(op) + origemLinhaHtml(op) + "</div></div>";
+      '<div class="cm-promo-detail__dir">' + promoLinha + bancaRodapeHtml(op) + freteDetalheHtml(op) + empateHtml(op) + promoFlagsHtml(op) + origemLinhaHtml(op) + "</div></div>";
   }
+
+  var OPPS_COLS = 8;
 
   // O conteúdo só existe enquanto a linha está aberta (nada de cascatas escondidas no DOM).
   function promoDetalheHtml(op, aberto) {
-    return '<tr class="cm-promo-detail" data-promo-detail="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="8">' + (aberto ? promoDetalheConteudoHtml(op) : "") + "</td></tr>";
+    return '<tr class="cm-promo-detail" data-promo-detail="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="' + OPPS_COLS + '">' + (aberto ? promoDetalheConteudoHtml(op) : "") + "</td></tr>";
   }
+
+  // "≈" na frente do número que não veio da cotação (o motivo no title); a legenda acima diz o resto.
+  function estimadoHtml(op, comAtributo) {
+    if (!op.estimado) return "";
+    var motivo = ((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "números estimados");
+    return '<abbr class="cm-est"' + (comAtributo ? ' data-cm-flag="estimado"' : "") + ' title="Estimativa: ' + escapeHtml(motivo) + '.">≈</abbr>';
+  }
+
+  // Percentuais da LINHA com 1 casa ("18,4%", "+2,0 pp"); o detalhe e a Bancada mantêm a precisão.
+  function pctCurto(v, signed) {
+    var n = contract.numberOrNull(v);
+    if (n === null) return null;
+    return (signed && n > 0 ? "+" : "") + (n * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+  }
+
+  function ppCurto(v) {
+    var n = contract.numberOrNull(v);
+    if (n === null) return null;
+    return (n > 0 ? "+" : "") + (n * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " pp";
+  }
+
+  // Célula numérica da linha: valor principal (com Δ ao lado) e "hoje …" embaixo.
+  function celulaNum(principalHtml, deltaHtml, subHtml) {
+    return '<span class="cm-cel"><span class="cm-cel__v">' + principalHtml + (deltaHtml ? " " + deltaHtml : "") + "</span>" +
+      (subHtml ? '<span class="cm-cel__sub">' + subHtml + "</span>" : "") + "</span>";
+  }
+
 
   function promoRowHtml(op) {
     var atual = op.atual || {};
@@ -2457,43 +2601,73 @@
     var flags = op.flags || {};
     var quando = promo.herdada ? formatShortDateTime(promo.observadaEm) : null;
     var herdada = promo.herdada
-      ? '<span class="cm-prod-meta cm-opps-herdada" title="A leitura desta promoção falhou na última atualização; mostrando a leitura anterior' +
+      ? '<span class="cm-promo-sub cm-opps-herdada" title="A leitura desta promoção falhou na última atualização; mostrando a leitura anterior' +
         (quando ? " (" + escapeHtml(quando) + ")" : "") + '.">leitura anterior' + (quando ? " · " + escapeHtml(quando) : "") + "</span>"
       : "";
     var mais = op.opcoes_total > 1
       ? '<button class="cm-promo-more" type="button" data-promo-more="' + escapeHtml(op.itemId) + '" aria-expanded="' + (state.promoExpanded[op.itemId] ? "true" : "false") + '">+' + (op.opcoes_total - 1) + (op.opcoes_total - 1 === 1 ? " opção" : " opções") + "</button>"
       : "";
-    var unidades = op.unidades === null || op.unidades === undefined
-      ? unavailable("vendas —", "Vendas indisponíveis neste período (a leitura da Central de Vendas falhou).")
-      : escapeHtml(formatInt(op.unidades) + " un. no período");
-    var semHist = flags.sem_historico ? ' <span class="cm-promo-flag" data-cm-flag="sem-historico" title="Sem vendas no período: o impacto é por unidade.">sem histórico</span>' : "";
-    var estimativa = op.estimado
-      ? ' <span class="cm-promo-flag" data-cm-flag="estimado" title="' + escapeHtml(((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "Números estimados") + ".") + '">estimativa</span>' : "";
+    var fim = formatShortDate(promo.fim);
+    var promoSub = [tipoPromoTexto(promo.tipo), fim ? "até " + fim : ""].filter(Boolean).join(" · ");
 
-    var banca = (op.seller_banca === null || op.seller_banca === undefined) && (op.ml_banca === null || op.ml_banca === undefined)
-      ? "—" + bancaAvisoHtml(op)
-      : '<span class="cm-2l" data-cm-banca-dupla title="Você banca / ML banca"><span class="cm-2l__depois">' + escapeHtml(formatMoney(op.seller_banca) || "—") + bancaAvisoHtml(op) + '</span><span class="cm-2l__antes">' + escapeHtml(formatMoney(op.ml_banca) || "—") + "</span></span>";
-
+    // Preço na promoção (forte), o de hoje embaixo e o desconto sobre o preço cheio.
     var precoChip = op.desconto_ratio !== null && op.desconto_ratio !== undefined
-      ? '<span class="cm-chip-delta" data-cm-desc-pct title="Desconto sobre o preço cheio' + (op.delta_preco_atual !== null && op.delta_preco_atual !== undefined ? " · contra o preço de hoje: " + escapeHtml(formatMoney(-op.delta_preco_atual, true) || "R$ 0,00") : "") + '">' + (op.desconto_ratio < 0 ? "+" : "−") + escapeHtml(formatPercent(Math.abs(op.desconto_ratio))) + "</span>"
+      ? '<span class="cm-chip-delta" data-cm-desc-pct title="Desconto sobre o preço cheio' + (op.delta_preco_atual !== null && op.delta_preco_atual !== undefined ? " · contra o preço de hoje: " + escapeHtml(formatMoney(-op.delta_preco_atual, true) || "R$ 0,00") : "") + '">' + (op.desconto_ratio < 0 ? "+" : "−") + escapeHtml(pctCurto(Math.abs(op.desconto_ratio))) + "</span>"
       : "";
+    var preco = celulaNum(escapeHtml(formatMoney(op.precoPromocao) || "—"), "",
+      '<s class="cm-cel__de" title="Preço de hoje">' + escapeHtml(formatNumero(op.precoAtual) || "—") + "</s> " + precoChip);
+
+    // Subsídio: quanto o ML banca do desconto (o que o gestor procura) e, embaixo, quanto você banca.
+    var semBanca = (op.seller_banca === null || op.seller_banca === undefined) && (op.ml_banca === null || op.ml_banca === undefined);
+    var mlBanca = contract.numberOrNull(op.ml_banca);
+    var banca = semBanca
+      ? celulaNum('<span class="cm-cel__nd">—</span>' + bancaAvisoHtml(op), "", "")
+      : '<span class="cm-cel" data-cm-banca-dupla title="ML banca / você banca"><span class="cm-cel__v' + (mlBanca > 0 ? " is-good" : "") + '">' + escapeHtml(formatMoney(op.ml_banca) || "—") + "</span>" +
+        '<span class="cm-cel__sub">você ' + escapeHtml(formatNumero(op.seller_banca) || "—") + bancaAvisoHtml(op) + "</span></span>";
+
+    // Lucro por unidade e margem na promoção, com o Δ contra hoje; indisponível nunca vira número.
+    var lcPromo = cen.lc === null || cen.lc === undefined ? unavailable("indisponível", "Sem números para este preço: " + (motivoTexto(op.veredito_motivo) || "faltam dados")) : escapeHtml(formatMoney(cen.lc));
+    // Embaixo do lucro por unidade: o que a diferença vale no PERÍODO (ΔLC × unidades vendidas) —
+    // a ordem padrão da lista. Sem vendas o impacto é só por unidade; vendas indisponíveis nunca viram 0.
+    var impacto;
+    if (op.unidades === null || op.unidades === undefined) {
+      impacto = '<span data-cm-impacto="indisponivel">' + unavailable("vendas indisp.", "Vendas indisponíveis neste período (a leitura da Central de Vendas falhou): o impacto no período não é calculado — nunca vira zero.") + "</span>";
+    } else if (flags.sem_historico) {
+      impacto = '<span data-cm-impacto="sem-historico" data-cm-flag="sem-historico" title="Sem vendas no período: o impacto é por unidade.">sem vendas no período</span>';
+    } else {
+      var imp = contract.numberOrNull(op.impacto_lc);
+      if (imp === null) impacto = '<span data-cm-impacto="sem-numero">' + escapeHtml(formatInt(op.unidades) + " un. no período") + "</span>";
+      else impacto = '<span data-cm-impacto title="' + escapeHtml("Diferença no lucro × " + formatInt(op.unidades) + " un. vendidas no período") + '"' +
+        (imp === null ? "" : ' class="' + (imp > 0 ? "is-good" : imp < 0 ? "is-bad" : "") + '"') + ">" +
+        escapeHtml(imp === null ? "—" : (imp > 0 ? "+" : "") + formatMoneyShort(imp)) + "</span> no período";
+    }
+    var lcNd = cen.lc === null || cen.lc === undefined;
+    var lc = celulaNum((lcNd ? "" : estimadoHtml(op, true)) + lcPromo,
+      chipDelta(op.delta_lc, op.delta_lc === null || op.delta_lc === undefined ? null : formatNumero(op.delta_lc, true), 'data-cm-delta-lc title="Diferença por unidade contra hoje (' + escapeHtml(formatMoney(atual.lc) || "—") + ')"'),
+      impacto);
     var margemClasse = marginClass(cen.margem_ratio === undefined ? null : cen.margem_ratio, {});
+    var margemPromo = cen.margem_ratio === null || cen.margem_ratio === undefined ? unavailable("indisponível", "Margem indisponível neste preço.") : '<span class="' + margemClasse + '">' + escapeHtml(pctCurto(cen.margem_ratio)) + "</span>";
+    var margem = celulaNum((cen.margem_ratio === null || cen.margem_ratio === undefined ? "" : estimadoHtml(op, false)) + margemPromo, chipDelta(op.delta_margem_ratio, ppCurto(op.delta_margem_ratio)), "hoje " + escapeHtml(pctCurto(atual.margem_ratio) || "—"));
 
     // Linha curta sob o veredito: o motivo do bloqueio, o volume de empate ou o motivo do veredito.
     var nota = "";
-    if (op.veredito === "bloqueado") nota = '<span class="cm-promo-nota is-warn" data-cm-flag="bloqueado" title="' + escapeHtml("Bloqueado: " + (motivoTexto(op.veredito_motivo) || "sem motivo informado")) + '">bloqueado · ' + escapeHtml(motivoTexto(op.veredito_motivo) || "sem motivo informado") + "</span>";
-    else if (op.veredito === "entrar_se_girar" && op.empate_volume !== null && op.empate_volume !== undefined) nota = '<span class="cm-promo-nota" data-cm-flag="empate" title="Volume a mais para empatar o LC total de hoje.">precisa vender ' + escapeHtml(formatPercent(op.empate_volume, true)) + "</span>";
+    if (op.veredito === "bloqueado") nota = '<span class="cm-promo-nota is-warn" data-cm-flag="bloqueado" title="' + escapeHtml("Bloqueado: " + (motivoTexto(op.veredito_motivo) || "sem motivo informado")) + '">' + escapeHtml(motivoTexto(op.veredito_motivo) || "sem motivo informado") + "</span>";
+    else if (op.veredito === "entrar_se_girar" && op.empate_volume !== null && op.empate_volume !== undefined) nota = '<span class="cm-promo-nota" data-cm-flag="empate" title="Volume a mais para empatar o LC total de hoje.">precisa vender ' + escapeHtml(pctCurto(op.empate_volume, true)) + "</span>";
     else if (op.veredito_motivo) nota = '<span class="cm-promo-nota" title="' + escapeHtml(motivoTexto(op.veredito_motivo)) + '">' + escapeHtml(motivoTexto(op.veredito_motivo)) + "</span>";
+    if (flags.mudou_faixa_frete === true) nota += '<span class="cm-promo-nota is-warn" data-cm-flag="faixa-frete" title="O frete do Mercado Livre muda neste preço (detalhe na linha aberta).">⚠ faixa de frete</span>';
+    // As notas dividem UMA linha (altura uniforme); o texto inteiro fica no title de cada uma.
+    if (nota) nota = '<span class="cm-promo-notas">' + nota + "</span>";
 
-    return '<tr class="cm-promo-row' + (aberto ? " is-open" : "") + '" data-opp="' + escapeHtml(op.itemId) + '" tabindex="0" aria-expanded="' + (aberto ? "true" : "false") + '" data-cm-numeros="' + escapeHtml((op.numeros && op.numeros.origem) || "") + '">' +
-      '<td class="cm-c-produto"><strong class="cm-clamp2" title="' + escapeHtml(op.titulo) + '">' + escapeHtml(op.titulo) + '</strong><span class="cm-prod-meta">' + escapeHtml(op.itemId) + " · " + unidades + semHist + "</span></td>" +
-      '<td class="cm-c-promo"><strong class="cm-clamp2" title="' + escapeHtml(promo.nome || promo.tipo || "—") + '">' + escapeHtml(promo.nome || promo.tipo || "—") + '</strong><span class="cm-prod-meta">' + escapeHtml(promo.tipo || "") + estimativa + "</span>" + herdada + mais + "</td>" +
-      '<td class="num cm-c-preco">' + antesDepois(formatMoney(op.precoAtual), formatMoney(op.precoPromocao), precoChip) + "</td>" +
+    return '<tr class="cm-promo-row is-' + escapeHtml(op.veredito || "bloqueado") + (aberto ? " is-open" : "") + '" data-opp="' + escapeHtml(op.itemId) + '" tabindex="0" aria-expanded="' + (aberto ? "true" : "false") + '" data-cm-numeros="' + escapeHtml((op.numeros && op.numeros.origem) || "") + '">' +
+      '<td class="cm-c-produto"><div class="cm-product">' + productThumbHtml({ image: op.imagem }) +
+        '<div class="cm-product__info"><span class="cm-prod-title" title="' + escapeHtml(op.titulo) + '">' + escapeHtml(op.titulo) + '</span><span class="cm-prod-meta">' + escapeHtml(op.itemId) + "</span></div></div></td>" +
+      '<td class="cm-c-promo"><strong class="cm-clamp2" title="' + escapeHtml(promo.nome || promo.tipo || "—") + '">' + escapeHtml(promo.nome || promo.tipo || "—") + '</strong><span class="cm-promo-sub">' + escapeHtml(promoSub) + mais + "</span>" + herdada + "</td>" +
+      '<td class="num cm-c-preco" data-cm-preco>' + preco + "</td>" +
       '<td class="num cm-c-banca" data-cm-banca>' + banca + "</td>" +
-      '<td class="num" data-cm-frete>' + freteCelula(op) + "</td>" +
-      '<td class="num" data-cm-lc>' + antesDepois(formatMoney(atual.lc), formatMoney(cen.lc), chipDelta(op.delta_lc, op.delta_lc === null || op.delta_lc === undefined ? null : "Δ " + formatMoney(op.delta_lc, true), "data-cm-delta-lc")) + "</td>" +
-      '<td class="num" data-cm-margem>' + antesDepois(formatPercent(atual.margem_ratio), formatPercent(cen.margem_ratio), chipDelta(op.delta_margem_ratio, ppTexto(op.delta_margem_ratio)), margemClasse) + "</td>" +
-      '<td class="cm-c-veredito">' + veredictoChipHtml(op.veredito) + nota + acoesPromoHtml(op.itemId, promo, op.veredito, op.veredito_motivo, false) + "</td></tr>" +
+      '<td class="num" data-cm-lc>' + lc + "</td>" +
+      '<td class="num" data-cm-margem>' + margem + "</td>" +
+      '<td class="cm-c-veredito">' + veredictoChipHtml(op.veredito) + nota + "</td>" +
+      '<td class="cm-c-acoes">' + acoesPromoHtml(op.itemId, promo, op.veredito, op.veredito_motivo, false) + "</td></tr>" +
       promoDetalheHtml(op, aberto) +
       promoOptionsHtml(op);
   }
@@ -2502,17 +2676,65 @@
   function promoOptionsHtml(op) {
     if (!(op.opcoes && op.opcoes.length)) return "";
     var aberto = state.promoExpanded[op.itemId] === true;
-    return '<tr class="cm-promo-options" data-promo-options="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="8"><table class="vf-table vf-table--compact"><tbody>' +
+    return '<tr class="cm-promo-options" data-promo-options="' + escapeHtml(op.itemId) + '"' + (aberto ? "" : " hidden") + '><td colspan="' + OPPS_COLS + '"><p class="cm-promo-options__titulo">Outras promoções deste anúncio</p><table class="vf-table vf-table--compact"><thead><tr><th>Promoção</th><th class="num">Preço</th><th class="num">Δ lucro/un</th><th class="num">Margem</th><th>Veredito</th><th></th></tr></thead><tbody>' +
       op.opcoes.map(function (opcao) {
         var promo = opcao.promocao || {};
         return '<tr data-promo-option="' + escapeHtml(promo.id || "") + '">' +
-          "<td>" + escapeHtml(promo.nome || promo.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(promo.tipo || "") + "</span></td>" +
+          "<td>" + escapeHtml(promo.nome || promo.tipo || "—") + '<span class="cm-prod-meta">' + escapeHtml(tipoPromoTexto(promo.tipo)) + "</span></td>" +
           '<td class="num">' + escapeHtml(formatMoney(opcao.precoPromocao) || "—") + "</td>" +
-          '<td class="num">' + (opcao.delta_lc === null || opcao.delta_lc === undefined ? "—" : escapeHtml("Δ " + formatMoney(opcao.delta_lc, true))) + "</td>" +
+          '<td class="num">' + (opcao.delta_lc === null || opcao.delta_lc === undefined ? "—" : escapeHtml(formatMoney(opcao.delta_lc, true))) + "</td>" +
           '<td class="num">' + escapeHtml(formatPercent(opcao.margemDepois) || "—") + "</td>" +
           "<td>" + veredictoChipHtml(opcao.veredito) + (opcao.veredito === "bloqueado" ? '<span class="cm-promo-flag is-warn"> · ' + escapeHtml(motivoTexto(opcao.veredito_motivo)) + "</span>" : "") + "</td>" +
           '<td class="vf-table__actions">' + acoesPromoHtml(op.itemId, promo, opcao.veredito, opcao.veredito_motivo, true) + "</td></tr>";
       }).join("") + "</tbody></table></td></tr>";
+  }
+
+  // Leitura financeira do recorte (o que diferencia a Central de Anúncios ML): quanto as
+  // promoções que valem entrar somam no período — do `resumo` do servidor, nunca recalculado aqui —
+  // e o atalho para EXECUTAR no Radar de Anúncios ML da mesma conta (não duplicamos o fluxo).
+  function renderPromoResumo(o) {
+    if (refs.promoResumo) {
+      var r = o && o.resumo;
+      var texto = "";
+      if (r && Number(r.entrar) > 0) {
+        var n = Number(r.entrar);
+        var imp = contract.numberOrNull(r.impacto_lc);
+        texto = "Vale entrar em " + formatInt(n) + (n === 1 ? " anúncio" : " anúncios") +
+          (imp !== null && Number(r.com_historico) > 0 ? ": " + (imp > 0 ? "+" : "") + formatMoneyShort(imp) + " de lucro no período" +
+            (Number(r.sem_historico) > 0 ? " (" + formatInt(r.sem_historico) + " sem vendas, fora da soma)" : "") : " (sem vendas no período para somar o impacto)");
+      } else if (r) {
+        texto = "Nenhuma promoção deste recorte vale entrar sem exigir mais vendas.";
+      }
+      refs.promoResumo.textContent = texto;
+      refs.promoResumo.title = texto ? "Soma do impacto (diferença no lucro por unidade × unidades vendidas) das que valem entrar, no recorte atual. Estimativa até a cotação ao vivo de cada linha." : "";
+    }
+    if (refs.promoExecutar) {
+      var pode = Boolean(state.client && state.contaId);
+      refs.promoExecutar.hidden = !pode;
+      if (pode) refs.promoExecutar.href = "anuncios-meli.html?cliente=" + encodeURIComponent(state.client.slug) + "&conta=" + encodeURIComponent(String(state.contaId));
+    }
+  }
+
+  // Cabeçalho: colunas ordenáveis são botões que pilotam o "Ordenar por" (uma ordem só).
+  function oppsHeadHtml() {
+    var ordem = state.oppsFilters.ordem || "";
+    function col(rotulo, chave, classe, titulo) {
+      if (chave === null) return '<th class="' + (classe || "") + '"' + (titulo ? ' title="' + escapeHtml(titulo) + '"' : "") + ">" + rotulo + "</th>";
+      var ativa = ordem === chave;
+      return '<th class="' + (classe || "") + '" aria-sort="' + (ativa ? (chave === "fim" ? "ascending" : "descending") : "none") + '">' +
+        '<button type="button" class="cm-th-ordem' + (ativa ? " is-active" : "") + '" data-cm-ordenar="' + chave + '" title="' + escapeHtml(titulo || "") + '">' + rotulo +
+        '<span class="cm-th-ordem__seta" aria-hidden="true">' + (ativa ? "↓" : "") + "</span></button></th>";
+    }
+    return "<tr>" +
+      col("Anúncio", null, "cm-c-produto") +
+      col("Promoção", "fim", "cm-c-promo", "Ordenar pelas que terminam antes") +
+      col("Preço", "desconto", "num", "Preço na promoção; embaixo, o de hoje riscado e o desconto sobre o preço cheio. Ordenar pelo maior desconto") +
+      col("ML banca", "subsidio", "num", "Quanto do desconto o Mercado Livre paga (embaixo, quanto você paga). Ordenar pelo maior subsídio") +
+      col("Lucro/un", "lucro", "num", "Lucro de contribuição por unidade na promoção e a diferença para hoje; embaixo, quanto isso vale no período. Ordenar pela melhor diferença por unidade") +
+      col("Margem", "margem", "num", "Margem na promoção e a diferença para hoje. Ordenar pela maior") +
+      col("Veredito", null, "cm-c-veredito") +
+      '<th class="cm-c-acoes"><span class="vf-visually-hidden">Ações</span></th>' +
+      "</tr>";
   }
 
   function renderPromotions() {
@@ -2524,32 +2746,49 @@
     setPromotionsFilters();
     renderPromotionsLive();
     var o = state.opps;
+    var total = function (texto) {
+      if (refs.promoTotal) refs.promoTotal.textContent = texto;
+      refs.resultCount.textContent = texto || "—";
+    };
+    // Recortes, busca, ordem e a linha de fonte só existem quando há lista para filtrar:
+    // sem leitura (ou erro) a tela não mostra contagens velhas nem filtros que não fazem nada.
+    var ferramentas = function (visivel) {
+      if (!visivel) state.oppsContagem = null;
+      Array.prototype.forEach.call(refs.promos.querySelectorAll(".cm-promos__seg, .cm-promos__bar, .cm-promos__fonte"), function (n) { n.hidden = !visivel; });
+    };
+    ferramentas(Boolean(o && (o.status === "loading" ? state.oppsContagem : o.status === "ok" && o.disponivel)));
     if (!isSnapshotMode() || state.awaitingAccount || !state.contaId) {
       refs.oppsMeta.textContent = "";
       refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="sem-conta">' +
         escapeHtml(state.awaitingAccount ? "Escolha a operação (conta Mercado Livre) para ver as promoções." : "As promoções são lidas da conta no modo persistido; escolha uma operação para vê-las.") + "</p>";
-      refs.resultCount.textContent = "—";
+      total("");
       return;
     }
     if (!o || o.status === "loading") {
       refs.oppsMeta.textContent = "";
       refs.oppsHost.innerHTML = stateHtml("loading", "Carregando promoções…");
-      refs.resultCount.textContent = "Carregando…";
+      total("Carregando…");
       return;
     }
     if (o.status === "error") {
       refs.oppsMeta.textContent = "";
       refs.oppsHost.innerHTML = '<p class="cm-empty-note" role="alert">' + escapeHtml(o.error || "Não foi possível carregar as promoções.") + "</p>";
-      refs.resultCount.textContent = "Erro";
+      total("");
       return;
     }
     if (!o.disponivel) {
       var linhaFonte = promoFonteLinha(o.fontePromocoes);
       refs.oppsMeta.textContent = linhaFonte || oppsSyncTexto(o) || "promoções da conta";
-      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="indisponivel" data-cm-opps-sync="' + escapeHtml((o.sync && o.sync.state) || "") + '"' +
-        (o.fontePromocoes ? ' data-cm-promo-estado="' + escapeHtml(o.fontePromocoes.estado) + '"' : "") + ">" +
-        escapeHtml(linhaFonte || o.mensagem || "Nenhuma promoção sincronizada para esta conta ainda.") + "</p>";
-      refs.resultCount.textContent = "—";
+      var proximo = oppsSincronizando(o)
+        ? "A lista aparece aqui assim que a leitura terminar — acompanhe o progresso na barra acima."
+        : "Peça a leitura na barra acima; a lista aparece aqui quando ela terminar.";
+      refs.oppsHost.innerHTML = '<div class="cm-empty-note cm-opps-vazio cm-opps-vazio--leitura"><p data-cm-opps="indisponivel" data-cm-opps-sync="' + escapeHtml((o.sync && o.sync.state) || "") + '"' +
+        (o.fontePromocoes ? ' data-cm-promo-estado="' + escapeHtml(o.fontePromocoes.estado) + '"' : "") + "><strong>" +
+        escapeHtml(linhaFonte || o.mensagem || "Nenhuma promoção sincronizada para esta conta ainda.") + "</strong>" +
+        // Sem a linha da fonte única (servidor antigo), o progresso vem do `sync` — a linha de fonte está oculta aqui.
+        (!linhaFonte && oppsSyncTexto(o) ? " · " + escapeHtml(oppsSyncTexto(o)) : "") + "</p>" +
+        '<p class="cm-opps-vazio__dica">' + escapeHtml(proximo) + "</p></div>";
+      total("");
       return;
     }
     var fonte = o.fonte || {};
@@ -2566,21 +2805,26 @@
     if (!geradoTxt || geradoTxt === "—") geradoTxt = "data desconhecida";
     // Com fontePromocoes a linha é a da fonte única (a mesma da Bancada); sem ela, o texto de antes.
     refs.oppsMeta.textContent = "Lista: " + (promoFonteLinha(o.fontePromocoes) || (origem + " · " + geradoTxt + (extra.length ? " · " + extra.join(" · ") : "")));
-    refs.resultCount.textContent = formatInt(o.total || 0) + (Number(o.total) === 1 ? " anúncio" : " anúncios");
+    total(formatInt(o.total || 0) + (Number(o.total) === 1 ? " anúncio" : " anúncios"));
+    renderPromoResumo(o);
     if (!o.oportunidades || !o.oportunidades.length) {
+      var busca = state.oppsFilters.busca;
       var filtrado = state.oppsFilters.veredito || state.oppsFilters.tipo;
-      refs.oppsHost.innerHTML = '<p class="cm-empty-note" data-cm-opps="vazio">' + escapeHtml(filtrado
-        ? "Nenhuma promoção neste filtro. Ajuste o veredito ou o tipo."
-        : "Nenhuma promoção disponível que valha entrar nesta conta (promoções já ativas e as que não baixam o preço não contam).") + "</p>";
+      var texto = busca
+        ? "Nenhum anúncio com “" + busca + "” neste recorte."
+        : filtrado
+          ? "Nenhuma promoção neste filtro. Ajuste o veredito ou o tipo."
+          : "Nenhuma promoção disponível que valha entrar nesta conta (promoções já ativas e as que não baixam o preço não contam).";
+      refs.oppsHost.innerHTML = '<div class="cm-empty-note cm-opps-vazio" data-cm-opps="vazio"><span>' + escapeHtml(texto) + "</span>" +
+        (busca ? '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-cm-limpar-busca>Limpar busca</button>' : "") +
+        (!busca && !filtrado ? '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-cm-ver-todos>Ver todas as promoções</button>' : "") + "</div>";
       return;
     }
-    refs.oppsHost.innerHTML = '<div class="vf-table-wrap cm-opps-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead><tr>' +
-      '<th>Produto</th><th>Promo</th><th class="num">Preço → promo</th><th class="num" title="Você banca / ML banca">Seller / ML</th><th class="num">Frete</th>' +
-      '<th class="num">LC/un</th><th class="num">Margem</th><th>Veredito</th>' +
-      "</tr></thead><tbody>" + o.oportunidades.map(promoRowHtml).join("") + "</tbody></table></div>" + oppsPagerHtml(o) +
-      '<p class="cm-opps-foot">' + escapeHtml(o.criterio || "") + (o.cotacao && o.cotacao.modo === "viva"
-        ? " Linhas com cotação ao vivo completa usam o mesmo cálculo do simulador; as marcadas como estimativa, não."
-        : " Valores estimados com a taxa de comissão e o frete do snapshot até a cotação ao vivo terminar.") + "</p>";
+    refs.oppsHost.innerHTML = '<div class="vf-table-wrap cm-opps-wrap"><table class="vf-table vf-table--compact cm-opps-table"><thead>' + oppsHeadHtml() +
+      "</thead><tbody>" + o.oportunidades.map(promoRowHtml).join("") + "</tbody></table></div>" + oppsPagerHtml(o) +
+      '<details class="cm-opps-foot"><summary>Como a lista é calculada</summary><p>' + escapeHtml(o.criterio || "") + (o.cotacao && o.cotacao.modo === "viva"
+        ? " Linhas com cotação ao vivo completa usam o mesmo cálculo do simulador; as marcadas com ≈ são estimativa."
+        : " Valores estimados (≈) com a taxa de comissão e o frete do snapshot até a cotação ao vivo terminar.") + "</p></details>";
   }
 
   // Paginação do SERVIDOR: page/limit/total/hasNext vêm da resposta.

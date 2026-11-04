@@ -589,6 +589,8 @@
       if (ir) {
         // "Promos com +LC" abre a aba Promoções já no veredito "Entrar".
         state.oppsFilters = { veredito: "entrar", tipo: "", busca: "", ordem: "" };
+        if (state.oppsBuscaTimer) { root.clearTimeout(state.oppsBuscaTimer); state.oppsBuscaTimer = null; }
+        if (refs.promoBusca) refs.promoBusca.value = "";
         state.oppsPage = 1;
         state.promoExpanded = {};
         state.promoDetail = {};
@@ -2403,11 +2405,15 @@
   function numerosDaPagina() {
     var o = state.opps;
     var linhas = o && o.status === "ok" ? (o.oportunidades || []) : [];
-    var contagem = { total: linhas.length, simular: 0, estimativa: 0, bloqueado: 0, primeiroMotivo: null };
+    var contagem = { total: linhas.length, simular: 0, estimativa: 0, bloqueado: 0, semNumero: 0, primeiroMotivo: null };
     linhas.forEach(function (l) {
       var origem = l.numeros && l.numeros.origem;
+      var cen = l.cenario || {};
+      // Linha sem lucro e sem margem (faltam dados): não é estimativa — nada foi calculado.
+      var semNumero = (cen.lc === null || cen.lc === undefined) && (cen.margem_ratio === null || cen.margem_ratio === undefined);
       if (origem === "simular") contagem.simular += 1;
       else if (origem === "bloqueado") contagem.bloqueado += 1;
+      else if (semNumero) { contagem.semNumero += 1; return; }
       else contagem.estimativa += 1;
       if (origem !== "simular" && !contagem.primeiroMotivo && l.numeros && l.numeros.motivo) contagem.primeiroMotivo = l.numeros.motivo;
     });
@@ -2425,13 +2431,14 @@
     if (state.oppsLive === "loading") {
       texto = "Cotando os valores desta página no Mercado Livre…";
       tom = "is-loading";
+    } else if (c.total && c.simular === 0 && c.estimativa === 0) {
+      // Nenhuma linha tem número (cotação incompleta ou dados faltando): não é estimativa — em qualquer
+      // estado da cotação, inclusive quando ela falhou ou ainda não rodou.
+      texto = "Sem números nestas linhas — " + (c.bloqueado === c.total ? "a cotação no Mercado Livre não veio completa" : "faltam dados para calcular (o motivo está em cada linha)") + " (nada foi estimado)";
+      tom = "is-nd";
     } else if (state.oppsLive === "error") {
       texto = "≈ Valores estimados — a cotação no Mercado Livre está indisponível agora";
       tom = "is-est";
-    } else if (c.total && c.bloqueado === c.total) {
-      // Nenhuma linha tem número (a cotação foi tentada e não veio completa): não é estimativa.
-      texto = "Sem números nestas linhas — a cotação no Mercado Livre não veio completa (nada foi estimado)";
-      tom = "is-nd";
     } else if (state.oppsLive === "ok") {
       var bloqueadas = c.bloqueado ? " · " + c.bloqueado + (c.bloqueado === 1 ? " linha bloqueada" : " linhas bloqueadas") + " (a cotação não veio completa)" : "";
       if (c.simular > 0 && c.estimativa === 0) { texto = "Valores cotados agora no Mercado Livre · comissão e frete reais no preço da promoção (mesmo cálculo da Bancada)" + bloqueadas; tom = "is-cotado"; }
@@ -2444,7 +2451,7 @@
     refs.promosLive.textContent = texto;
     refs.promosLive.className = "cm-promos__live" + (tom ? " " + tom : "");
     refs.promosLive.setAttribute("data-cm-live", state.oppsLive || "idle");
-    refs.promosLive.setAttribute("data-cm-numeros", c.simular > 0 && c.estimativa === 0 && state.oppsLive === "ok" ? "simular" : c.total ? "estimativa" : "");
+    refs.promosLive.setAttribute("data-cm-numeros", c.simular > 0 && c.estimativa === 0 && state.oppsLive === "ok" ? "simular" : c.estimativa > 0 ? "estimativa" : c.total ? "indisponivel" : "");
   }
 
   function veredictoChipHtml(veredito) {

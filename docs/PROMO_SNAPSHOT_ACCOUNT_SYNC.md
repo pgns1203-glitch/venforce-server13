@@ -260,7 +260,7 @@ Todos em `/operacao/central-margem`, com a cadeia JWT → `requireAutomacoesAcce
 
 | Método | Rota | O que faz |
 |---|---|---|
-| GET | `/:slug/promocoes/status?clienteContaId=` | estado da conta para a barra de atualização: `sync` (snapshot, run ativo com `itensProcessados/itensTotal/rateLimits/erros`), `ultimaTentativa` (status, código e motivo da falha, 429, duração), `atualizacao` (`disponivel` + motivo: `CONTA_SEM_GRANT_ML`, `WORKER_DESABILITADO`, `PILOTO_VAZIO`, `FORA_DO_PILOTO`, `EM_ANDAMENTO`, `COOLDOWN`), `worker`. Só lê |
+| GET | `/:slug/promocoes/status?clienteContaId=` | estado da conta para a barra de atualização: `sync` (snapshot, run ativo com `itensProcessados/itensTotal/rateLimits/erros`), `ultimaTentativa` (status, código e motivo da falha, 429, duração), `atualizacao` (`disponivel` + motivo, nesta precedência: `CONTA_SEM_GRANT_ML` > `WORKER_DESABILITADO` (com `runParado` se há run na fila que não vai andar) > `PILOTO_VAZIO`/`FORA_DO_PILOTO` > `EM_ANDAMENTO` > `COOLDOWN`), `worker`. Só lê |
 | GET | `/:slug/promocoes/snapshot?clienteContaId=&page=&limit=&itemId=&status=&tipo=` | linhas do snapshot **atual**, paginadas no servidor (`page, limit ≤ 100, total, hasNext`) |
 | GET | `/:slug/promocoes/oportunidades?clienteContaId=&page=&limit=&periodo=` | Oportunidades a partir do snapshot, paginadas **no banco** (`page, limit ≤ 50, total, hasNext`) |
 | POST | `/:slug/promocoes/sync` `{clienteContaId}` | **só enfileira** leitura (202). Reaproveita run ativo, respeita o cooldown por conta (`PROMO_SAME_CLIENT_COOLDOWN_MINUTES`), responde `WORKER_DESABILITADO` com a flag desligada. Nunca aplica promoção |
@@ -370,11 +370,14 @@ Todos carregam `cliente_id`, `cliente_conta_id`, `seller_id` e `run_id`; os de c
 
 ## 12b. Retenção
 
-Depois de cada run terminado (`markRunCompleted`/`markRunFailed`), `podarHistoricoDaConta` roda três
-DELETEs curtos da conta, sem transação longa:
+Depois de cada run terminado (`markRunCompleted`/`markRunFailed`), `podarHistoricoDaConta` roda
+DELETEs curtos da conta, sem transação longa, com **teto**: no máximo 5.000 linhas por DELETE e 20
+DELETEs por poda. O que sobrar fica para a próxima poda da conta (`pendente: true` no log
+`promo_snapshot_retencao`):
 1. lotes de runs terminados não protegidos;
 2. linhas de runs terminados não protegidos (run falho/não promovido);
-3. registros de run além dos `PROMO_SNAPSHOT_RUNS_RETIDOS` mais novos (CASCADE).
+3. registros de run além dos `PROMO_SNAPSHOT_RUNS_RETIDOS` mais novos — só os que já ficaram sem
+   linhas e sem lotes (o CASCADE nunca vira um DELETE grande escondido).
 
 Protegidos (nunca podados): snapshot atual e anterior da conta, runs ativos, o run de origem de uma
 retomada em andamento e runs interrompidos ainda retomáveis (janela de retomada + 60 min). A poda

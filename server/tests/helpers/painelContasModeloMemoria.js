@@ -6,6 +6,7 @@
 // /* painelContas:... */. Extraído de painelContasOperacionalService.test.js
 // para ser compartilhado com painelContasModoManual.test.js.
 
+const { ehDialogoDeSchema } = require("./schemaVersionadoNoMock");
 const pool = require("../../config/database");
 
 function importRow(id, contaId, competencia, { fat, lc, fatComCusto = fat, status = "published", de = `${competencia}-01`, ate = `${competencia}-28`, publicado = `${competencia}-29T06:00:00.000Z` }) {
@@ -124,6 +125,8 @@ function instalarMock(m) {
     if (q.includes("CREATE TABLE IF NOT EXISTS painel_contas_lancamentos_manuais")) { contar("ensure:painel"); return { rows: [] }; }
     // DDL dos ensures (Squads roda arquivos de migration, que começam com comentário).
     if (/^(--|CREATE|ALTER|DROP|BEGIN|COMMIT|ROLLBACK|DO )/i.test(q) || q.includes("pg_advisory")) return { rows: [] };
+    // Diálogo do marcador de versão de schema (schemaVersionado, P0 03/11/2026).
+    if (ehDialogoDeSchema(q)) return { rows: [] };
 
     if (q.includes("painelAcesso:ADMIN_TODOS")) { contar("authz"); return { rows: m.clientes.filter((c) => c.ativo).map(({ id, slug, nome }) => ({ id, slug, nome })) }; }
     if (q.includes("painelAcesso:SQUADS_DO_USUARIO")) {

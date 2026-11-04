@@ -1,5 +1,6 @@
 const { Pool } = require('pg');
 const { configConexao, lerMsPositivo, protegerConexoesDoPool } = require('./databaseConexao');
+const { instrumentarPool } = require('./databaseObservabilidade');
 
 // Espera por uma conexão LIVRE do pool tem prazo. Sem ele (padrão do pg =
 // infinito), um pool esgotado deixava toda requisição pendurada até o timeout
@@ -15,5 +16,10 @@ const pool = new Pool({
 
 // Conexão que cai nunca derruba o processo (ver protegerConexoesDoPool).
 protegerConexoesDoPool(pool);
+
+// P0 03/11/2026: tempo de aquisição, total/idle/waiting, falhas, conexões
+// perdidas e a recuperação depois de uma queda (ver databaseObservabilidade).
+// Só observa — não muda tamanho do pool nem nenhum timeout.
+instrumentarPool(pool);
 
 module.exports = pool;

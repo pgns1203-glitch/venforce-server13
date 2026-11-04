@@ -10,11 +10,21 @@ const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
 const { SQL_CUSTO_MARKETPLACE_AUSENTE } = require("./margemConfiavel");
+const { aplicarSchemaVersionado } = require("../schema/schemaVersionado");
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "margin_snapshot_schema.sql");
 
+// P0 03/11/2026: com um pool, o schema só roda quando o hash do arquivo muda
+// (marcador de versão) e com lock_timeout — `ALTER TABLE
+// margin_projection_snapshots ADD COLUMN IF NOT EXISTS` pede ACCESS EXCLUSIVE
+// mesmo quando a coluna existe, e o worker sobe a cada boot. db de teste
+// (sem connect): caminho direto de sempre.
 async function ensureMarginSnapshotTables(db = pool) {
   const sql = fs.readFileSync(schemaPath, "utf8");
+  if (typeof db?.connect === "function" && typeof db?.release !== "function") {
+    await aplicarSchemaVersionado({ db, chave: "margin_snapshot_schema", sql, lockKey: "vf:schema:margin_snapshot" });
+    return;
+  }
   await db.query(sql);
 }
 

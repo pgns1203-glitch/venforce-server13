@@ -512,7 +512,8 @@ async function run() {
   {
     const index = fs.readFileSync(path.join(__dirname, "../index.js"), "utf8");
     ok("index: importa o scheduler", index.includes('require("./services/motorMargem/margemProjetadaScheduler")'));
-    ok("index: inicia só depois de ensureAnunciosMargemProjetadaSnapshotSchema", /ensureAnunciosMargemProjetadaSnapshotSchema\(\)\.then\(\s*\(\) => margemProjetadaScheduler\.iniciar\(\)/.test(index));
+    // Boot em etapas (P0 03/11/2026): aoConcluir só roda depois de executar() dar certo.
+    ok("index: inicia só depois de ensureAnunciosMargemProjetadaSnapshotSchema", /executar: \(\) => ensureAnunciosMargemProjetadaSnapshotSchema\(\),\s*aoConcluir: \(\) => margemProjetadaScheduler\.iniciar\(\)/.test(index));
     const encerrar = index.slice(index.indexOf("function encerrarComGraca"), index.indexOf('process.on("SIGTERM"'));
     ok("index: encerrarComGraca para o scheduler", encerrar.includes("margemProjetadaScheduler.parar()"));
     // PASSO 12 do hardening pós-merge com origin/main (PR #183): o shutdown

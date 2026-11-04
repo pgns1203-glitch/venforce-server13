@@ -26,17 +26,28 @@ async function run() {
     const db = { async query(sql, params) { consultas.push({ sql, params }); return { rows: [
       { item_id: "MLB1", margin_percent: "18.25", profit: "7.10", status: "HEALTHY", calculated_at: "2026-10-12T06:00:00Z" },
       { item_id: "MLB2", margin_percent: null, profit: null, status: "UNVALIDATED", calculated_at: "2026-10-12T06:00:00Z" },
+      // P0 04/11/2026: gravada com comissão/frete assumidos 0 (R$ 50 → 45%) e não revalidada.
+      { item_id: "MLB3", margin_percent: "45.10", profit: "22.55", status: "SUSPECT_DATA", calculated_at: "2026-10-01T06:00:00Z",
+        assumed_json: ["commission", "freight"], refresh_status: "failed" },
     ] }; } };
 
-    const comConta = await fonte.lerMarginSnapshotPorItens({ clienteId: 1, clienteContaId: 10, itemIds: ["MLB1", "MLB2", "MLB1"] }, db);
+    const comConta = await fonte.lerMarginSnapshotPorItens({ clienteId: 1, clienteContaId: 10, itemIds: ["MLB1", "MLB2", "MLB1", "MLB3"] }, db);
     assert.ok(consultas[0].sql.includes("FROM margin_projection_snapshots"));
     assert.ok(consultas[0].sql.includes("s.cliente_conta_id = $4"));
     assert.ok(!consultas[0].sql.includes("meli_anuncios"), "conta resolvida: filtro direto pela chave canônica");
-    assert.deepStrictEqual(consultas[0].params, [1, "meli", ["MLB1", "MLB2"], 10]);
+    assert.deepStrictEqual(consultas[0].params, [1, "meli", ["MLB1", "MLB2", "MLB3"], 10]);
     assert.deepStrictEqual(comConta.get("MLB1"), {
       marginPercent: 18.25, profit: 7.1, computable: true, status: "HEALTHY",
+      margemIncompleta: false, assumidos: [], refreshStatus: null,
       calculadoEm: "2026-10-12T06:00:00Z", origemJob: "margin_snapshot", fonte: "margin_snapshot",
     });
+    const inflada = comConta.get("MLB3");
+    assert.strictEqual(inflada.computable, false, "comissão/frete assumidos 0: margem não computável (fora de ordenação/média)");
+    assert.strictEqual(inflada.marginPercent, null, "o 45% inflado não chega à célula");
+    assert.strictEqual(inflada.profit, null);
+    assert.strictEqual(inflada.margemIncompleta, true);
+    assert.strictEqual(inflada.refreshStatus, "failed", "valor antigo não revalidado fica identificado");
+    assert.strictEqual(inflada.status, "SUSPECT_DATA");
     assert.strictEqual(comConta.get("MLB2").computable, false, "margin_percent null = não computável");
     assert.strictEqual(comConta.get("MLB2").marginPercent, null);
 

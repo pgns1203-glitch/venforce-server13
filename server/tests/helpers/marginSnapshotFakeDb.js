@@ -117,6 +117,12 @@ function ordenarPorOrderBy(sql, linhas, params = []) {
       const idx = (row) => { const i = ordem.indexOf(statusEfetivo(row, params, apEf[2], apEf[3])); return i === -1 ? null : i + 1; };
       return { valor: idx, dir: apEf[4], nulls: apEf[5] || (apEf[4] === "ASC" ? "LAST" : "FIRST") };
     }
+    // P0 04/11/2026: margem/lucro "confiáveis" — linha com comissão/frete
+    // assumidos como 0 (assumed_json) ordena como sem margem.
+    const cf = texto.match(/^\(CASE WHEN \(assumed_json \? 'commission' OR \(assumed_json \? 'freight' AND COALESCE\(quality_json->>'freteAplicavel' = 'true', false\)\)\) THEN NULL ELSE (\w+) END\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
+    if (cf) {
+      return { valor: (row) => (custoMarketplaceAssumido(row) ? null : row[cf[1]]), dir: cf[2], nulls: cf[3] || (cf[2] === "ASC" ? "LAST" : "FIRST") };
+    }
     const mm = texto.match(/^(\w+) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
     if (!mm) throw new Error(`marginSnapshotFakeDb: ORDER BY não suportado -> ${texto}`);
     return { valor: (row) => row[mm[1]], dir: mm[2], nulls: mm[3] || (mm[2] === "ASC" ? "LAST" : "FIRST") };
@@ -137,6 +143,15 @@ function ordenarPorOrderBy(sql, linhas, params = []) {
   });
 }
 
+// Mesma regra de services/motorMargem/margemConfiavel (SQL_CUSTO_MARKETPLACE_AUSENTE):
+// comissão assumida sempre; frete só quando quality_json.freteAplicavel = true.
+function custoMarketplaceAssumido(row) {
+  const a = Array.isArray(row.assumed_json) ? row.assumed_json : [];
+  if (a.includes("commission")) return true;
+  const q = row.quality_json && typeof row.quality_json === "object" ? row.quality_json : {};
+  return a.includes("freight") && q.freteAplicavel === true;
+}
+
 function makeMarginSnapshotFakeDb() {
   const runs = [];
   const snapshots = [];
@@ -155,7 +170,12 @@ function makeMarginSnapshotFakeDb() {
     }
     if (sql.includes("/* ms:kpis */")) {
       const linhas = filtrarPorWhere(sql, snapshots, params);
-      const row = { total: linhas.length, com_margem: linhas.filter((r) => r.margin !== null && r.margin !== undefined).length };
+      const comMargem = linhas.filter((r) => r.margin !== null && r.margin !== undefined);
+      const row = {
+        total: linhas.length,
+        com_margem: comMargem.filter((r) => !custoMarketplaceAssumido(r)).length,
+        margem_incompleta: comMargem.filter(custoMarketplaceAssumido).length,
+      };
       // LC somado dos anúncios em Prejuízo (status persistido ou efetivo).
       if (/AS lc_prejuizo/.test(sql)) {
         const mEf = sql.match(new RegExp(`SUM\\(profit\\) FILTER \\(WHERE ${EXPR_STATUS_EFETIVO} = 'LOSS'\\)`));
@@ -180,7 +200,7 @@ function makeMarginSnapshotFakeDb() {
         && r.marketplace === marketplace && !r.catalog_missing_since && ids.includes(r.item_id)).map((r) => ({ ...r })) };
     }
     if (sql.includes("/* ms:projecoes */")) {
-      return { rows: filtrarPorWhere(sql, snapshots, params).map((r) => ({ ...r })) };
+      return { rows: filtrarPorWhere(sql, snapshots, params).map((r) => ({ ...r, custo_marketplace_ausente: custoMarketplaceAssumido(r) })) };
     }
     if (sql.includes("/* ms:count */")) {
       const linhas = filtrarPorWhere(sql, snapshots, params);

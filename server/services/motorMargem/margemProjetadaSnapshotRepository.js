@@ -20,6 +20,7 @@
 // -----------------------------------------------------------------------------
 
 const pool = require("../../config/database");
+const { custoMarketplaceAusente, freteAplicavelDaLogistica } = require("./margemConfiavel");
 
 // Mesmo formato/uso de `valorEvidencia` em meliAnunciosController.js:629-635 —
 // desembrulha `{value, source, quality, observedAt}` (ou `null`) para o valor
@@ -46,7 +47,17 @@ function valorEvidencia(entrada) {
  * @returns {{inserted: boolean}} inserted=true → linha nova; false → linha atualizada
  */
 async function upsertSnapshot({ clienteId, clienteContaId, itemId, item, origemJob }, db = pool) {
-  const projetado = item.margin.projected;
+  // P0 04/11/2026: comissão/frete ausentes (assumidos 0) ⇒ margem não
+  // computável nesta tabela — nunca grava o número inflado.
+  const incompleta = custoMarketplaceAusente({
+    assumed: item.margin.projected.assumed || [],
+    // null = sem logística no anúncio ⇒ combinável (mesma convenção da cotação).
+    freteAplicavel: freteAplicavelDaLogistica(item.diagnostico ? item.diagnostico.logisticType : undefined),
+  });
+  const projetado = incompleta
+    ? { ...item.margin.projected, marginPercent: null, profit: null, computable: false,
+      missing: Array.from(new Set([...(item.margin.projected.missing || []), ...(item.margin.projected.assumed || []).filter((k) => k === "commission" || k === "freight")])) }
+    : item.margin.projected;
   const precoAtual = valorEvidencia(item.pricing && item.pricing.current);
   const precoOriginal = valorEvidencia(item.pricing && item.pricing.list);
   const status = (item.quality && item.quality.status) || null;
@@ -116,10 +127,16 @@ async function lerSnapshotPorItens({ clienteId, itemIds }, db = pool) {
 
   const porItem = new Map();
   for (const r of rows) {
+    const suspeito = r.status === "SUSPECT_DATA";
     porItem.set(r.item_id, {
-      marginPercent: r.margin_percent != null ? Number(r.margin_percent) : null,
-      profit: r.profit != null ? Number(r.profit) : null,
-      computable: r.computable === true,
+      // Linha antiga "Dado suspeito" pode ter comissão/frete zerados: sem
+      // número (nem % nem lucro — o lucro entraria na soma da família).
+      marginPercent: !suspeito && r.margin_percent != null ? Number(r.margin_percent) : null,
+      profit: !suspeito && r.profit != null ? Number(r.profit) : null,
+      // Esta tabela não guarda `assumed`: uma linha antiga "Dado suspeito" pode
+      // ser margem com comissão/frete zerados (ex.: 46% em R$ 50) — no fallback
+      // de Anúncios ela não conta como calculável (P0 04/11/2026).
+      computable: r.computable === true && r.status !== "SUSPECT_DATA",
       status: r.status || null,
       calculadoEm: r.calculado_em || null,
       origemJob: r.origem_job || null,

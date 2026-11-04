@@ -26,6 +26,7 @@ const snapshotRepository = require("./marginSnapshotRepository");
 const runRepository = require("./marginSnapshotRunRepository");
 const api = require("./marginSnapshotApiService");
 const core = require("./core");
+const margemConfiavel = require("./margemConfiavel");
 const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const { flagLigada } = require("./marginSnapshotConfig");
@@ -374,11 +375,19 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
   // do núcleo (null = o do snapshot continua valendo).
   const reclass = reclassificarStatus(row, atual);
   const statusItem = reclass ? reclass.status : row.status;
+  // P0 04/11/2026: comissão ou frete ASSUMIDOS como 0 na linha gravada (antes
+  // da trava de cotação incompleta) ⇒ margem inflada (ex.: R$ 50 com 45%). O
+  // número não é exibido nem usado como margem; a linha e o status do Motor
+  // ("Dado suspeito") continuam, com o motivo explícito.
+  const custoMarketplaceAssumido = margemConfiavel.custoMarketplaceAusente({
+    assumed: row.assumed || [],
+    freteAplicavel: row.quality && typeof row.quality.freteAplicavel === "boolean" ? row.quality.freteAplicavel : null,
+  });
   const projected = {
-    profit: atual.profit,
-    margin: atual.margin,
-    marginPercent: atual.rebate === null ? row.marginPercent : percentual(atual.margin),
-    computable: row.margin !== null,
+    profit: custoMarketplaceAssumido ? null : atual.profit,
+    margin: custoMarketplaceAssumido ? null : atual.margin,
+    marginPercent: custoMarketplaceAssumido ? null : (atual.rebate === null ? row.marginPercent : percentual(atual.margin)),
+    computable: row.margin !== null && !custoMarketplaceAssumido,
     strict: (row.assumed || []).length === 0 && row.margin !== null,
     missing: row.missing || [],
     assumed: row.assumed || [],
@@ -497,7 +506,11 @@ function comporItem(row, realizada, deps = {}, rebateInfo = null, rebateIndispon
       margin: projected.margin,
       profit: projected.profit,
       estimated: projected.margin !== null && projected.assumed.length > 0,
-      note: projected.assumed.length ? `Assumido 0 para: ${projected.assumed.join(", ")}.` : null,
+      // Comissão/frete do ML ausentes nesta linha: margem não exibida (≠ margem ruim).
+      incompleta: custoMarketplaceAssumido,
+      note: custoMarketplaceAssumido
+        ? margemConfiavel.NOTA_MARGEM_INCOMPLETA
+        : projected.assumed.length ? `Assumido 0 para: ${projected.assumed.join(", ")}.` : null,
       // Retorno ML da promoção em andamento já somado à margem acima (null = nenhum).
       rebate: atual.rebate,
       rebateMotivo: atual.rebateMotivo,

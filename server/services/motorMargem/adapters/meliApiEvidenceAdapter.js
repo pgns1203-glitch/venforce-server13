@@ -217,14 +217,55 @@ async function listarIdsCatalogo({ clienteId, mlUserId, maxItens = 20000 }, fetc
 }
 
 /** Detalhes em lote. Devolve os `body` já desembrulhados do multiget. */
-async function buscarDetalhesItens({ clienteId, ids }, fetchFn = mlFetch) {
+// Código por entrada do multiget: `code` em /items?ids=, `status_code` no
+// substituto /items/bulk?ids= (doc itens-e-buscas: migração até 25/10/2026).
+function codigoDaEntrada(entry) {
+  const c = entry && (entry.code ?? entry.status_code);
+  const n = Number(c);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Detalhes de até 20 anúncios (multiget). Devolve SÓ os corpos de entradas
+ * HTTP 200 com `id` — o array carrega, numa propriedade não enumerável
+ * `erros`, as entradas recusadas: [{ id, status, erro }].
+ *
+ * P0 04/11/2026 (Alianza Jeans 2, conta secundária): a chamada saía SEM
+ * `mlUserId`, com o token do grant PRINCIPAL do cliente (outro vendedor), e o
+ * ML respondia 403 por item. O corpo de erro (`{status:403, message, …}`) era
+ * aceito como se fosse o anúncio: "Status: 403" na tela, sem categoria/tipo de
+ * anúncio ⇒ comissão e frete nunca consultados ⇒ 532/532 cotações
+ * "incompletas" sem motivo. Agora: identidade explícita da conta e o erro do
+ * ML chega como erro, com o status HTTP.
+ */
+async function buscarDetalhesItens({ clienteId, ids, mlUserId = null }, fetchFn = mlFetch) {
   if (!ids || ids.length === 0) return [];
-  const resp = await fetchFn(clienteId, `/items?ids=${ids.join(",")}`);
+  const resp = await fetchFn(clienteId, `/items?ids=${ids.join(",")}`, mlUserId ? { mlUserId } : undefined);
   if (!resp.ok) {
     throw criarErroMeliApi(resp, "Erro ao buscar detalhes dos itens no Mercado Livre.");
   }
   const entries = Array.isArray(resp.data) ? resp.data : [];
-  return entries.map((entry) => entry?.body || null).filter(Boolean);
+  const bodies = [];
+  const erros = [];
+  for (const entry of entries) {
+    const codigo = codigoDaEntrada(entry);
+    const body = entry && entry.body;
+    const id = (body && body.id) || (entry && entry.id) || null;
+    // Entrada sem código (formato inesperado) com corpo de anúncio válido:
+    // aceita como antes. Com código ≠ 200, ou corpo de erro: recusa.
+    const corpoDeAnuncio = body && body.id && !(Number(body.status) >= 400);
+    if ((codigo === 200 || codigo === null) && corpoDeAnuncio) {
+      bodies.push(body);
+    } else {
+      erros.push({
+        id: id ? String(id) : null,
+        status: codigo ?? (body && Number(body.status) >= 400 ? Number(body.status) : null),
+        erro: body && (body.error || body.message) ? String(body.error || body.message).slice(0, 120) : null,
+      });
+    }
+  }
+  Object.defineProperty(bodies, "erros", { value: erros, enumerable: false });
+  return bodies;
 }
 
 /**
@@ -302,6 +343,8 @@ async function aplicarEvidenciasProjetadas(
     freight: cotacao.fretePrevisto,
     // Sinaliza para a Central por que uma variável ficou sem valor.
     faltantes: cotacao.faltantes,
+    // Status HTTP + motivo por componente (comissão/frete) da cotação.
+    cotacao: cotacao.diagnosticoCotacao || null,
   };
 }
 

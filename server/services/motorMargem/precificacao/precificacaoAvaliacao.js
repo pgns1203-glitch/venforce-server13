@@ -16,6 +16,7 @@
 
 // Núcleo puro (calcularCenario/DEFAULT_TARGET_MARGIN): carregado no topo — sem I/O.
 const core = require("../core");
+const margemConfiavel = require("../margemConfiavel");
 // Fonte única dos tipos de promoção em que o VenForce escreve (a mesma de /anuncios). Pura.
 const tiposSuportados = require("../../meliAnuncios/promocaoTiposSuportados");
 
@@ -353,13 +354,28 @@ function avaliar({ base, tipo, novoPreco, precoVisto, recote, promocao = null, p
 
   const m = base.motor;
   const insumos = { cost: m.custo, taxRate: m.imposto, fixedFee: m.taxaFixa };
-  const antes = d.computeMargin({ price: m.precoAtual, ...insumos, commission: m.comissao, freight: m.frete });
+  // P0 04/11/2026: comissão/frete do ML ausentes ⇒ sem margem (o núcleo
+  // assumiria 0: preço 50 → 46%). Frete combinável não é ausência.
+  const freteAplicavelAnuncio = margemConfiavel.freteAplicavelDaLogistica(base.anuncio ? base.anuncio.logisticType : undefined);
+  const semMargem = (calc, faltando) => ({ ...calc, computable: false, margin: null, profit: null,
+    missing: Array.from(new Set([...(calc.missing || []), ...faltando])) });
+  const faltandoMarketplace = (comissao, frete, freteAplicavel) => [
+    comissao === null || comissao === undefined ? "commission" : null,
+    (frete === null || frete === undefined) && freteAplicavel !== false ? "freight" : null,
+  ].filter(Boolean);
+  const antesBruto = d.computeMargin({ price: m.precoAtual, ...insumos, commission: m.comissao, freight: m.frete });
+  const faltandoAntes = faltandoMarketplace(m.comissao, m.frete, freteAplicavelAnuncio);
+  const antes = faltandoAntes.length ? semMargem(antesBruto, faltandoAntes) : antesBruto;
   const rebate = tipo === "PROMOTION" && promocao && promocao.subsidioMl !== null && promocao.subsidioMl !== undefined
     ? Number(promocao.subsidioMl)
     : 0;
-  const depois = novoPreco === null
+  const depoisBruto = novoPreco === null
     ? { computable: false, profit: null, margin: null, missing: ["price"], assumed: [] }
     : d.computeMargin({ price: novoPreco, ...insumos, commission: recote.comissao, freight: recote.frete, rebate });
+  const faltandoDepois = novoPreco === null ? [] : faltandoMarketplace(
+    recote.comissao, recote.frete, recote.freteFonte === "nao_aplicavel" ? false : freteAplicavelAnuncio
+  );
+  const depois = faltandoDepois.length ? semMargem(depoisBruto, faltandoDepois) : depoisBruto;
 
   // ── DADOS ────────────────────────────────────────────────────────────────
   gates.push(

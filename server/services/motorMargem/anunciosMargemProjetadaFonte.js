@@ -35,6 +35,7 @@
 
 const pool = require("../../config/database");
 const legado = require("./margemProjetadaSnapshotRepository");
+const margemConfiavel = require("./margemConfiavel");
 
 const MARKETPLACE = "meli";
 // Valor de `origemJob` para linhas vindas de A — distingue no payload a
@@ -71,7 +72,8 @@ async function lerMarginSnapshotPorItens({ clienteId, clienteContaId = null, ite
 
   const { rows } = await db.query(
     `-- LER_MARGIN_SNAPSHOT_PARA_ANUNCIOS
-     SELECT DISTINCT ON (s.item_id) s.item_id, s.margin_percent, s.profit, s.status, s.calculated_at
+     SELECT DISTINCT ON (s.item_id) s.item_id, s.margin_percent, s.profit, s.status, s.calculated_at,
+            s.assumed_json, s.refresh_status, s.quality_json->>'freteAplicavel' AS frete_aplicavel
        FROM margin_projection_snapshots s${escopoConta}
         AND s.cliente_id = $1
         AND s.marketplace = $2
@@ -83,12 +85,25 @@ async function lerMarginSnapshotPorItens({ clienteId, clienteContaId = null, ite
   const porItem = new Map();
   for (const r of rows) {
     const marginPercent = r.margin_percent != null ? Number(r.margin_percent) : null;
+    const assumidos = Array.isArray(r.assumed_json) ? r.assumed_json : [];
+    // P0 04/11/2026: margem com comissão ou frete ASSUMIDOS como 0 (linhas
+    // gravadas antes da trava de cotação incompleta) é inflada — ex.: R$ 50 com
+    // 45%. Não entra como computável: fora da ordenação, da faixa e da média da
+    // família, e a célula não mostra o número como se fosse margem.
+    const custoMarketplaceAusente = margemConfiavel.custoMarketplaceAusente({
+      assumed: assumidos,
+      freteAplicavel: r.frete_aplicavel === "true" ? true : r.frete_aplicavel === "false" ? false : null,
+    });
     porItem.set(r.item_id, {
-      marginPercent,
-      profit: r.profit != null ? Number(r.profit) : null,
+      marginPercent: custoMarketplaceAusente ? null : marginPercent,
+      profit: custoMarketplaceAusente ? null : (r.profit != null ? Number(r.profit) : null),
       // O Motor só zera margin quando a projetada não é computável
       // (marginEngine.computeMargin) — A não tem coluna `computable` própria.
-      computable: marginPercent != null,
+      computable: marginPercent != null && !custoMarketplaceAusente,
+      margemIncompleta: custoMarketplaceAusente,
+      assumidos,
+      // 'fresh' | 'stale' | 'failed' | … — valor de um run anterior não revalidado.
+      refreshStatus: r.refresh_status || null,
       status: r.status || null,
       calculadoEm: r.calculated_at || null,
       origemJob: ORIGEM_MARGIN_SNAPSHOT,

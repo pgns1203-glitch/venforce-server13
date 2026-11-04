@@ -39,6 +39,7 @@ const { registrarLog, extrairIp, dadosUsuarioDeReq } = require("../services/acti
 const motorMargemService = require("../services/motorMargem/motorMargemService");
 const cliente360ProdutosEngine = require("../services/cliente360/cliente360ProdutosEngine");
 const marginEngine = require("../services/motorMargem/core/marginEngine");
+const margemConfiavel = require("../services/motorMargem/margemConfiavel");
 const { reclassificarStatus } = require("../services/motorMargem/margemAtualRebate");
 const { mlFetch } = require("../utils/mlClient");
 const { assertClienteNaCarteira } = require("../services/squads/authorizationService");
@@ -1388,17 +1389,22 @@ function montarMapaMargem(itens, incluirComposicao, rebateAlvo, rebatesAoVivo = 
       )
       : null;
 
+    // P0 04/11/2026: comissão/frete do ML ausentes (assumidos 0 pelo núcleo)
+    // ⇒ o número é inflado (R$ 50 → 46%): não vai para a célula, nem com rebate.
+    const incompleta = margemConfiavel.margemProjetadaIncompleta(item);
     margem[itemId] = {
       origem,
-      margin: comRebate ? comRebate.margin : (exibida ? exibida.margin : null),
-      marginPercent: comRebate
+      margemIncompleta: incompleta,
+      margemIncompletaMotivo: incompleta ? margemConfiavel.NOTA_MARGEM_INCOMPLETA : null,
+      margin: incompleta ? null : (comRebate ? comRebate.margin : (exibida ? exibida.margin : null)),
+      marginPercent: incompleta ? null : (comRebate
         ? (comRebate.margin === null ? null : Math.round(comRebate.margin * 10000) / 100)
-        : (exibida ? exibida.marginPercent : null),
+        : (exibida ? exibida.marginPercent : null)),
       // Lucro em R$ (o Motor já calcula — `margin`/`marginPercent` acima são
       // só a RAZÃO/percentual). Aditivo: a lista nunca leu este campo, só a
       // seção "Composição da margem" do modal precisa dele para a linha
       // final "= Margem" em moeda.
-      profit: comRebate ? comRebate.profit : (exibida ? exibida.profit : null),
+      profit: incompleta ? null : (comRebate ? comRebate.profit : (exibida ? exibida.profit : null)),
       status: novoStatus ? novoStatus.status : item.quality.status,
       statusLabel: novoStatus ? novoStatus.label : item.quality.statusLabel,
       statusReasons: novoStatus ? novoStatus.reasons : item.quality.statusReasons,
@@ -2018,13 +2024,23 @@ async function anexarVoceRecebe({ cliente, clienteContaId, itemId, promocoesItem
       clienteSlug: cliente.slug, clienteContaId, itemIds: [itemId],
     });
     const item = (resultadoMotor.itens || []).find((it) => it.identity.itemId === String(itemId));
-    if (item) base = extrairValoresBaseParaSimulacao(item, "projected");
+    if (item) {
+      base = extrairValoresBaseParaSimulacao(item, "projected");
+      base.freteAplicavel = margemConfiavel.freteAplicavelDaLogistica(
+        item.diagnostico && item.diagnostico.logisticType !== undefined ? item.diagnostico.logisticType : undefined
+      );
+    }
   } catch (_) {
     base = null;
   }
 
   return promocoesItem.map((p) => {
     if (!base || p.precoFinal == null) return { ...p, voceRecebe: null };
+    // Sem comissão/frete do ML não há "Você recebe": o núcleo assumiria 0 e a
+    // promoção pareceria lucrativa (P0 04/11/2026).
+    if (margemConfiavel.custoMarketplaceAusenteNosValores(base)) {
+      return { ...p, voceRecebe: { computable: false, profit: null, marginPercent: null, motivo: margemConfiavel.MOTIVO_MARGEM_INCOMPLETA } };
+    }
     const resultado = marginEngine.computeMargin({
       price: p.precoFinal,
       cost: base.cost,
@@ -3172,6 +3188,27 @@ async function simularMargem(req, res) {
       rebate,
     };
 
+    // Sem comissão/frete do ML a simulação não devolve margem: o núcleo
+    // assumiria 0 (preço R$ 45 → 41%). P0 04/11/2026.
+    const freteAplicavel = margemConfiavel.freteAplicavelDaLogistica(
+      item.diagnostico && item.diagnostico.logisticType !== undefined ? item.diagnostico.logisticType : undefined
+    );
+    if (margemConfiavel.custoMarketplaceAusenteNosValores({ commission: entrada.commission, freight: entrada.freight, freteAplicavel })) {
+      return res.json({
+        ok: true,
+        simulado: true,
+        origem,
+        entradas: entrada,
+        resultado: {
+          computable: false, profit: null, margin: null, marginPercent: null,
+          missing: [entrada.commission == null ? "commission" : null, entrada.freight == null ? "freight" : null].filter(Boolean),
+          assumed: [],
+          motivo: margemConfiavel.MOTIVO_MARGEM_INCOMPLETA,
+          nota: margemConfiavel.NOTA_MARGEM_INCOMPLETA,
+        },
+      });
+    }
+
     const resultado = marginEngine.computeMargin(entrada);
 
     return res.json({
@@ -4063,6 +4100,8 @@ async function previaPlanilhaCustos(req, res) {
 module.exports = {
   // Só para testes: isola o cache de rebate entre cenários.
   _limparRebateCache: () => rebateCache.clear(),
+  // P0 04/11/2026: testes de margem com comissão/frete ausentes (margemCotacaoConfiabilidade).
+  _paraTeste: { montarMapaMargem, anexarVoceRecebe },
   lerCustos,
   salvarCustosLote,
   baixarPlanilhaCustos,

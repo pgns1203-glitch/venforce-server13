@@ -22,6 +22,10 @@
 
 const { mlFetch } = require("../../utils/mlClient");
 const { resolverPrecosItem } = require("../automacoes/precoItemService");
+// Motivos por componente: a MESMA tabela da cotação em P' (Simular/Promoções).
+const {
+  MOTIVOS_COTACAO, motivoDaResposta, LOGISTICA_SEM_FRETE_PREVISTO,
+} = require("../motorMargem/margemCotacaoEmP");
 
 function numOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -54,25 +58,48 @@ async function buscarComissaoEFrete(
   { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType, mlUserId = null },
   fetchFn = mlFetch
 ) {
+  // P0 04/11/2026 (Alianza Jeans 2): o resultado de cada GET fica registrado
+  // (status HTTP / timeout / exceção) para o `diagnostico` dizer POR QUE um
+  // componente ficou ausente — antes tudo virava um `null` mudo e 532 itens
+  // falharam sem nenhuma pista. Valores continuam null quando ausentes: nunca 0.
+  const registros = { listing: null, frete: null };
+  const registrar = (chave, resp) => {
+    registros[chave] = resp ? { ok: resp.ok === true, status: resp.status ?? null } : null;
+    return resp;
+  };
+  const registrarErro = (chave, err) => {
+    registros[chave] = {
+      ok: false, status: null, timeout: Boolean(err && err.name === "MlTimeoutError"),
+      erro: err && (err.code || err.name) ? String(err.code || err.name) : "erro",
+    };
+    return null;
+  };
+  // Mesma identidade de conta em TODAS as chamadas: sem mlUserId o mlFetch
+  // cai no grant PRINCIPAL do cliente — numa conta secundária isso é ler o ML
+  // com o token de outro vendedor.
+  const opcoesConta = mlUserId ? { mlUserId } : undefined;
+
+  const comissaoConsultavel = precoEfetivo !== null && Boolean(listingTypeId) && Boolean(categoryId);
+  // Frete combinável (não especificado/custom) não tem custo previsto pelo
+  // ML — pedir mesmo assim devolveria um número que não se aplica.
+  const freteAplicavel = !LOGISTICA_SEM_FRETE_PREVISTO.has(logisticType || "");
+  const freteConsultavel = freteAplicavel && precoEfetivo !== null && Boolean(sellerId) && Boolean(listingTypeId) && Boolean(itemId);
+
   const [listingPricesResp, shippingResp] = await Promise.all([
     (async () => {
-      if (precoEfetivo === null || !listingTypeId || !categoryId) return null;
+      if (!comissaoConsultavel) return null;
       const query =
         `/sites/MLB/listing_prices?price=${encodeURIComponent(precoEfetivo)}` +
         `&listing_type_id=${encodeURIComponent(listingTypeId)}` +
         `&category_id=${encodeURIComponent(categoryId)}`;
       try {
-        return await fetchFn(clienteId, query);
-      } catch (_) {
-        return null;
+        return registrar("listing", await fetchFn(clienteId, query, opcoesConta));
+      } catch (err) {
+        return registrarErro("listing", err);
       }
     })(),
     (async () => {
-      // Frete combinável (não especificado/custom) não tem custo previsto pelo
-      // ML — pedir mesmo assim devolveria um número que não se aplica.
-      const isCombinable = ["not_specified", "custom", ""].includes(logisticType || "");
-      if (isCombinable) return null;
-      if (precoEfetivo === null || !sellerId || !listingTypeId || !itemId) return null;
+      if (!freteConsultavel) return null;
       const query =
         `/users/${encodeURIComponent(sellerId)}/shipping_options/free` +
         `?item_id=${encodeURIComponent(itemId)}&verbose=true` +
@@ -82,9 +109,9 @@ async function buscarComissaoEFrete(
         // Path seller-scoped (/users/{seller}/…): sem mlUserId o token cai no
         // principal e o ML pode responder 403 quando a conta selecionada não
         // é a principal do cliente (mesmo bug do fix de Automações).
-        return await fetchFn(clienteId, query, { mlUserId });
-      } catch (_) {
-        return null;
+        return registrar("frete", await fetchFn(clienteId, query, opcoesConta));
+      } catch (err) {
+        return registrarErro("frete", err);
       }
     })(),
   ]);
@@ -104,12 +131,32 @@ async function buscarComissaoEFrete(
       ? numOrNull(shippingResp.data?.coverage?.all_country?.list_cost)
       : null;
 
+  const motivoEntradaAusente = precoEfetivo === null ? "preco_ausente" : MOTIVOS_COTACAO.ANUNCIO_SEM_TIPO_OU_CATEGORIA;
+  const diagnostico = {
+    comissao: {
+      status: registros.listing ? registros.listing.status : null,
+      motivo: comissaoValor !== null
+        ? null
+        : !comissaoConsultavel ? motivoEntradaAusente : motivoDaResposta(registros.listing, MOTIVOS_COTACAO.ML_SEM_TARIFA),
+    },
+    frete: {
+      aplicavel: freteAplicavel,
+      status: registros.frete ? registros.frete.status : null,
+      motivo: !freteAplicavel || fretePrevisto !== null
+        ? null
+        : !freteConsultavel
+          ? (precoEfetivo !== null && !sellerId ? MOTIVOS_COTACAO.CONTA_SEM_SELLER : motivoEntradaAusente)
+          : motivoDaResposta(registros.frete, MOTIVOS_COTACAO.ML_SEM_FRETE),
+    },
+  };
+
   return {
     comissaoValor,
     // O ML devolve o percentual em escala 0–100; o resto do backend trabalha
     // em decimal (0.12 = 12%) — mesma convenção de `custos.imposto_percentual`.
     comissaoPercentual: comissaoPercentualBruta === null ? null : comissaoPercentualBruta / 100,
     fretePrevisto,
+    diagnostico,
   };
 }
 
@@ -140,7 +187,7 @@ async function obterCotacaoAtual(
     mlUserId,
   });
 
-  const { comissaoValor, comissaoPercentual, fretePrevisto } = await buscarComissaoEFrete(
+  const { comissaoValor, comissaoPercentual, fretePrevisto, diagnostico } = await buscarComissaoEFrete(
     { clienteId, itemId, precoEfetivo, listingTypeId, categoryId, sellerId, logisticType, mlUserId },
     fetchFn
   );
@@ -166,6 +213,8 @@ async function obterCotacaoAtual(
     listingType: listingTypeId || null,
     logisticType: logisticType || null,
     faltantes,
+    // Por componente: status HTTP da leitura e motivo da ausência (null = ok).
+    diagnosticoCotacao: diagnostico || null,
   };
 }
 

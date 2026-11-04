@@ -20,6 +20,11 @@ const MOTIVOS_COTACAO = Object.freeze({
   ANUNCIO_SEM_TIPO_OU_CATEGORIA: "anuncio_sem_tipo_ou_categoria",
   CONTA_SEM_SELLER: "conta_sem_seller",
   ML_RATE_LIMIT: "ml_rate_limit",
+  // 401/403: o token usado não tem permissão sobre o recurso — no ML, quase
+  // sempre "access token de outro usuário" (doc erro-403). Em multi-conta é o
+  // sinal de que a chamada saiu com o grant de OUTRA conta do cliente.
+  ML_SEM_PERMISSAO: "ml_sem_permissao",
+  ML_TIMEOUT: "ml_timeout",
   ML_INDISPONIVEL: "ml_indisponivel",
   ML_NAO_ENCONTRADO: "ml_nao_encontrado",
   ML_SEM_TARIFA: "ml_sem_tarifa",
@@ -30,6 +35,8 @@ const MOTIVOS_COTACAO = Object.freeze({
 function motivoDaResposta(registro, semValor) {
   if (!registro) return MOTIVOS_COTACAO.ML_INDISPONIVEL;
   if (registro.status === 429) return MOTIVOS_COTACAO.ML_RATE_LIMIT;
+  if (registro.status === 401 || registro.status === 403) return MOTIVOS_COTACAO.ML_SEM_PERMISSAO;
+  if (registro.timeout === true) return MOTIVOS_COTACAO.ML_TIMEOUT;
   if (registro.status === 404) return MOTIVOS_COTACAO.ML_NAO_ENCONTRADO;
   if (!registro.ok) return MOTIVOS_COTACAO.ML_INDISPONIVEL;
   return semValor;
@@ -113,7 +120,7 @@ function criarCotadorEmP({
         registros[chave] = resp ? { ok: resp.ok === true, status: resp.status ?? null } : null;
         return resp;
       } catch (err) {
-        registros[chave] = { ok: false, status: null, erro: err && (err.code || err.message) };
+        registros[chave] = { ok: false, status: null, erro: err && (err.code || err.message), timeout: Boolean(err && err.name === "MlTimeoutError") };
         throw err;
       }
     };
@@ -204,4 +211,4 @@ function evidenciaDaCotacao(cotacao) {
   };
 }
 
-module.exports = { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao, MOTIVOS_COTACAO, LOGISTICA_SEM_FRETE_PREVISTO, mapComLimite };
+module.exports = { criarCotadorEmP, cotacaoParaNucleo, evidenciaDaCotacao, motivoDaResposta, MOTIVOS_COTACAO, LOGISTICA_SEM_FRETE_PREVISTO, mapComLimite };

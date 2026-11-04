@@ -26,6 +26,7 @@ const { LEVELS } = require("./core/marginConfidence");
 const { STATUS, DEFAULT_TARGET_MARGIN } = require("./core/marginStatus");
 const baseCustos = require("./adapters/baseCustosEvidenceAdapter");
 const meliApi = require("./adapters/meliApiEvidenceAdapter");
+const margemConfiavel = require("./margemConfiavel");
 const centralVendas = require("./adapters/centralVendasEvidenceAdapter");
 const settlement = require("./adapters/settlementEvidenceAdapter");
 const extensao = require("./adapters/extensionEvidenceAdapter");
@@ -319,6 +320,16 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
 async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, deps = {}) {
   const { cliente, base, mlUserId, custos, porMlb, reembolsoPorMlb, fallbackObservedAt, now } = prepared;
 
+  // P0 04/11/2026: sem o seller da conta selecionada, toda chamada ao ML cairia
+  // no grant PRINCIPAL do cliente (mlTokenService.resolveMlGrant) — numa conta
+  // secundária, o token de outro vendedor. Melhor falhar alto que ler errado.
+  if (mlUserId === null || mlUserId === undefined || String(mlUserId).trim() === "") {
+    const err = new Error("Conta sem seller do Mercado Livre resolvido (mlUserId): leitura de margem recusada para não usar o grant de outra conta.");
+    err.code = "ML_USER_ID_AUSENTE";
+    err.status = 409;
+    throw err;
+  }
+
   // Lista de anúncios: ou os IDs pedidos explicitamente (detalhe de item), ou
   // uma página dos ativos + pausados do vendedor (ver buscarItensAtivos).
   let ids;
@@ -337,10 +348,15 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
     totalItensMl = busca.total;
   }
 
+  // Identidade EXPLÍCITA da conta (P0 04/11/2026): sem mlUserId o mlFetch usa
+  // o grant principal do cliente — numa conta secundária, o token de outro
+  // vendedor (ML responde 403 por item).
   const bodies = await (deps.buscarDetalhesItens || meliApi.buscarDetalhesItens)({
     clienteId: cliente.id,
     ids,
+    mlUserId,
   });
+  const errosDetalhe = Array.isArray(bodies && bodies.erros) ? bodies.erros : [];
 
   const aplicarProjetadas = deps.aplicarEvidenciasProjetadas || meliApi.aplicarEvidenciasProjetadas;
 
@@ -410,6 +426,8 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
       logisticType: observado.logisticType,
       statusAnuncio: observado.status,
       faltantesMeliApi: observado.faltantes,
+      // { comissao:{status,motivo}, frete:{aplicavel,status,motivo} } — por que faltou.
+      cotacao: observado.cotacao || null,
       // Promoção que forma o preço agora (sale_price.metadata.promotion_id),
       // da MESMA leitura que deu o preço — Anúncios ML usa para achar o
       // rebate sem reler o sale_price. undefined = preço não veio do sale_price.
@@ -419,10 +437,13 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
       reembolso: reembolsoInfo || null,
     };
 
-    return item;
+    // Margem projetada sem comissão/frete do ML: número neutralizado aqui, para
+    // TODO consumidor ao vivo (ver margemConfiavel.neutralizarMargemIncompleta).
+    return margemConfiavel.neutralizarMargemIncompleta(item);
   });
 
-  return { totalItensMl, itens };
+  // errosDetalhe: anúncios que o multiget recusou ([{ id, status, erro }]).
+  return { totalItensMl, itens, errosDetalhe };
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +491,15 @@ async function montarItens(
 
 const ORDENACOES = {
   margem_asc: (a, b) => valorOrdenacao(a) - valorOrdenacao(b),
-  margem_desc: (a, b) => valorOrdenacao(b) - valorOrdenacao(a),
+  // "Não sei" (Infinity) fica no FIM também na ordem decrescente.
+  margem_desc: (a, b) => {
+    const va = valorOrdenacao(a);
+    const vb = valorOrdenacao(b);
+    if (va === Number.POSITIVE_INFINITY || vb === Number.POSITIVE_INFINITY) {
+      return (va === Number.POSITIVE_INFINITY ? 1 : 0) - (vb === Number.POSITIVE_INFINITY ? 1 : 0);
+    }
+    return vb - va;
+  },
   titulo_asc: (a, b) => String(a.identity.titulo || "").localeCompare(String(b.identity.titulo || ""), "pt-BR"),
 };
 
@@ -478,6 +507,8 @@ const ORDENACOES = {
 // não pode competir com "-5%".
 function valorOrdenacao(item) {
   const displayed = item.margin.realized.computable ? item.margin.realized : item.margin.projected;
+  // Projetada com comissão/frete assumidos 0 é "não sei", não "46%" (P0 04/11/2026).
+  if (displayed === item.margin.projected && margemConfiavel.margemProjetadaIncompleta(item)) return Number.POSITIVE_INFINITY;
   return displayed.margin === null ? Number.POSITIVE_INFINITY : displayed.margin;
 }
 
@@ -596,15 +627,21 @@ function comAliasesDeCompatibilidade(item) {
     confianca: item.quality.confidence,
     problema: item.quality.statusReasons[0] || null,
     targetMargin: item.margin.target.marginTarget,
-    projected: {
-      margin: item.margin.projected.margin,
-      profit: item.margin.projected.profit,
-      // `estimated` = alguma variável entrou no cálculo assumida como 0.
-      estimated: item.margin.projected.strict === false,
-      note: item.margin.projected.assumed.length
-        ? `Assumido 0 para: ${item.margin.projected.assumed.join(", ")}.`
-        : null,
-    },
+    projected: (() => {
+      const incompleta = margemConfiavel.margemProjetadaIncompleta(item);
+      return {
+        margin: incompleta ? null : item.margin.projected.margin,
+        profit: incompleta ? null : item.margin.projected.profit,
+        // `estimated` = alguma variável entrou no cálculo assumida como 0.
+        estimated: !incompleta && item.margin.projected.strict === false,
+        incompleta,
+        note: incompleta
+          ? margemConfiavel.NOTA_MARGEM_INCOMPLETA
+          : item.margin.projected.assumed.length
+            ? `Assumido 0 para: ${item.margin.projected.assumed.join(", ")}.`
+            : null,
+      };
+    })(),
     realized: {
       margin: item.margin.realized.margin,
       profit: item.margin.realized.profit,

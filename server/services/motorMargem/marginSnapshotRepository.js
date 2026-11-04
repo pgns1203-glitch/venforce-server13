@@ -9,6 +9,7 @@
 const fs = require("fs");
 const path = require("path");
 const pool = require("../../config/database");
+const { SQL_CUSTO_MARKETPLACE_AUSENTE } = require("./margemConfiavel");
 const { aplicarSchemaVersionado } = require("../schema/schemaVersionado");
 
 const schemaPath = path.join(__dirname, "..", "..", "sql", "margin_snapshot_schema.sql");
@@ -377,9 +378,18 @@ function montarFiltroSnapshots({
 // sentidos (item sem margem nunca "vence" por falta de dado). `status` segue
 // a precedência de AÇÃO do Motor (core/marginStatus.STATUS_PRECEDENCE),
 // não a ordem alfabética.
+// P0 04/11/2026: linha com comissão ou frete ASSUMIDOS como 0 (gravada antes da
+// trava de cotação incompleta) tem margem inflada. Para ordenar e contar, ela é
+// "sem margem" — nunca sobe para o topo de uma ordenação por margem nem entra
+// em `comMargem`. A linha continua lá (preservada), com o status do Motor.
+// Regra única (margemConfiavel): comissão assumida sempre; frete só se aplicável.
+const SQL_CUSTO_MARKETPLACE_ASSUMIDO = SQL_CUSTO_MARKETPLACE_AUSENTE;
+const SQL_MARGEM_CONFIAVEL_PCT = `(CASE WHEN ${SQL_CUSTO_MARKETPLACE_ASSUMIDO} THEN NULL ELSE margin_percent END)`;
+const SQL_LUCRO_CONFIAVEL = `(CASE WHEN ${SQL_CUSTO_MARKETPLACE_ASSUMIDO} THEN NULL ELSE profit END)`;
+
 const ORDENACOES = {
-  margin_percent: "margin_percent",
-  profit: "profit",
+  margin_percent: SQL_MARGEM_CONFIAVEL_PCT,
+  profit: SQL_LUCRO_CONFIAVEL,
   // __STATUS__ vira o status efetivo (filtro.statusExpr) em queryProjectionSnapshotsPage.
   status: "array_position(ARRAY['UNVALIDATED','SUSPECT_DATA','LOSS','LOW_MARGIN','RECONCILING','HEALTHY']::text[], __STATUS__)",
   updated_at: "updated_at",
@@ -475,7 +485,8 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
             ${porRefresh},
             COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'active')::int AS anuncios_ativos,
             COUNT(*) FILTER (WHERE quality_json->>'statusAnuncio' = 'paused')::int AS anuncios_pausados,
-            COUNT(*) FILTER (WHERE margin IS NOT NULL)::int AS com_margem,
+            COUNT(*) FILTER (WHERE margin IS NOT NULL AND NOT ${SQL_CUSTO_MARKETPLACE_ASSUMIDO})::int AS com_margem,
+            COUNT(*) FILTER (WHERE margin IS NOT NULL AND ${SQL_CUSTO_MARKETPLACE_ASSUMIDO})::int AS margem_incompleta,
             COALESCE(SUM(profit) FILTER (WHERE ${filtro.statusExpr || "status"} = 'LOSS'), 0) AS lc_prejuizo,
             MAX(calculated_at) AS ultimo_calculo
        FROM margin_projection_snapshots
@@ -490,6 +501,8 @@ async function summarizeProjectionSnapshots({ filtro, db = pool }) {
     porRefreshStatus: { fresh: n(row.refresh_fresh), stale: n(row.refresh_stale), failed: n(row.refresh_failed) },
     anuncios: { total: n(row.total), ativos: n(row.anuncios_ativos), pausados: n(row.anuncios_pausados) },
     comMargem: n(row.com_margem),
+    // Margem gravada com comissão/frete assumidos como 0 (não confiável).
+    margemIncompleta: n(row.margem_incompleta),
     // LC por unidade somado dos anúncios em Prejuízo (SEM o retorno ML dos que seguem em
     // prejuízo: o serviço de leitura soma esse retorno).
     lcPrejuizo: n(row.lc_prejuizo),
@@ -524,20 +537,25 @@ async function mapProjectionsForItems({ clienteId, clienteContaId, marketplace =
   const ids = Array.from(new Set((itemIds || []).filter(Boolean).map(String)));
   if (!ids.length) return new Map();
   const result = await db.query(
-    `/* ms:projecoes */ SELECT item_id, titulo, price, profit, margin, margin_percent, status, calculated_at
+    `/* ms:projecoes */ SELECT item_id, titulo, price, profit, margin, margin_percent, status, calculated_at,
+            ${SQL_CUSTO_MARKETPLACE_AUSENTE} AS custo_marketplace_ausente
        FROM margin_projection_snapshots
       WHERE cliente_id = $1 AND cliente_conta_id = $2 AND marketplace = $3 AND item_id = ANY($4::text[])`,
     [clienteId, clienteContaId, marketplace, ids]
   );
   const mapa = new Map();
   for (const row of result.rows) {
+    // Margem gravada sem comissão/frete (assumidos 0): não entra em desvio
+    // projetada × realizada nem nos "piores" (P0 04/11/2026).
+    const incompleta = row.custo_marketplace_ausente === true;
     mapa.set(row.item_id, {
       itemId: row.item_id,
       titulo: row.titulo || null,
       price: row.price != null ? Number(row.price) : null,
-      profit: row.profit != null ? Number(row.profit) : null,
-      margin: row.margin != null ? Number(row.margin) : null,
-      marginPercent: row.margin_percent != null ? Number(row.margin_percent) : null,
+      profit: !incompleta && row.profit != null ? Number(row.profit) : null,
+      margin: !incompleta && row.margin != null ? Number(row.margin) : null,
+      marginPercent: !incompleta && row.margin_percent != null ? Number(row.margin_percent) : null,
+      margemIncompleta: incompleta,
       status: row.status || null,
       calculatedAt: row.calculated_at || null,
     });

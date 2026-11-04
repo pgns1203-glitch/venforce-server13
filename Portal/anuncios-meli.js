@@ -10773,6 +10773,8 @@
           : (total ? "Com o preço e o custo atuais de cada anúncio." : "Aguardando o cálculo começar.") };
       } else if (s.margem === "pulada") {
         e2 = { estado: "pulado", detalhe: "Nenhum anúncio novo, margem mantida." };
+      } else if (s.margem === "sem_base") {
+        e2 = { estado: "aviso", detalhe: s.aviso };
       } else if (s.margem === "ok") {
         var falhas = (run && run.failedItems) || 0;
         var okN = (run && run.successItems) || 0;
@@ -10807,12 +10809,13 @@
       relogio: duracaoTexto((s.tFim || Date.now()) - s.t0),
       rodape: rodape,
       refazerN: refazerN,
+      semBase: !andamento && s.margem === "sem_base",
       refazerRunId: refazerN ? run.runId : null,
       anuncio: s.fase === "sincronizando" ? "Sincronização em andamento, etapa 1 de 2: anúncios do Mercado Livre."
         : s.fase === "recalculando" ? "Etapa 2 de 2: recalculando a margem dos anúncios."
         : s.fase === "erro" ? "Não foi possível sincronizar. " + s.motivo
         : rodape + ".",
-      chave: [s.fase, s.modo, e1.estado, e2.estado, total ? "n" : "-", refazerN, s.refazendo || 0].join("|"),
+      chave: [s.fase, s.modo, e1.estado, e2.estado, total ? "n" : "-", refazerN, s.refazendo || 0, s.margem || ""].join("|"),
     };
   }
 
@@ -10839,6 +10842,7 @@
           '<span class="am-sync-status__resultado">' + escapeHtml(v.rodape) + "</span>" +
           '<span class="am-sync-status__acoes">' +
             (v.tom === "is-erro" ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-sync-repetir>Tentar de novo</button>' : "") +
+            (v.semBase ? '<a class="vf-btn vf-btn--secondary vf-btn--sm" href="bases.html" data-sync-vincular-base>Vincular base</a>' : "") +
             (v.refazerN ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-sync-refazer-falhas="' + escapeAttr(String(v.refazerRunId)) + '">' +
               "Recalcular só " + (v.refazerN === 1 ? "o que falhou" : "os " + v.refazerN + " que falharam") + "</button>" : "") +
             '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-sync-fechar>Fechar</button>' +
@@ -10935,6 +10939,14 @@
     renderSyncStatus();
   }
 
+  // Recálculo que falhou por falta de Base de custos (códigos canônicos de
+  // server/utils/erroContextoCanonico.js): mensagem própria + "Vincular base".
+  var MSG_SEM_BASE = "Margem não calculada: esta conta não tem Base de custos vinculada.";
+  var CODIGOS_SEM_BASE = {
+    BASE_AUSENTE: MSG_SEM_BASE,
+    BASE_AMBIGUA: "Margem não calculada: há mais de uma Base de custos vinculada a esta conta. Corrija o vínculo em Bases de custo.",
+  };
+
   // opcoes.refazerFalhasDoRun: recalcula só os anúncios que falharam naquele run.
   function recalcularMargemAposSync(opcoes) {
     var refazerDe = opcoes && opcoes.refazerFalhasDoRun ? opcoes.refazerFalhasDoRun : null;
@@ -10979,6 +10991,9 @@
             toast(refazerDe
               ? (run.failedItems ? "Recálculo refeito; alguns anúncios ainda falharam." : "Os anúncios que tinham falhado foram recalculados.")
               : "Sincronização concluída e margem recalculada.", run.failedItems && refazerDe ? undefined : "is-success");
+          } else if (CODIGOS_SEM_BASE[run.errorCode]) {
+            // Não é falha passageira: tentar de novo falharia igual.
+            setSync({ fase: "aviso", margem: "sem_base", aviso: CODIGOS_SEM_BASE[run.errorCode] });
           } else {
             setSync({ fase: "aviso", margem: "falhou",
               aviso: "O recálculo falhou; a margem mostrada é a do cálculo anterior. Tente \"Atualizar leitura\" na Central de Margem." });
@@ -11027,6 +11042,11 @@
         return;
       }
       setSync({ resumoSync: resumoSync });
+      // Sem Base já sabida pela tela: o recálculo falharia com certeza.
+      if (CUSTOS.base === null) {
+        setSync({ fase: "aviso", margem: "sem_base", aviso: MSG_SEM_BASE });
+        return;
+      }
       recalcularMargemAposSync();
     });
   }

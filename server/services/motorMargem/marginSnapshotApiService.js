@@ -63,6 +63,12 @@ async function resolverContaDoCliente({ clienteSlug, clienteContaId }, deps = {}
 
 // Contrato público do run — só o que a UI precisa para progresso. Nunca
 // metadata crua (contadores internos ficam no banco), erro sempre redigido.
+// Ids que o run não conseguiu recalcular (gravados pelo processor no fim).
+function idsFalhosDoRun(run) {
+  const ids = run && run.metadata && run.metadata.falhas && run.metadata.falhas.itemIds;
+  return Array.isArray(ids) ? ids : [];
+}
+
 function runPublico(run) {
   if (!run) return null;
   return {
@@ -70,6 +76,10 @@ function runPublico(run) {
     clienteContaId: run.clienteContaId,
     status: run.status,
     reason: run.reason,
+    // "falhas" = run que recalculou só os anúncios que falharam num run anterior.
+    escopo: run.metadata && run.metadata.escopo ? "falhas" : "catalogo",
+    // A tela oferece "recalcular só os que falharam" quando há ids guardados.
+    podeRefazerFalhas: run.status === "completed" && idsFalhosDoRun(run).length > 0,
     totalItems: run.totalItems,
     processedItems: run.processedItems,
     successItems: run.successItems,
@@ -83,20 +93,44 @@ function runPublico(run) {
   };
 }
 
+/**
+ * Escopo "só as falhas" de um run anterior DESTA conta: o run tem de ter
+ * completado e guardado os ids que não recalculou. A lista vai no metadado
+ * do run novo (o processor lê dali e não varre o catálogo).
+ */
+async function escopoDasFalhas({ refazerFalhasDoRun, conta, db, getRunStatus }) {
+  const origemId = parseIdPositivo(refazerFalhasDoRun);
+  if (origemId === null || Number.isNaN(origemId)) throw criarErroHttp(400, "refazerFalhasDoRun inválido.", "RUN_ID_INVALIDO");
+  const origem = await getRunStatus({ runId: origemId, clienteContaId: conta.id, db });
+  if (!origem) throw criarErroHttp(404, "Run de atualização não encontrado para esta conta.", "RUN_NAO_ENCONTRADO");
+  const itemIds = idsFalhosDoRun(origem);
+  if (origem.status !== "completed" || !itemIds.length) {
+    throw criarErroHttp(409, "Este recálculo não tem anúncios com falha para refazer.", "SEM_FALHAS_PARA_REFAZER");
+  }
+  return { tipo: "falhas", origemRunId: origem.id, itemIds };
+}
+
 /** POST refresh: enfileira (ou reaproveita) — nunca espera o cálculo. */
-async function solicitarRefresh({ clienteSlug, clienteContaId, requestedBy = null }, deps = {}) {
+async function solicitarRefresh({ clienteSlug, clienteContaId, requestedBy = null, refazerFalhasDoRun = null }, deps = {}) {
   const db = deps.db || pool;
   const enqueue = deps.enqueue || runService.enqueueMarginSnapshotRun;
   const kick = deps.kick || require("./marginSnapshotRuntime").kick;
+  const getRunStatus = deps.getRunStatus || runService.getRunStatus;
 
   const { cliente, conta } = await resolverContaDoCliente({ clienteSlug, clienteContaId }, deps);
+  const escopo = refazerFalhasDoRun != null && String(refazerFalhasDoRun).trim() !== ""
+    ? await escopoDasFalhas({ refazerFalhasDoRun, conta, db, getRunStatus })
+    : null;
   const { run, reaproveitado } = await enqueue({
     clienteId: cliente.id,
     clienteSlug: cliente.slug,
     clienteContaId: conta.id,
     marketplace: "meli",
+    // Mesmo reason do clique manual (o CHECK do banco não tem outro); o que
+    // distingue o run parcial é metadata.escopo.
     reason: "manual_refresh",
     requestedBy,
+    ...(escopo ? { metadata: { escopo } } : {}),
     db,
   });
   kick();

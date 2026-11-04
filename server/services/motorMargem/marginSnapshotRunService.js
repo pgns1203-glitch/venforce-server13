@@ -34,8 +34,17 @@ function assertIdentidadeMinima({ clienteId, clienteContaId, reason }) {
 // (sync da Central de Vendas, clique manual) não pedem rerun.
 const REASONS_QUE_PEDEM_RERUN = new Set(["base_changed"]);
 
-async function marcarRerunSeNecessario(runAtivo, reason, db) {
-  if (!runAtivo || runAtivo.status !== "running" || !REASONS_QUE_PEDEM_RERUN.has(reason)) return runAtivo;
+// Um run PARCIAL (escopo "só as falhas", ver marginSnapshotApiService) não
+// cobre o catálogo: um pedido de catálogo inteiro que chega durante ele
+// também vira um rerun completo ao final.
+function ehRunParcial(run) {
+  return Boolean(run && run.metadata && run.metadata.escopo);
+}
+
+async function marcarRerunSeNecessario(runAtivo, reason, db, pedidoParcial = false) {
+  if (!runAtivo || runAtivo.status !== "running") return runAtivo;
+  const cobreOPedido = !ehRunParcial(runAtivo) || pedidoParcial;
+  if (cobreOPedido && !REASONS_QUE_PEDEM_RERUN.has(reason)) return runAtivo;
   const marcado = await runRepo.mergeRunMetadata({
     runId: runAtivo.id,
     patch: { rerunSolicitado: { reason, solicitadoEm: new Date().toISOString() } },
@@ -53,9 +62,10 @@ async function marcarRerunSeNecessario(runAtivo, reason, db) {
 // ---------------------------------------------------------------------------
 async function enqueueMarginSnapshotRun({
   clienteId, clienteSlug = null, clienteContaId, marketplace = "meli", baseId = null,
-  reason, requestedBy = null, db = pool, staleMinutes = null,
+  reason, requestedBy = null, metadata = null, db = pool, staleMinutes = null,
 }) {
   assertIdentidadeMinima({ clienteId, clienteContaId, reason });
+  const pedidoParcial = Boolean(metadata && metadata.escopo);
   const marketplaceNorm = String(marketplace || "meli").trim().toLowerCase();
 
   // M8 — reconciliação preguiçosa ANTES do dedupe (mesmo espírito de
@@ -70,11 +80,11 @@ async function enqueueMarginSnapshotRun({
   const ativoAntes = await runRepo.findActiveRunForAccount({
     clienteId, clienteContaId, marketplace: marketplaceNorm, db,
   });
-  if (ativoAntes) return { run: await marcarRerunSeNecessario(ativoAntes, reason, db), reaproveitado: true };
+  if (ativoAntes) return { run: await marcarRerunSeNecessario(ativoAntes, reason, db, pedidoParcial), reaproveitado: true };
 
   try {
     const run = await runRepo.createRun({
-      clienteId, clienteSlug, clienteContaId, marketplace: marketplaceNorm, baseId, reason, requestedBy, db,
+      clienteId, clienteSlug, clienteContaId, marketplace: marketplaceNorm, baseId, reason, requestedBy, metadata, db,
     });
     return { run, reaproveitado: false };
   } catch (err) {
@@ -84,7 +94,7 @@ async function enqueueMarginSnapshotRun({
       const ativoDepois = await runRepo.findActiveRunForAccount({
         clienteId, clienteContaId, marketplace: marketplaceNorm, db,
       });
-      if (ativoDepois) return { run: await marcarRerunSeNecessario(ativoDepois, reason, db), reaproveitado: true };
+      if (ativoDepois) return { run: await marcarRerunSeNecessario(ativoDepois, reason, db, pedidoParcial), reaproveitado: true };
     }
     throw err;
   }

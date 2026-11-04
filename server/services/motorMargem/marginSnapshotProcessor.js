@@ -59,6 +59,19 @@ const BATCH_SIZE = motorMargem.PAGE_LIMIT_MAX;
 
 const MARKETPLACES_SUPORTADOS = ["meli"];
 
+// Teto de ids falhos guardados no metadado do run (cada id ~14 bytes).
+const MAX_IDS_FALHOS_GUARDADOS = 5000;
+
+// Escopo parcial do run: `metadata.escopo.itemIds` (gravado no INSERT por
+// marginSnapshotApiService ao pedir "recalcular só os que falharam"). Só ids
+// MLB válidos e sem repetição; lista vazia/ausente = catálogo inteiro.
+function idsDoEscopo(run) {
+  const bruto = run && run.metadata && run.metadata.escopo && run.metadata.escopo.itemIds;
+  if (!Array.isArray(bruto)) return null;
+  const ids = Array.from(new Set(bruto.map((x) => String(x || "").trim().toUpperCase()).filter((x) => /^MLB\d+$/.test(x))));
+  return ids.length ? ids.slice(0, MAX_IDS_FALHOS_GUARDADOS) : null;
+}
+
 class MarginSnapshotMarketplaceNaoSuportadoError extends Error {
   constructor(marketplace) {
     super(
@@ -388,14 +401,19 @@ async function processMarginSnapshotRun(run, deps = {}) {
   const observedAt = isoOrNull(prepared.now);
 
   // ── 2. Catálogo inteiro (scan) com retry ────────────────────────────────
+  // Run PARCIAL ("recalcular só os que falharam", ver idsDoEscopo): a lista
+  // vem do metadado do run, sem varrer o catálogo de novo.
+  const idsEscopo = idsDoEscopo(run);
   const inicioListagem = clock();
-  const listagem = await executarComRetry(
-    () => comVez(() => listarIdsCatalogo(
-      { clienteId: prepared.cliente.id, mlUserId: prepared.mlUserId, maxItens: config.maxCatalogItems },
-      deps.mlFetchCatalogo
-    )),
-    { config, sleep, signal, onRetry: aoRetentar("catalogo") }
-  );
+  const listagem = idsEscopo
+    ? { ok: true, value: { ids: idsEscopo, totalAtivos: null, totalPausados: null } }
+    : await executarComRetry(
+      () => comVez(() => listarIdsCatalogo(
+        { clienteId: prepared.cliente.id, mlUserId: prepared.mlUserId, maxItens: config.maxCatalogItems },
+        deps.mlFetchCatalogo
+      )),
+      { config, sleep, signal, onRetry: aoRetentar("catalogo") }
+    );
   if (!listagem.ok) {
     // Sem catálogo não existe lote para processar: falha estrutural do run.
     const err = erroTipado(
@@ -412,8 +430,15 @@ async function processMarginSnapshotRun(run, deps = {}) {
   const passoLogLotes = Math.max(1, Math.ceil(totalLotes / 20));
   evento("log", "margin_snapshot_catalog_listed", {
     total, ativos: listagem.value.totalAtivos ?? null, pausados: listagem.value.totalPausados ?? null,
-    lotes: totalLotes, duracao_ms: clock() - inicioListagem,
+    lotes: totalLotes, duracao_ms: clock() - inicioListagem, escopo: idsEscopo ? "falhas" : "catalogo",
   });
+
+  // Ids que não puderam ser recalculados neste run — viram o escopo de um
+  // "recalcular só os que falharam" pedido depois pela tela.
+  const idsFalhos = new Set();
+  function registrarFalhos(lista) {
+    for (const id of lista) idsFalhos.add(String(id));
+  }
 
   // Só contadores e ids — nunca payload do ML, token ou dado financeiro.
   function resumoMetadata() {
@@ -429,6 +454,11 @@ async function processMarginSnapshotRun(run, deps = {}) {
         cotacaoIncompletaRecuperada: stats.cotacaoIncompletaRecuperada,
         motivos: stats.motivos,
         duracaoMs: clock() - inicio,
+      },
+      // Só ids de anúncio (nada financeiro). Teto para não inflar o jsonb.
+      falhas: {
+        total: idsFalhos.size,
+        itemIds: Array.from(idsFalhos).slice(0, MAX_IDS_FALHOS_GUARDADOS),
       },
     };
   }
@@ -451,6 +481,7 @@ async function processMarginSnapshotRun(run, deps = {}) {
       // Falha técnica isolada de persistência: a linha anterior (se
       // existir) fica intocada — o UPSERT simplesmente não aconteceu.
       failedItems += 1;
+      registrarFalhos([itemId]);
       evento("error", "margin_snapshot_item_persist_failed", { item_id: itemId, erro: mensagemCurta(err) });
     }
   }
@@ -493,6 +524,7 @@ async function processMarginSnapshotRun(run, deps = {}) {
       if (naoRetornados.length) {
         stats.itensNaoRetornados += naoRetornados.length;
         failedItems += naoRetornados.length;
+        registrarFalhos(naoRetornados);
         const errosPorId = new Map((tentativa.value.errosDetalhe || []).filter((e) => e && e.id).map((e) => [String(e.id), e]));
         for (const id of naoRetornados) contarMotivo(stats.motivos.detalhe, String(errosPorId.get(id)?.status ?? "sem_status"));
         const grupos = agruparPorMensagem(naoRetornados.map((id) => [id, motivoNaoRetornado(errosPorId.get(id))]));
@@ -512,6 +544,7 @@ async function processMarginSnapshotRun(run, deps = {}) {
       falhasConsecutivas += 1;
       stats.lotesFalhos += 1;
       failedItems += loteIds.length;
+      registrarFalhos(loteIds);
       const motivo = `Lote não pôde ser recalculado (${tentativa.motivo}, ${tentativa.attempts} tentativa(s)): ${mensagemCurta(tentativa.error)}`;
       evento("error", "margin_snapshot_batch_failed", {
         offset, itens: loteIds.length, tentativas: tentativa.attempts, motivo: tentativa.motivo,
@@ -582,6 +615,7 @@ async function processMarginSnapshotRun(run, deps = {}) {
     }
     if (aindaIncompletos.length) {
       failedItems += aindaIncompletos.length;
+      registrarFalhos(aindaIncompletos);
       evento("warn", "margin_snapshot_cotacao_incompleta", {
         itens: aindaIncompletos.length, recuperados: stats.cotacaoIncompletaRecuperada,
         motivos_comissao: { ...stats.motivos.comissao }, motivos_frete: { ...stats.motivos.frete },
@@ -598,17 +632,23 @@ async function processMarginSnapshotRun(run, deps = {}) {
   }
 
   // ── 4. Itens fora do catálogo (listagem completa e bem-sucedida) ────────
-  const foraDoCatalogo = await markSnapshotsOutsideCatalog({
-    clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
-    catalogItemIds: ids, runId: run.id, db,
-  });
-  stats.itensForaDoCatalogo = foraDoCatalogo.length;
+  // Run parcial não listou o catálogo: marcar "fora" tudo que não está na
+  // lista dele seria apagar a conta inteira da leitura.
+  if (!idsEscopo) {
+    const foraDoCatalogo = await markSnapshotsOutsideCatalog({
+      clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
+      catalogItemIds: ids, runId: run.id, db,
+    });
+    stats.itensForaDoCatalogo = foraDoCatalogo.length;
+  }
 
   await mergeRunMetadata({ runId: run.id, patch: resumoMetadata(), db });
 
   // Nenhum item calculado num catálogo não vazio = nada foi atualizado: o
-  // run não pode terminar "completed" fingindo sucesso.
-  if (total > 0 && successItems === 0) {
+  // run não pode terminar "completed" fingindo sucesso. No run parcial o
+  // resultado "todos falharam de novo" é informação (completed com
+  // failedItems = total), e a tela oferece tentar outra vez.
+  if (!idsEscopo && total > 0 && successItems === 0) {
     throw erroTipado(
       "MARGIN_SNAPSHOT_NENHUM_ITEM_CALCULADO",
       `Nenhum dos ${total} item(ns) do catálogo pôde ser recalculado neste run.`
@@ -627,6 +667,8 @@ async function processMarginSnapshotRun(run, deps = {}) {
 module.exports = {
   BATCH_SIZE,
   MARKETPLACES_SUPORTADOS,
+  MAX_IDS_FALHOS_GUARDADOS,
+  idsDoEscopo,
   MarginSnapshotMarketplaceNaoSuportadoError,
   mapItemParaSnapshot,
   evidenciasProjetadas,

@@ -1009,6 +1009,66 @@ cenario("39. frete ausente com envio combinável (not_specified/custom) é fato,
   assert.strictEqual(linha.freight, null);
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// RECALCULAR SÓ OS QUE FALHARAM (escopo parcial)
+// ═══════════════════════════════════════════════════════════════════════════
+
+cenario("40. run guarda no metadado os ids que falharam (lote falho + não retornado)", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const run = await criarRunRunning(db);
+  await processMarginSnapshotRun(run, depsRun(db, {
+    ids: idsDe(45),
+    config: { batchMaxAttempts: 1 },
+    enrichBatch: fakeEnrichBatch({
+      // lote 2 (MLB1020..1039) falha inteiro; MLB1040 some do detalhe.
+      gerarItem: (id) => (id === "MLB1040" ? null : itemComEvidencias({ itemId: id })),
+      falhar: ({ itemIds }) => (itemIds.includes("MLB1020") ? erroMl() : null),
+    }),
+  }));
+  const runFinal = await runRepository.getRunById({ runId: run.id, clienteContaId: 5, db });
+  assert.strictEqual(runFinal.failedItems, 21);
+  assert.strictEqual(runFinal.metadata.falhas.total, 21);
+  assert.deepStrictEqual(runFinal.metadata.falhas.itemIds.slice().sort(), [...idsDe(20, 1020), "MLB1040"].sort());
+});
+
+cenario("41. run com escopo.itemIds processa só esses ids, sem listar o catálogo nem marcar 'fora do catálogo'", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  // Leitura anterior com 30 itens.
+  const runA = await criarRunRunning(db);
+  await processMarginSnapshotRun(runA, depsRun(db, { ids: idsDe(30) }));
+  await runRepository.updateRunStatus({ runId: runA.id, status: "completed", db });
+
+  const runB = await criarRunRunning(db, { metadata: { escopo: { tipo: "falhas", origemRunId: runA.id, itemIds: ["MLB1003", "mlb1007", "MLB1003", "lixo"] } } });
+  const listagens = [];
+  const lotes = [];
+  const resultado = await processMarginSnapshotRun(runB, depsRun(db, {
+    listarIdsCatalogo: fakeListagem(idsDe(30), listagens),
+    enrichBatch: fakeEnrichBatch({ chamadas: lotes, gerarItem: (id) => itemComEvidencias({ itemId: id, price: 222 }) }),
+  }));
+  assert.strictEqual(listagens.length, 0, "não varre o catálogo");
+  assert.deepStrictEqual(lotes.map((l) => l.itemIds), [["MLB1003", "MLB1007"]], "só os ids do escopo, normalizados e sem repetição");
+  assert.strictEqual(resultado.successItems, 2);
+  assert.strictEqual((await snapshot(db, "MLB1003")).price, 222);
+  const intocado = await snapshot(db, "MLB1010");
+  assert.strictEqual(intocado.price, 100, "itens fora do escopo ficam como estavam");
+  assert.strictEqual(intocado.catalogMissingSince, null, "nada é marcado fora do catálogo");
+  assert.strictEqual(intocado.refreshStatus, "fresh");
+});
+
+cenario("42. run parcial em que todos falham de novo termina completed (não lança), com as falhas guardadas", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const run = await criarRunRunning(db, { metadata: { escopo: { tipo: "falhas", itemIds: ["MLB1", "MLB2"] } } });
+  const resultado = await processMarginSnapshotRun(run, depsRun(db, {
+    config: { batchMaxAttempts: 1 },
+    enrichBatch: fakeEnrichBatch({ falhar: () => erroMl() }),
+  }));
+  assert.strictEqual(resultado.successItems, 0);
+  assert.strictEqual(resultado.failedItems, 2);
+  const runFinal = await runRepository.getRunById({ runId: run.id, clienteContaId: 5, db });
+  assert.deepStrictEqual(runFinal.metadata.falhas.itemIds.slice().sort(), ["MLB1", "MLB2"]);
+  assert.strictEqual(runFinal.metadata.escopo.tipo, "falhas", "o merge do metadado preserva o escopo");
+});
+
 // ── Runner ───────────────────────────────────────────────────────────────
 
 async function main() {

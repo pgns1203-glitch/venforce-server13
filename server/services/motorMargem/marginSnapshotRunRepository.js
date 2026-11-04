@@ -63,20 +63,23 @@ function sanitizeRun(row) {
 
 async function createRun({
   clienteId, clienteSlug, clienteContaId, marketplace = "meli", baseId = null,
-  reason, requestedBy = null, db = pool,
+  reason, requestedBy = null, metadata = null, db = pool,
 }) {
   if (!clienteId) throw new Error("createRun: clienteId é obrigatório.");
   if (!clienteContaId) throw new Error("createRun: clienteContaId é obrigatório (ver decisão em margin_snapshot_schema.sql).");
   if (!reason) throw new Error("createRun: reason é obrigatório.");
+  // Metadado inicial (ex.: escopo "só as falhas do run X") vai no MESMO
+  // INSERT: o worker pode reivindicar o run logo em seguida e precisa vê-lo.
+  if (metadata) assertNoSecrets(metadata);
 
   await ensureTables(db);
 
   const result = await db.query(
     `INSERT INTO margin_snapshot_runs
-      (cliente_id, cliente_slug, cliente_conta_id, marketplace, base_id, reason, status, requested_by)
-     VALUES ($1,$2,$3,$4,$5,$6,'queued',$7)
+      (cliente_id, cliente_slug, cliente_conta_id, marketplace, base_id, reason, status, requested_by, metadata_json)
+     VALUES ($1,$2,$3,$4,$5,$6,'queued',$7,$8::jsonb)
      RETURNING *`,
-    [clienteId, clienteSlug, clienteContaId, marketplace, baseId, reason, requestedBy]
+    [clienteId, clienteSlug, clienteContaId, marketplace, baseId, reason, requestedBy, JSON.stringify(metadata || {})]
   );
   return sanitizeRun(result.rows[0]);
 }

@@ -535,6 +535,26 @@ async function run() {
     });
     await foto(cdp, "rebate-03-previa");
 
+    // ── Mensagem para o cliente (WhatsApp) ───────────────────────────────────
+    await check("W1 — 'Copiar mensagem' na prévia copia a proposta com os anúncios selecionados, antes → depois", async () => {
+      await cdp.evaluate(`navigator.clipboard.writeText = (t) => { window.__copiado = t; return Promise.resolve(); }; window.__copiado = null;`);
+      await clicar(cdp, "#am-reb-copiar-proposta");
+      await waitFor(cdp, "window.__copiado", "nada foi copiado");
+      const msg = await cdp.evaluate("window.__copiado");
+      assert.match(msg, /^\*Radar de subsídios · N97 Comercial\*/);
+      assert.match(msg, /Analisamos 7 anúncios da \*Vendex - Outubro\*/);
+      assert.match(msg, /Encontramos 3 anúncios que ganham/);
+      assert.match(msg, /1\. \*Garrafa térmica 1L\* \(MLB-R1\)/);
+      assert.match(msg, /Promoção: Smart Outubro · até 30\/10\/2026/);
+      assert.match(msg, /Preço: R\$ 99,90 → R\$ 94,90 · rebate do ML: R\$ 4,99 por venda/);
+      assert.match(msg, /Margem: 12,3% → 14,1% \(\+1,8 p\.p\.\) · Lucro\/un: R\$ 12,29 → R\$ 13,38 \(\+R\$ 1,09\)/);
+      assert.match(msg, /\(MLB-E1\)[\s\S]*Preço competitivo/, "item de Escolha entra com a opção marcada");
+      assert.doesNotMatch(msg, /MLB-E2|MLB-S1|MLB-D1/, "só o que está selecionado");
+      assert.match(msg, /A \*Vendex - Outubro\* continua ativa/);
+      assert.match(msg, /Se estiver de acordo/);
+      await waitFor(cdp, `/Mensagem copiada/.test(${texto("#am-toast-stack")})`, "toast de confirmação ausente");
+    });
+
     // ── Passo 4: execução ────────────────────────────────────────────────────
     await check("E1 — Participar pede confirmação inline (sem confirm nativo) dizendo quantos e que a referência fica", async () => {
       await cdp.evaluate(`window.confirm = () => { window.__confirmNativo = true; return true; }; window.alert = () => { window.__alertNativo = true; };`);
@@ -586,6 +606,16 @@ async function run() {
       assert.deepStrictEqual(SERVIDOR.execucoes[1], { clienteSlug: "n97", clienteContaId: "42", escolhas: [{ itemId: "MLB-R2", promotionId: "P-2", tipo: "MARKETPLACE_CAMPAIGN" }] });
       assert.strictEqual(await cdp.evaluate(`!!${q("#am-reb-retentar")}`), false);
       assert.strictEqual(await cdp.evaluate(`document.querySelectorAll("[data-reb-exec-item]").length`), 1);
+    });
+    await check("W2 — depois da execução, 'Copiar mensagem para o cliente' lista o que entrou em TODAS as rodadas", async () => {
+      await cdp.evaluate("window.__copiado = null");
+      await clicar(cdp, "#am-reb-copiar-feito");
+      await waitFor(cdp, "window.__copiado", "nada foi copiado");
+      const msg = await cdp.evaluate("window.__copiado");
+      assert.match(msg, /3 anúncios entraram em promoção com rebate/);
+      assert.match(msg, /MLB-R1/); assert.match(msg, /MLB-E1/); assert.match(msg, /MLB-R2/);
+      assert.match(msg, /Preço: R\$ 99,90 → R\$ 90,00/, "usa o preço confirmado pelo ML");
+      assert.match(msg, /Seguimos acompanhando/);
     });
     await check("E6 — Fechar depois da execução recarrega a lista de anúncios", async () => {
       const antes = SERVIDOR.familiasLidas;

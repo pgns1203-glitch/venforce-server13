@@ -258,7 +258,7 @@ async function check(name, fn) {
 
 // Mesmos contratos e fixtures do teste de listagem; apenas rotas de leitura
 // necessarias para montar a lista, os KPIs e a expansao de FAM-1.
-const MOCK = { syncPendentes: [], syncResposta: null, refreshPosts: 0, familiasGets: 0, run: null, margemCalculadaEm: "2026-10-15T12:00:00.000Z" };
+const MOCK = { syncPendentes: [], syncResposta: null, refreshPosts: 0, refreshBodies: [], familiasGets: 0, run: null, margemCalculadaEm: "2026-10-15T12:00:00.000Z" };
 
 function wireInterception(cdp) {
   cdp.onEvent = async (method, params) => {
@@ -298,6 +298,7 @@ function wireInterception(cdp) {
     // um sufixo só deixou passar um 404 em produção.
     if (pathname === "/operacao/central-margem/n97/snapshot/refresh") {
       MOCK.refreshPosts += 1;
+      try { MOCK.refreshBodies.push(JSON.parse(params.request.postData || "{}")); } catch (_) { MOCK.refreshBodies.push(null); }
       return respond({ ok: true, runId: 77, reaproveitado: true, run: { runId: 77, status: "running", processedItems: 0, totalItems: 175 } }, 202);
     }
     if (pathname === "/operacao/central-margem/n97/snapshot/refresh/77") return respond({ ok: true, run: MOCK.run });
@@ -450,6 +451,40 @@ async function run() {
       assert.ok(/Tentar de novo/.test(e.texto), "erro deveria oferecer tentar de novo");
       assert.ok(!e.completoDisabled && !e.novosDisabled);
       await shot(cdp, "4-erro");
+    });
+
+    await check("S7 - recálculo com falhas oferece 'Recalcular só os N que falharam' e reenvia só elas", async () => {
+      await cdp.evaluate("document.querySelector('[data-sync-fechar]').click()");
+      await waitFor(cdp, "!document.getElementById('am-sync-status')", "aviso de erro não foi dispensado");
+      MOCK.run = { runId: 77, status: "running", processedItems: 10, totalItems: 175 };
+      await cdp.evaluate("document.getElementById('am-sync-completo').click()");
+      await soltarSync(cdp, { ok: true, codigo: "OK", modo: "completo", contaId: 42, totalEncontrados: 175, totalProcessados: 175, totalSalvos: 175, limitado: false });
+      MOCK.run = { runId: 77, status: "completed", processedItems: 175, totalItems: 175, successItems: 155, failedItems: 20, podeRefazerFalhas: true, escopo: "catalogo" };
+      await waitFor(cdp, "document.querySelector('[data-sync-refazer-falhas]')", "botão de refazer as falhas não apareceu");
+      let e = await cdp.evaluate(estado);
+      assert.ok(/20 mantiveram o valor anterior/.test(e.d2), e.d2);
+      assert.ok(/Recalcular só os 20 que falharam/.test(e.texto), e.texto);
+      await shot(cdp, "5-com-falhas");
+
+      const postsAntes = MOCK.refreshPosts;
+      MOCK.run = { runId: 77, status: "running", processedItems: 5, totalItems: 20, escopo: "falhas" };
+      await cdp.evaluate("document.querySelector('[data-sync-refazer-falhas]').click()");
+      await waitFor(cdp, "/is-andamento/.test((document.getElementById('am-sync-status')||{}).className||'')", "não voltou a recalcular");
+      for (let i = 0; i < 50 && MOCK.refreshPosts === postsAntes; i++) await sleep(30);
+      assert.strictEqual(MOCK.refreshPosts, postsAntes + 1, "deveria ter feito 1 POST de refresh");
+      const corpo = MOCK.refreshBodies[MOCK.refreshBodies.length - 1];
+      assert.strictEqual(String(corpo.refazerFalhasDoRun), "77", JSON.stringify(corpo));
+      assert.strictEqual(corpo.clienteContaId, "42");
+      e = await cdp.evaluate(estado);
+      assert.ok(/Só os 20 que falharam/.test(e.d2), e.d2);
+
+      MOCK.run = { runId: 77, status: "completed", processedItems: 20, totalItems: 20, successItems: 18, failedItems: 2, podeRefazerFalhas: true, escopo: "falhas" };
+      await waitFor(cdp, "/18 de 20 recuperados/.test(((document.querySelector('[data-etapa=\"2\"] .am-sync-etapa__detalhe'))||{}).textContent||'')", "resultado do refazer não apareceu");
+      e = await cdp.evaluate(estado);
+      assert.ok(/2 ainda com o valor anterior/.test(e.d2), e.d2);
+      assert.ok(/Recalcular só os 2 que falharam/.test(e.texto), "deveria oferecer de novo para as que sobraram");
+      assert.ok(!e.completoDisabled && !e.novosDisabled);
+      await shot(cdp, "6-refeito");
     });
 
     console.log(`\n${failures ? "RED" : "GREEN"}: ${checks - failures}/${checks} checks passaram; ${failures} falharam.`);

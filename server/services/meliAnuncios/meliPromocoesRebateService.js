@@ -357,6 +357,7 @@ function classificarItem({ referencia, candidatas }) {
       lucro: round2(c.lucro),
       ganhoMargemPp: round2((c.margemRatio - refM) * 100),
       ganhoLucro: round2((centavos(c.lucro) - refL) / 100),
+      inicio: c.inicio || null,
       fim: c.fim || null,
       melhorMargem: chaveCandidata(c) === chaveCandidata(porMargem),
       melhorLucro: chaveCandidata(c) === chaveCandidata(porLucro),
@@ -386,7 +387,7 @@ function falha(codigo, motivo, extra = {}) {
 
 /**
  * Cada escolha precisa existir entre as `candidatas` daquele item no resultado
- * salvo (promotionId + tipo). Uma por item. Nunca a referência.
+ * salvo (promotionId + tipo). Pode haver várias por item. Nunca a referência.
  */
 function validarEscolhas(escolhasBrutas, resultado, referencia) {
   if (!Array.isArray(escolhasBrutas) || escolhasBrutas.length === 0) {
@@ -403,10 +404,12 @@ function validarEscolhas(escolhasBrutas, resultado, referencia) {
     if (!itemId || !promotionId || !tipo) {
       return falha("ESCOLHA_INVALIDA", `escolhas[${i}] precisa de itemId, promotionId e tipo.`);
     }
-    if (vistos.has(itemId)) {
-      return falha("ESCOLHA_INVALIDA", `O anúncio ${itemId} aparece mais de uma vez — é uma promoção por anúncio.`);
+    // Um anúncio pode participar de várias promoções; só o par repetido é erro.
+    const chave = `${itemId}|${promotionId}|${tipo}`;
+    if (vistos.has(chave)) {
+      return falha("ESCOLHA_INVALIDA", `A promoção ${promotionId} aparece mais de uma vez para o anúncio ${itemId}.`);
     }
-    vistos.add(itemId);
+    vistos.add(chave);
     if (referencia && String(referencia.id) === promotionId && mesmoTipo(referencia.tipo, tipo)) {
       return falha("ESCOLHA_INVALIDA", `A promoção de referência nunca é alterada (anúncio ${itemId}).`);
     }
@@ -1160,7 +1163,7 @@ async function executarParticipacoes(ctx, escolhas, execucao, deps = {}) {
         }
       }
 
-      const alvo = execucao.itens.find((it) => String(it.itemId) === String(escolha.itemId));
+      const alvo = execucao.itens.find((it) => String(it.itemId) === String(escolha.itemId) && String(it.promotionId) === String(escolha.promotionId));
       if (alvo) {
         alvo.status = r && r.ok ? "ok" : "falha";
         alvo.codigo = r && r.ok ? null : (r && r.codigo) || "FALHA";

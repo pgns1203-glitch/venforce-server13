@@ -5260,6 +5260,7 @@ body.vf-page-anuncios-meli.am-custos-savebar-on .vf-toast-stack {
   font-weight: var(--vf-fw-semibold);
   white-space: nowrap;
 }
+.am-reb-opcao__vigencia { display: block; margin-top: 4px; font-size: 12px; color: var(--vf-text-muted, var(--vf-text)); }
 .am-reb-opcao.is-selecionada .am-reb-opcao__rotulo { background: var(--vf-surface); color: var(--vf-primary); }
 
 .am-reb-metricas {

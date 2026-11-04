@@ -5614,20 +5614,28 @@
       if (it.status === "recomendado") {
         var s = it.sugestao || {};
         var pid = s.porMargem || s.porLucro || (it.candidatas && it.candidatas[0] && it.candidatas[0].promotionId) || "";
-        esc[it.itemId] = rebCandidata(it, pid) ? pid : "";
+        esc[it.itemId] = rebCandidata(it, pid) ? [pid] : [];
       } else if (it.status === "escolha") {
-        esc[it.itemId] = "";
+        esc[it.itemId] = [];
       }
     });
     return esc;
+  }
+
+  // Cada anúncio guarda uma LISTA de promoções marcadas (pode participar de várias).
+  function rebMarcadas(itemId) {
+    var v = REB && REB.escolhas[itemId];
+    return Array.isArray(v) ? v : [];
   }
 
   function rebEscolhasSelecionadas() {
     var out = [];
     rebItens().forEach(function (it) {
       if (it.status !== "recomendado" && it.status !== "escolha") return;
-      var c = rebCandidata(it, REB.escolhas[it.itemId]);
-      if (c) out.push({ itemId: it.itemId, promotionId: c.promotionId, tipo: c.tipo });
+      rebMarcadas(it.itemId).forEach(function (pid) {
+        var c = rebCandidata(it, pid);
+        if (c) out.push({ itemId: it.itemId, promotionId: c.promotionId, tipo: c.tipo });
+      });
     });
     return out;
   }
@@ -5637,11 +5645,11 @@
   // "ref" = Manter como está em todos (nenhuma participação nova).
   function rebPreferir(criterio) {
     rebItens("escolha").forEach(function (it) {
-      if (criterio === "ref") { REB.escolhas[it.itemId] = ""; return; }
+      if (criterio === "ref") { REB.escolhas[it.itemId] = []; return; }
       var s = it.sugestao || {};
       var c = rebCandidata(it, criterio === "margem" ? s.porMargem : s.porLucro);
       var ganho = c ? rebNum(criterio === "margem" ? c.ganhoMargemPp : c.ganhoLucro) : null;
-      REB.escolhas[it.itemId] = c && ganho !== null && ganho > 0 ? c.promotionId : "";
+      REB.escolhas[it.itemId] = c && ganho !== null && ganho > 0 ? [c.promotionId] : [];
     });
     REB.preferencia = criterio;
     REB.confirmando = false;
@@ -5806,7 +5814,8 @@
     if (t.hasAttribute("data-reb-todos")) {
       rebItens("recomendado").forEach(function (it) {
         var s = it.sugestao || {};
-        REB.escolhas[it.itemId] = t.checked ? (s.porMargem || s.porLucro || "") : "";
+        var pid = s.porMargem || s.porLucro || "";
+        REB.escolhas[it.itemId] = t.checked && pid ? [pid] : [];
       });
       REB.confirmando = false;
       renderRebate();
@@ -5816,14 +5825,24 @@
     if (chk) {
       var it = rebItemPorId(chk);
       var s = (it && it.sugestao) || {};
-      REB.escolhas[chk] = t.checked ? (s.porMargem || s.porLucro || "") : "";
+      var pidSug = s.porMargem || s.porLucro || "";
+      REB.escolhas[chk] = t.checked && pidSug ? [pidSug] : [];
       REB.confirmando = false;
       renderRebate();
       return;
     }
     var radio = t.getAttribute("data-reb-escolha");
-    if (radio && t.checked) {
-      REB.escolhas[radio] = t.value;
+    if (radio) {
+      // Valor vazio = "Manter como está": limpa as promoções marcadas.
+      // Senão alterna a promoção (várias podem ficar marcadas).
+      var atuais = rebMarcadas(radio).slice();
+      if (!t.value) atuais = [];
+      else {
+        var pos = atuais.indexOf(t.value);
+        if (t.checked && pos < 0) atuais.push(t.value);
+        else if (!t.checked && pos >= 0) atuais.splice(pos, 1);
+      }
+      REB.escolhas[radio] = atuais;
       REB.preferencia = null;
       REB.confirmando = false;
       renderRebate();
@@ -6017,7 +6036,7 @@
     if (!REB || REB.retomado) return true;
     var enviados = REB.enviadas || [];
     var cobre = enviados.every(function (e) {
-      return itens.some(function (x) { return x.itemId === e.itemId; });
+      return itens.some(function (x) { return x.itemId === e.itemId && x.promotionId === e.promotionId; });
     });
     if (!cobre) return REB.pollsParado >= 4;
     if (REB.viuProcessando) return true;
@@ -6071,7 +6090,7 @@
     // Só o que foi enviado nesta rodada (o servidor pode manter as anteriores).
     var enviados = REB.enviadas || [];
     if (!enviados.length) return itens;
-    var filtrados = itens.filter(function (x) { return enviados.some(function (e) { return e.itemId === x.itemId; }); });
+    var filtrados = itens.filter(function (x) { return enviados.some(function (e) { return e.itemId === x.itemId && e.promotionId === x.promotionId; }); });
     return filtrados.length ? filtrados : itens;
   }
 
@@ -6304,7 +6323,7 @@
   function rebAbaRecomendadosHtml(rec) {
     if (!rec.length) return '<p class="am-reb-vazio">Nenhum anúncio em que a mesma promoção melhore margem e lucro.</p>';
     var reb = REB;
-    var todos = rec.every(function (it) { return !!reb.escolhas[it.itemId]; });
+    var todos = rec.every(function (it) { return rebMarcadas(it.itemId).length > 0; });
     // Uma coluna por medida: valor com a promoção sugerida em destaque, o ganho
     // logo abaixo e o "hoje" por último, para comparar sem decifrar posição.
     var medida = function (novo, ganho, hoje, attr) {
@@ -6325,7 +6344,7 @@
       rec.map(function (it, i) {
         var s = it.sugestao || {};
         var c = rebCandidata(it, s.porMargem || s.porLucro) || (it.candidatas || [])[0];
-        var marcado = !!(c && reb.escolhas[it.itemId] === c.promotionId);
+        var marcado = !!(c && rebMarcadas(it.itemId).indexOf(c.promotionId) >= 0);
         var hoje = rebAtual(it);
         var celulas = c
           ? medida(formatMoeda(c.preco),
@@ -6389,11 +6408,14 @@
   }
 
   function rebOpcaoHtml(o, nomeRadio, id, itemId, atual) {
-    var sel = atual === o.valor;
+    // atual = lista de promoções marcadas; "Manter como está" vale quando está vazia.
+    var sel = o.valor ? atual.indexOf(o.valor) >= 0 : atual.length === 0;
+    var vig = (o.inicio || o.fim) ? rebVigencia({ inicio: o.inicio, fim: o.fim }) : "";
     return '<label class="am-reb-opcao' + (sel ? " is-selecionada" : "") + '" for="' + id + '">' +
-      '<span class="am-reb-opcao__cab"><input type="radio" id="' + id + '" name="' + nomeRadio + '" value="' + escapeAttr(o.valor) + '" data-reb-escolha="' + escapeAttr(itemId) + '"' +
+      '<span class="am-reb-opcao__cab"><input type="checkbox" id="' + id + '" name="' + nomeRadio + '" value="' + escapeAttr(o.valor) + '" data-reb-escolha="' + escapeAttr(itemId) + '"' +
         (sel ? " checked" : "") + '><span class="am-reb-opcao__nome" title="' + escapeAttr(o.promo || "") + '">' + escapeHtml(o.promo || "") + "</span>" +
         '<span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
+      (vig ? '<span class="am-reb-opcao__vigencia">Vigência: ' + escapeHtml(vig) + "</span>" : "") +
       '<span class="am-reb-metricas">' +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Preço de venda</span>' +
           '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebDeltaHtml(o.dPreco, "preco") + "</span>" +
@@ -6406,12 +6428,14 @@
 
   function rebEscolhaItemHtml(it, i) {
     var s = it.sugestao || {};
-    var atual = REB.escolhas[it.itemId] || "";
+    var atual = rebMarcadas(it.itemId);
     var nome = "am-reb-esc-" + i;
     var hoje = rebAtual(it);
+    var refJob = (REB.job && REB.job.referencia) || {};
     var opcoes = [{
       valor: "", rotulo: "Manter como está", margem: hoje.margemPercent, lucro: hoje.lucro, dMargem: null, dLucro: null, dPreco: null,
       promo: hoje.nome, preco: hoje.preco, subsidio: hoje.subsidioMl, pct: hoje.meliPercentage,
+      inicio: hoje.inicio || refJob.inicio || null, fim: hoje.fim || refJob.fim || null,
     }];
     var vistos = {};
     function add(pid, rotulo) {
@@ -6423,6 +6447,7 @@
         // Queda do preço de venda em relação ao de hoje (centavos, sem resíduo de float).
         dPreco: rebNum(c.preco) !== null && rebNum(hoje.preco) !== null ? Math.round(c.preco * 100 - hoje.preco * 100) / 100 : null,
         promo: c.nome || c.promotionId, preco: c.preco, subsidio: c.subsidioMl, pct: c.meliPercentage,
+        inicio: c.inicio || null, fim: c.fim || null,
       });
     }
     if (s.porMargem && s.porMargem === s.porLucro) add(s.porMargem, "Maior margem e lucro");
@@ -6434,7 +6459,7 @@
       '<div class="am-reb-escolha__topo">' + rebThumbHtml(it.thumbnail) +
         '<h3 class="am-reb-escolha__titulo">' + escapeHtml(it.titulo || "Anúncio sem título") + "</h3>" +
         '<span class="am-reb-escolha__id vf-mono">' + escapeHtml(it.itemId) + "</span></div>" +
-      '<fieldset class="am-reb-opcoes"><legend class="vf-visually-hidden">Promoção para ' + escapeHtml(it.titulo || it.itemId) + "</legend>" +
+      '<fieldset class="am-reb-opcoes"><legend class="vf-visually-hidden">Promoções (pode marcar mais de uma) para' + escapeHtml(it.titulo || it.itemId) + "</legend>" +
         opcoes.map(function (o, k) { return rebOpcaoHtml(o, nome, nome + "-" + k, it.itemId, atual); }).join("") +
       "</fieldset></article>";
   }
@@ -6455,10 +6480,13 @@
     var n = sel.length;
     var nRec = sel.filter(function (x) { var it = rebItemPorId(x.itemId); return it && it.status === "recomendado"; }).length;
     var nEsc = n - nRec;
+    var vistosAn = {};
+    sel.forEach(function (x) { vistosAn[x.itemId] = true; });
+    var nAnuncios = Object.keys(vistosAn).length;
     var nomeRef = (reb.job.referencia && reb.job.referencia.nome) || "referência";
     if (reb.confirmando && n) {
       return '<div class="am-reb-confirma" role="alertdialog" aria-labelledby="am-reb-confirma-txt">' +
-        '<p class="am-reb-confirma__txt" id="am-reb-confirma-txt">Participar de ' + n + (n === 1 ? " promoção em 1 anúncio" : " promoções em " + n + " anúncios") +
+        '<p class="am-reb-confirma__txt" id="am-reb-confirma-txt">Participar de ' + n + (n === 1 ? " promoção" : " promoções") + " em " + nAnuncios + (nAnuncios === 1 ? " anúncio" : " anúncios") +
           "? A promoção <strong>" + escapeHtml(nomeRef) + "</strong> permanece ativa em todos — nada nela é alterado.</p>" +
         '<div class="am-reb-confirma__acoes">' +
           '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-cancelar-conf" data-reb-acao="cancelar-confirmacao"' + (reb.enviando ? " disabled" : "") + ">Voltar</button>" +

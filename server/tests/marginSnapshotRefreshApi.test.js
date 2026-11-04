@@ -188,6 +188,64 @@ cenario("controller: erro estruturado vira o status/código do service; erro ine
   assert.deepStrictEqual(r2.body, { ok: false, erro: "Erro interno." }, "detalhe interno nunca vaza");
 });
 
+// ── Recalcular só os que falharam ───────────────────────────────────────────
+
+async function runConcluido(db, { clienteContaId = 5, clienteId = 1, falhas = [] } = {}) {
+  const run = await runRepository.createRun({ clienteId, clienteSlug: "x", clienteContaId, reason: "manual_refresh", db });
+  await runRepository.updateRunStatus({ runId: run.id, status: "running", db });
+  if (falhas.length) {
+    await runRepository.mergeRunMetadata({ runId: run.id, patch: { falhas: { total: falhas.length, itemIds: falhas } }, db });
+  }
+  return runRepository.updateRunStatus({ runId: run.id, status: "completed", db });
+}
+
+cenario("run concluído com falhas guardadas expõe podeRefazerFalhas; sem falhas, não", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const comFalhas = await runConcluido(db, { falhas: ["MLB1", "MLB2"] });
+  assert.strictEqual(api.runPublico(comFalhas).podeRefazerFalhas, true);
+  assert.strictEqual(api.runPublico(comFalhas).escopo, "catalogo");
+  const semFalhas = await runConcluido(db, { clienteContaId: 6 });
+  assert.strictEqual(api.runPublico(semFalhas).podeRefazerFalhas, false);
+});
+
+cenario("POST refresh com refazerFalhasDoRun: cria run com escopo = ids que falharam no run de origem", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const origem = await runConcluido(db, { falhas: ["MLB1", "MLB2"] });
+  const r = await api.solicitarRefresh({ clienteSlug: "loja-a", clienteContaId: 5, refazerFalhasDoRun: origem.id }, deps(db));
+  assert.strictEqual(r.reaproveitado, false);
+  assert.strictEqual(r.run.escopo, "falhas");
+  const novo = db.runs.find((x) => x.id === r.runId);
+  assert.deepStrictEqual(novo.metadata_json.escopo, { tipo: "falhas", origemRunId: origem.id, itemIds: ["MLB1", "MLB2"] });
+  assert.strictEqual(novo.reason, "manual_refresh");
+});
+
+cenario("refazerFalhasDoRun: run sem falhas → 409; run de outra conta → 404; id inválido → 400", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const semFalhas = await runConcluido(db);
+  const e409 = await esperaErro(() => api.solicitarRefresh({ clienteSlug: "loja-a", clienteContaId: 5, refazerFalhasDoRun: semFalhas.id }, deps(db)));
+  assert.strictEqual(e409.statusCode, 409);
+  assert.strictEqual(e409.payload.code, "SEM_FALHAS_PARA_REFAZER");
+
+  const deOutra = await runConcluido(db, { clienteContaId: 6, falhas: ["MLB9"] });
+  const e404 = await esperaErro(() => api.solicitarRefresh({ clienteSlug: "loja-a", clienteContaId: 5, refazerFalhasDoRun: deOutra.id }, deps(db)));
+  assert.strictEqual(e404.statusCode, 404);
+
+  const e400 = await esperaErro(() => api.solicitarRefresh({ clienteSlug: "loja-a", clienteContaId: 5, refazerFalhasDoRun: "abc" }, deps(db)));
+  assert.strictEqual(e400.statusCode, 400);
+  assert.strictEqual(db.runs.filter((x) => x.status === "queued").length, 0, "nenhum run criado nos erros");
+});
+
+cenario("pedido de catálogo inteiro durante um run PARCIAL em execução vira rerun completo", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const origem = await runConcluido(db, { falhas: ["MLB1"] });
+  const r = await api.solicitarRefresh({ clienteSlug: "loja-a", clienteContaId: 5, refazerFalhasDoRun: origem.id }, deps(db));
+  await runRepository.updateRunStatus({ runId: r.runId, status: "running", db });
+  const completo = await api.solicitarRefresh({ clienteSlug: "loja-a", clienteContaId: 5 }, deps(db));
+  assert.strictEqual(completo.reaproveitado, true);
+  const parcial = db.runs.find((x) => x.id === r.runId);
+  assert.ok(parcial.metadata_json.rerunSolicitado, "o worker re-enfileira o catálogo inteiro ao fim do parcial");
+});
+
 async function main() {
   let falhas = 0;
   for (const caso of casos) {

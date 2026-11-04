@@ -5779,7 +5779,7 @@
       case "voltar-ref":
       case "trocar-ref":
         REB.passo = "referencia"; REB.erro = null; REB.job = null; REB.jobId = null;
-        REB.confirmando = false; REB.escolhas = {};
+        REB.confirmando = false; REB.escolhas = {}; REB.confirmadas = {};
         delete rebJobEmCurso[REB.chave];
         renderRebate(); rebFocarInicio();
         if (!REB.referencias) carregarReferenciasRebate();
@@ -5804,6 +5804,7 @@
         if (falhas.length) executarRebate(falhas);
         break;
       }
+      case "copiar-msg": rebCopiarMensagem(b.getAttribute("data-reb-modo") === "feito" ? "feito" : "proposta"); break;
     }
   }
 
@@ -6092,6 +6093,110 @@
     if (!enviados.length) return itens;
     var filtrados = itens.filter(function (x) { return enviados.some(function (e) { return e.itemId === x.itemId && e.promotionId === x.promotionId; }); });
     return filtrados.length ? filtrados : itens;
+  }
+
+  // --- Mensagem para o cliente (WhatsApp) ----------------------------------------
+  // Texto pronto para colar no WhatsApp do seller: o que o radar encontrou
+  // (prévia = proposta) ou o que de fato entrou (execução = feito), anúncio a
+  // anúncio, com preço, rebate, margem e lucro antes → depois. Formatação do
+  // WhatsApp: *negrito* e _itálico_. Nada sai do navegador — só a área de
+  // transferência.
+
+  // Participações confirmadas em TODAS as rodadas (o "tentar de novo" envia só
+  // as falhas, e a lista da execução passa a mostrar só elas).
+  function rebRegistrarConfirmadas() {
+    if (!REB) return [];
+    REB.confirmadas = REB.confirmadas || {};
+    var ex = REB.job && REB.job.execucao;
+    ((ex && ex.itens) || []).forEach(function (x) {
+      if (x.status === "ok") REB.confirmadas[x.itemId + "|" + x.promotionId] = { itemId: x.itemId, promotionId: x.promotionId, precoConfirmado: x.precoConfirmado };
+    });
+    return Object.keys(REB.confirmadas).map(function (k) { return REB.confirmadas[k]; });
+  }
+
+  function rebWaPct(v) {
+    var n = rebNum(v);
+    return n === null ? "—" : n.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + "%";
+  }
+
+  // "+0,8 p.p." / "−R$ 0,55"
+  function rebWaSinal(n, tipo) {
+    var abs = Math.abs(n);
+    var txt = tipo === "pp"
+      ? abs.toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + " p.p."
+      : formatMoeda(abs);
+    return (n > 0 ? "+" : n < 0 ? "−" : "") + txt;
+  }
+
+  function rebWaDelta(n, tipo) {
+    return n === null || n === 0 ? "" : " (" + rebWaSinal(n, tipo) + ")";
+  }
+
+  // pares: [{ itemId, promotionId, precoConfirmado? }]; modo "proposta" | "feito".
+  function rebMensagemCliente(pares, modo) {
+    var reb = REB;
+    var job = (reb && reb.job) || {};
+    var nomeRef = (job.referencia && job.referencia.nome) || "promoção de referência";
+    var analisados = rebItens().length;
+    var porItem = {}, ordem = [];
+    pares.forEach(function (p) {
+      var it = rebItemPorId(p.itemId);
+      var c = rebCandidata(it, p.promotionId);
+      if (!it || !c) return;
+      if (!porItem[p.itemId]) { porItem[p.itemId] = { it: it, promos: [] }; ordem.push(p.itemId); }
+      porItem[p.itemId].promos.push({ c: c, preco: rebNum(p.precoConfirmado) !== null ? p.precoConfirmado : c.preco });
+    });
+    if (!ordem.length) return "";
+
+    var feito = modo === "feito";
+    var n = ordem.length;
+    var somaRebate = 0, nRebate = 0, somaLucro = 0, nLucro = 0, somaMargem = 0, nMargem = 0;
+    var linhas = [];
+    linhas.push("*Radar de subsídios" + (AM.clienteAtual && AM.clienteAtual.nome ? " · " + AM.clienteAtual.nome : "") + "*");
+    linhas.push("");
+    linhas.push("Analisamos " + analisados + (analisados === 1 ? " anúncio" : " anúncios") + " da *" + nomeRef + "* atrás de promoções em que o Mercado Livre paga parte do desconto (rebate).");
+    linhas.push("");
+    linhas.push(feito
+      ? "✅ *" + n + (n === 1 ? " anúncio entrou" : " anúncios entraram") + " em promoção com rebate:*"
+      : "📋 *Encontramos " + n + (n === 1 ? " anúncio" : " anúncios") + " que ganham entrando em promoção com rebate:*");
+    ordem.forEach(function (id, i) {
+      var g = porItem[id];
+      var hoje = rebAtual(g.it);
+      linhas.push("");
+      linhas.push((i + 1) + ". *" + (g.it.titulo || "Anúncio") + "* (" + id + ")");
+      g.promos.forEach(function (p) {
+        var c = p.c;
+        var vig = (c.inicio || c.fim) ? " · " + rebVigencia({ inicio: c.inicio, fim: c.fim }) : "";
+        var rebate = rebNum(c.subsidioMl);
+        var dLucro = rebNum(c.ganhoLucro), dMargem = rebNum(c.ganhoMargemPp);
+        if (rebate !== null && rebate > 0) { somaRebate += rebate; nRebate++; }
+        if (dLucro !== null) { somaLucro += dLucro; nLucro++; }
+        if (dMargem !== null) { somaMargem += dMargem; nMargem++; }
+        linhas.push("   Promoção: " + (c.nome || c.promotionId) + vig);
+        linhas.push("   Preço: " + formatMoeda(hoje.preco) + " → " + formatMoeda(p.preco) +
+          (rebate !== null && rebate > 0 ? " · rebate do ML: " + formatMoeda(rebate) + " por venda" : ""));
+        linhas.push("   Margem: " + rebWaPct(hoje.margemPercent) + " → " + rebWaPct(c.margemPercent) + rebWaDelta(dMargem, "pp") +
+          " · Lucro/un: " + formatMoeda(hoje.lucro) + " → " + formatMoeda(c.lucro) + rebWaDelta(dLucro, "rs"));
+      });
+    });
+    linhas.push("");
+    linhas.push("*Resumo*");
+    if (nRebate) linhas.push("• Rebate do Mercado Livre: " + formatMoeda(Math.round((somaRebate / nRebate) * 100) / 100) + " por venda, em média");
+    if (nMargem) linhas.push("• Margem: " + rebWaSinal(Math.round((somaMargem / nMargem) * 10) / 10, "pp") + " por anúncio, em média");
+    if (nLucro) linhas.push("• Lucro: " + rebWaSinal(Math.round((somaLucro / nLucro) * 100) / 100, "rs") + " por venda, em média");
+    linhas.push("• A *" + nomeRef + "* continua ativa em todos os anúncios.");
+    linhas.push("");
+    linhas.push(feito
+      ? "Seguimos acompanhando as vendas desses anúncios."
+      : "Se estiver de acordo, a gente já coloca esses anúncios nas promoções.");
+    return linhas.join("\n");
+  }
+
+  function rebCopiarMensagem(modo) {
+    var pares = modo === "feito" ? rebRegistrarConfirmadas() : rebEscolhasSelecionadas();
+    var txt = rebMensagemCliente(pares, modo);
+    if (!txt) { toast("Nenhum anúncio para incluir na mensagem."); return; }
+    copiarTexto(txt, "Mensagem copiada. Cole no WhatsApp do cliente.");
   }
 
   function rebFalhas() {
@@ -6501,6 +6606,8 @@
         '<span class="am-reb-resumo-sel__det">' + det + "</span></div>" +
       '<div class="am-reb-rodape__acoes">' +
         '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-prev" data-reb-acao="fechar">Cancelar</button>' +
+        '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-copiar-proposta" data-reb-acao="copiar-msg" data-reb-modo="proposta"' +
+          (n ? "" : " disabled") + ' title="Copia uma mensagem com os anúncios selecionados para enviar ao cliente pelo WhatsApp">Copiar mensagem</button>' +
         '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-participar" data-reb-acao="participar"' + (n ? "" : " disabled") + ">" +
           (n ? "Participar de " + n : "Participar") + "</button></div>";
   }
@@ -6549,9 +6656,12 @@
         '<div class="am-reb-rodape__acoes"><button type="button" class="vf-btn vf-btn--secondary" id="am-reb-fechar-exec" data-reb-acao="fechar">Fechar</button></div>';
     }
     var nFalhas = rebFalhas().length;
+    var nOk = rebRegistrarConfirmadas().length;
     return '<div class="am-reb-rodape__acoes">' +
       (nFalhas ? '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-retentar" data-reb-acao="retentar"' + (reb.enviando ? " disabled" : "") + ">" +
         (reb.enviando ? "Enviando…" : "Tentar de novo as falhas (" + nFalhas + ")") + "</button>" : "") +
+      (nOk ? '<button type="button" class="vf-btn vf-btn--secondary" id="am-reb-copiar-feito" data-reb-acao="copiar-msg" data-reb-modo="feito"' +
+        ' title="Copia uma mensagem com o que entrou em promoção para enviar ao cliente pelo WhatsApp">Copiar mensagem para o cliente</button>' : "") +
       '<button type="button" class="vf-btn vf-btn--primary" id="am-reb-fechar-final" data-reb-acao="fechar">Fechar</button></div>';
   }
 
@@ -10658,15 +10768,19 @@
     } else {
       e1 = { estado: "feito", detalhe: s.resumoSync };
       if (s.fase === "recalculando") {
-        e2 = { estado: "ativo", detalhe: total ? "Com o preço e o custo atuais de cada anúncio." : "Aguardando o cálculo começar." };
+        e2 = { estado: "ativo", detalhe: s.refazendo
+          ? "Só os " + s.refazendo + " que falharam no cálculo anterior."
+          : (total ? "Com o preço e o custo atuais de cada anúncio." : "Aguardando o cálculo começar.") };
       } else if (s.margem === "pulada") {
         e2 = { estado: "pulado", detalhe: "Nenhum anúncio novo, margem mantida." };
       } else if (s.margem === "ok") {
         var falhas = (run && run.failedItems) || 0;
+        var okN = (run && run.successItems) || 0;
         e2 = {
           estado: falhas ? "aviso" : "feito",
-          detalhe: ((run && run.successItems) || 0) + " anúncio(s) recalculados" +
-            (falhas ? " · " + falhas + " mantiveram o valor anterior." : "."),
+          detalhe: s.refazendo
+            ? okN + " de " + s.refazendo + " recuperados" + (falhas ? " · " + falhas + " ainda com o valor anterior." : ".")
+            : okN + " anúncio(s) recalculados" + (falhas ? " · " + falhas + " mantiveram o valor anterior." : "."),
         };
       } else {
         e2 = { estado: "aviso", detalhe: s.aviso };
@@ -10678,6 +10792,8 @@
     var rodape = "";
     if (s.fase === "erro") rodape = "Não foi possível sincronizar";
     else if (!andamento) rodape = (e2.estado === "aviso" ? "Anúncios sincronizados às " : "Concluído às ") + horaDe(s.tFim) + " · levou " + duracaoTexto(s.tFim - s.t0);
+    // Recalcular só os que falharam: o run guardou os ids (podeRefazerFalhas).
+    var refazerN = !andamento && s.margem === "ok" && run && run.podeRefazerFalhas ? (run.failedItems || 0) : 0;
 
     return {
       andamento: andamento,
@@ -10690,11 +10806,13 @@
       pct: total ? Math.round(feitos / total * 100) : 0,
       relogio: duracaoTexto((s.tFim || Date.now()) - s.t0),
       rodape: rodape,
+      refazerN: refazerN,
+      refazerRunId: refazerN ? run.runId : null,
       anuncio: s.fase === "sincronizando" ? "Sincronização em andamento, etapa 1 de 2: anúncios do Mercado Livre."
         : s.fase === "recalculando" ? "Etapa 2 de 2: recalculando a margem dos anúncios."
         : s.fase === "erro" ? "Não foi possível sincronizar. " + s.motivo
         : rodape + ".",
-      chave: [s.fase, s.modo, e1.estado, e2.estado, total ? "n" : "-"].join("|"),
+      chave: [s.fase, s.modo, e1.estado, e2.estado, total ? "n" : "-", refazerN, s.refazendo || 0].join("|"),
     };
   }
 
@@ -10721,6 +10839,8 @@
           '<span class="am-sync-status__resultado">' + escapeHtml(v.rodape) + "</span>" +
           '<span class="am-sync-status__acoes">' +
             (v.tom === "is-erro" ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-sync-repetir>Tentar de novo</button>' : "") +
+            (v.refazerN ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-sync-refazer-falhas="' + escapeAttr(String(v.refazerRunId)) + '">' +
+              "Recalcular só " + (v.refazerN === 1 ? "o que falhou" : "os " + v.refazerN + " que falharam") + "</button>" : "") +
             '<button type="button" class="vf-btn vf-btn--ghost vf-btn--sm" data-sync-fechar>Fechar</button>' +
           "</span>" +
         "</div>";
@@ -10781,6 +10901,12 @@
       if (fechar) fechar.addEventListener("click", function () { setSync(null); });
       var repetir = area.querySelector("[data-sync-repetir]");
       if (repetir) repetir.addEventListener("click", function () { var m = AM.sync && AM.sync.modo; setSync(null); sincronizar(m || "completo"); });
+      var refazer = area.querySelector("[data-sync-refazer-falhas]");
+      if (refazer) refazer.addEventListener("click", function () {
+        if (syncEmAndamento()) return;
+        setSync({ refazendo: v.refazerN, t0: Date.now(), tFim: null });
+        recalcularMargemAposSync({ refazerFalhasDoRun: refazer.getAttribute("data-sync-refazer-falhas") });
+      });
     }
 
     var andamento = syncEmAndamento();
@@ -10809,7 +10935,10 @@
     renderSyncStatus();
   }
 
-  function recalcularMargemAposSync() {
+  // opcoes.refazerFalhasDoRun: recalcula só os anúncios que falharam naquele run.
+  function recalcularMargemAposSync(opcoes) {
+    var refazerDe = opcoes && opcoes.refazerFalhasDoRun ? opcoes.refazerFalhasDoRun : null;
+    if (!refazerDe && AM.sync && AM.sync.refazendo) setSync({ refazendo: 0 });
     if (!AM.clienteAtual || !AM.contaMlId) {
       setSync({ fase: "aviso", margem: "falhou", aviso: "Sem conta ML selecionada para recalcular a margem." });
       return;
@@ -10823,8 +10952,10 @@
     function mesmaTela() {
       return seq === margemRecalculo.seq && AM.sync && AM.clienteAtual && AM.clienteAtual.slug === slug && AM.contaMlId === conta;
     }
-    setSync({ fase: "recalculando", run: null });
-    api(base, { method: "POST", body: { clienteContaId: conta } }).then(function (r) {
+    setSync({ fase: "recalculando", margem: null, run: null });
+    var corpo = { clienteContaId: conta };
+    if (refazerDe) corpo.refazerFalhasDoRun = refazerDe;
+    api(base, { method: "POST", body: corpo }).then(function (r) {
       if (!mesmaTela()) return;
       var d = r.data || {};
       if (!d.ok || !d.runId) {
@@ -10845,7 +10976,9 @@
           }
           if (run.status === "completed") {
             setSync({ fase: run.failedItems ? "aviso" : "ok", margem: "ok", run: run });
-            toast("Sincronização concluída e margem recalculada.", "is-success");
+            toast(refazerDe
+              ? (run.failedItems ? "Recálculo refeito; alguns anúncios ainda falharam." : "Os anúncios que tinham falhado foram recalculados.")
+              : "Sincronização concluída e margem recalculada.", run.failedItems && refazerDe ? undefined : "is-success");
           } else {
             setSync({ fase: "aviso", margem: "falhou",
               aviso: "O recálculo falhou; a margem mostrada é a do cálculo anterior. Tente \"Atualizar leitura\" na Central de Margem." });

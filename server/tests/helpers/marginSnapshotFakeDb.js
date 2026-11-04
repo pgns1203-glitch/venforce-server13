@@ -229,7 +229,7 @@ function makeMarginSnapshotFakeDb() {
     // ── margin_snapshot_runs ────────────────────────────────────────────
 
     if (sql.includes("INSERT INTO margin_snapshot_runs")) {
-      const [clienteId, clienteSlug, clienteContaId, marketplace, baseId, reason, requestedBy] = params;
+      const [clienteId, clienteSlug, clienteContaId, marketplace, baseId, reason, requestedBy, metadataJson] = params;
       const conflito = runs.find((r) =>
         r.cliente_id === clienteId
         && r.cliente_conta_id === clienteContaId
@@ -249,7 +249,7 @@ function makeMarginSnapshotFakeDb() {
         total_items: null, processed_items: 0, success_items: 0, failed_items: 0, cursor_offset: 0,
         requested_by: requestedBy ?? null,
         created_at: now, started_at: null, heartbeat_at: null, finished_at: null,
-        error_code: null, error_message: null, metadata_json: {},
+        error_code: null, error_message: null, metadata_json: metadataJson ? JSON.parse(metadataJson) : {},
         updated_at: now,
       };
       runs.push(row);

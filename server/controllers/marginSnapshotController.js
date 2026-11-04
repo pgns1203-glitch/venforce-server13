@@ -94,6 +94,8 @@ function createMarginSnapshotController({ service = defaultService, readService 
         clienteSlug,
         clienteContaId: req.body?.clienteContaId ?? req.body?.cliente_conta_id,
         requestedBy: req.user?.id ?? null,
+        // Opcional: recalcula só os anúncios que falharam neste run anterior.
+        refazerFalhasDoRun: req.body?.refazerFalhasDoRun ?? null,
       });
       return responder(res, 202, data);
     } catch (err) {

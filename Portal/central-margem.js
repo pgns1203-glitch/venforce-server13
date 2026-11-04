@@ -2411,9 +2411,10 @@
       var cen = l.cenario || {};
       // Linha sem lucro e sem margem (faltam dados): não é estimativa — nada foi calculado.
       var semNumero = (cen.lc === null || cen.lc === undefined) && (cen.margem_ratio === null || cen.margem_ratio === undefined);
-      if (origem === "simular") contagem.simular += 1;
-      else if (origem === "bloqueado") contagem.bloqueado += 1;
+      // A falta de número vem antes da origem: cotada (simular) sem custo continua sem número.
+      if (origem === "bloqueado") contagem.bloqueado += 1;
       else if (semNumero) { contagem.semNumero += 1; return; }
+      else if (origem === "simular") contagem.simular += 1;
       else contagem.estimativa += 1;
       if (origem !== "simular" && !contagem.primeiroMotivo && l.numeros && l.numeros.motivo) contagem.primeiroMotivo = l.numeros.motivo;
     });
@@ -2441,6 +2442,7 @@
       tom = "is-est";
     } else if (state.oppsLive === "ok") {
       var bloqueadas = c.bloqueado ? " · " + c.bloqueado + (c.bloqueado === 1 ? " linha bloqueada" : " linhas bloqueadas") + " (a cotação não veio completa)" : "";
+      if (c.semNumero) bloqueadas += " · " + c.semNumero + (c.semNumero === 1 ? " linha sem números" : " linhas sem números") + " (faltam dados)";
       if (c.simular > 0 && c.estimativa === 0) { texto = "Valores cotados agora no Mercado Livre · comissão e frete reais no preço da promoção (mesmo cálculo da Bancada)" + bloqueadas; tom = "is-cotado"; }
       else if (c.simular > 0) { texto = "Cotados no Mercado Livre em " + c.simular + " de " + c.total + " linhas · " + c.estimativa + (c.estimativa === 1 ? " estimada" : " estimadas") + " (≈)" + bloqueadas; tom = "is-est"; }
       else if (c.total) { texto = "≈ Valores estimados — " + (NUMEROS_MOTIVO_UI[c.primeiroMotivo] || "não vieram do simulador"); tom = "is-est"; }

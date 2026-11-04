@@ -108,6 +108,8 @@ const CONTAS = {
 // (o núcleo bloqueia, nada é estimado) e uma promoção com a leitura anterior.
 CONTAS[87].itens[3].semComissao = true;
 CONTAS[87].itens[5].herdada = true;
+// Sem custo: a cotação ao vivo vem completa, mas o núcleo não tem número (custo_ausente) — nunca "cotado".
+CONTAS[87].itens[10].custo = null;
 CONTAS[86].itens[2].semComissao = true;
 // Uma promoção da 86 com subsídio do ML maior que o desconto: vale entrar (o resumo tem o que somar).
 (function () { const it = CONTAS[86].itens[0]; it.custo = Math.round(it.preco * 0.25 * 100) / 100; const pr = it.promos[0]; pr.status = "candidate"; pr.retornoMl = Math.round((it.preco - pr.precoPromo) * 1.3 * 100) / 100; })();
@@ -637,6 +639,10 @@ async function run() {
       await waitFor(cdp, `${pronto} && document.querySelector('[data-cm-seg=todos]').getAttribute('aria-pressed') === 'true'`);
       await cdp.evaluate("document.querySelector('[data-cm-seg=bloqueado]').click()");
       await waitFor(cdp, `document.querySelector('[data-cm-seg=bloqueado]').getAttribute('aria-pressed') === 'true' && document.querySelector('#cm-opps-host tr.cm-promo-row [data-cm-flag=bloqueado]') && document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'`, "bloqueados (cotação ok) não apareceram");
+      if (!MODO_ANTES) {
+        assert.ok(await cdp.evaluate("Boolean(document.querySelector('#cm-opps-host tr.cm-promo-row[data-cm-numeros=simular]'))"), "há linha cotada sem número (sem custo) no recorte");
+        assert.strictEqual(await cdp.evaluate("document.getElementById('cm-promos-live').getAttribute('data-cm-numeros')"), "indisponivel", "linha cotada sem custo não torna a página 'cotada'");
+      }
       const lin = await texto("#cm-opps-host tr.cm-promo-row");
       assert.ok(/tarifa do Mercado Livre indisponível|comissão atual ausente|faltam dados/.test(lin), `motivo do bloqueio: ${lin}`);
       assert.ok(/indisponível/.test(await texto("#cm-opps-host tr.cm-promo-row [data-cm-lc]")), "lucro indisponível, não zero");

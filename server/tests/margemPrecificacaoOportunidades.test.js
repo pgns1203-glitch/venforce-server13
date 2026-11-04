@@ -5,7 +5,7 @@
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://127.0.0.1:1/vf-test";
 
 const assert = require("assert");
-const { listarOportunidades, motivoForaDoRanking, MOTIVO_FORA_DO_RANKING, rankearOportunidades, parseVeredito } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
+const { listarOportunidades, motivoForaDoRanking, MOTIVO_FORA_DO_RANKING, rankearOportunidades, parseVeredito, parseOrdem, parseBusca } = require("../services/motorMargem/precificacao/precificacaoOportunidadesService");
 const { atualizarSnapshotDoItem } = require("../services/motorMargem/precificacao/precificacaoSnapshotItem");
 const { computeMargin } = require("../services/motorMargem/core/marginEngine");
 const { elegiveisReferencia } = require("./helpers/oportunidadesReferencia");
@@ -170,7 +170,7 @@ cenario("ranking explicável: veredito → com histórico → ΔLC × unidades; 
   assert.strictEqual(mlb3.precoPromocao, 95, "MLB3: a melhor promoção do mesmo item (menor perda por unidade)");
   assert.strictEqual(mlb3.opcoes_total, 2);
   assert.strictEqual(r.fonte.frescor, "atual");
-  assert.deepStrictEqual(r.filtro, { veredito: ["entrar", "entrar_se_girar"], tipo: null });
+  assert.deepStrictEqual(r.filtro, { veredito: ["entrar", "entrar_se_girar"], tipo: null, busca: null, ordem: "impacto" });
   assert.deepStrictEqual(r.contagem, { entrar: 0, entrar_se_girar: 3, nao_entrar: 1, bloqueado: 0 });
 });
 
@@ -460,11 +460,11 @@ cenario("filtro `veredito` desconhecido: 400 antes de qualquer leitura (nunca ig
   assert.strictEqual(parseVeredito("todos"), null);
 });
 
-cenario("controllers repassam veredito, tipo, cotacao, página e período ao serviço (e erro 400 do serviço chega como 400)", async () => {
+cenario("controllers repassam veredito, tipo, busca, ordem, cotacao, página e período ao serviço (e erro 400 do serviço chega como 400)", async () => {
   const { createPromoSnapshotController } = require("../controllers/promoSnapshotController");
   const { createMargemPrecificacaoController } = require("../controllers/margemPrecificacaoController");
-  const query = { clienteContaId: "7", veredito: "todos", tipo: "DEAL", cotacao: "viva", page: "2", limit: "10", periodo: "2026-09" };
-  const esperado = { clienteSlug: "loja-a", clienteContaId: "7", periodo: "2026-09", veredito: "todos", tipo: "DEAL", cotacao: "viva", page: "2", limit: "10" };
+  const query = { clienteContaId: "7", veredito: "todos", tipo: "DEAL", busca: "calça", ordem: "subsidio", cotacao: "viva", page: "2", limit: "10", periodo: "2026-09" };
+  const esperado = { clienteSlug: "loja-a", clienteContaId: "7", periodo: "2026-09", veredito: "todos", tipo: "DEAL", busca: "calça", ordem: "subsidio", cotacao: "viva", page: "2", limit: "10" };
   for (const criar of [
     (oportunidades) => createPromoSnapshotController({ oportunidades }),
     (oportunidades) => createMargemPrecificacaoController({ oportunidades }),
@@ -496,6 +496,41 @@ cenario("rankearOportunidades é pura e estável: mesma entrada embaralhada → 
   }
   const p2 = rankearOportunidades(base, { page: 2, limit: 4 });
   assert.deepStrictEqual([p2.total, p2.hasNext, p2.pagina.map((c) => c.itemId)], [6, false, ["C", "F"]]);
+});
+
+cenario("busca (título/MLB, sem acento) recorta ANTES da contagem; ordem só muda a sequência, nunca a melhor promoção", () => {
+  const mk = (itemId, titulo, veredito, delta, unidades, extra = {}) => ({
+    itemId, titulo, veredito, delta_lc: delta, impacto_lc: unidades ? delta * unidades : null,
+    flags: { sem_historico: !unidades }, promocao: { chave: itemId + ":" + (extra.chave || "p"), fim: extra.fim || null, tipo: extra.tipo || "DEAL" },
+    ml_banca: extra.ml === undefined ? null : extra.ml, margemDepois: extra.margem === undefined ? null : extra.margem,
+    desconto_ratio: extra.desc === undefined ? null : extra.desc,
+  });
+  const base = [
+    mk("MLB100", "Calça Jeans Mom Clara", "entrar", 2, 10, { ml: 5, margem: 0.2, desc: 0.1, fim: "2026-11-20T00:00:00Z" }),
+    mk("MLB200", "Calça jeans skinny", "entrar_se_girar", -1, 4, { ml: 9, margem: 0.12, desc: 0.2, fim: "2026-11-10T00:00:00Z" }),
+    mk("MLB300", "Jaqueta Jeans", "nao_entrar", -5, 3, { ml: null, margem: 0.01, desc: 0.3 }),
+    mk("MLB400", "Bermuda Sarja", "entrar", 1, 0, { ml: 1, margem: 0.3, desc: 0.05, fim: "2026-11-05T00:00:00Z" }),
+    // Mesmo anúncio, promoção pior: a melhor (impacto) continua sendo a linha, qualquer que seja a ordem.
+    mk("MLB100", "Calça Jeans Mom Clara", "entrar_se_girar", -3, 10, { ml: 50, chave: "q" }),
+  ];
+  const r = rankearOportunidades(base, { page: 1, limit: 10, veredito: null, busca: "calca" });
+  assert.deepStrictEqual(r.pagina.map((c) => c.itemId), ["MLB100", "MLB200"], "sem acento e sem caixa");
+  assert.deepStrictEqual([r.total, r.contagem.entrar, r.contagem.entrar_se_girar, r.contagem.nao_entrar], [2, 1, 1, 0], "contagem do mesmo recorte");
+  assert.strictEqual(r.pagina[0].promocao.chave, "MLB100:p", "a melhor promoção do anúncio não muda");
+  assert.deepStrictEqual(rankearOportunidades(base, { page: 1, limit: 10, veredito: null, busca: "300" }).pagina.map((c) => c.itemId), ["MLB300"], "número do MLB sem o prefixo");
+  assert.deepStrictEqual(rankearOportunidades(base, { page: 1, limit: 10, veredito: null, busca: "mlb4" }).pagina.map((c) => c.itemId), ["MLB400"]);
+  const ordem = (o) => rankearOportunidades(base, { page: 1, limit: 10, veredito: null, ordem: o }).pagina.map((c) => c.itemId);
+  assert.deepStrictEqual(ordem(null), ["MLB100", "MLB400", "MLB200", "MLB300"]);
+  assert.deepStrictEqual(ordem("subsidio"), ["MLB200", "MLB100", "MLB400", "MLB300"], "maior ML banca primeiro; sem valor no fim");
+  assert.deepStrictEqual(ordem("lucro"), ["MLB100", "MLB400", "MLB200", "MLB300"]);
+  assert.deepStrictEqual(ordem("margem"), ["MLB400", "MLB100", "MLB200", "MLB300"]);
+  assert.deepStrictEqual(ordem("desconto"), ["MLB300", "MLB200", "MLB100", "MLB400"]);
+  assert.deepStrictEqual(ordem("fim"), ["MLB400", "MLB200", "MLB100", "MLB300"], "termina antes primeiro; sem data no fim");
+  assert.strictEqual(parseOrdem("impacto"), null);
+  assert.strictEqual(parseOrdem(""), null);
+  assert.throws(() => parseOrdem("preco"), (e) => e.statusCode === 400 || e.status === 400 || /ordem/.test(e.message));
+  assert.strictEqual(parseBusca("   "), null);
+  assert.strictEqual(parseBusca("x".repeat(200)).length, 80);
 });
 
 cenario("motivoForaDoRanking: started/active = ativa; P' >= preço atual (ou sem preço atual) = sem_desconto_efetivo; senão elegível", () => {
@@ -568,6 +603,80 @@ cenario("promoção SEM promotion_id no snapshot: o id da linha cai na chave do 
   // SMART: o ML define o preço — a Central participa no modo ACEITE (mesma lista de /anuncios).
   assert.strictEqual(por.MLB1.grupo, "pode", "SMART: aceite pelo VenForce");
   assert.deepStrictEqual(por.MLB1.escrita, { suportada: true, acao: "PARTICIPAR", modo: "aceite", motivo: null });
+});
+
+cenario("busca e ordem no SERVIÇO (Promo Snapshot): recortam a conta inteira ANTES da página, isoladas por conta, nulos no fim e desempate estável; sem parâmetro, a ordem padrão de sempre", async () => {
+  // Duas contas do MESMO cliente com catálogos diferentes (e um título repetido): cada uma lê só o que é seu.
+  const catalogo = {
+    7: Array.from({ length: 30 }, (_, i) => ({ id: `MLB7${String(i).padStart(3, "0")}`, titulo: i % 3 === 0 ? `Calça Jeans ${i}` : `Bermuda ${i}`, retorno: i % 4 === 0 ? null : i % 5, desc: 5 + (i % 7) })),
+    8: Array.from({ length: 25 }, (_, i) => ({ id: `MLB8${String(i).padStart(3, "0")}`, titulo: i % 2 === 0 ? `Calça Jeans ${i}` : `Saia ${i}`, retorno: i % 3, desc: 4 + (i % 5) })),
+  };
+  const pedidosConta = [];
+  const depsDaConta = (contaId) => {
+    const d = deps(fakeDb());
+    d.resolverContaDoCliente = async (p) => ({ cliente: { id: 3, slug: "loja-a" }, conta: { id: Number(p.clienteContaId), nome: `Conta ${p.clienteContaId}` } });
+    d.obterConta = async (id) => ({ id, external_account_id: `55${id}` });
+    d.promo = {
+      estadoComAutoTrigger: async () => ({ estado: { state: "ready", hasSnapshot: true, snapshotRunId: 9, snapshotAt: new Date().toISOString(), total: 30, workerEnabled: true }, gatilho: { acao: "nenhuma" } }),
+      syncPublico: (e) => ({ ...e }),
+      listarElegiveis: async ({ clienteContaId }) => {
+        pedidosConta.push(clienteContaId);
+        const itens = catalogo[clienteContaId] || [];
+        const promos = itens.map((it) => ({ item_id: it.id, chave: `${it.id}::DEAL`, preco_promo: 100 - it.desc, retorno: it.retorno, promo_status: "candidate", promo_tipo: "DEAL" }));
+        const snapPorItem = new Map(itens.map((it) => [it.id, { ...snapRow(it.id), titulo: it.titulo }]));
+        return elegiveisReferencia({ promos, snapPorItem });
+      },
+    };
+    return d;
+  };
+  const listar = (conta, extra) => listarOportunidades({ clienteSlug: "loja-a", clienteContaId: conta, veredito: "todos", limit: 4, ...extra }, depsDaConta(conta));
+
+  // Sem parâmetro: exatamente a ordem padrão (veredito → impacto → item), página a página.
+  const padrao = await listar(7, {});
+  const padraoExplicito = await listar(7, { ordem: "impacto" });
+  assert.deepStrictEqual(padrao.oportunidades.map((o) => o.itemId), padraoExplicito.oportunidades.map((o) => o.itemId));
+  assert.deepStrictEqual(padrao.filtro.ordem, "impacto");
+
+  // Busca: conta inteira ANTES da página (10 "Calça" na conta 7 → 3 páginas de 4), só da conta pedida.
+  const paginas = [];
+  for (let page = 1; page <= 3; page += 1) paginas.push(await listar(7, { busca: "calca", page }));
+  assert.deepStrictEqual(paginas.map((p) => [p.total, p.hasNext, p.oportunidades.length]), [[10, true, 4], [10, true, 4], [10, false, 2]]);
+  const ids = paginas.flatMap((p) => p.oportunidades.map((o) => o.itemId));
+  assert.strictEqual(new Set(ids).size, 10, "nenhuma linha repetida ou perdida entre páginas");
+  assert.ok(ids.every((id) => id.startsWith("MLB7")), "nada da conta 8");
+  assert.ok(paginas.every((p) => p.oportunidades.every((o) => /Calça/.test(o.titulo))));
+  const conta8 = await listar(8, { busca: "calca" });
+  assert.strictEqual(conta8.total, 13);
+  assert.ok(conta8.oportunidades.every((o) => o.itemId.startsWith("MLB8")), "nada da conta 7");
+  assert.ok(pedidosConta.every((c) => c === 7 || c === 8) && pedidosConta.includes(8), "cada leitura com a conta explícita");
+
+  // Ordem por subsídio do ML: decrescente na conta inteira (entre páginas), nulos no fim, desempate estável.
+  const porSubsidio = [];
+  for (let page = 1; page <= 8; page += 1) {
+    const r = await listar(7, { ordem: "subsidio", page });
+    porSubsidio.push(...r.oportunidades);
+    if (!r.hasNext) break;
+  }
+  assert.strictEqual(porSubsidio.length, 30);
+  const valores = porSubsidio.map((o) => o.ml_banca);
+  const primeiroNulo = valores.findIndex((v) => v === null || v === undefined);
+  const naoNulos = primeiroNulo === -1 ? valores : valores.slice(0, primeiroNulo);
+  for (let i = 1; i < naoNulos.length; i += 1) assert.ok(naoNulos[i - 1] >= naoNulos[i], `subsídio fora de ordem: ${valores.join(",")}`);
+  if (primeiroNulo !== -1) assert.ok(valores.slice(primeiroNulo).every((v) => v === null || v === undefined), "nulos sempre no fim");
+  const repetido = [];
+  for (let page = 1; page <= 8; page += 1) {
+    const r = await listar(7, { ordem: "subsidio", page });
+    repetido.push(...r.oportunidades.map((o) => o.itemId));
+    if (!r.hasNext) break;
+  }
+  assert.deepStrictEqual(repetido, porSubsidio.map((o) => o.itemId), "mesma entrada → mesma sequência");
+
+  // Parâmetro inválido recusa (400) antes de qualquer leitura; texto livre nunca vira SQL (a busca é no serviço).
+  const antes = pedidosConta.length;
+  await assert.rejects(() => listar(7, { ordem: "preco; DROP TABLE x" }), (e) => e.statusCode === 400 && e.code === "FILTRO_INVALIDO");
+  assert.strictEqual(pedidosConta.length, antes, "nada lido com parâmetro inválido");
+  const injecao = await listar(7, { busca: "'; DROP TABLE promo_snapshot_itens; --" });
+  assert.strictEqual(injecao.total, 0);
 });
 
 cenario("performance: 3 consultas ao banco (cabeçalho, elegíveis, rebates da conta) para a conta inteira, página fatiada no serviço, zero ML", async () => {

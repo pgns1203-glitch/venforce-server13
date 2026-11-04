@@ -2402,15 +2402,20 @@
     cotacao_indisponivel: "a cotação ao vivo não veio completa para este preço",
   };
 
+  // Linha sem lucro e sem margem (faltam dados ou a cotação não veio): nada foi calculado, então
+  // ela nunca é dita "cotada" nem "estimativa" — nem na legenda, nem no detalhe.
+  function linhaSemNumero(l) {
+    var cen = (l && l.cenario) || {};
+    return (cen.lc === null || cen.lc === undefined) && (cen.margem_ratio === null || cen.margem_ratio === undefined);
+  }
+
   function numerosDaPagina() {
     var o = state.opps;
     var linhas = o && o.status === "ok" ? (o.oportunidades || []) : [];
     var contagem = { total: linhas.length, simular: 0, estimativa: 0, bloqueado: 0, semNumero: 0, primeiroMotivo: null };
     linhas.forEach(function (l) {
       var origem = l.numeros && l.numeros.origem;
-      var cen = l.cenario || {};
-      // Linha sem lucro e sem margem (faltam dados): não é estimativa — nada foi calculado.
-      var semNumero = (cen.lc === null || cen.lc === undefined) && (cen.margem_ratio === null || cen.margem_ratio === undefined);
+      var semNumero = linhaSemNumero(l);
       // A falta de número vem antes da origem: cotada (simular) sem custo continua sem número.
       if (origem === "bloqueado") contagem.bloqueado += 1;
       else if (semNumero) { contagem.semNumero += 1; return; }
@@ -2501,7 +2506,7 @@
     } else if (op.veredito_motivo) {
       itens.push('<span class="cm-promo-flag">' + escapeHtml(motivoTexto(op.veredito_motivo)) + "</span>");
     }
-    if (op.estimado) itens.push('<span class="cm-promo-flag" data-cm-flag="estimado" title="' + escapeHtml(((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "Números estimados") + ".") + '">estimativa</span>');
+    if (op.estimado && !linhaSemNumero(op)) itens.push('<span class="cm-promo-flag" data-cm-flag="estimado" title="' + escapeHtml(((op.numeros && NUMEROS_MOTIVO_UI[op.numeros.motivo]) || "Números estimados") + ".") + '">estimativa</span>');
     return itens.length ? '<div class="cm-promo-flags">' + itens.join("") + "</div>" : "";
   }
 
@@ -2551,7 +2556,9 @@
     var quando = lista.observada_em ? formatShortDateTime(lista.observada_em) : null;
     if (!quando || quando === "—") quando = "data desconhecida";
     var num = op.numeros || {};
-    var numerosTxt = num.origem === "simular"
+    var numerosTxt = linhaSemNumero(op)
+      ? "sem números — " + (motivoTexto(op.veredito_motivo) || "faltam dados para calcular") + " (nada foi estimado)"
+      : num.origem === "simular"
       ? "cotação ao vivo" + (op.cotacao && op.cotacao.consultado_em ? " às " + formatShortDateTime(op.cotacao.consultado_em) : "") + " (mesmo cálculo do simulador)"
       : num.origem === "bloqueado" ? "cotação ao vivo incompleta — " + (NUMEROS_MOTIVO_UI[num.motivo] || "sem números")
         : "estimativa — " + (NUMEROS_MOTIVO_UI[num.motivo] || "não vieram do simulador");

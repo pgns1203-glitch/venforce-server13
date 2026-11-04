@@ -642,6 +642,13 @@ async function run() {
       if (!MODO_ANTES) {
         assert.ok(await cdp.evaluate("Boolean(document.querySelector('#cm-opps-host tr.cm-promo-row[data-cm-numeros=simular]'))"), "há linha cotada sem número (sem custo) no recorte");
         assert.strictEqual(await cdp.evaluate("document.getElementById('cm-promos-live').getAttribute('data-cm-numeros')"), "indisponivel", "linha cotada sem custo não torna a página 'cotada'");
+        // O detalhe da linha segue a mesma regra: sem números não é "cotação ao vivo" nem "estimativa".
+        await cdp.evaluate("document.querySelector('#cm-opps-host tr.cm-promo-row[data-cm-numeros=simular] .cm-c-produto').click()");
+        await waitFor(cdp, "document.querySelector('tr.cm-promo-detail:not([hidden]) [data-cm-origem-linha]')", "detalhe da linha sem custo não abriu");
+        const origem = await texto("tr.cm-promo-detail:not([hidden]) [data-cm-origem-linha]");
+        assert.ok(/Números: sem números — custo ausente \(nada foi estimado\)/.test(origem), origem);
+        assert.strictEqual(await cdp.evaluate("document.querySelector('tr.cm-promo-detail:not([hidden]) [data-cm-flag=estimado]')"), null, "sem flag 'estimativa'");
+        await cdp.evaluate("document.querySelector('#cm-opps-host tr.cm-promo-row[data-cm-numeros=simular] .cm-c-produto').click()");
       }
       const lin = await texto("#cm-opps-host tr.cm-promo-row");
       assert.ok(/tarifa do Mercado Livre indisponível|comissão atual ausente|faltam dados/.test(lin), `motivo do bloqueio: ${lin}`);

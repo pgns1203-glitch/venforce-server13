@@ -147,6 +147,12 @@ o nome da variável da tela antiga.
 
 `ensureFreshPromoSnapshot(conta)` nunca executa o scan: só enfileira e devolve na hora.
 
+> **Desde a Central de Promoções unificada (nov/2026):** as LEITURAS da Central (status, snapshot,
+> oportunidades) não chamam mais o auto-trigger — abrir, filtrar, paginar ou trocar de aba nunca
+> enfileira varredura. A revalidação automática fica só no **orquestrador** (frescor, allowlist,
+> espera pós-falha) e a manual no botão **Atualizar** da Central (`POST /promocoes/sync`).
+> `autoTrigger: true` explícito ainda chama `ensureFreshPromoSnapshot` (compatibilidade).
+
 | Situação | Ação |
 |---|---|
 | run ativo | reutiliza |
@@ -211,6 +217,11 @@ Não há cron novo. O `promoSnapshotRuntime` sobe no boot (`server/index.js`) s�
 
 - **Worker:** o genérico `marginSnapshotWorker` com o processor e o run service do Promo Snapshot,
   com polling leve do banco.
+- **Piloto por CONTA:** `PROMO_SNAPSHOT_CONTAS` (ids de `cliente_contas`, vírgula) soma-se à lista
+  de clientes e libera **só aquela conta** — as outras contas do mesmo cliente continuam fora. É o
+  jeito de pilotar a conta 87 (Alianza Jeans 2) sem ligar a 86. Mesma regra (`avaliarPiloto(config,
+  slug, clienteContaId)`) no orquestrador (SQL `c.id = ANY($5)`), no POST /sync, no run-once e no
+  estado exibido.
 - **Piloto (allowlist):** `PROMO_SNAPSHOT_CLIENTES` (slugs de cliente separados por vírgula, sem
   distinção de caixa; vazio = nenhum; `*` = todos os clientes, mesmo misturado a slugs — o resto da
   elegibilidade continua valendo). Ligar o worker sem a lista **não sincroniza conta nenhuma**.
@@ -228,7 +239,8 @@ Não há cron novo. O `promoSnapshotRuntime` sobe no boot (`server/index.js`) s�
   - fora da espera pós-falha.
 
   Conta inativa, revogada ou sem grant nunca entra.
-- **Gatilhos:** abrir, filtrar ou paginar a Central chama o auto-trigger da conta.
+- **Gatilhos:** orquestrador (automático) e botão Atualizar da Central (manual). Abrir, filtrar ou
+  paginar a Central **não** enfileira mais nada.
 - **Passada avulsa (Render Cron Job, opcional):** `node scripts/promoSnapshotRunOnce.js [--max-runs=N]`
   (a partir de `server/`). Faz UMA passada sem timer: reconcilia runs stale, roda o orquestrador
   (mesma allowlist e mesmo índice único de run ativo) e processa até N runs da fila, um por vez
@@ -248,7 +260,7 @@ Todos em `/operacao/central-margem`, com a cadeia JWT → `requireAutomacoesAcce
 
 | Método | Rota | O que faz |
 |---|---|---|
-| GET | `/:slug/promocoes/status?clienteContaId=` | estado da sincronização + auto-trigger |
+| GET | `/:slug/promocoes/status?clienteContaId=` | estado da conta para a barra de atualização: `sync` (snapshot, run ativo com `itensProcessados/itensTotal/rateLimits/erros`), `ultimaTentativa` (status, código e motivo da falha, 429, duração), `atualizacao` (`disponivel` + motivo: `CONTA_SEM_GRANT_ML`, `WORKER_DESABILITADO`, `PILOTO_VAZIO`, `FORA_DO_PILOTO`, `EM_ANDAMENTO`, `COOLDOWN`), `worker`. Só lê |
 | GET | `/:slug/promocoes/snapshot?clienteContaId=&page=&limit=&itemId=&status=&tipo=` | linhas do snapshot **atual**, paginadas no servidor (`page, limit ≤ 100, total, hasNext`) |
 | GET | `/:slug/promocoes/oportunidades?clienteContaId=&page=&limit=&periodo=` | Oportunidades a partir do snapshot, paginadas **no banco** (`page, limit ≤ 50, total, hasNext`) |
 | POST | `/:slug/promocoes/sync` `{clienteContaId}` | **só enfileira** leitura (202). Reaproveita run ativo, respeita o cooldown por conta (`PROMO_SAME_CLIENT_COOLDOWN_MINUTES`), responde `WORKER_DESABILITADO` com a flag desligada. Nunca aplica promoção |
@@ -273,6 +285,14 @@ ganhou `page`, `total` e `hasNext`.
   atualizando" e "última atualização falhou". Enquanto sincroniza, relê a lista a cada 20 s, até 30
   vezes, só enquanto a conta e o cliente continuam os mesmos. Não manda mais o operador para a tela
   Promoções ML.
+- **Atualizar na Central (nov/2026):** a aba Promoções tem uma barra (`central-margem-promo-sync.js`)
+  que lê `/promocoes/status` da conta ativa: sem leitura → "Buscar promoções"; atualizada/
+  desatualizada (data + idade) → "Atualizar"; em andamento → progresso real `X de Y (%)` com 429 e
+  itens sem leitura, relido a cada 5 s; falhou → código/motivo/mensagem do run e "dados ANTIGOS"
+  sobre a lista. O botão só fica habilitado quando o servidor diz `atualizacao.disponivel`. Quando o
+  run termina, a Central recarrega a lista e o resumo das promoções. Troca de conta invalida o
+  acompanhamento (resposta atrasada da conta anterior é descartada). Recarregar a página retoma o
+  acompanhamento (o run continua no servidor). A tela antiga não é mais necessária.
 - **Drawer:** continua consultando ao vivo **só o MLB aberto**
   (`precificacaoService.promocoes` → `meliPromocoesService.listarPromocoesDoItem`), somente leitura.
   Nunca faz scan do catálogo.
@@ -283,6 +303,8 @@ ganhou `page`, `total` e `hasNext`.
 |---|---|---|
 | `PROMO_SNAPSHOT_WORKER_ENABLED` | `false` | liga worker + orquestrador + auto-enqueue |
 | `PROMO_SNAPSHOT_CLIENTES` | vazio (= nenhum) | allowlist de clientes (slugs, vírgula) que podem ser sincronizados; `*` = todos |
+| `PROMO_SNAPSHOT_CONTAS` | vazio (= nenhuma) | allowlist de CONTAS (`cliente_contas.id`, vírgula); soma-se à de clientes |
+| `PROMO_SNAPSHOT_RUNS_RETIDOS` | 20 (3–500) | runs terminados guardados por conta (fora atual/anterior/ativos/retomáveis); o resto é podado com linhas e lotes |
 | `PROMO_SNAPSHOT_FRESH_MINUTES` | 720 | frescor do snapshot (nome reaproveitado da tela antiga) |
 | `PROMO_SNAPSHOT_WORKER_CONCURRENCY` | 1 (≤3) | runs simultâneos por processo |
 | `PROMO_SNAPSHOT_WORKER_POLL_MS` | 15000 | polling de runs de outra instância |
@@ -345,6 +367,19 @@ Todos carregam `cliente_id`, `cliente_conta_id`, `seller_id` e `run_id`; os de c
   lock do grant fica numa conexão dedicada fora do pool e o POST tem timeout de 15 s.
 - `marginSnapshotWorker` ganhou opções compatíveis (nomes de evento, campos extras de log e
   repasse do resultado do processor). O Margin Snapshot continua igual.
+
+## 12b. Retenção
+
+Depois de cada run terminado (`markRunCompleted`/`markRunFailed`), `podarHistoricoDaConta` roda três
+DELETEs curtos da conta, sem transação longa:
+1. lotes de runs terminados não protegidos;
+2. linhas de runs terminados não protegidos (run falho/não promovido);
+3. registros de run além dos `PROMO_SNAPSHOT_RUNS_RETIDOS` mais novos (CASCADE).
+
+Protegidos (nunca podados): snapshot atual e anterior da conta, runs ativos, o run de origem de uma
+retomada em andamento e runs interrompidos ainda retomáveis (janela de retomada + 60 min). A poda
+na promoção (só atual + anterior por seller) continua como antes. Falha na poda é logada
+(`promo_snapshot_retencao_falhou`) e nunca muda o resultado do run.
 
 ## 13. Rollback
 

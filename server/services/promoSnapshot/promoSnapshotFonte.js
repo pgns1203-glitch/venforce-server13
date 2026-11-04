@@ -77,9 +77,9 @@ function numeroOuNulo(v) {
  * @param {string|null} p.clienteSlug
  * @param {{ id:number, createdAt:any, parcial:boolean }|null} [p.legado]  último diagnóstico da tela antiga
  */
-function montarFontePromocoes({ estado, config, clienteSlug, legado = null }) {
+function montarFontePromocoes({ estado, config, clienteSlug, clienteContaId = null, legado = null }) {
   const temSnapshot = Boolean(estado && estado.hasSnapshot);
-  const piloto = avaliarPiloto(config, clienteSlug);
+  const piloto = avaliarPiloto(config, clienteSlug, clienteContaId);
 
   let codigoEstado;
   let motivo = null;

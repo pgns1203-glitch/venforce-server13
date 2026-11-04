@@ -23,13 +23,14 @@ async function orquestrarTick(deps = {}) {
   const config = resolvePromoSnapshotConfig(deps.env || process.env);
   if (!config.workerEnabled) return { enfileirados: [], motivo: "WORKER_DESABILITADO" };
 
-  if (!config.clientesPiloto.length) return { enfileirados: [], motivo: "PILOTO_VAZIO" };
+  if (!config.clientesPiloto.length && !config.contasPiloto.length) return { enfileirados: [], motivo: "PILOTO_VAZIO" };
 
   const candidatas = await repo.listarContasElegiveis({
     limit: config.orchestratorMaxPerTick, failedRetryMinutes: config.failedRetryMinutes, clientesPiloto: config.clientesPiloto,
+    contasPiloto: config.contasPiloto,
   }, db);
   // O filtro é do SQL; este é o cinto de segurança (a regra é uma só: avaliarPiloto).
-  const contas = candidatas.filter((c) => avaliarPiloto(config, c.clienteSlug).noPiloto);
+  const contas = candidatas.filter((c) => avaliarPiloto(config, c.clienteSlug, c.clienteContaId).noPiloto);
   const enfileirados = [];
   for (const conta of contas) {
     try {

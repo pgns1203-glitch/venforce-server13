@@ -686,15 +686,19 @@ function depsCentral(amb, extra = {}) {
   return { ...depsLeitura(amb), db, carregarRealizada: async () => ({ porMlb: new Map(), periodo: null }), ...extra };
 }
 
-cenario("Central sem snapshot: responde na hora, sem ML, indisponível com o estado e enfileira a primeira leitura", async () => {
+cenario("Central sem snapshot: responde na hora, sem ML, indisponível com o estado e NÃO enfileira só por abrir a aba", async () => {
   const amb = ambiente();
   const r = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, depsCentral(amb));
   assert.strictEqual(r.disponivel, false);
   assert.strictEqual(r.motivo, "SEM_SNAPSHOT_PROMOCOES");
-  assert.strictEqual(r.sync.autoTrigger, "enfileirado");
+  assert.strictEqual(r.sync.autoTrigger, "nenhuma");
   assert.strictEqual(r.sync.state, "never_synced");
   assert.ok(!/Promoções ML/.test(r.mensagem));
   assert.strictEqual(amb.ml.chamadas.length, 0, "nenhuma chamada ao ML dentro do request");
+  assert.strictEqual(amb.repo._st.runs.length, 0, "abrir/trocar de aba nunca dispara varredura");
+  // autoTrigger explícito (comportamento antigo, opt-in) ainda enfileira a primeira leitura.
+  const r2 = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, autoTrigger: true }, depsCentral(amb));
+  assert.strictEqual(r2.sync.autoTrigger, "enfileirado");
   assert.strictEqual(amb.repo._st.runs[0].status, "queued");
 });
 
@@ -719,11 +723,15 @@ cenario("Central com snapshot fresh: usa o snapshot e NÃO enfileira; stale: ser
   amb.relogio.avancar(400);
   const stale = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, depsCentral(amb));
   assert.strictEqual(stale.sync.state, "stale");
-  assert.strictEqual(stale.sync.autoTrigger, "enfileirado");
-  assert.strictEqual(stale.oportunidades.length, 3, "serve o último snapshot bom enquanto revalida");
+  assert.strictEqual(stale.sync.autoTrigger, "nenhuma", "ler a lista não revalida sozinho");
+  assert.strictEqual(stale.oportunidades.length, 3, "serve o último snapshot bom (marcado stale)");
+  assert.strictEqual(amb.repo._st.runs.length, 1);
+  // Revalidação explícita (opt-in) continua funcionando.
+  const reval = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, autoTrigger: true }, depsCentral(amb));
+  assert.strictEqual(reval.sync.autoTrigger, "enfileirado");
   assert.strictEqual(amb.repo._st.runs[1].status, "queued");
 
-  const syncing = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7 }, depsCentral(amb));
+  const syncing = await listarOportunidades({ clienteSlug: "loja-a", clienteContaId: 7, autoTrigger: true }, depsCentral(amb));
   assert.strictEqual(syncing.sync.state, "syncing");
   assert.strictEqual(syncing.sync.autoTrigger, "reutilizado");
   assert.strictEqual(syncing.oportunidades.length, 3);
@@ -894,6 +902,10 @@ cenario("seller reconectado: conta 7 passa de 555 para 666 — snapshot, run e o
   const snap = await read.obterSnapshot({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
   assert.strictEqual(snap.disponivel, false);
   assert.deepStrictEqual(snap.promocoes, []);
+  assert.strictEqual(st.atualizacao.disponivel, true, "o run do 555 não bloqueia o Atualizar do 666");
+  // Operador pede a atualização (a leitura sozinha não enfileira nada).
+  const pedido = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(pedido.enfileirado, true);
   // Run antigo NÃO é reaproveitado como run atual: encerrado; o novo é do 666.
   const vRow = amb.repo._st.runs.find((r) => r.id === velho.id);
   assert.strictEqual(vRow.status, "failed");
@@ -1545,8 +1557,15 @@ cenario("allowlist no auto-trigger: ensureFresh e abrir a Central em conta fora 
   assert.strictEqual(amb.repo._st.runs.length, 0);
   assert.strictEqual(amb.kicks.length, 0);
   const st = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
-  assert.strictEqual(st.sync.autoTrigger, "fora_do_piloto");
+  assert.strictEqual(st.sync.autoTrigger, "nenhuma");
+  assert.strictEqual(st.worker.noPiloto, false);
+  assert.strictEqual(st.atualizacao.disponivel, false);
+  assert.strictEqual(st.atualizacao.motivo, "FORA_DO_PILOTO");
   assert.strictEqual(amb.repo._st.runs.length, 0, "abrir a tela não enfileira");
+  // Mesmo com autoTrigger explícito, fora da lista nada é enfileirado.
+  const st2 = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 7, autoTrigger: true }, depsLeitura(amb));
+  assert.strictEqual(st2.sync.autoTrigger, "fora_do_piloto");
+  assert.strictEqual(amb.repo._st.runs.length, 0);
   const dentro = await service.ensureFreshPromoSnapshot(idConta(9), {}, amb.base);
   assert.strictEqual(dentro.acao, "enfileirado");
   assert.strictEqual(amb.repo._st.runs.length, 1);
@@ -1557,13 +1576,41 @@ cenario("allowlist no POST /sync: conta fora da lista → FORA_DO_PILOTO, nada e
   const fora = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
   assert.strictEqual(fora.enfileirado, false);
   assert.strictEqual(fora.motivo, "FORA_DO_PILOTO");
-  assert.strictEqual(fora.mensagem, "Promoções automáticas não ativadas para esta conta");
+  assert.strictEqual(fora.mensagem, read.MENSAGEM_ATUALIZACAO.FORA_DO_PILOTO);
+  assert.strictEqual(fora.atualizacao.disponivel, false);
   assert.strictEqual(amb.repo._st.runs.length, 0);
   const dentro = await read.solicitarSync({ clienteSlug: "loja-b", clienteContaId: 9 }, depsLeitura(amb));
   assert.strictEqual(dentro.enfileirado, true);
   assert.strictEqual(amb.repo._st.runs.length, 1);
   const vazio = ambiente({ env: { PROMO_SNAPSHOT_CLIENTES: "" } });
   assert.strictEqual((await read.solicitarSync({ clienteSlug: "loja-b", clienteContaId: 9 }, depsLeitura(vazio))).motivo, "PILOTO_VAZIO");
+});
+
+cenario("allowlist por CONTA (PROMO_SNAPSHOT_CONTAS): libera só a conta 8 — a conta 7 do MESMO cliente continua fora", async () => {
+  const amb = ambiente({ env: { PROMO_SNAPSHOT_CLIENTES: "", PROMO_SNAPSHOT_CONTAS: "8, x, 8" } });
+  const sete = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(sete.enfileirado, false);
+  assert.strictEqual(sete.motivo, "FORA_DO_PILOTO");
+  const oito = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 8 }, depsLeitura(amb));
+  assert.strictEqual(oito.enfileirado, true);
+  assert.strictEqual(amb.repo._st.runs.length, 1);
+  assert.strictEqual(amb.repo._st.runs[0].cliente_conta_id, 8);
+  assert.strictEqual(amb.repo._st.runs[0].seller_id, "666");
+  // Status: a 8 está no piloto, a 7 não.
+  const st8 = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 8 }, depsLeitura(amb));
+  assert.strictEqual(st8.worker.noPiloto, true);
+  assert.strictEqual(st8.atualizacao.motivo, "EM_ANDAMENTO");
+  const st7 = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(st7.worker.noPiloto, false);
+  assert.strictEqual(st7.atualizacao.motivo, "FORA_DO_PILOTO");
+  // Orquestrador (via filtro de cinto de segurança) só enxerga a conta 8.
+  const { avaliarPiloto, resolvePromoSnapshotConfig: cfg } = require("../services/promoSnapshot/promoSnapshotConfig");
+  const c = cfg({ PROMO_SNAPSHOT_WORKER_ENABLED: "true", PROMO_SNAPSHOT_CONTAS: "8" });
+  assert.deepStrictEqual(c.contasPiloto, [8]);
+  assert.strictEqual(avaliarPiloto(c, "loja-a", 8).noPiloto, true);
+  assert.strictEqual(avaliarPiloto(c, "loja-a", 7).noPiloto, false);
+  assert.strictEqual(avaliarPiloto(c, "loja-a", "8").noPiloto, true);
+  assert.strictEqual(avaliarPiloto(cfg({ PROMO_SNAPSHOT_CONTAS: "8" }), "loja-a", 8).motivo, "WORKER_DESABILITADO");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

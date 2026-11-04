@@ -681,14 +681,17 @@ async function listarOportunidades(params = {}, deps = {}) {
     return { ok: true, disponivel: false, motivo: "CONTA_SEM_GRANT_ML", mensagem: "A conta não tem conexão do Mercado Livre vinculada.", page: pag.page, limit: pag.limit, total: 0, hasNext: false, oportunidades: [] };
   }
 
-  // Estado do Promo Snapshot + auto-trigger (nunca bloqueia; falha aqui não
-  // derruba a lista — cai no legado/indisponível).
+  // Estado do Promo Snapshot (falha aqui não derruba a lista — cai no
+  // legado/indisponível). Ler a lista NÃO enfileira varredura: abrir ou
+  // trocar de aba nunca dispara scan. Quem atualiza é o orquestrador
+  // (frescor/allowlist) ou o botão Atualizar da Central (POST /promocoes/sync).
+  // `autoTrigger: true` explícito mantém o comportamento antigo para quem pedir.
   let estado = null;
   let sync = null;
   try {
     const r = await d.promo.estadoComAutoTrigger(
       { clienteId: cliente.id, clienteSlug: cliente.slug, clienteContaId: conta.id, marketplace: "meli", sellerId },
-      { autoTrigger: params.autoTrigger !== false }
+      { autoTrigger: params.autoTrigger === true }
     );
     estado = r.estado;
     sync = d.promo.syncPublico(r.estado, r.gatilho);
@@ -700,7 +703,7 @@ async function listarOportunidades(params = {}, deps = {}) {
   const temSnapshot = Boolean(estado && estado.hasSnapshot);
   const diagnostico = temSnapshot ? null : await obterDiagnosticoLegado({ db: d.db, clienteId: cliente.id, sellerId });
   const fontePromocoes = montarFontePromocoes({
-    estado, config: resolvePromoSnapshotConfig(d.env), clienteSlug: cliente.slug, legado: diagnostico,
+    estado, config: resolvePromoSnapshotConfig(d.env), clienteSlug: cliente.slug, clienteContaId: conta.id, legado: diagnostico,
   });
 
   const ctx = { d, cliente, conta, sellerId, estado, diagnostico, sync, fontePromocoes, params, deps, pag, veredito, tipo, cotacao };

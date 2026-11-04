@@ -88,8 +88,9 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       return r && r.cliente_conta_id === clienteContaId ? real.sanitizeRun(r) : null;
     },
 
-    async findLatestFinishedRun({ clienteContaId }) {
-      const r = st.runs.filter((x) => x.cliente_conta_id === clienteContaId && ["completed", "partial", "failed"].includes(x.status))
+    async findLatestFinishedRun({ clienteContaId, sellerId = null }) {
+      const r = st.runs.filter((x) => x.cliente_conta_id === clienteContaId && ["completed", "partial", "failed"].includes(x.status) &&
+        (sellerId == null || x.seller_id === String(sellerId)))
         .sort((a, b) => ms(b.finished_at) - ms(a.finished_at) || b.id - a.id)[0];
       return real.sanitizeRun(r);
     },
@@ -326,13 +327,15 @@ function criarRepoFake({ relogio = new Relogio(), marginSnaps = new Map(), conta
       return { rows };
     },
 
-    async listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto }) {
+    async listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto, contasPiloto = [] }) {
       reg("listarContasElegiveis");
       const agora = relogio.agora();
       const ponteiro = (c) => st.contas.get(chaveConta(c.id, "meli", c.external_account_id));
-      // Allowlist (espelha `'*' = ANY($4) OR LOWER(cl.slug) = ANY($4)` do SQL): lista vazia = nenhuma conta.
+      // Allowlist (espelha `'*' = ANY($4) OR LOWER(cl.slug) = ANY($4) OR c.id = ANY($5)` do SQL):
+      // as duas listas vazias = nenhuma conta.
+      const contas = (contasPiloto || []).map(Number);
       const noPiloto = (c) => !Array.isArray(clientesPiloto) || clientesPiloto.includes("*") ||
-        clientesPiloto.includes(String(c.cliente_slug || "").toLowerCase());
+        clientesPiloto.includes(String(c.cliente_slug || "").toLowerCase()) || contas.includes(Number(c.id));
       return contasCliente.filter((c) => c.marketplace === "meli" && c.ativo !== false && c.cliente_ativo !== false && c.external_account_id)
         .filter(noPiloto)
         .filter((c) => grants.some((g) => g.cliente_id === c.cliente_id && String(g.ml_user_id) === String(c.external_account_id) &&

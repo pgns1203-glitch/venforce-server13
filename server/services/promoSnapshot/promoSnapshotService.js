@@ -163,7 +163,11 @@ async function estadoSincronizacao({ clienteContaId, marketplace = "meli", selle
     ageMinutes: Number.isFinite(snapshotAtMs) ? Math.max(0, Math.floor((agora - snapshotAtMs) / 60000)) : null,
     processed: ativo ? ativo.itensProcessados : temSnapshot ? conta.itensTotal : null,
     total: ativo ? ativo.itensTotal : temSnapshot ? conta.itensTotal : null,
-    activeRun: ativo ? { runId: ativo.id, status: ativo.status, reason: ativo.reason, createdAt: ativo.createdAt, heartbeatAt: ativo.heartbeatAt } : null,
+    activeRun: ativo ? {
+      runId: ativo.id, status: ativo.status, reason: ativo.reason, createdAt: ativo.createdAt, heartbeatAt: ativo.heartbeatAt,
+      startedAt: ativo.startedAt || null, itensProcessados: ativo.itensProcessados, itensTotal: ativo.itensTotal,
+      erros: ativo.erros, rateLimits: ativo.rateLimits, retries: ativo.retries,
+    } : null,
     errorCode: ultimaFalhou ? conta.lastErrorCode || null : null,
     freshMinutes: config.freshMinutes,
     workerEnabled: config.workerEnabled,
@@ -195,7 +199,7 @@ async function ensureFreshPromoSnapshot(conta, { reason = "auto_refresh", estado
   if (atual.snapshotState === "fresh" && atual.state !== "failed") return { acao: "nenhuma", estado: atual };
   if (!config.workerEnabled) return { acao: "worker_desabilitado", estado: atual };
   // Piloto: cliente fora da allowlist nunca é enfileirado pela abertura da tela.
-  const piloto = avaliarPiloto(config, id.clienteSlug);
+  const piloto = avaliarPiloto(config, id.clienteSlug, id.clienteContaId);
   if (!piloto.noPiloto) return { acao: "fora_do_piloto", motivo: piloto.motivo, estado: atual };
 
   const c = atual._conta;
@@ -223,6 +227,29 @@ function criarRunService(deps = {}) {
       run_id: run.id, cliente_id: run.clienteId, cliente_conta_id: run.clienteContaId, seller_id: run.sellerId,
       processed_count: run.itensProcessados, duration_ms: ms(run.finishedAt) - ms(run.startedAt), ...extra,
     });
+  }
+
+  // Retenção depois de cada run terminado: falha aqui nunca muda o resultado
+  // do run (o próximo término tenta de novo).
+  async function podar(run, db) {
+    if (!run || typeof d.repo.podarHistoricoDaConta !== "function") return null;
+    const cfg = config();
+    try {
+      const podado = await d.repo.podarHistoricoDaConta({
+        clienteContaId: run.clienteContaId, manterRuns: cfg.runsRetidosPorConta, resumeMaxMinutes: cfg.resumeMaxMinutes,
+      }, db);
+      if (podado && (podado.runs || podado.itens || podado.lotes)) {
+        logEvento(d.logger, "log", "promo_snapshot_retencao", {
+          cliente_conta_id: run.clienteContaId, run_id: run.id, runs: podado.runs, itens: podado.itens, lotes: podado.lotes,
+        });
+      }
+      return podado;
+    } catch (err) {
+      logEvento(d.logger, "warn", "promo_snapshot_retencao_falhou", {
+        cliente_conta_id: run.clienteContaId, run_id: run.id, erro: redigirSegredos(err?.message || String(err), 300),
+      });
+      return null;
+    }
   }
 
   return {
@@ -271,6 +298,7 @@ function criarRunService(deps = {}) {
           itens_herdados: run.itensHerdados, error_code: run.errorCode,
         });
       }
+      await podar(run, db);
       return run;
     },
 
@@ -280,6 +308,7 @@ function criarRunService(deps = {}) {
       if (code === "MARGIN_SNAPSHOT_WORKER_STOPPED") code = d.repo.ERRO_WORKER_PARADO || "PROMO_SNAPSHOT_WORKER_STOPPED";
       const run = await d.repo.marcarFalhou({ runId, code, message: message ? redigirSegredos(message, 2000) : null }, db);
       if (run) evento("error", "promo_snapshot_failed", run, { error_code: code, error_message: redigirSegredos(message || "", 300) });
+      await podar(run, db);
       return run;
     },
 

@@ -629,7 +629,7 @@ async function simular({ user, body } = {}, deps = {}) {
     ? await carregarPromocoes(escopo, pedido.mlb, d, estadoPromo, diagnosticoLegado)
     : { disponivel: null, motivo: null, linhas: [], estado: null, origem: null, diagnostico: null };
   const fontePromocoes = precisaPromo
-    ? montarFontePromocoes({ estado: estadoPromo, config: resolvePromoSnapshotConfig(d.env), clienteSlug: escopo.clienteSlug, legado: diagnosticoLegado })
+    ? montarFontePromocoes({ estado: estadoPromo, config: resolvePromoSnapshotConfig(d.env), clienteSlug: escopo.clienteSlug, clienteContaId: escopo.conta.id, legado: diagnosticoLegado })
     : null;
 
   const tarefas = montarTarefas(pedido.cenarios, promocoes, { tiposComEscrita: d.tiposComEscrita });

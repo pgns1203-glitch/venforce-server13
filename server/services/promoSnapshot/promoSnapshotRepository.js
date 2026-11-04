@@ -199,14 +199,16 @@ async function getRunById({ runId, clienteContaId }, db = pool) {
   return sanitizeRun(r.rows[0]);
 }
 
-async function findLatestFinishedRun({ clienteContaId, marketplace = "meli" }, db = pool) {
+// `sellerId` opcional: com ele, só runs do seller vinculado hoje à conta.
+async function findLatestFinishedRun({ clienteContaId, marketplace = "meli", sellerId = null }, db = pool) {
   await ensureTables(db);
   const r = await db.query(
     `SELECT * FROM promo_snapshot_runs
       WHERE cliente_conta_id = $1 AND marketplace = $2 AND tipo = $3
         AND status IN ('completed','partial','failed')
+        AND ($4::text IS NULL OR seller_id = $4::text)
       ORDER BY finished_at DESC NULLS LAST, id DESC LIMIT 1`,
-    [clienteContaId, marketplace, TIPO]
+    [clienteContaId, marketplace, TIPO, sellerId == null ? null : String(sellerId)]
   );
   return sanitizeRun(r.rows[0]);
 }
@@ -738,6 +740,67 @@ async function reconcileStaleRunningRuns({ staleMinutes, clienteContaId = null }
   return r.rows.map(sanitizeRun);
 }
 
+// ─── Retenção ────────────────────────────────────────────────────────────────
+
+/**
+ * Poda o histórico de UMA conta, sem nunca tocar no que ainda serve:
+ *   protegidos = snapshot atual e anterior (qualquer seller da conta), runs
+ *                ativos, o run de origem de uma retomada em andamento e os
+ *                runs interrompidos ainda retomáveis (janela de retomada +
+ *                folga de 60 min).
+ *   1. lotes de runs terminados não protegidos (só servem para retomada);
+ *   2. linhas de promoções de runs terminados não protegidos (run falho ou
+ *      não promovido — nunca o snapshot atual/anterior);
+ *   3. o registro do run além dos `manterRuns` terminados mais novos (o
+ *      CASCADE leva o que sobrou de linhas e lotes).
+ * Três DELETEs curtos, sem transação longa e sem chamada externa; idempotente
+ * (rodar de novo não apaga mais nada). Devolve as contagens.
+ */
+const SQL_PROTEGIDOS = `
+  SELECT current_run_id AS id FROM promo_snapshot_contas WHERE cliente_conta_id = $1 AND current_run_id IS NOT NULL
+  UNION SELECT previous_run_id FROM promo_snapshot_contas WHERE cliente_conta_id = $1 AND previous_run_id IS NOT NULL
+  UNION SELECT id FROM promo_snapshot_runs WHERE cliente_conta_id = $1 AND status IN ('queued','running')
+  UNION SELECT resumed_from_run_id FROM promo_snapshot_runs
+         WHERE cliente_conta_id = $1 AND status IN ('queued','running') AND resumed_from_run_id IS NOT NULL
+  UNION SELECT id FROM promo_snapshot_runs
+         WHERE cliente_conta_id = $1 AND status = 'failed' AND error_code = ANY($2::text[])
+           AND finished_at > NOW() - make_interval(mins => $3::int)`;
+
+async function podarHistoricoDaConta({ clienteContaId, manterRuns, resumeMaxMinutes = 0 }, db = pool) {
+  const conta = Number(clienteContaId);
+  if (!Number.isSafeInteger(conta) || conta <= 0) throw new Error("podarHistoricoDaConta: clienteContaId é obrigatório.");
+  const manter = Number(manterRuns);
+  if (!Number.isInteger(manter) || manter < 1) throw new Error("podarHistoricoDaConta: manterRuns inválido.");
+  const janela = Math.max(0, Math.trunc(Number(resumeMaxMinutes) || 0)) + 60;
+  await ensureTables(db);
+  const params = [conta, ERROS_RETOMAVEIS, janela];
+  const lotes = await db.query(
+    `DELETE FROM promo_snapshot_run_lotes l
+       USING promo_snapshot_runs r
+      WHERE l.run_id = r.id AND r.cliente_conta_id = $1 AND r.status IN ('completed','partial','failed')
+        AND NOT EXISTS (SELECT 1 FROM (${SQL_PROTEGIDOS}) p WHERE p.id = r.id)`,
+    params
+  );
+  const itens = await db.query(
+    `DELETE FROM promo_snapshot_itens i
+       USING promo_snapshot_runs r
+      WHERE i.run_id = r.id AND r.cliente_conta_id = $1 AND r.status IN ('completed','partial','failed')
+        AND NOT EXISTS (SELECT 1 FROM (${SQL_PROTEGIDOS}) p WHERE p.id = r.id)`,
+    params
+  );
+  const runs = await db.query(
+    `DELETE FROM promo_snapshot_runs r
+      WHERE r.cliente_conta_id = $1 AND r.status IN ('completed','partial','failed')
+        AND NOT EXISTS (SELECT 1 FROM (${SQL_PROTEGIDOS}) p WHERE p.id = r.id)
+        AND r.id NOT IN (
+          SELECT k.id FROM promo_snapshot_runs k
+           WHERE k.cliente_conta_id = $1 AND k.status IN ('completed','partial','failed')
+           ORDER BY k.id DESC LIMIT $4)`,
+    [...params, manter]
+  );
+  return { lotes: lotes.rowCount || 0, itens: itens.rowCount || 0, runs: runs.rowCount || 0 };
+}
+
 // ─── Leitura do estado / snapshot ────────────────────────────────────────────
 
 /** Ponteiro do snapshot da conta PARA ESTE SELLER (nunca o de outro seller). */
@@ -885,12 +948,14 @@ async function listarOportunidadesElegiveis({ clienteId, clienteContaId, sellerI
  * seller atual vencido ou inexistente e fora da espera pós-falha. Vencidas
  * primeiro. (Run ativo de um seller anterior é encerrado no enqueue.)
  */
-async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto }, db = pool) {
+async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto, contasPiloto = [] }, db = pool) {
   await ensureTables(db);
   // Allowlist do piloto (slugs em minúsculas): lista vazia = nenhuma conta;
   // `*` na lista = todos os clientes (o resto da elegibilidade continua).
   const slugs = Array.isArray(clientesPiloto) ? clientesPiloto.map((x) => String(x).trim().toLowerCase()).filter(Boolean) : [];
-  if (!slugs.length) return [];
+  // Allowlist de contas (cliente_conta_id): soma-se à de clientes.
+  const contas = Array.isArray(contasPiloto) ? contasPiloto.map(Number).filter((n) => Number.isSafeInteger(n) && n > 0) : [];
+  if (!slugs.length && !contas.length) return [];
   const r = await db.query(
     `SELECT c.id AS cliente_conta_id, c.cliente_id, cl.slug AS cliente_slug, c.external_account_id AS seller_id,
             s.fresh_until
@@ -900,7 +965,7 @@ async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto
          ON s.cliente_conta_id = c.id AND s.marketplace = 'meli' AND s.seller_id = c.external_account_id::text
       WHERE c.marketplace = 'meli' AND c.ativo = true AND COALESCE(cl.ativo, true) = true
         AND c.external_account_id IS NOT NULL AND c.external_account_id <> ''
-        AND ('*' = ANY($4::text[]) OR LOWER(cl.slug) = ANY($4::text[]))
+        AND ('*' = ANY($4::text[]) OR LOWER(cl.slug) = ANY($4::text[]) OR c.id = ANY($5::bigint[]))
         AND EXISTS (
           SELECT 1 FROM ml_tokens t
            WHERE ${currentGrantSql("t")} AND t.cliente_id = c.cliente_id AND t.ml_user_id::text = c.external_account_id::text
@@ -915,7 +980,7 @@ async function listarContasElegiveis({ limit, failedRetryMinutes, clientesPiloto
                  AND s.last_attempt_at > NOW() - make_interval(mins => $3::int))
       ORDER BY s.fresh_until ASC NULLS FIRST, c.id ASC
       LIMIT $1`,
-    [limit, TIPO, failedRetryMinutes, slugs]
+    [limit, TIPO, failedRetryMinutes, slugs, contas]
   );
   return r.rows.map((row) => ({
     clienteContaId: Number(row.cliente_conta_id),
@@ -952,6 +1017,7 @@ module.exports = {
   marcarFalhou,
   mergeRunMetadata,
   reconcileStaleRunningRuns,
+  podarHistoricoDaConta,
   obterConta,
   listarLinhasSnapshot,
   listarOportunidadesElegiveis,

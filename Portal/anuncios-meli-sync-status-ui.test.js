@@ -290,6 +290,10 @@ function wireInterception(cdp) {
     const family = pathname.match(/^\/anuncios-meli\/familias\/([^/]+)/);
     if (family) return respond({ ok: true, cliente: N97, familia: DETALHE_CONTA_42[decodeURIComponent(family[1])] });
     if (pathname === "/anuncios-meli/familias") { MOCK.familiasGets += 1; } if (pathname === "/anuncios-meli/familias") return respond({ ok: true, cliente: N97, anuncios: LINHAS_CONTA_42, paginacao: { page: 1, limit: 20, total: LINHAS_CONTA_42.length, totalPaginas: 1 } });
+    // Leitura de custos só responde nos cenários "sem Base" (antes era sempre recusada).
+    if (pathname === "/anuncios-meli/custos" && MOCK.custosSemBase) {
+      return respond({ ok: true, base: null, mensagem: "Cliente sem base MELI vinculada. Ajuste o vínculo em Bases de Custo.", custos: {} });
+    }
     if (pathname === "/anuncios-meli/sync") {
       MOCK.syncPendentes.push(() => respond(MOCK.syncResposta));
       return;
@@ -485,6 +489,39 @@ async function run() {
       assert.ok(/Recalcular só os 2 que falharam/.test(e.texto), "deveria oferecer de novo para as que sobraram");
       assert.ok(!e.completoDisabled && !e.novosDisabled);
       await shot(cdp, "6-refeito");
+    });
+
+    await check("S8 - recálculo que falha por falta de Base (BASE_AUSENTE) explica o motivo e oferece Vincular base", async () => {
+      await cdp.evaluate("document.querySelector('[data-sync-fechar]').click()");
+      await waitFor(cdp, "!document.getElementById('am-sync-status')", "aviso anterior não foi dispensado");
+      MOCK.run = { runId: 77, status: "running", processedItems: 0, totalItems: null };
+      await cdp.evaluate("document.getElementById('am-sync-completo').click()");
+      await soltarSync(cdp, { ok: true, codigo: "OK", modo: "completo", contaId: 42, totalEncontrados: 566, totalProcessados: 566, totalSalvos: 566, limitado: false });
+      MOCK.run = { runId: 77, status: "failed", processedItems: 0, totalItems: null, errorCode: "BASE_AUSENTE", errorMessage: "Cliente sem base MELI vinculada." };
+      await waitFor(cdp, "document.querySelector('[data-sync-vincular-base]')", "botão Vincular base não apareceu");
+      const e = await cdp.evaluate(estado);
+      assert.ok(/não tem Base de custos vinculada/.test(e.d2), e.d2);
+      assert.ok(!/Atualizar leitura/.test(e.texto), "não deve mandar tentar de novo na Central de Margem");
+      assert.strictEqual(await cdp.evaluate("document.querySelector('[data-sync-vincular-base]').getAttribute('href')"), "bases.html");
+      assert.ok(!/recálculo da margem falhou/i.test(await cdp.evaluate("(document.getElementById('am-toast-stack')||{}).textContent||''")), "sem toast de erro");
+      await shot(cdp, "7-sem-base-run");
+    });
+
+    await check("S9 - conta já sabida sem Base: não dispara o recálculo e mostra o motivo direto", async () => {
+      MOCK.custosSemBase = true;
+      await cdp.send("Page.navigate", { url: `http://127.0.0.1:${server.address().port}/anuncios-meli.html?cliente=n97&conta=42` });
+      await waitFor(cdp, "document.getElementById('am-sync-completo') && /sem base MELI vinculada/.test((document.getElementById('am-custos-barra')||{}).textContent||'')", "aviso de sem Base não apareceu na tela");
+      const postsAntes = MOCK.refreshPosts;
+      await cdp.evaluate("document.getElementById('am-sync-completo').click()");
+      await soltarSync(cdp, { ok: true, codigo: "OK", modo: "completo", contaId: 42, totalEncontrados: 566, totalProcessados: 566, totalSalvos: 566, limitado: false });
+      await waitFor(cdp, "document.querySelector('[data-sync-vincular-base]')", "botão Vincular base não apareceu");
+      const e = await cdp.evaluate(estado);
+      assert.deepStrictEqual(e.etapas, ["feito", "aviso"]);
+      assert.ok(/não tem Base de custos vinculada/.test(e.d2), e.d2);
+      await sleep(300);
+      assert.strictEqual(MOCK.refreshPosts, postsAntes, "não deveria pedir recálculo sem Base");
+      assert.ok(!e.completoDisabled && !e.novosDisabled);
+      await shot(cdp, "8-sem-base-sabido");
     });
 
     console.log(`\n${failures ? "RED" : "GREEN"}: ${checks - failures}/${checks} checks passaram; ${failures} falharam.`);

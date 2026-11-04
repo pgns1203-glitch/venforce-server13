@@ -319,6 +319,16 @@ async function prepareWorkspaceContext({ clienteSlug, baseSlug, dateFrom, dateTo
 async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, deps = {}) {
   const { cliente, base, mlUserId, custos, porMlb, reembolsoPorMlb, fallbackObservedAt, now } = prepared;
 
+  // P0 04/11/2026: sem o seller da conta selecionada, toda chamada ao ML cairia
+  // no grant PRINCIPAL do cliente (mlTokenService.resolveMlGrant) — numa conta
+  // secundária, o token de outro vendedor. Melhor falhar alto que ler errado.
+  if (mlUserId === null || mlUserId === undefined || String(mlUserId).trim() === "") {
+    const err = new Error("Conta sem seller do Mercado Livre resolvido (mlUserId): leitura de margem recusada para não usar o grant de outra conta.");
+    err.code = "ML_USER_ID_AUSENTE";
+    err.status = 409;
+    throw err;
+  }
+
   // Lista de anúncios: ou os IDs pedidos explicitamente (detalhe de item), ou
   // uma página dos ativos + pausados do vendedor (ver buscarItensAtivos).
   let ids;
@@ -337,10 +347,15 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
     totalItensMl = busca.total;
   }
 
+  // Identidade EXPLÍCITA da conta (P0 04/11/2026): sem mlUserId o mlFetch usa
+  // o grant principal do cliente — numa conta secundária, o token de outro
+  // vendedor (ML responde 403 por item).
   const bodies = await (deps.buscarDetalhesItens || meliApi.buscarDetalhesItens)({
     clienteId: cliente.id,
     ids,
+    mlUserId,
   });
+  const errosDetalhe = Array.isArray(bodies && bodies.erros) ? bodies.erros : [];
 
   const aplicarProjetadas = deps.aplicarEvidenciasProjetadas || meliApi.aplicarEvidenciasProjetadas;
 
@@ -410,6 +425,8 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
       logisticType: observado.logisticType,
       statusAnuncio: observado.status,
       faltantesMeliApi: observado.faltantes,
+      // { comissao:{status,motivo}, frete:{aplicavel,status,motivo} } — por que faltou.
+      cotacao: observado.cotacao || null,
       // Promoção que forma o preço agora (sale_price.metadata.promotion_id),
       // da MESMA leitura que deu o preço — Anúncios ML usa para achar o
       // rebate sem reler o sale_price. undefined = preço não veio do sale_price.
@@ -422,7 +439,8 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
     return item;
   });
 
-  return { totalItensMl, itens };
+  // errosDetalhe: anúncios que o multiget recusou ([{ id, status, erro }]).
+  return { totalItensMl, itens, errosDetalhe };
 }
 
 // ---------------------------------------------------------------------------

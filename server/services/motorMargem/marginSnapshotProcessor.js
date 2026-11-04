@@ -210,6 +210,68 @@ function cotacaoIncompleta(item) {
   return faltantes.includes("frete") && !LOGISTICAS_COMBINAVEIS.includes((diag && diag.logisticType) || "");
 }
 
+// ── Motivo da falha, por item (P0 04/11/2026) ──────────────────────────────
+// Antes, toda cotação incompleta virava a MESMA frase e o run só sabia "532
+// incompletas". Agora o last_error diz o componente, o motivo e o HTTP status
+// (códigos de margemCotacaoEmP.MOTIVOS_COTACAO), e o run guarda a contagem por
+// motivo — sem payload do ML, sem token, sem valor financeiro.
+const TEXTO_MOTIVO = {
+  ml_sem_permissao: "o Mercado Livre recusou o acesso (sem permissão para esta conta)",
+  ml_rate_limit: "limite de requisições do Mercado Livre (429)",
+  ml_timeout: "tempo esgotado na consulta ao Mercado Livre",
+  ml_indisponivel: "Mercado Livre indisponível ou erro na consulta",
+  ml_nao_encontrado: "não encontrado no Mercado Livre (404)",
+  ml_sem_tarifa: "resposta do Mercado Livre sem a tarifa",
+  ml_sem_frete: "resposta do Mercado Livre sem o custo de frete",
+  anuncio_sem_tipo_ou_categoria: "anúncio sem tipo/categoria na leitura do detalhe",
+  conta_sem_seller: "conta sem seller identificado",
+  preco_ausente: "preço do anúncio não obtido",
+};
+
+function descreverComponente(nome, diag) {
+  if (!diag || !diag.motivo) return null;
+  const texto = TEXTO_MOTIVO[diag.motivo] || diag.motivo;
+  return `${nome}: ${texto}${diag.status ? ` (HTTP ${diag.status})` : ""}`;
+}
+
+function motivoCotacaoIncompleta(item) {
+  const cot = item && item.diagnostico && item.diagnostico.cotacao;
+  const partes = [];
+  if (cot) {
+    const faltantes = (item.diagnostico.faltantesMeliApi) || [];
+    if (faltantes.includes("comissao")) partes.push(descreverComponente("comissão", cot.comissao));
+    if (cotacaoIncompleta(item) && faltantes.includes("frete")) partes.push(descreverComponente("frete", cot.frete));
+  }
+  const detalhe = partes.filter(Boolean).join("; ");
+  return detalhe
+    ? `Cotação incompleta — ${detalhe}. Margem não recalculada para não gravar valor sem esses custos.`
+    : "Comissão ou frete não retornados pelo Mercado Livre nesta leitura; margem não recalculada para não gravar valor sem esses custos.";
+}
+
+function motivoNaoRetornado(erroDetalhe) {
+  if (!erroDetalhe) return "Item listado no catálogo, mas não retornado pelo detalhe do Mercado Livre nesta leitura.";
+  const s = erroDetalhe.status;
+  const texto = s === 401 || s === 403
+    ? "o Mercado Livre recusou o acesso ao anúncio (token sem permissão para esta conta)"
+    : s === 404 ? "anúncio não encontrado no Mercado Livre" : "o Mercado Livre devolveu erro ao ler o anúncio";
+  return `Detalhe do anúncio não obtido: ${texto}${s ? ` (HTTP ${s})` : ""}. Margem não recalculada.`;
+}
+
+function contarMotivo(mapa, chave) {
+  if (!chave) return;
+  mapa[chave] = (mapa[chave] || 0) + 1;
+}
+
+// Agrupa itemIds por mensagem: um UPDATE por motivo distinto (poucos).
+function agruparPorMensagem(pares) {
+  const grupos = new Map();
+  for (const [id, msg] of pares) {
+    if (!grupos.has(msg)) grupos.set(msg, []);
+    grupos.get(msg).push(id);
+  }
+  return grupos;
+}
+
 // Vai para log, last_error e error_message: truncada e sem segredo.
 function mensagemCurta(err) {
   return redigirSegredos(err?.message || "Erro desconhecido.", 500);
@@ -258,7 +320,11 @@ async function processMarginSnapshotRun(run, deps = {}) {
   const stats = {
     retries: 0, rateLimitedRetries: 0, lotesFalhos: 0, itensNaoRetornados: 0, itensForaDoCatalogo: 0,
     cotacaoIncompleta: 0, cotacaoIncompletaRecuperada: 0,
+    // Por que faltou: { comissao: { ml_sem_permissao: 532 }, frete: {…}, detalhe: { "403": 532 } }
+    motivos: { comissao: {}, frete: {}, detalhe: {} },
   };
+  // Último motivo de cotação incompleta por item (para o last_error).
+  const motivoIncompletoPorItem = new Map();
 
   // Log estruturado: ids e contadores, mensagens redigidas (marginSnapshotLog).
   function evento(nivel, nome, campos = {}) {
@@ -356,6 +422,7 @@ async function processMarginSnapshotRun(run, deps = {}) {
         itensForaDoCatalogo: stats.itensForaDoCatalogo,
         cotacaoIncompleta: stats.cotacaoIncompleta,
         cotacaoIncompletaRecuperada: stats.cotacaoIncompletaRecuperada,
+        motivos: stats.motivos,
         duracaoMs: clock() - inicio,
       },
     };
@@ -408,6 +475,10 @@ async function processMarginSnapshotRun(run, deps = {}) {
         retornados.add(itemId);
         if (cotacaoIncompleta(item)) {
           repescagem.push(itemId);
+          const cot = item.diagnostico && item.diagnostico.cotacao;
+          contarMotivo(stats.motivos.comissao, cot && cot.comissao && cot.comissao.motivo);
+          contarMotivo(stats.motivos.frete, cot && cot.frete && cot.frete.motivo);
+          motivoIncompletoPorItem.set(itemId, motivoCotacaoIncompleta(item));
           continue;
         }
         await gravarItem(item);
@@ -417,12 +488,18 @@ async function processMarginSnapshotRun(run, deps = {}) {
       if (naoRetornados.length) {
         stats.itensNaoRetornados += naoRetornados.length;
         failedItems += naoRetornados.length;
-        await markSnapshotsRefreshFailed({
-          clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
-          itemIds: naoRetornados, runId: run.id,
-          lastError: "Item listado no catálogo, mas não retornado pelo detalhe do Mercado Livre nesta leitura.",
-          db,
-        });
+        const errosPorId = new Map((tentativa.value.errosDetalhe || []).filter((e) => e && e.id).map((e) => [String(e.id), e]));
+        for (const id of naoRetornados) contarMotivo(stats.motivos.detalhe, String(errosPorId.get(id)?.status ?? "sem_status"));
+        const grupos = agruparPorMensagem(naoRetornados.map((id) => [id, motivoNaoRetornado(errosPorId.get(id))]));
+        if (errosPorId.size) {
+          evento("warn", "margin_snapshot_detalhe_recusado", { itens: naoRetornados.length, por_status: { ...stats.motivos.detalhe } });
+        }
+        for (const [lastError, itemIds] of grupos) {
+          await markSnapshotsRefreshFailed({
+            clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
+            itemIds, runId: run.id, lastError, db,
+          });
+        }
       }
     } else {
       // Falha DEFINITIVA do lote: falha parcial do run, não exceção. As
@@ -488,7 +565,9 @@ async function processMarginSnapshotRun(run, deps = {}) {
       if (tentativa.ok) {
         for (const item of tentativa.value.itens || []) {
           const itemId = item?.identity?.itemId ? String(item.identity.itemId) : "";
-          if (!loteIds.includes(itemId) || recuperados.has(itemId) || cotacaoIncompleta(item)) continue;
+          if (!loteIds.includes(itemId) || recuperados.has(itemId)) continue;
+          // Ainda incompleto: o motivo da 2ª leitura é o que vale no last_error.
+          if (cotacaoIncompleta(item)) { motivoIncompletoPorItem.set(itemId, motivoCotacaoIncompleta(item)); continue; }
           recuperados.add(itemId);
           stats.cotacaoIncompletaRecuperada += 1;
           await gravarItem(item);
@@ -500,13 +579,15 @@ async function processMarginSnapshotRun(run, deps = {}) {
       failedItems += aindaIncompletos.length;
       evento("warn", "margin_snapshot_cotacao_incompleta", {
         itens: aindaIncompletos.length, recuperados: stats.cotacaoIncompletaRecuperada,
+        motivos_comissao: { ...stats.motivos.comissao }, motivos_frete: { ...stats.motivos.frete },
       });
-      await markSnapshotsRefreshFailed({
-        clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
-        itemIds: aindaIncompletos, runId: run.id,
-        lastError: "Comissão ou frete não retornados pelo Mercado Livre nesta leitura; margem não recalculada para não gravar valor sem esses custos.",
-        db,
-      });
+      const grupos = agruparPorMensagem(aindaIncompletos.map((id) => [id, motivoIncompletoPorItem.get(id) || motivoCotacaoIncompleta(null)]));
+      for (const [lastError, itemIds] of grupos) {
+        await markSnapshotsRefreshFailed({
+          clienteId: run.clienteId, clienteContaId: run.clienteContaId, marketplace,
+          itemIds, runId: run.id, lastError, db,
+        });
+      }
     }
     await registrarProgresso({ processedItems, successItems, failedItems, cursorOffset: total, totalItems: total });
   }

@@ -51,7 +51,8 @@ async function upsertSnapshot({ clienteId, clienteContaId, itemId, item, origemJ
   // computável nesta tabela — nunca grava o número inflado.
   const incompleta = custoMarketplaceAusente({
     assumed: item.margin.projected.assumed || [],
-    freteAplicavel: freteAplicavelDaLogistica(item.diagnostico ? (item.diagnostico.logisticType ?? undefined) : undefined),
+    // null = sem logística no anúncio ⇒ combinável (mesma convenção da cotação).
+    freteAplicavel: freteAplicavelDaLogistica(item.diagnostico ? item.diagnostico.logisticType : undefined),
   });
   const projetado = incompleta
     ? { ...item.margin.projected, marginPercent: null, profit: null, computable: false,
@@ -126,9 +127,12 @@ async function lerSnapshotPorItens({ clienteId, itemIds }, db = pool) {
 
   const porItem = new Map();
   for (const r of rows) {
+    const suspeito = r.status === "SUSPECT_DATA";
     porItem.set(r.item_id, {
-      marginPercent: r.margin_percent != null ? Number(r.margin_percent) : null,
-      profit: r.profit != null ? Number(r.profit) : null,
+      // Linha antiga "Dado suspeito" pode ter comissão/frete zerados: sem
+      // número (nem % nem lucro — o lucro entraria na soma da família).
+      marginPercent: !suspeito && r.margin_percent != null ? Number(r.margin_percent) : null,
+      profit: !suspeito && r.profit != null ? Number(r.profit) : null,
       // Esta tabela não guarda `assumed`: uma linha antiga "Dado suspeito" pode
       // ser margem com comissão/frete zerados (ex.: 46% em R$ 50) — no fallback
       // de Anúncios ela não conta como calculável (P0 04/11/2026).

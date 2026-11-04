@@ -437,7 +437,9 @@ async function enrichBatch(prepared, { offset, limit, targetMargin, itemIds }, d
       reembolso: reembolsoInfo || null,
     };
 
-    return item;
+    // Margem projetada sem comissão/frete do ML: número neutralizado aqui, para
+    // TODO consumidor ao vivo (ver margemConfiavel.neutralizarMargemIncompleta).
+    return margemConfiavel.neutralizarMargemIncompleta(item);
   });
 
   // errosDetalhe: anúncios que o multiget recusou ([{ id, status, erro }]).
@@ -489,7 +491,15 @@ async function montarItens(
 
 const ORDENACOES = {
   margem_asc: (a, b) => valorOrdenacao(a) - valorOrdenacao(b),
-  margem_desc: (a, b) => valorOrdenacao(b) - valorOrdenacao(a),
+  // "Não sei" (Infinity) fica no FIM também na ordem decrescente.
+  margem_desc: (a, b) => {
+    const va = valorOrdenacao(a);
+    const vb = valorOrdenacao(b);
+    if (va === Number.POSITIVE_INFINITY || vb === Number.POSITIVE_INFINITY) {
+      return (va === Number.POSITIVE_INFINITY ? 1 : 0) - (vb === Number.POSITIVE_INFINITY ? 1 : 0);
+    }
+    return vb - va;
+  },
   titulo_asc: (a, b) => String(a.identity.titulo || "").localeCompare(String(b.identity.titulo || ""), "pt-BR"),
 };
 

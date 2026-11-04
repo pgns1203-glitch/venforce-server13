@@ -119,7 +119,7 @@ function ordenarPorOrderBy(sql, linhas, params = []) {
     }
     // P0 04/11/2026: margem/lucro "confiáveis" — linha com comissão/frete
     // assumidos como 0 (assumed_json) ordena como sem margem.
-    const cf = texto.match(/^\(CASE WHEN \(assumed_json \? 'commission' OR \(assumed_json \? 'freight' AND quality_json->>'freteAplicavel' = 'true'\)\) THEN NULL ELSE (\w+) END\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
+    const cf = texto.match(/^\(CASE WHEN \(assumed_json \? 'commission' OR \(assumed_json \? 'freight' AND COALESCE\(quality_json->>'freteAplicavel' = 'true', false\)\)\) THEN NULL ELSE (\w+) END\) (ASC|DESC)(?: NULLS (LAST|FIRST))?$/);
     if (cf) {
       return { valor: (row) => (custoMarketplaceAssumido(row) ? null : row[cf[1]]), dir: cf[2], nulls: cf[3] || (cf[2] === "ASC" ? "LAST" : "FIRST") };
     }

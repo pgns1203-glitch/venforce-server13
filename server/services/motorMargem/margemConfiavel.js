@@ -47,10 +47,35 @@ function margemProjetadaIncompleta(item) {
   });
 }
 
+/**
+ * Devolve o item com a margem PROJETADA neutralizada quando comissão/frete do
+ * ML estão ausentes: margin/profit/marginPercent null, computable false,
+ * `incompleta: true` — o `assumed` e o status do núcleo ("Dado suspeito")
+ * ficam. Aplicada no enrichBatch: todo consumidor AO VIVO (Central — lista,
+ * resumo, médias, exceções —, Anúncios, Cliente 360, Precificação) recebe o
+ * item já seguro, em vez de cada um lembrar de checar.
+ */
+function neutralizarMargemIncompleta(item) {
+  if (!margemProjetadaIncompleta(item)) return item;
+  const p = item.margin.projected;
+  const projected = {
+    ...p, computable: false, margin: null, profit: null, marginPercent: null,
+    incompleta: true, motivoIncompleta: MOTIVO_MARGEM_INCOMPLETA,
+  };
+  const margin = { ...item.margin, projected };
+  // Erro de projeção (projetada × realizada) não existe sem a projetada.
+  // Mantém o FORMATO (consumidores leem `.comparable`/`.deltaPp`).
+  if (margin.projectionError && typeof margin.projectionError === "object") {
+    margin.projectionError = { ...margin.projectionError, comparable: false, deltaPp: null, deltaRelative: null, motivo: MOTIVO_MARGEM_INCOMPLETA };
+  }
+  if (margin.comparison && typeof margin.comparison === "object") margin.comparison = { ...margin.comparison, projected };
+  return { ...item, margin };
+}
+
 // A mesma regra em SQL, sobre margin_projection_snapshots (assumed_json é
 // sempre um array JSONB; quality_json.freteAplicavel gravado pelo processor).
 const SQL_CUSTO_MARKETPLACE_AUSENTE =
-  "(assumed_json ? 'commission' OR (assumed_json ? 'freight' AND quality_json->>'freteAplicavel' = 'true'))";
+  "(assumed_json ? 'commission' OR (assumed_json ? 'freight' AND COALESCE(quality_json->>'freteAplicavel' = 'true', false)))";
 
 const MOTIVO_MARGEM_INCOMPLETA = "comissao_ou_frete_ausente";
 const NOTA_MARGEM_INCOMPLETA =
@@ -61,6 +86,7 @@ module.exports = {
   custoMarketplaceAusente,
   custoMarketplaceAusenteNosValores,
   margemProjetadaIncompleta,
+  neutralizarMargemIncompleta,
   SQL_CUSTO_MARKETPLACE_AUSENTE,
   MOTIVO_MARGEM_INCOMPLETA,
   NOTA_MARGEM_INCOMPLETA,

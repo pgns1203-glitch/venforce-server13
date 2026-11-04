@@ -181,7 +181,7 @@ function mapItemParaSnapshot({ item, run, base, observedAt }) {
       // Para a leitura distinguir frete AUSENTE (falha) de NÃO APLICÁVEL
       // (logística combinável) — ver margemConfiavel. null = desconhecido.
       logisticType: item.diagnostico ? (item.diagnostico.logisticType ?? null) : null,
-      freteAplicavel: item.diagnostico ? margemConfiavel.freteAplicavelDaLogistica(item.diagnostico.logisticType ?? undefined) : null,
+      freteAplicavel: item.diagnostico ? margemConfiavel.freteAplicavelDaLogistica(item.diagnostico.logisticType) : null,
     },
     missing: item.margin.projected.missing,
     assumed: item.margin.projected.assumed,

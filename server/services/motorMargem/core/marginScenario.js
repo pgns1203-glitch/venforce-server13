@@ -195,8 +195,13 @@ function calcularComposicao(insumos = {}, { base = null, meta_margem = null } = 
   });
   const aliquota = num(insumos.aliquota);
   const preco = num(insumos.preco);
-  const lc = calc.computable ? calc.profit : null;
-  const margem = calc.computable ? calc.margin : null;
+  // P0 04/11/2026: comissão do ML ausente nunca é 0 — toda venda paga tarifa.
+  // Sem ela não há LC/margem (antes: preço 50 sem comissão/frete → 46%).
+  // Frete ausente segue o `assumido` (pode ser combinável; o insumo não diz).
+  const semComissao = num(insumos.comissao) === null;
+  const computavel = calc.computable && !semComissao;
+  const lc = computavel ? calc.profit : null;
+  const margem = computavel ? calc.margin : null;
 
   // Diferenças contra uma composição-base e contra a meta. Pontos percentuais
   // (pp) = diferença de FRAÇÕES × 100, só para exibição; as margens seguem 0–1.
@@ -212,10 +217,10 @@ function calcularComposicao(insumos = {}, { base = null, meta_margem = null } = 
   const deltaMetaPp = margem !== null && metaValida ? round2((margem - meta) * 100) : null;
 
   return {
-    computavel: calc.computable,
+    computavel,
     lc,
     margem_ratio: margem,
-    faltando: calc.missing,
+    faltando: semComissao && calc.computable ? [...calc.missing, "commission"] : calc.missing,
     assumido: calc.assumed,
     estrito: calc.strict,
     delta_lc: deltaLc,

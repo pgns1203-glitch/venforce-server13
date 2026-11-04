@@ -261,8 +261,12 @@ cenario("ordenação padrão coloca a pior margem primeiro e o sem-margem por ú
     "−7% < 18% < (sem margem)"
   );
 
+  // P0 04/11/2026 (revisão do Codex): "não sei" fica no FIM também no desc — a
+  // mesma regra da leitura por snapshot (NULLS LAST nos dois sentidos). Antes o
+  // sem-margem subia para o topo, e com a margem incompleta (sem comissão/frete)
+  // virando "sem margem", o anúncio duvidoso seria o primeiro da lista.
   const desc = await service.listarItens({ ...params, ordenacao: "margem_desc" }, depsPadrao());
-  assert.strictEqual(desc.itens[0].identity.itemId, "MLB2", "sem margem vai para o topo no desc");
+  assert.deepStrictEqual(desc.itens.map((i) => i.identity.itemId), ["MLB1", "MLB3", "MLB2"], "18% > −7% > (sem margem)");
 });
 
 cenario("paginação respeita o teto do multiget do Mercado Livre", async () => {

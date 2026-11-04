@@ -45,6 +45,8 @@ function mundoMl({ listing = null, frete = null } = {}) {
     MLB201: { seller: SELLER_2, price: 50, category_id: "MLB1430", listing_type_id: "gold_special", logistic_type: "fulfillment" },
     MLB202: { seller: SELLER_2, price: 80, category_id: "MLB1430", listing_type_id: "gold_special", logistic_type: "not_specified" },
     MLB101: { seller: SELLER_1, price: 60, category_id: "MLB1430", listing_type_id: "gold_pro", logistic_type: "cross_docking" },
+    // Preço 33: listing_prices falha (403) só para ele — incompleto no meio dos completos.
+    MLB203: { seller: SELLER_2, price: 33, category_id: "MLB1430", listing_type_id: "gold_special", logistic_type: "fulfillment" },
   };
   const chamadas = [];
   async function mlFetch(clienteId, path, opts = {}) {
@@ -68,6 +70,7 @@ function mundoMl({ listing = null, frete = null } = {}) {
     }
     if (p.startsWith("/sites/MLB/listing_prices")) {
       if (listing) return listing({ path: p, dono });
+      if (p.includes("price=33")) return { ok: false, status: 403, data: { status: 403 } };
       return { ok: true, status: 200, data: [{ sale_fee_amount: 7.0, sale_fee_details: { percentage_fee: 14 } }] };
     }
     const fr = p.match(/^\/users\/(\d+)\/shipping_options\/free/);
@@ -102,10 +105,14 @@ function prepared(mlUserId, extra = {}) {
         { produto_id: "MLB201", custo_produto: 22, imposto_percentual: 0.1, taxa_fixa: 0, produto_nome: "Calça", updated_at: NOW },
         { produto_id: "MLB202", custo_produto: 30, imposto_percentual: 0.1, taxa_fixa: 0, produto_nome: "Short", updated_at: NOW },
         { produto_id: "MLB101", custo_produto: 25, imposto_percentual: 0.1, taxa_fixa: 0, produto_nome: "Saia", updated_at: NOW },
+        { produto_id: "MLB203", custo_produto: 10, imposto_percentual: 0.1, taxa_fixa: 0, produto_nome: "Top", updated_at: NOW },
       ]),
       total: 3,
     },
     porMlb: new Map(), reembolsoPorMlb: new Map(), fallbackObservedAt: null,
+    periodo: { dateFrom: "2026-10-05", dateTo: "2026-11-03" },
+    vendasRaw: { sincronizado: false, pedidos: [], itens: [], componentes: [], imports: [], importSnapshotAt: null },
+    naoAtribuido: { reembolso: 0 },
     ...extra,
   };
 }
@@ -231,7 +238,9 @@ cenario("comissão e frete ausentes: margem (R$ 50 → 46%) é Dado suspeito, nu
   ok(item.margin.projected.assumed.includes("commission") && item.margin.projected.assumed.includes("freight"));
   ok(item.quality.status !== "HEALTHY", `status ${item.quality.status}`);
   ok(item.quality.status === core.STATUS.SUSPECT_DATA, item.quality.status);
-  ok(item.margin.projected.margin > 0.4, "o número inflado existe no núcleo (por isso não pode ser exibido/gravado)");
+  // O núcleo calcularia 46%; o enrichBatch neutraliza antes de qualquer consumidor.
+  ok(item.margin.projected.margin === null && item.margin.projected.profit === null && item.margin.projected.incompleta === true,
+    JSON.stringify(item.margin.projected.margin));
   ok(item.diagnostico.cotacao.comissao.motivo === "ml_sem_permissao" && item.diagnostico.cotacao.comissao.status === 403);
 });
 
@@ -414,6 +423,7 @@ cenario("pipeline B (legado): grava sem o número inflado; leitura não aceita l
     { item_id: "MLB9", margin_percent: "46.00", profit: "23", computable: true, status: "SUSPECT_DATA", calculado_em: null, origem_job: "x" },
   ] }) });
   ok(lido.get("MLB9").computable === false, "46% antigo no legado não volta à célula/ranking");
+  ok(lido.get("MLB9").profit === null && lido.get("MLB9").marginPercent === null, "nem o lucro (somado na família) nem o %");
 });
 
 cenario("fonte de Anúncios: frete NÃO aplicável (combinável) mantém a margem; frete aplicável ausente esconde; desconhecido mantém", async () => {
@@ -448,6 +458,72 @@ cenario("processor grava freteAplicavel/logística no quality_json (a leitura di
   const s202 = await snapshotRepository.getProjectionSnapshot({ clienteContaId: 87, itemId: "MLB202", db });
   ok(s201.quality.freteAplicavel === true && s201.quality.logisticType === "fulfillment", JSON.stringify(s201.quality.freteAplicavel));
   ok(s202.quality.freteAplicavel === false && (s202.assumed || []).includes("freight"), "combinável gravado e marcado como frete não aplicável");
+});
+
+// ── 7. Revisão do Codex (2ª rodada) ────────────────────────────────────────
+function depsWorkspace(w) {
+  return {
+    ...depsMundo(w),
+    prepareWorkspaceContext: async () => prepared(SELLER_2),
+    buscarItensAtivos: async () => ({ ids: ["MLB201", "MLB203"], total: 2 }),
+  };
+}
+
+cenario("resumo AO VIVO da Central: média, calculáveis e exceções ignoram o item sem comissão", async () => {
+  const w = mundoMl();
+  const r = await motorMargem.obterResumo({ clienteSlug: "alianza_jeans", clienteContaId: 87 }, depsWorkspace(w));
+  const s = JSON.stringify(r);
+  // MLB201: 13% (6,5/50). MLB203 sem comissão daria (33−3,3−9,5−10)/33 ≈ 31% — não pode entrar.
+  ok(Math.abs(r.placar.margemMedia - 0.13) < 0.001, `margemMedia ${r.placar.margemMedia}`);
+  ok(!/0\.31|31\./.test(JSON.stringify((r.excecoes || []).map((e) => [e.margemProjetadaPercent]))), s.slice(0, 300));
+});
+
+cenario("lista AO VIVO, ordem decrescente: o item sem comissão fica no FIM (não no topo)", async () => {
+  const w = mundoMl();
+  const desc = await motorMargem.listarItens({ clienteSlug: "alianza_jeans", clienteContaId: 87, ordenacao: "margem_desc" }, depsWorkspace(w));
+  const ids = desc.itens.map((i) => i.identity.itemId);
+  ok(ids[ids.length - 1] === "MLB203", ids.join());
+});
+
+cenario("Cliente 360: margem exibível não usa a projetada incompleta", async () => {
+  const { margemExibivel } = require("../services/cliente360/cliente360V3MargemCompositor");
+  const inc = await itemAoVivo({ comissao: false });
+  ok(margemExibivel(inc).margemPercent === null);
+});
+
+cenario("POST /api/margem/composicao (núcleo): comissão ausente → não computável (preço 50 nunca vira 46%)", async () => {
+  const c = core.calcularComposicao({ preco: 50, custo: 22, aliquota: 0.1, comissao: null, frete: null });
+  ok(c.computavel === false && c.lc === null && c.margem_ratio === null && c.faltando.includes("commission"), JSON.stringify(c));
+  const ok2 = core.calcularComposicao({ preco: 50, custo: 22, aliquota: 0.1, comissao: 7, frete: 9.5 });
+  ok(ok2.computavel === true && Math.abs(ok2.lc - 6.5) < 0.001);
+});
+
+cenario("Precificação (avaliar): atual/proposta sem margem quando falta comissão/frete; combinável continua", async () => {
+  const { avaliar } = require("../services/motorMargem/precificacao/precificacaoAvaliacao");
+  const base = (motor, logisticType = "fulfillment") => ({
+    cliente: { id: 7, slug: "alianza_jeans" }, conta: { id: 87, nome: "Alianza Jeans 2", mlUserId: SELLER_2 },
+    anuncio: { itemId: "MLB201", logisticType, titulo: "x" }, contaCorreta: true,
+    motor: { precoAtual: 50, precoLista: 50, precoPromocional: null, custo: 22, imposto: 0.1, taxaFixa: 0, comissaoTaxa: null,
+      metaMargem: 0.1, breakEven: null, precoAlvo: null, status: "SUSPECT_DATA", confianca: "UNKNOWN", temConflito: false, vendas: null, ...motor },
+  });
+  const r = avaliar({ base: base({ comissao: null, frete: null }), tipo: "PRICE", novoPreco: 45, precoVisto: 50,
+    recote: { comissao: null, comissaoFonte: "indisponivel", frete: null, freteFonte: "indisponivel" } });
+  ok(r.atual.margem === null && r.atual.lucro === null, `atual ${r.atual.margem}`);
+  ok(r.proposta.margem === null && r.proposta.lucro === null, `proposta ${r.proposta.margem}`);
+  ok(r.bloqueado === true);
+  const comb = avaliar({ base: base({ comissao: 7, frete: null }, "not_specified"), tipo: "PRICE", novoPreco: 45, precoVisto: 50,
+    recote: { comissao: 6.3, comissaoFonte: "recotada", frete: null, freteFonte: "nao_aplicavel" } });
+  ok(comb.atual.margem !== null && comb.proposta.margem !== null, "frete combinável não esconde a margem");
+});
+
+cenario("SQL: aplicabilidade do frete desconhecida não some dos KPIs (nem comMargem nem margemIncompleta perdem a linha)", async () => {
+  const db = makeMarginSnapshotFakeDb();
+  const base = { clienteId: 7, clienteSlug: "alianza_jeans", clienteContaId: 87, marketplace: "meli", confidenceLevel: "UNKNOWN",
+    missing: [], divergences: [], calculatedAt: new Date(), runId: null, refreshStatus: "fresh" };
+  await snapshotRepository.upsertProjectionSnapshot({ ...base, itemId: "MLB7", price: 70, profit: 14, margin: 0.2, marginPercent: 20,
+    status: "SUSPECT_DATA", assumed: ["freight"], quality: {} }, db);
+  const k = await snapshotRepository.summarizeProjectionSnapshots({ filtro: snapshotRepository.montarFiltroSnapshots({ clienteId: 7, clienteContaId: 87 }), db });
+  ok(k.comMargem === 1 && k.margemIncompleta === 0, JSON.stringify(k));
 });
 
 (async () => {

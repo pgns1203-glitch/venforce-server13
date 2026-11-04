@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
-  <link rel="stylesheet" href="css/pages/central-margem-v2.css?v=e1a9d4e162">
+  <link rel="stylesheet" href="css/pages/central-margem-v2.css?v=26bbe28ad5">
   <link rel="stylesheet" href="css/pages/central-margem-layout.css?v=e85e407a91">
   <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
@@ -195,6 +195,9 @@
                    do mesmo cálculo do simulador. Fonte bulk persistida; a página
                    é cotada ao vivo em segundo plano. -->
               <div class="cm-promos" id="cm-promos" hidden>
+                <!-- Atualização das promoções DA CONTA (Promo Snapshot): estado,
+                     progresso real do run e botão Atualizar — sem a tela antiga. -->
+                <div class="cm-promo-sync" id="cm-promo-sync" aria-live="polite" hidden></div>
                 <div class="cm-promos__bar">
                   <span class="cm-promos__badge" id="cm-opps-meta"></span>
                   <label class="vf-filter-group">
@@ -293,8 +296,9 @@
   <script type="module" src="vf-shell.js"></script>
   <!-- Confirmação e toast da Fundação V2 (VF.confirm / VF.toast) -->
   <script src="vf-ui.js"></script>
-  <script src="central-margem-api.js?v=0ebff64be8"></script>
+  <script src="central-margem-api.js?v=bea872b0ea"></script>
   <script src="central-margem-promo-fonte.js?v=4752ecd8f1"></script>
-  <script src="central-margem.js?v=b5f5a60782"></script>
+  <script src="central-margem-promo-sync.js?v=e338466df7"></script>
+  <script src="central-margem.js?v=b1fc017bf7"></script>
 </body>
 </html>

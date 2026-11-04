@@ -22,6 +22,9 @@
   // Linha de fonte das promoções — a MESMA na aba Promoções e na Bancada (o servidor devolve o mesmo
   // `fontePromocoes` nas duas respostas). Ausente (servidor antigo), as telas usam o texto de antes.
   var promoFonte = root.VFCentralMargemPromoFonte || null;
+  // Barra de atualização das promoções (Promo Snapshot da conta): o servidor
+  // decide se o Atualizar está disponível; o módulo só monta o texto.
+  var promoSync = root.VFCentralMargemPromoSync || null;
 
   var CONFIDENCE_META = {
     HIGH: { label: "Alta", className: "is-success" },
@@ -139,11 +142,25 @@
     promoDetail: {},
     pendingPromoId: null,
     pendingReview: false,
+
+    // Atualização das promoções da CONTA (Promo Snapshot): status lido do
+    // servidor, pedido em voo e acompanhamento do run. `promoSyncSeq` muda a
+    // cada troca de conta: resposta atrasada da conta anterior é descartada.
+    promoSyncState: null,
+    promoSyncSeq: 0,
+    promoSyncTimer: null,
+    promoSyncPolls: 0,
+    promoSyncPedindo: false,
+    promoSyncAviso: null,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
   // smoke test de UI (mesmo padrão de __VF_CENTRAL_MARGEM_API_CLIENT__).
   var SNAPSHOT_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_POLL_MS__) || 4000;
+  // Acompanhamento do run de promoções: 5 s, no máximo ~1 h de polling por
+  // abertura (o run continua no servidor; recarregar a página retoma).
+  var PROMO_SYNC_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_PROMO_SYNC_POLL_MS__) || 5000;
+  var PROMO_SYNC_POLL_MAX = 720;
   // Pós-escrita: acompanha o refresh do snapshot do item aplicado.
   var POST_WRITE_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_POST_WRITE_POLL_MS__) || 2500;
 
@@ -343,6 +360,7 @@
     refs.promoTipo = el("cm-promo-tipo");
     refs.sheetToolbar = el("cm-sheet-toolbar");
     refs.oppsHost = el("cm-opps-host");
+    refs.promoSyncHost = el("cm-promo-sync");
     refs.oppsMeta = el("cm-opps-meta");
     refs.drawerSummary = el("cm-drawer-summary");
     refs.healthIssues = el("cm-health-issues");
@@ -579,12 +597,19 @@
       onFiltersChanged();
     });
 
+    if (refs.promoSyncHost) {
+      refs.promoSyncHost.addEventListener("click", function (event) {
+        var botao = event.target.closest("[data-cm-promo-sync-acao]");
+        if (botao && !botao.disabled) requestPromoSyncRun();
+      });
+    }
+
     refs.oppsHost.addEventListener("click", function (event) {
       var pager = event.target.closest("[data-opps-page]");
       if (pager) {
         if (pager.disabled) return;
         state.oppsPage = Math.max(1, Number(pager.getAttribute("data-opps-page")) || 1);
-        loadOpportunities();
+        loadOpportunities(false, { semStatus: true });
         return;
       }
       var mais = event.target.closest("[data-promo-more]");
@@ -629,14 +654,14 @@
       state.oppsPage = 1;
       state.promoExpanded = {};
       state.promoDetail = {};
-      loadOpportunities();
+      loadOpportunities(false, { semStatus: true });
     });
     refs.promoTipo.addEventListener("change", function () {
       state.oppsFilters.tipo = refs.promoTipo.value || "";
       state.oppsPage = 1;
       state.promoExpanded = {};
       state.promoDetail = {};
-      loadOpportunities();
+      loadOpportunities(false, { semStatus: true });
     });
 
     refs.divergences.addEventListener("click", function (event) {
@@ -789,6 +814,7 @@
     state.realizadoLoading = false;
     state.oppsSequence += 1;
     if (state.oppsPollTimer) { root.clearTimeout(state.oppsPollTimer); state.oppsPollTimer = null; }
+    resetPromoSync();
     state.opps = null;
     state.oppsPage = 1;
     state.oppsLive = "idle";
@@ -1835,6 +1861,7 @@
     renderViewToggle();
     renderSheet();
     if (view === "promotions" && !state.opps) loadOpportunities();
+    else if (view === "promotions") loadPromoSync();
     if (state.selectedItemId) markSelectedRow();
   }
 
@@ -1916,7 +1943,9 @@
     };
   }
 
-  function loadOpportunities(poll) {
+  // `opts.semStatus`: recarga disparada pelo fim do run (o status acabou de
+  // ser lido — não relê).
+  function loadOpportunities(poll, opts) {
     if (state.oppsPollTimer) { root.clearTimeout(state.oppsPollTimer); state.oppsPollTimer = null; }
     if (!isSnapshotMode() || !state.client || !state.contaId || typeof api.getOpportunities !== "function") {
       state.opps = null;
@@ -1924,7 +1953,10 @@
       renderPromotions();
       return;
     }
-    if (!poll) state.oppsPolls = 0;
+    if (!poll) {
+      state.oppsPolls = 0;
+      if (!(opts && opts.semStatus)) loadPromoSync();
+    }
     state.oppsSequence += 1;
     var seq = state.oppsSequence;
     var slug = state.client.slug;
@@ -1961,6 +1993,136 @@
         }, OPPS_POLL_MS);
       }
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Atualização das promoções da conta (Promo Snapshot) — direto na Central
+  // ---------------------------------------------------------------------------
+
+  function resetPromoSync() {
+    state.promoSyncSeq += 1;
+    if (state.promoSyncTimer) { root.clearTimeout(state.promoSyncTimer); state.promoSyncTimer = null; }
+    state.promoSyncState = null;
+    state.promoSyncPolls = 0;
+    state.promoSyncPedindo = false;
+    state.promoSyncAviso = null;
+  }
+
+  function promoSyncContexto() {
+    var seq = state.promoSyncSeq;
+    var slug = state.client && state.client.slug;
+    var conta = state.contaId;
+    return function () {
+      return seq === state.promoSyncSeq && state.client && state.client.slug === slug && state.contaId === conta;
+    };
+  }
+
+  // Lê o estado da conta (só banco). Enquanto houver run ativo, relê a cada
+  // PROMO_SYNC_POLL_MS; quando o run termina, recarrega lista e indicadores.
+  function loadPromoSync(poll) {
+    if (state.promoSyncTimer) { root.clearTimeout(state.promoSyncTimer); state.promoSyncTimer = null; }
+    if (!promoSync || !isSnapshotMode() || !state.client || !state.contaId || typeof api.getPromoSyncStatus !== "function") {
+      state.promoSyncState = null;
+      renderPromoSync();
+      return;
+    }
+    if (!poll) state.promoSyncPolls = 0;
+    var contexto = promoSyncContexto();
+    if (!state.promoSyncState) {
+      state.promoSyncState = { status: "loading" };
+      renderPromoSync();
+    }
+    api.getPromoSyncStatus({ clientSlug: state.client.slug, clienteContaId: state.contaId }).then(function (result) {
+      if (!contexto()) return;
+      var anterior = state.promoSyncState && state.promoSyncState.data;
+      if (!result.ok) {
+        state.promoSyncState = { status: "error", error: result.error || "Falha ao ler o estado.", data: anterior || null };
+        renderPromoSync();
+        return;
+      }
+      state.promoSyncState = { status: "ok", data: result };
+      if (promoSync.terminou(anterior, result)) {
+        var u = result.ultimaTentativa;
+        state.promoSyncAviso = u && u.status === "failed"
+          ? { tom: "danger", texto: "A atualização terminou com falha; a lista continua com a última leitura válida." }
+          : { tom: "ok", texto: "Atualização concluída. Lista e indicadores recarregados com a leitura nova." };
+        // Recarrega a conta: lista (página 1) e resumo das promoções.
+        state.oppsPage = 1;
+        loadOpportunities(false, { semStatus: true });
+        loadPromoSummary();
+      }
+      renderPromoSync();
+      var m = promoSync.modelo(result, { formatDate: formatShortDateTime });
+      if (m.acompanhar && state.view === "promotions" && state.promoSyncPolls < PROMO_SYNC_POLL_MAX) {
+        state.promoSyncPolls += 1;
+        state.promoSyncTimer = root.setTimeout(function () {
+          state.promoSyncTimer = null;
+          if (!contexto()) return;
+          loadPromoSync(true);
+        }, PROMO_SYNC_POLL_MS);
+      }
+    });
+  }
+
+  function requestPromoSyncRun() {
+    if (state.promoSyncPedindo || !state.client || !state.contaId || typeof api.requestPromoSync !== "function") return;
+    var contexto = promoSyncContexto();
+    state.promoSyncPedindo = true;
+    state.promoSyncAviso = null;
+    renderPromoSync();
+    api.requestPromoSync({ clientSlug: state.client.slug, clienteContaId: state.contaId }).then(function (result) {
+      if (!contexto()) return;
+      state.promoSyncPedindo = false;
+      var r = promoSync.resultadoDoPedido(result);
+      state.promoSyncAviso = { tom: r.iniciou ? "info" : "warning", texto: r.texto };
+      // O estado verdadeiro (run na fila/rodando, ou o motivo de não ter
+      // iniciado) vem sempre do servidor.
+      loadPromoSync();
+    });
+  }
+
+  function renderPromoSync() {
+    var host = refs.promoSyncHost;
+    if (!host) return;
+    var st = state.promoSyncState;
+    if (!promoSync || !st || state.view !== "promotions" || !isSnapshotMode() || !state.contaId) {
+      host.hidden = true;
+      host.innerHTML = "";
+      return;
+    }
+    host.hidden = false;
+    if (st.status === "loading") {
+      host.setAttribute("data-cm-promo-sync", "loading");
+      host.innerHTML = '<p class="cm-promo-sync__titulo">Lendo o estado das promoções desta conta…</p>';
+      return;
+    }
+    var m = promoSync.modelo(st.status === "ok" ? st.data : st.data, {
+      formatDate: formatShortDateTime,
+      erro: st.status === "error" ? st.error : null,
+    });
+    var botao = m.botao;
+    var rotulo = state.promoSyncPedindo ? "Pedindo…" : botao.rotulo;
+    var habilitado = botao.habilitado && !state.promoSyncPedindo;
+    var barra = m.progresso && m.progresso.pct !== null
+      ? '<div class="cm-promo-sync__barra" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + m.progresso.pct + '"><span style="width:' + m.progresso.pct + '%"></span></div>'
+      : "";
+    var aviso = state.promoSyncAviso
+      ? '<p class="cm-promo-sync__aviso is-' + escapeHtml(state.promoSyncAviso.tom) + '" data-cm-promo-sync-aviso>' + escapeHtml(state.promoSyncAviso.texto) + "</p>"
+      : "";
+    host.setAttribute("data-cm-promo-sync", m.estado);
+    host.className = "cm-promo-sync is-" + m.tom;
+    host.innerHTML =
+      '<div class="cm-promo-sync__texto">' +
+        '<p class="cm-promo-sync__titulo" data-cm-promo-sync-titulo>' + escapeHtml(m.titulo) + "</p>" +
+        (m.detalhe ? '<p class="cm-promo-sync__detalhe" data-cm-promo-sync-detalhe>' + escapeHtml(m.detalhe) + "</p>" : "") +
+        barra +
+        (m.conta ? '<p class="cm-promo-sync__conta" data-cm-promo-sync-conta>' + escapeHtml(m.conta) + "</p>" : "") +
+        aviso +
+      "</div>" +
+      (botao.visivel
+        ? '<button type="button" class="vf-btn vf-btn--sm' + (habilitado ? " vf-btn--primary" : " vf-btn--ghost") + '" data-cm-promo-sync-acao' +
+          (habilitado ? "" : " disabled") + ' title="' + escapeHtml(botao.titulo || "") + '">' + escapeHtml(rotulo) + "</button>"
+        : "");
   }
 
   // Resumo das promoções (KPI "Promos com +LC" e chips "Promo Y +R$ Z" da worklist):
@@ -2312,6 +2474,7 @@
     if (!refs.promos) return;
     var ativa = state.view === "promotions";
     refs.promos.hidden = !ativa;
+    renderPromoSync();
     if (!ativa) return;
     setPromotionsFilters();
     renderPromotionsLive();

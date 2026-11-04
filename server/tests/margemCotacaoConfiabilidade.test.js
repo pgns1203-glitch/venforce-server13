@@ -475,7 +475,10 @@ cenario("resumo AO VIVO da Central: média, calculáveis e exceções ignoram o 
   const s = JSON.stringify(r);
   // MLB201: 13% (6,5/50). MLB203 sem comissão daria (33−3,3−9,5−10)/33 ≈ 31% — não pode entrar.
   ok(Math.abs(r.placar.margemMedia - 0.13) < 0.001, `margemMedia ${r.placar.margemMedia}`);
-  ok(!/0\.31|31\./.test(JSON.stringify((r.excecoes || []).map((e) => [e.margemProjetadaPercent]))), s.slice(0, 300));
+  ok(r.placar.itensComMargem === 1 && r.placar.itensSemMargem === 1, JSON.stringify(r.placar));
+  const exc203 = (r.excecoes || []).find((e) => e.itemId === "MLB203");
+  ok(exc203 && exc203.margemProjetadaPercent === null, `exceção do incompleto: ${JSON.stringify(exc203)}`);
+  ok((r.excecoes || []).every((e) => e.itemId !== "MLB203" || e.margemProjetadaPercent === null), s.slice(0, 200));
 });
 
 cenario("lista AO VIVO, ordem decrescente: o item sem comissão fica no FIM (não no topo)", async () => {
@@ -524,6 +527,33 @@ cenario("SQL: aplicabilidade do frete desconhecida não some dos KPIs (nem comMa
     status: "SUSPECT_DATA", assumed: ["freight"], quality: {} }, db);
   const k = await snapshotRepository.summarizeProjectionSnapshots({ filtro: snapshotRepository.montarFiltroSnapshots({ clienteId: 7, clienteContaId: 87 }), db });
   ok(k.comMargem === 1 && k.margemIncompleta === 0, JSON.stringify(k));
+});
+
+cenario("projetada × realizada (bloco de desvio da Central): sem 46% nem −33 pp quando a projetada é incompleta", async () => {
+  const { neutralizarMargemIncompleta } = require("../services/motorMargem/margemConfiavel");
+  const item = {
+    diagnostico: { logisticType: "fulfillment" },
+    margin: { projected: { computable: true, margin: 0.46, profit: 23, marginPercent: 46, assumed: ["commission", "freight"], missing: [] },
+      realized: { computable: true, margin: 0.13, profit: 6.5 }, projectionError: { comparable: true, deltaPp: -33, deltaRelative: -0.7 } },
+    projectedVsRealized: {
+      status: "COMPARABLE",
+      projected: { price: 50, commission: null, freight: null, profit: 23, margin: 0.46, marginPercent: 46, computable: true, assumed: ["commission", "freight"] },
+      realized: { profit: 6.5, margin: 0.13, marginPercent: 13, computable: true },
+      drift: { price: 0, commission: null, freight: null, cost: 0, profit: 16.5, marginPercentagePoints: 33 },
+      notComparable: [],
+    },
+  };
+  const n = neutralizarMargemIncompleta(item);
+  const pvr = n.projectedVsRealized;
+  ok(pvr.status === "PROJECTED_NOT_COMPUTABLE", pvr.status);
+  ok(pvr.projected.margin === null && pvr.projected.profit === null && pvr.projected.marginPercent === null && pvr.projected.computable === false);
+  ok(pvr.drift.profit === null && pvr.drift.marginPercentagePoints === null && pvr.drift.price === 0, "desvios financeiros fora; componentes ficam");
+  ok(pvr.realized.margin === 0.13, "realizado intacto");
+  ok(n.margin.projectionError.comparable === false && n.margin.projectionError.deltaPp === null);
+  ok(item.projectedVsRealized.projected.margin === 0.46, "não muta o item original");
+  // e na cadeia real (enrichBatch) o bloco também sai neutralizado
+  const inc = await itemAoVivo({ comissao: false });
+  ok(inc.projectedVsRealized.projected.margin === null && inc.projectedVsRealized.projected.computable === false, JSON.stringify(inc.projectedVsRealized.projected.margin));
 });
 
 (async () => {

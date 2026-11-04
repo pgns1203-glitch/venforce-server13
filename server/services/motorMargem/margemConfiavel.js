@@ -68,8 +68,23 @@ function neutralizarMargemIncompleta(item) {
   if (margin.projectionError && typeof margin.projectionError === "object") {
     margin.projectionError = { ...margin.projectionError, comparable: false, deltaPp: null, deltaRelative: null, motivo: MOTIVO_MARGEM_INCOMPLETA };
   }
-  if (margin.comparison && typeof margin.comparison === "object") margin.comparison = { ...margin.comparison, projected };
-  return { ...item, margin };
+  const saida = { ...item, margin };
+  // Contrato projetada × realizada (Central: bloco de desvio). Mesmo efeito de
+  // buildProjectedVsRealized com a projetada NÃO computável: status
+  // PROJECTED_NOT_COMPUTABLE (se era comparável), sem lucro/margem projetados e
+  // sem desvio de lucro/margem. Componentes e realizado ficam intactos.
+  const pvr = item.projectedVsRealized;
+  if (pvr && typeof pvr === "object") {
+    saida.projectedVsRealized = {
+      ...pvr,
+      status: pvr.status === "COMPARABLE" ? "PROJECTED_NOT_COMPUTABLE" : pvr.status,
+      projected: pvr.projected
+        ? { ...pvr.projected, profit: null, margin: null, marginPercent: null, computable: false, incompleta: true }
+        : pvr.projected,
+      drift: pvr.drift ? { ...pvr.drift, profit: null, marginPercentagePoints: null } : pvr.drift,
+    };
+  }
+  return saida;
 }
 
 // A mesma regra em SQL, sobre margin_projection_snapshots (assumed_json é

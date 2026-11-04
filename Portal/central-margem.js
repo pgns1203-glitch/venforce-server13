@@ -152,6 +152,10 @@
     promoSyncPolls: 0,
     promoSyncPedindo: false,
     promoSyncAviso: null,
+    // runId devolvido pelo POST (acompanhado até sair da fila/execução) e
+    // falhas seguidas ao reler o status (retentativa limitada com espera).
+    promoSyncRunPedido: null,
+    promoSyncFalhas: 0,
   };
 
   // Intervalo moderado de polling do run. O override existe só para o
@@ -161,6 +165,9 @@
   // abertura (o run continua no servidor; recarregar a página retoma).
   var PROMO_SYNC_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_PROMO_SYNC_POLL_MS__) || 5000;
   var PROMO_SYNC_POLL_MAX = 720;
+  // Falha ao reler o status durante o acompanhamento: até 5 retentativas,
+  // com espera crescente (5 s, 10 s, 20 s, 40 s, 60 s).
+  var PROMO_SYNC_FALHAS_MAX = 5;
   // Pós-escrita: acompanha o refresh do snapshot do item aplicado.
   var POST_WRITE_POLL_MS = Number(root.__VF_CENTRAL_MARGEM_POST_WRITE_POLL_MS__) || 2500;
 
@@ -2006,6 +2013,8 @@
     state.promoSyncPolls = 0;
     state.promoSyncPedindo = false;
     state.promoSyncAviso = null;
+    state.promoSyncRunPedido = null;
+    state.promoSyncFalhas = 0;
   }
 
   function promoSyncContexto() {
@@ -2035,15 +2044,32 @@
     api.getPromoSyncStatus({ clientSlug: state.client.slug, clienteContaId: state.contaId }).then(function (result) {
       if (!contexto()) return;
       var anterior = state.promoSyncState && state.promoSyncState.data;
+      var agendar = function (ms) {
+        state.promoSyncTimer = root.setTimeout(function () {
+          state.promoSyncTimer = null;
+          if (!contexto()) return;
+          loadPromoSync(true);
+        }, ms);
+      };
       if (!result.ok) {
-        state.promoSyncState = { status: "error", error: result.error || "Falha ao ler o estado.", data: anterior || null };
+        // Falha transitória: mantém a última leitura na tela e tenta de novo
+        // (limitado) se havia algo a acompanhar.
+        state.promoSyncFalhas += 1;
+        var acompanhando = Boolean(state.promoSyncRunPedido || (anterior && anterior.sync && anterior.sync.activeRun));
+        var retenta = acompanhando && state.promoSyncFalhas <= PROMO_SYNC_FALHAS_MAX && state.view === "promotions";
+        state.promoSyncState = { status: "error", error: result.error || "Falha ao ler o estado.", data: anterior || null, retentando: retenta };
         renderPromoSync();
+        if (retenta) agendar(Math.min(PROMO_SYNC_POLL_MS * Math.pow(2, state.promoSyncFalhas - 1), 60000));
         return;
       }
+      state.promoSyncFalhas = 0;
       state.promoSyncState = { status: "ok", data: result };
-      if (promoSync.terminou(anterior, result)) {
+      if (promoSync.terminou(anterior, result, state.promoSyncRunPedido)) {
+        var pedido = state.promoSyncRunPedido;
+        state.promoSyncRunPedido = null;
         var u = result.ultimaTentativa;
-        state.promoSyncAviso = u && u.status === "failed"
+        var doPedido = !pedido || !u || u.runId === pedido;
+        state.promoSyncAviso = u && u.status === "failed" && doPedido
           ? { tom: "danger", texto: "A atualização terminou com falha; a lista continua com a última leitura válida." }
           : { tom: "ok", texto: "Atualização concluída. Lista e indicadores recarregados com a leitura nova." };
         // Recarrega a conta: lista (página 1) e resumo das promoções.
@@ -2052,15 +2078,16 @@
         loadPromoSummary();
       }
       renderPromoSync();
+      if (state.view !== "promotions") return;
       var m = promoSync.modelo(result, { formatDate: formatShortDateTime });
-      if (m.acompanhar && state.view === "promotions" && state.promoSyncPolls < PROMO_SYNC_POLL_MAX) {
+      if ((m.acompanhar || state.promoSyncRunPedido) && state.promoSyncPolls < PROMO_SYNC_POLL_MAX) {
         state.promoSyncPolls += 1;
-        state.promoSyncTimer = root.setTimeout(function () {
-          state.promoSyncTimer = null;
-          if (!contexto()) return;
-          loadPromoSync(true);
-        }, PROMO_SYNC_POLL_MS);
+        agendar(PROMO_SYNC_POLL_MS);
+        return;
       }
+      // Cooldown: relê quando ele vence, para o botão voltar sozinho.
+      var releitura = promoSync.releituraEmMs(result);
+      if (releitura) agendar(releitura);
     });
   }
 
@@ -2075,6 +2102,9 @@
       state.promoSyncPedindo = false;
       var r = promoSync.resultadoDoPedido(result);
       state.promoSyncAviso = { tom: r.iniciou ? "info" : "warning", texto: r.texto };
+      // Acompanha ESTE run até ele sair da fila/execução (mesmo que termine
+      // antes do primeiro GET de status).
+      state.promoSyncRunPedido = r.iniciou && result && result.runId ? result.runId : null;
       // O estado verdadeiro (run na fila/rodando, ou o motivo de não ter
       // iniciado) vem sempre do servidor.
       loadPromoSync();
@@ -2096,10 +2126,17 @@
       host.innerHTML = '<p class="cm-promo-sync__titulo">Lendo o estado das promoções desta conta…</p>';
       return;
     }
-    var m = promoSync.modelo(st.status === "ok" ? st.data : st.data, {
+    // Erro ao reler com uma leitura anterior na tela: mantém o modelo da
+    // leitura anterior e avisa (nunca apaga o que o operador via).
+    var comDados = st.status === "error" && st.data;
+    var m = promoSync.modelo(st.data, {
       formatDate: formatShortDateTime,
-      erro: st.status === "error" ? st.error : null,
+      erro: st.status === "error" && !comDados ? st.error : null,
     });
+    if (comDados) {
+      m.detalhe = [m.detalhe, "Não foi possível reler o estado agora (" + st.error + ")" +
+        (st.retentando ? "; tentando de novo…" : "; reabra a aba para tentar de novo.")].filter(Boolean).join(" · ");
+    }
     var botao = m.botao;
     var rotulo = state.promoSyncPedindo ? "Pedindo…" : botao.rotulo;
     var habilitado = botao.habilitado && !state.promoSyncPedindo;

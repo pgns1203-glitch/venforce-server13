@@ -237,6 +237,14 @@ function criarBackend({ deps, depsOp, atrasos }) {
     return next();
   });
   app.use(express.json());
+  // Falha transitória injetada: as próximas N leituras de status dão 503.
+  app.use((req, res, next) => {
+    if (/\/promocoes\/status$/.test(req.path) && atrasos.falharStatus > 0) {
+      atrasos.falharStatus -= 1;
+      return res.status(503).json({ ok: false, erro: "indisponível (teste)" });
+    }
+    return next();
+  });
   // Atraso por conta no status (resposta atrasada da conta anterior).
   app.use((req, res, next) => {
     const conta = String(req.query.clienteContaId || (req.body && req.body.clienteContaId) || "");
@@ -770,6 +778,70 @@ async function main() {
       env.PROMO_SNAPSHOT_CLIENTES = "";
     });
 
+    await check("17. run na fila com o worker DESLIGADO: status e POST dizem WORKER_DESABILITADO (nunca 'reaproveitado'); religado, o run anda", async () => {
+      await worker.stop();
+      worker = null;
+      env.PROMO_SNAPSHOT_WORKER_ENABLED = "false";
+      await passarCooldown(87);
+      const { run } = await service.enqueuePromoSnapshotRun(
+        { clienteId: ALIANZA.id, clienteSlug: ALIANZA.slug, clienteContaId: 87, marketplace: "meli", sellerId: C87.seller },
+        { reason: "manual_sync" }, { db, repo, env, logger });
+      const s = await status(87);
+      assert.strictEqual(s.sync.activeRun.runId, run.id);
+      assert.strictEqual(s.atualizacao.motivo, "WORKER_DESABILITADO");
+      assert.strictEqual(s.atualizacao.runParado, run.id);
+      const r = await sync(87);
+      assert.strictEqual(r.body.enfileirado, false);
+      assert.notStrictEqual(r.body.reaproveitado, true);
+      assert.strictEqual(r.body.motivo, "WORKER_DESABILITADO");
+      env.PROMO_SNAPSHOT_WORKER_ENABLED = "true";
+      worker = iniciarWorker();
+      worker.kick();
+      const fim = await esperarRunTerminar(87);
+      assert.strictEqual(fim.ultimaTentativa.runId, run.id);
+      assert.strictEqual(fim.ultimaTentativa.status, "completed");
+    });
+
+    await check("18. poda com teto por DELETE: volume grande sai em várias podas (pendente), nunca toca atual/anterior", async () => {
+      const conta = (await q(`SELECT current_run_id FROM promo_snapshot_contas WHERE cliente_conta_id = 87`))[0];
+      const atual = Number(conta.current_run_id);
+      const linhasAtual = (await q(`SELECT count(*)::int n FROM promo_snapshot_itens WHERE run_id = $1`, [atual]))[0].n;
+      // Histórico artificial: 12 runs falhos NÃO retomáveis com 400 linhas e 30 lotes cada.
+      const artificiais = [];
+      for (let k = 0; k < 12; k += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        const r = (await q(`INSERT INTO promo_snapshot_runs (cliente_id, cliente_slug, cliente_conta_id, marketplace, seller_id, reason, status, finished_at, error_code)
+                             VALUES ($1,$2,87,'meli',$3,'teste','failed', NOW() - INTERVAL '3 hours','PROMO_SNAPSHOT_LOTES_FALHANDO') RETURNING id`,
+          [ALIANZA.id, ALIANZA.slug, C87.seller]))[0];
+        artificiais.push(Number(r.id));
+        // eslint-disable-next-line no-await-in-loop
+        await pool.query(`INSERT INTO promo_snapshot_itens (run_id, cliente_id, cliente_conta_id, seller_id, item_id, promocao_chave, observed_at)
+                          SELECT $1, $2, 87, $3, 'MLBX' || g, 'k', NOW() FROM generate_series(1, 400) g`, [r.id, ALIANZA.id, C87.seller]);
+        // eslint-disable-next-line no-await-in-loop
+        await pool.query(`INSERT INTO promo_snapshot_run_lotes (run_id, seq, item_ids) SELECT $1, g, ARRAY['MLBX'||g] FROM generate_series(1, 30) g`, [r.id]);
+      }
+      const rodadas = [];
+      for (let i = 0; i < 30; i += 1) {
+        // eslint-disable-next-line no-await-in-loop
+        const p = await repo.podarHistoricoDaConta({ clienteContaId: 87, manterRuns: 5, resumeMaxMinutes: 60, linhasPorDelete: 500, deletesMax: 4 }, db);
+        rodadas.push(p);
+        if (!p.pendente) break;
+      }
+      assert.ok(rodadas.length > 1, "o volume não cabe numa poda só com o teto");
+      assert.ok(rodadas.every((p) => p.itens + p.lotes <= 500 * 4), JSON.stringify(rodadas));
+      assert.strictEqual(rodadas[rodadas.length - 1].pendente, false);
+      assert.strictEqual((await q(`SELECT count(*)::int n FROM promo_snapshot_itens WHERE item_id LIKE 'MLBX%'`))[0].n, 0);
+      assert.strictEqual((await q(`SELECT count(*)::int n FROM promo_snapshot_itens WHERE run_id = $1`, [atual]))[0].n, linhasAtual, "snapshot atual intacto");
+      // Sobram só: os 5 terminados mais novos + protegidos (atual, anterior,
+      // retomáveis dentro da janela). Nenhum dos 12 runs artificiais.
+      const restantes = await contaRuns(87);
+      const ficaram = restantes.map((x) => Number(x.id)).filter((id) => artificiais.includes(id));
+      assert.deepStrictEqual(ficaram, artificiais.slice(-5), "dos 12 runs, ficam só os 5 mais novos (sem linhas)");
+      assert.ok(restantes.some((x) => Number(x.id) === atual), "snapshot atual preservado");
+      console.log(`      runs restantes da 87: ${restantes.map((x) => x.id + ":" + x.status + (x.error_code ? ":" + x.error_code.replace("PROMO_SNAPSHOT_", "") : "")).join(" ")}`);
+      console.log(`      poda em ${rodadas.length} rodadas (teto 4 DELETEs × 500 linhas): ${rodadas.map((p) => p.itens + p.lotes).join(", ")} linhas`);
+    });
+
     console.log(`      pico de conexões do pool do teste: ${Math.max(m.picoConexoes, mHttp.picoConexoes)} (max=4) · consultas: worker=${m.consultas} http=${mHttp.consultas}`);
     assert.ok(Math.max(m.picoConexoes, mHttp.picoConexoes) <= 4);
 
@@ -959,6 +1031,43 @@ async function main() {
         await ev(`document.querySelector('[data-view="promotions"]').click()`);
         await esperar(`document.getElementById('cm-promo-sync').getAttribute('data-cm-promo-sync') === 'sincronizando'`, "acompanhamento não retomou");
         await esperar(`document.getElementById('cm-promo-sync').getAttribute('data-cm-promo-sync') === 'atualizado'`, "run não terminou", { tentativas: 800 });
+        roteiro.latenciaMs = 5;
+      });
+
+      await check("UI 9. run RÁPIDO (termina antes do 1º status): a Central recarrega lista e indicadores mesmo assim", async () => {
+        await passarCooldown(87);
+        roteiro.latenciaMs = 0;
+        await ev(`document.querySelector('[data-view="operational"]').click()`);
+        await ev(`document.querySelector('[data-view="promotions"]').click()`);
+        await esperar(`(document.querySelector('[data-cm-promo-sync-acao]')||{}).disabled === false`, "Atualizar não habilitou", { tentativas: 600 });
+        // O status da 87 atrasa: o run termina antes da primeira leitura.
+        atrasos["/operacao/central-margem/alianza-jeans/promocoes/status|87"] = 1500;
+        const listasAntes = backend.log.filter((r) => /precificacao\/oportunidades$/.test(r.path)).length;
+        const runsAntes = (await contaRuns(87)).length;
+        await ev(`document.querySelector('[data-cm-promo-sync-acao]').click()`);
+        await aguardar(async () => {
+          const rr = await contaRuns(87);
+          return rr.length > runsAntes && !rr.some((x) => ["queued", "running"].includes(x.status));
+        }, "run rápido não terminou");
+        await esperar(`/Atualização concluída/.test(document.getElementById('cm-promo-sync').innerText)`, "aviso de conclusão não apareceu", { tentativas: 400 });
+        delete atrasos["/operacao/central-margem/alianza-jeans/promocoes/status|87"];
+        const listasDepois = backend.log.filter((r) => /precificacao\/oportunidades$/.test(r.path)).length;
+        assert.ok(listasDepois > listasAntes, "a lista foi relida depois do run rápido");
+        roteiro.latenciaMs = 5;
+      });
+
+      await check("UI 10. 503 transitório no status durante o run: a barra mantém a leitura, avisa, retenta e conclui", async () => {
+        await passarCooldown(87);
+        roteiro.latenciaMs = 60;
+        await ev(`document.querySelector('[data-view="operational"]').click()`);
+        await ev(`document.querySelector('[data-view="promotions"]').click()`);
+        await esperar(`(document.querySelector('[data-cm-promo-sync-acao]')||{}).disabled === false`, "Atualizar não habilitou", { tentativas: 600 });
+        await ev(`document.querySelector('[data-cm-promo-sync-acao]').click()`);
+        await esperar(`document.getElementById('cm-promo-sync').getAttribute('data-cm-promo-sync') === 'sincronizando'`, "não entrou em sincronizando");
+        atrasos.falharStatus = 2;
+        await esperar(`/tentando de novo/.test(document.getElementById('cm-promo-sync').innerText)`, "aviso de retentativa não apareceu", { tentativas: 400 });
+        await esperar(`document.getElementById('cm-promo-sync').getAttribute('data-cm-promo-sync') === 'atualizado'`, "não concluiu depois do 503", { tentativas: 1200 });
+        await esperar(`/Atualização concluída/.test(document.getElementById('cm-promo-sync').innerText)`, "não recarregou depois do 503");
         roteiro.latenciaMs = 5;
       });
 

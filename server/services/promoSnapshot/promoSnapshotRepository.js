@@ -753,8 +753,10 @@ async function reconcileStaleRunningRuns({ staleMinutes, clienteContaId = null }
  *      não promovido — nunca o snapshot atual/anterior);
  *   3. o registro do run além dos `manterRuns` terminados mais novos (o
  *      CASCADE leva o que sobrou de linhas e lotes).
- * Três DELETEs curtos, sem transação longa e sem chamada externa; idempotente
- * (rodar de novo não apaga mais nada). Devolve as contagens.
+ * DELETEs curtos (no máximo PODA_LINHAS_POR_DELETE linhas cada, no máximo
+ * PODA_DELETES_MAX por poda), sem transação longa e sem chamada externa;
+ * idempotente. O que passar do teto fica para a próxima poda da conta
+ * (`pendente: true`). Devolve as contagens.
  */
 const SQL_PROTEGIDOS = `
   SELECT current_run_id AS id FROM promo_snapshot_contas WHERE cliente_conta_id = $1 AND current_run_id IS NOT NULL
@@ -766,39 +768,83 @@ const SQL_PROTEGIDOS = `
          WHERE cliente_conta_id = $1 AND status = 'failed' AND error_code = ANY($2::text[])
            AND finished_at > NOW() - make_interval(mins => $3::int)`;
 
-async function podarHistoricoDaConta({ clienteContaId, manterRuns, resumeMaxMinutes = 0 }, db = pool) {
+// Teto por DELETE e por poda: a instância do Render é pequena. O que sobrar
+// fica para o próximo término de run da conta (`pendente: true`).
+const PODA_LINHAS_POR_DELETE = 5000;
+const PODA_DELETES_MAX = 20;
+
+async function apagarEmLotes(db, sql, params, limite, orcamento) {
+  let total = 0;
+  while (orcamento.restantes > 0) {
+    orcamento.restantes -= 1;
+    // eslint-disable-next-line no-await-in-loop
+    const r = await db.query(sql, [...params, limite]);
+    const n = r.rowCount || 0;
+    total += n;
+    if (n < limite) return { total, completo: true };
+  }
+  return { total, completo: false };
+}
+
+async function podarHistoricoDaConta({
+  clienteContaId, manterRuns, resumeMaxMinutes = 0,
+  linhasPorDelete = PODA_LINHAS_POR_DELETE, deletesMax = PODA_DELETES_MAX,
+}, db = pool) {
   const conta = Number(clienteContaId);
   if (!Number.isSafeInteger(conta) || conta <= 0) throw new Error("podarHistoricoDaConta: clienteContaId é obrigatório.");
   const manter = Number(manterRuns);
   if (!Number.isInteger(manter) || manter < 1) throw new Error("podarHistoricoDaConta: manterRuns inválido.");
+  const limite = Math.max(1, Math.trunc(Number(linhasPorDelete)) || PODA_LINHAS_POR_DELETE);
+  const orcamento = { restantes: Math.max(3, Math.trunc(Number(deletesMax)) || PODA_DELETES_MAX) };
   const janela = Math.max(0, Math.trunc(Number(resumeMaxMinutes) || 0)) + 60;
   await ensureTables(db);
   const params = [conta, ERROS_RETOMAVEIS, janela];
-  const lotes = await db.query(
-    `DELETE FROM promo_snapshot_run_lotes l
-       USING promo_snapshot_runs r
-      WHERE l.run_id = r.id AND r.cliente_conta_id = $1 AND r.status IN ('completed','partial','failed')
-        AND NOT EXISTS (SELECT 1 FROM (${SQL_PROTEGIDOS}) p WHERE p.id = r.id)`,
-    params
-  );
-  const itens = await db.query(
-    `DELETE FROM promo_snapshot_itens i
-       USING promo_snapshot_runs r
-      WHERE i.run_id = r.id AND r.cliente_conta_id = $1 AND r.status IN ('completed','partial','failed')
-        AND NOT EXISTS (SELECT 1 FROM (${SQL_PROTEGIDOS}) p WHERE p.id = r.id)`,
-    params
-  );
-  const runs = await db.query(
-    `DELETE FROM promo_snapshot_runs r
-      WHERE r.cliente_conta_id = $1 AND r.status IN ('completed','partial','failed')
-        AND NOT EXISTS (SELECT 1 FROM (${SQL_PROTEGIDOS}) p WHERE p.id = r.id)
-        AND r.id NOT IN (
-          SELECT k.id FROM promo_snapshot_runs k
-           WHERE k.cliente_conta_id = $1 AND k.status IN ('completed','partial','failed')
-           ORDER BY k.id DESC LIMIT $4)`,
-    [...params, manter]
-  );
-  return { lotes: lotes.rowCount || 0, itens: itens.rowCount || 0, runs: runs.rowCount || 0 };
+  const naoProtegido = `r.cliente_conta_id = $1 AND r.status IN ('completed','partial','failed')
+        AND NOT EXISTS (SELECT 1 FROM (${SQL_PROTEGIDOS}) p WHERE p.id = r.id)`;
+  // 1. lotes (PK run_id+seq), no máximo `limite` por DELETE.
+  const lotes = await apagarEmLotes(db,
+    `DELETE FROM promo_snapshot_run_lotes
+      WHERE (run_id, seq) IN (
+        SELECT l.run_id, l.seq FROM promo_snapshot_run_lotes l
+          JOIN promo_snapshot_runs r ON r.id = l.run_id
+         WHERE ${naoProtegido}
+         LIMIT $4)`,
+    params, limite, orcamento);
+  // 2. linhas de promoções (PK id), idem.
+  const itens = await apagarEmLotes(db,
+    `DELETE FROM promo_snapshot_itens
+      WHERE id IN (
+        SELECT i.id FROM promo_snapshot_itens i
+          JOIN promo_snapshot_runs r ON r.id = i.run_id
+         WHERE ${naoProtegido}
+         LIMIT $4)`,
+    params, limite, orcamento);
+  // 3. registros de run além dos `manter` mais novos — só os já sem linhas e
+  //    sem lotes (o CASCADE nunca vira um DELETE grande escondido).
+  let runs = 0;
+  if (orcamento.restantes > 0) {
+    orcamento.restantes -= 1;
+    const r = await db.query(
+      `DELETE FROM promo_snapshot_runs
+        WHERE id IN (
+          SELECT r.id FROM promo_snapshot_runs r
+           WHERE ${naoProtegido}
+             AND NOT EXISTS (SELECT 1 FROM promo_snapshot_itens i WHERE i.run_id = r.id)
+             AND NOT EXISTS (SELECT 1 FROM promo_snapshot_run_lotes l WHERE l.run_id = r.id)
+             AND r.id NOT IN (
+               SELECT k.id FROM promo_snapshot_runs k
+                WHERE k.cliente_conta_id = $1 AND k.status IN ('completed','partial','failed')
+                ORDER BY k.id DESC LIMIT $4)
+           ORDER BY r.id
+           LIMIT $5)`,
+      [...params, manter, limite]
+    );
+    runs = r.rowCount || 0;
+  }
+  return {
+    lotes: lotes.total, itens: itens.total, runs,
+    pendente: !lotes.completo || !itens.completo || orcamento.restantes <= 0,
+  };
 }
 
 // ─── Leitura do estado / snapshot ────────────────────────────────────────────

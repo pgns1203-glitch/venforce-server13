@@ -132,6 +132,17 @@
       ? "Leitura de " + dataTexto(sync.snapshotAt, formatDate) + (idadeTexto(sync.ageMinutes) ? " (" + idadeTexto(sync.ageMinutes) + ")" : "")
       : "";
 
+    // Run na fila/em execução, mas o worker está desligado neste ambiente: ele
+    // NÃO vai avançar — nunca mostrar como "atualizando".
+    if (sync.activeRun && at.motivo === "WORKER_DESABILITADO") {
+      return {
+        estado: "parado", tom: "warning",
+        titulo: "Há uma leitura desta conta na fila, mas a atualização está desligada neste ambiente: ela não vai avançar.",
+        detalhe: [at.mensagem, sync.hasSnapshot ? snapshotTxt + " continua sendo a última leitura válida." : "Nenhuma leitura válida desta conta ainda."].filter(Boolean).join(" · "),
+        conta: conta, progresso: null, acompanhar: false, botao: botao,
+      };
+    }
+
     if (sync.activeRun) {
       var p = progressoDoRun(sync);
       botao.habilitado = false;
@@ -140,7 +151,7 @@
       return {
         estado: "sincronizando", tom: "info",
         titulo: "Atualizando as promoções desta conta",
-        detalhe: [textoDoProgresso(p), sync.hasSnapshot ? snapshotTxt + " continua exibida até terminar." : ""].filter(Boolean).join(" · "),
+        detalhe: [textoDoProgresso(p), sync.hasSnapshot ? snapshotTxt + " continua exibida até terminar." : "", aviso].filter(Boolean).join(" · "),
         conta: conta, progresso: p, acompanhar: true, botao: botao,
       };
     }
@@ -196,19 +207,40 @@
   }
 
   /**
-   * O run que a barra acompanhava terminou? (havia run ativo e agora não há.)
-   * Usado para recarregar a lista e os indicadores da conta.
+   * O run que a barra acompanhava terminou? Usado para recarregar a lista e
+   * os indicadores da conta. Três sinais (qualquer um basta):
+   *   - havia run ativo na leitura anterior e agora não há;
+   *   - o run PEDIDO por este operador (runId do POST) já não está ativo —
+   *     cobre o run rápido que termina antes do primeiro GET de status;
+   *   - o snapshot atual da conta mudou (outro run promoveu um snapshot novo).
    */
-  function terminou(anterior, atual) {
-    var antes = anterior && anterior.sync && anterior.sync.activeRun;
+  function terminou(anterior, atual, runPedido) {
     var agora = atual && atual.sync && atual.sync.activeRun;
-    return Boolean(antes && !agora);
+    var antes = anterior && anterior.sync && anterior.sync.activeRun;
+    if (antes && !agora) return true;
+    if (runPedido && (!agora || agora.runId !== runPedido)) return true;
+    var snapAntes = anterior && anterior.sync && anterior.sync.snapshotRunId;
+    var snapAgora = atual && atual.sync && atual.sync.snapshotRunId;
+    return Boolean(snapAntes && snapAgora && snapAntes !== snapAgora);
+  }
+
+  /**
+   * Quando reler o status sem run ativo: só no cooldown (o botão volta a
+   * habilitar sozinho quando ele vence). null = não precisa.
+   */
+  function releituraEmMs(status) {
+    var at = status && status.atualizacao;
+    if (!at || at.disponivel || at.motivo !== "COOLDOWN") return null;
+    var min = Number(at.cooldownRestanteMinutos);
+    if (!Number.isFinite(min) || min <= 0) return null;
+    return Math.min(min, 16) * 60000 + 2000;
   }
 
   return {
     modelo: modelo,
     resultadoDoPedido: resultadoDoPedido,
     terminou: terminou,
+    releituraEmMs: releituraEmMs,
     progressoDoRun: progressoDoRun,
     idadeTexto: idadeTexto,
   };

@@ -88,6 +88,10 @@ function syncPublico(estado, gatilho) {
 //   FORA_DO_PILOTO       esta conta não está na allowlist
 //   EM_ANDAMENTO         já existe run desta conta na fila/em execução
 //   COOLDOWN             última tentativa (não falha) há menos que o cooldown
+// Precedência: grant > worker > allowlist > em andamento > cooldown. Um run
+// que já existe NUNCA esconde o worker desligado nem a conta fora do piloto
+// (o run fica visível em `sync.activeRun`, mas a tela é avisada do
+// impedimento; com o worker desligado ele não progride — `runParado`).
 const MENSAGEM_ATUALIZACAO = Object.freeze({
   CONTA_SEM_GRANT_ML: "A conta não tem conexão do Mercado Livre vinculada.",
   WORKER_DESABILITADO: "A atualização de promoções está desligada neste ambiente (PROMO_SNAPSHOT_WORKER_ENABLED).",
@@ -100,10 +104,11 @@ const MENSAGEM_ATUALIZACAO = Object.freeze({
 function avaliarAtualizacaoManual({ config, identidade, estado, agoraMs }) {
   const nao = (motivo, extra = {}) => ({ disponivel: false, motivo, mensagem: MENSAGEM_ATUALIZACAO[motivo], ...extra });
   if (!identidade.sellerId) return nao("CONTA_SEM_GRANT_ML");
-  if (estado && estado.activeRun) return nao("EM_ANDAMENTO", { runId: estado.activeRun.runId });
-  if (!config.workerEnabled) return nao("WORKER_DESABILITADO");
+  const ativo = estado && estado.activeRun ? estado.activeRun.runId : null;
+  if (!config.workerEnabled) return nao("WORKER_DESABILITADO", ativo ? { runParado: ativo } : {});
   const piloto = avaliarPiloto(config, identidade.clienteSlug, identidade.clienteContaId);
-  if (!piloto.noPiloto) return nao(piloto.motivo);
+  if (!piloto.noPiloto) return nao(piloto.motivo, ativo ? { runId: ativo } : {});
+  if (ativo) return nao("EM_ANDAMENTO", { runId: ativo });
   const c = estado && estado._conta;
   const ultima = c && c.lastAttemptAt ? new Date(c.lastAttemptAt).getTime() : NaN;
   const desde = agoraMs - ultima;

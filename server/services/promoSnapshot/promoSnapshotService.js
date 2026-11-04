@@ -240,7 +240,7 @@ function criarRunService(deps = {}) {
       }, db);
       if (podado && (podado.runs || podado.itens || podado.lotes)) {
         logEvento(d.logger, "log", "promo_snapshot_retencao", {
-          cliente_conta_id: run.clienteContaId, run_id: run.id, runs: podado.runs, itens: podado.itens, lotes: podado.lotes,
+          cliente_conta_id: run.clienteContaId, run_id: run.id, runs: podado.runs, itens: podado.itens, lotes: podado.lotes, pendente: podado.pendente === true,
         });
       }
       return podado;

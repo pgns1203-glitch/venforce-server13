@@ -133,4 +133,40 @@ check("terminou: havia run ativo e agora não há", () => {
   assert.strictEqual(S.terminou(null, livre), false);
 });
 
+check("run na fila com worker DESLIGADO: estado 'parado', nunca 'atualizando', sem acompanhar", () => {
+  const m = S.modelo(status({
+    sync: { state: "syncing", hasSnapshot: true, snapshotAt: "x", ageMinutes: 60, activeRun: { runId: 5, status: "queued", itensProcessados: 0 } },
+    atualizacao: { disponivel: false, motivo: "WORKER_DESABILITADO", mensagem: "desligada neste ambiente", runParado: 5 },
+  }), { formatDate: fmt });
+  assert.strictEqual(m.estado, "parado");
+  assert.strictEqual(m.acompanhar, false);
+  assert.strictEqual(m.botao.habilitado, false);
+  assert.ok(/não vai avançar/.test(m.titulo));
+});
+
+check("run em andamento com conta fora do piloto: acompanha e mostra o aviso", () => {
+  const m = S.modelo(status({
+    sync: { state: "syncing", hasSnapshot: false, activeRun: { runId: 5, status: "running", itensProcessados: 3, itensTotal: 10 } },
+    atualizacao: { disponivel: false, motivo: "FORA_DO_PILOTO", mensagem: "não está liberada", runId: 5 },
+  }));
+  assert.strictEqual(m.estado, "sincronizando");
+  assert.ok(/não está liberada/.test(m.detalhe));
+});
+
+check("terminou: run PEDIDO que já saiu da fila antes do 1º status (run rápido) e troca de snapshot", () => {
+  const livreA = { sync: { activeRun: null, snapshotRunId: 10 } };
+  const livreB = { sync: { activeRun: null, snapshotRunId: 11 } };
+  assert.strictEqual(S.terminou(livreA, livreA, 77), true, "run pedido não está mais ativo");
+  assert.strictEqual(S.terminou(livreA, { sync: { activeRun: { runId: 77 }, snapshotRunId: 10 } }, 77), false, "ainda rodando");
+  assert.strictEqual(S.terminou(livreA, livreB, null), true, "snapshot novo promovido");
+  assert.strictEqual(S.terminou(livreA, livreA, null), false);
+});
+
+check("releituraEmMs: só no cooldown, até 16 min", () => {
+  assert.strictEqual(S.releituraEmMs(status({ atualizacao: { disponivel: false, motivo: "COOLDOWN", cooldownRestanteMinutos: 3 } })), 3 * 60000 + 2000);
+  assert.strictEqual(S.releituraEmMs(status({ atualizacao: { disponivel: false, motivo: "COOLDOWN", cooldownRestanteMinutos: 400 } })), 16 * 60000 + 2000);
+  assert.strictEqual(S.releituraEmMs(status()), null);
+  assert.strictEqual(S.releituraEmMs(status({ atualizacao: { disponivel: false, motivo: "WORKER_DESABILITADO" } })), null);
+});
+
 console.log(`# ${checks} testes da barra de atualização das promoções`);

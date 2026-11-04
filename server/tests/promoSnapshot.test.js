@@ -1586,6 +1586,37 @@ cenario("allowlist no POST /sync: conta fora da lista → FORA_DO_PILOTO, nada e
   assert.strictEqual((await read.solicitarSync({ clienteSlug: "loja-b", clienteContaId: 9 }, depsLeitura(vazio))).motivo, "PILOTO_VAZIO");
 });
 
+cenario("run já existente NUNCA esconde worker desligado nem conta fora do piloto (status e POST dizem o impedimento)", async () => {
+  const amb = ambiente();
+  const { run } = await amb.enfileirar(7);
+  // Worker desligado depois do enqueue: o run fica parado na fila.
+  amb.env.PROMO_SNAPSHOT_WORKER_ENABLED = "false";
+  const st = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(st.sync.activeRun.runId, run.id, "o run continua visível");
+  assert.strictEqual(st.atualizacao.disponivel, false);
+  assert.strictEqual(st.atualizacao.motivo, "WORKER_DESABILITADO");
+  assert.strictEqual(st.atualizacao.runParado, run.id);
+  const post = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(post.enfileirado, false);
+  assert.notStrictEqual(post.reaproveitado, true, "não pode dizer que reaproveitou um run que não vai andar");
+  assert.strictEqual(post.motivo, "WORKER_DESABILITADO");
+  // Conta tirada do piloto com run na fila: avisa FORA_DO_PILOTO.
+  amb.env.PROMO_SNAPSHOT_WORKER_ENABLED = "true";
+  amb.env.PROMO_SNAPSHOT_CLIENTES = "loja-b";
+  const st2 = await read.obterStatus({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(st2.atualizacao.motivo, "FORA_DO_PILOTO");
+  assert.strictEqual(st2.atualizacao.runId, run.id);
+  const post2 = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(post2.enfileirado, false);
+  assert.strictEqual(post2.motivo, "FORA_DO_PILOTO");
+  // De volta ao piloto: EM_ANDAMENTO, e o POST reaproveita o MESMO run.
+  amb.env.PROMO_SNAPSHOT_CLIENTES = "loja-a";
+  const post3 = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));
+  assert.strictEqual(post3.reaproveitado, true);
+  assert.strictEqual(post3.runId, run.id);
+  assert.strictEqual(amb.repo._st.runs.length, 1);
+});
+
 cenario("allowlist por CONTA (PROMO_SNAPSHOT_CONTAS): libera só a conta 8 — a conta 7 do MESMO cliente continua fora", async () => {
   const amb = ambiente({ env: { PROMO_SNAPSHOT_CLIENTES: "", PROMO_SNAPSHOT_CONTAS: "8, x, 8" } });
   const sete = await read.solicitarSync({ clienteSlug: "loja-a", clienteContaId: 7 }, depsLeitura(amb));

@@ -414,6 +414,7 @@
 .vf-page-central-margem .cm-promos__live { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
 .vf-page-central-margem .cm-promos__live.is-cotado { color: var(--vf-success-strong); }
 .vf-page-central-margem .cm-promos__live.is-est { color: var(--vf-warning-strong); }
+.vf-page-central-margem .cm-promos__live.is-nd { color: var(--vf-text-secondary); }
 .vf-page-central-margem .cm-promos__badge { margin: 0; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
 .vf-page-central-margem .cm-promos__decisao { order: -1; flex: 1 0 100%; display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: var(--vf-sp-1) var(--vf-sp-4); margin-bottom: 2px; }
 .vf-page-central-margem .cm-promos__resumo { color: var(--vf-text); font-size: var(--vf-fs-sm); font-weight: 600; }

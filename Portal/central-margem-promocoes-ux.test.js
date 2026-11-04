@@ -109,6 +109,8 @@ const CONTAS = {
 CONTAS[87].itens[3].semComissao = true;
 CONTAS[87].itens[5].herdada = true;
 CONTAS[86].itens[2].semComissao = true;
+// Uma promoção da 86 com subsídio do ML maior que o desconto: vale entrar (o resumo tem o que somar).
+(function () { const it = CONTAS[86].itens[0]; it.custo = Math.round(it.preco * 0.25 * 100) / 100; const pr = it.promos[0]; pr.status = "candidate"; pr.retornoMl = Math.round((it.preco - pr.precoPromo) * 1.3 * 100) / 100; })();
 
 // Estado de cada conta (o teste muda no meio do roteiro).
 const ESTADO = { 86: { modo: "atualizado", vendasIndisponiveis: false }, 87: { modo: "atualizado", vendasIndisponiveis: false } };
@@ -139,7 +141,11 @@ function candidatas(conta, viva) {
         precoPromo: pr.precoPromo, retornoMl: pr.retornoMl, snap: snapDoItem(it), precoOriginalPromo: it.preco, titulo: null,
         vendasPorMlb, vendasIndisponivel, rebateAtual: null, rebateIndisponivel: null,
       };
-      if (viva && !it.semComissao) {
+      if (viva && it.semComissao) {
+        // A cotação ao vivo foi tentada e não veio completa: o núcleo bloqueia (nada é estimado).
+        args.cotacaoReal = { comissao: null, frete: it.frete, frete_aplicavel: true, limite_excedido: false,
+          fonte: { comissao: "ml_listing_prices", frete: "ml_shipping_options_free" }, consultado_em: new Date(AGORA).toISOString(), motivos: { comissao: "indisponivel" } };
+      } else if (viva) {
         const freteNovo = pr.precoPromo < 79 ? 0 : it.frete;
         args.cotacaoReal = {
           comissao: Math.round(pr.precoPromo * it.taxa * 100) / 100, frete: freteNovo, frete_aplicavel: true, limite_excedido: false,
@@ -593,6 +599,12 @@ async function run() {
       await shot("05-busca-vazia");
       await cdp.evaluate("document.querySelector('[data-cm-limpar-busca]').click()");
       await waitFor(cdp, `${pronto} && document.querySelectorAll('#cm-opps-host tr.cm-promo-row').length === 20 && document.getElementById('cm-promo-busca').value === ''`, "limpar busca não voltou");
+      // Corrida: digitar e, antes do debounce, trocar a ordem — o texto pendente não pode sumir.
+      await cdp.evaluate("(function(){var i=document.getElementById('cm-promo-busca'); i.value='jaqueta'; i.dispatchEvent(new Event('input',{bubbles:true})); i.blur(); var o=document.getElementById('cm-promo-ordem'); o.value='margem'; o.dispatchEvent(new Event('change',{bubbles:true}));})()");
+      await waitFor(cdp, `${pronto} && window.VFCentralMargemUi.getState().oppsFilters.busca === 'jaqueta' && document.getElementById('cm-promo-busca').value === 'jaqueta'`, "a busca digitada sumiu antes do debounce");
+      assert.ok(chamadas.opps.some((c) => c.busca === "jaqueta" && c.ordem === "margem"), "busca e ordem aplicadas juntas");
+      await cdp.evaluate("document.querySelector('#cm-opps-host [data-cm-limpar-busca]') ? document.querySelector('[data-cm-limpar-busca]').click() : (function(){var i=document.getElementById('cm-promo-busca'); i.value=''; i.dispatchEvent(new Event('input',{bubbles:true}));})(); (function(){var o=document.getElementById('cm-promo-ordem'); o.value=''; o.dispatchEvent(new Event('change',{bubbles:true}));})()");
+      await waitFor(cdp, `${pronto} && !window.VFCentralMargemUi.getState().oppsFilters.busca && !window.VFCentralMargemUi.getState().oppsFilters.ordem && document.querySelectorAll('#cm-opps-host tr.cm-promo-row').length === 20`, "não voltou à lista padrão");
     });
 
     await check("Recortes por veredito: 'Vale entrar' e 'Bloqueado' filtram no servidor; o bloqueado diz o motivo e não mostra número inventado", async () => {
@@ -606,6 +618,12 @@ async function run() {
       const lin = await texto("#cm-opps-host tr.cm-promo-row");
       assert.ok(/tarifa do Mercado Livre indisponível|comissão atual ausente|faltam dados/.test(lin), `motivo do bloqueio: ${lin}`);
       assert.ok(/indisponível/.test(await texto("#cm-opps-host tr.cm-promo-row [data-cm-lc]")), "lucro indisponível, não zero");
+      if (!MODO_ANTES) {
+        await waitFor(cdp, "document.getElementById('cm-promos-live').getAttribute('data-cm-live') === 'ok'");
+        const leg = await texto("#cm-promos-live");
+        assert.ok(/^Sem números nestas linhas/.test(leg) && !/≈|estimad/.test(leg.replace("nada foi estimado", "")), `legenda de linha sem número não diz 'estimado': ${leg}`);
+        assert.strictEqual(await cdp.evaluate("document.querySelector('#cm-opps-host tr.cm-promo-row .cm-est')"), null, "sem '≈' em linha sem número");
+      }
       await semOverflow("bloqueados");
       await shot("07-bloqueado-financeiro-incompleto");
       await cdp.evaluate("document.querySelector('[data-cm-seg=\"\"]').click()");
@@ -718,6 +736,7 @@ async function run() {
       const ids = await linhas();
       assert.ok(ids.length && ids.every((id) => id.startsWith("MLB41")), `só anúncios da 86: ${ids.join(",")}`);
       assert.ok(!/MLB54/.test(await texto("#cm-opps-host")), "nada da 87");
+      if (!MODO_ANTES) assert.ok(/^Vale entrar em \d+ anúncios? \(vendas do período indisponíveis: o impacto não é somado\)$/.test(await texto("#cm-promo-resumo")), `resumo nunca troca 'indisponível' por 'sem vendas': ${await texto("#cm-promo-resumo")}`);
       if (!MODO_ANTES) assert.ok(/conta=86$/.test(await cdp.evaluate("document.getElementById('cm-promo-executar').href")), "o atalho acompanha a conta do Shell");
       assert.ok(/vendas indisp\./.test(await texto("#cm-opps-host")), "vendas indisponíveis ditas");
       assert.ok(!/\b0 un\./.test(await texto("#cm-opps-host")), "nunca '0 un.'");

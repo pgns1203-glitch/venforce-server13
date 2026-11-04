@@ -2369,7 +2369,8 @@
     if (!refs.promoVeredito) return;
     refs.promoVeredito.value = state.oppsFilters.veredito || "";
     if (refs.promoOrdem) refs.promoOrdem.value = state.oppsFilters.ordem || "";
-    if (refs.promoBusca && document.activeElement !== refs.promoBusca && refs.promoBusca.value.trim() !== (state.oppsFilters.busca || "")) refs.promoBusca.value = state.oppsFilters.busca || "";
+    // Nunca sobrescreve o que o gestor digitou e ainda não foi aplicado (debounce pendente ou campo em foco).
+    if (refs.promoBusca && !state.oppsBuscaTimer && document.activeElement !== refs.promoBusca && refs.promoBusca.value.trim() !== (state.oppsFilters.busca || "")) refs.promoBusca.value = state.oppsFilters.busca || "";
     renderPromoSeg();
     // Mantém os tipos da última resposta boa enquanto uma nova leitura carrega
     // (o seletor não pode perder as opções no meio de uma troca de filtro).
@@ -2427,6 +2428,10 @@
     } else if (state.oppsLive === "error") {
       texto = "≈ Valores estimados — a cotação no Mercado Livre está indisponível agora";
       tom = "is-est";
+    } else if (c.total && c.bloqueado === c.total) {
+      // Nenhuma linha tem número (a cotação foi tentada e não veio completa): não é estimativa.
+      texto = "Sem números nestas linhas — a cotação no Mercado Livre não veio completa (nada foi estimado)";
+      tom = "is-nd";
     } else if (state.oppsLive === "ok") {
       var bloqueadas = c.bloqueado ? " · " + c.bloqueado + (c.bloqueado === 1 ? " linha bloqueada" : " linhas bloqueadas") + " (a cotação não veio completa)" : "";
       if (c.simular > 0 && c.estimativa === 0) { texto = "Valores cotados agora no Mercado Livre · comissão e frete reais no preço da promoção (mesmo cálculo da Bancada)" + bloqueadas; tom = "is-cotado"; }
@@ -2700,7 +2705,8 @@
         var n = Number(r.entrar);
         var imp = contract.numberOrNull(r.impacto_lc);
         texto = "Vale entrar em " + formatInt(n) + (n === 1 ? " anúncio" : " anúncios") +
-          (imp !== null && Number(r.com_historico) > 0 ? ": " + (imp > 0 ? "+" : "") + formatMoneyShort(imp) + " de lucro no período" +
+          (o.vendas && o.vendas.realizado_motivo ? " (vendas do período indisponíveis: o impacto não é somado)" :
+          imp !== null && Number(r.com_historico) > 0 ? ": " + (imp > 0 ? "+" : "") + formatMoneyShort(imp) + " de lucro no período" +
             (Number(r.sem_historico) > 0 ? " (" + formatInt(r.sem_historico) + " sem vendas, fora da soma)" : "") : " (sem vendas no período para somar o impacto)");
       } else if (r) {
         texto = "Nenhuma promoção deste recorte vale entrar sem exigir mais vendas.";
@@ -2730,7 +2736,7 @@
       col("Promoção", "fim", "cm-c-promo", "Ordenar pelas que terminam antes") +
       col("Preço", "desconto", "num", "Preço na promoção; embaixo, o de hoje riscado e o desconto sobre o preço cheio. Ordenar pelo maior desconto") +
       col("ML banca", "subsidio", "num", "Quanto do desconto o Mercado Livre paga (embaixo, quanto você paga). Ordenar pelo maior subsídio") +
-      col("Lucro/un", "lucro", "num", "Lucro de contribuição por unidade na promoção e a diferença para hoje; embaixo, quanto isso vale no período. Ordenar pela melhor diferença por unidade") +
+      col("Lucro/un", "lucro", "num", "Lucro de contribuição por unidade na promoção e a diferença para hoje; embaixo, quanto isso vale no período. Ordenar pelo maior ganho por unidade (diferença contra hoje)") +
       col("Margem", "margem", "num", "Margem na promoção e a diferença para hoje. Ordenar pela maior") +
       col("Veredito", null, "cm-c-veredito") +
       '<th class="cm-c-acoes"><span class="vf-visually-hidden">Ações</span></th>' +

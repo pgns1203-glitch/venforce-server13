@@ -297,7 +297,7 @@ const texto = (sel) => `((${q(sel)} || {}).textContent || "").replace(/\\s+/g, "
 const clicar = (cdp, sel) => cdp.evaluate(`${q(sel)}.click()`);
 const contador = texto("[data-reb-contador]");
 const REC = (itemId) => `[data-reb-grupo-sec="recomendado"] [data-reb-item="${itemId}"]`;
-const escolhaMarcada = (itemId) => `(${q(`.am-reb-escolha[data-reb-item="${itemId}"] input[type=radio]:checked`)} || {}).value`;
+const escolhaMarcada = (itemId) => `(${q(`.am-reb-escolha[data-reb-item="${itemId}"] input[type=checkbox]:checked`)} || {}).value`;
 
 async function tecla(cdp, seletor, key) {
   await cdp.evaluate(`(${q(seletor)} || document.activeElement).dispatchEvent(new KeyboardEvent("keydown", { key: ${JSON.stringify(key)}, bubbles: true, cancelable: true }))`);

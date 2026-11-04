@@ -6415,7 +6415,7 @@
       '<span class="am-reb-opcao__cab"><input type="checkbox" id="' + id + '" name="' + nomeRadio + '" value="' + escapeAttr(o.valor) + '" data-reb-escolha="' + escapeAttr(itemId) + '"' +
         (sel ? " checked" : "") + '><span class="am-reb-opcao__nome" title="' + escapeAttr(o.promo || "") + '">' + escapeHtml(o.promo || "") + "</span>" +
         '<span class="am-reb-opcao__rotulo">' + escapeHtml(o.rotulo) + "</span></span>" +
-      (vig ? '<span class="am-reb-opcao__vigencia">Vigência: ' + escapeHtml(vig) + "</span>" : "") +
+      (vig ? '<span class="am-reb-opcao__vigencia" title="Vigência da promoção">' + escapeHtml(vig) + "</span>" : "") +
       '<span class="am-reb-metricas">' +
         '<span class="am-reb-metrica"><span class="am-reb-metrica__rotulo">Preço de venda</span>' +
           '<span class="am-reb-metrica__valor">' + formatMoeda(o.preco) + "</span>" + rebDeltaHtml(o.dPreco, "preco") + "</span>" +

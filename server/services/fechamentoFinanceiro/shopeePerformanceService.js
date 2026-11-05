@@ -441,6 +441,10 @@ function buildShopeeCostBridge(performanceRowsRaw) {
       variationName,
       variationSkus,
       principalSkus,
+      // Grafia BRUTA (só trim) do SKU principal: a normalização acima apaga
+      // caixa/espaços e faz anúncios distintos colidirem. Usada SOMENTE como
+      // desempate final de candidatos (FIN-865); nunca por índices/estratégias.
+      principalSkuRaw: identity(principalSkuRaw) ? String(principalSkuRaw).trim() : "",
     };
 
     if (!record.modelId && !record.itemId) continue;

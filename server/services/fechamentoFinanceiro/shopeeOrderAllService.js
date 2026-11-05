@@ -379,6 +379,9 @@ function parseShopeeFinancialRows(rows) {
       skuVariation,
       skuPrinciple,
       skuMainRef,
+      // Grafia bruta (só trim) — ver desempate final em selectShopeeIdentityFromRecords.
+      skuPrincipleRaw: String(skuPrincipleRaw ?? "").trim(),
+      skuMainRefRaw: String(skuMainRefRaw ?? "").trim(),
       skuRefNumber,
       statusPedido,
       statusDevolucao,
@@ -759,7 +762,48 @@ function selectShopeeIdentityFromRecords(rawRecords, line, source, bridgeSku) {
   if (narrowed.length === 1) {
     return { ambiguous: false, record: narrowed[0], records: narrowed, source, bridgeSku, ambiguityKey };
   }
+  const rawExact = selectShopeeCandidateByRawPrincipalSku(narrowed, line);
+  if (rawExact) {
+    return {
+      ambiguous: false,
+      record: rawExact,
+      records: [rawExact],
+      source: SHOPEE_PRINCIPAL_SKU_RAW_EXACT_SOURCE,
+      bridgeSku: rawExact.principalSkuRaw,
+      ambiguityKey,
+    };
+  }
   return { ambiguous: true, record: null, records: narrowed, source, bridgeSku, ambiguityKey };
+}
+
+// Desempate FINAL por SKU principal BRUTO (FIN-865). A normalização dos
+// índices (maiúsculas, sem espaços) faz anúncios distintos colidirem quando o
+// SKU difere só na grafia ("Gel Base Beltrat 10ml" x "GEL BASE BELTRAT 10ML").
+// Só roda depois de TODAS as reduções por evidência e só desempata:
+//   - comparação case-sensitive, valor trimado, SEM uppercase, espaços,
+//     acentos, tokens ou fuzzy;
+//   - EXATAMENTE um candidato com o mesmo SKU principal bruto do pedido;
+//   - 0 ou 2+ -> null (continua ambíguo).
+// Custo, título, preço, quantidade e ordem nunca participam.
+//
+// DÍVIDA TÉCNICA: a solução estrutural é consumir Item ID + Model ID oficiais
+// da API de pedidos da Shopee (v2.order.get_order_detail) quando a integração
+// LIVE estiver disponível, eliminando a dependência de identidade textual.
+// Esta regra é uma ponte: se o seller padronizar a caixa do SKU, a evidência
+// some e o resultado volta a ser `ambiguous` (lado seguro).
+const SHOPEE_PRINCIPAL_SKU_RAW_EXACT_SOURCE = "principal_sku_raw_exact";
+
+function selectShopeeCandidateByRawPrincipalSku(candidates, line) {
+  if (!Array.isArray(candidates) || candidates.length < 2) return null;
+  const lineRaws = [line.skuMainRefRaw, line.skuPrincipleRaw]
+    .map((value) => String(value ?? "").trim())
+    .filter((value, index, all) => value && !SHOPEE_IDENTITY_PLACEHOLDERS.has(value.toLowerCase()) && all.indexOf(value) === index);
+  if (lineRaws.length === 0) return null;
+  const matches = candidates.filter((record) => {
+    const raw = String(record.principalSkuRaw ?? "").trim();
+    return raw && lineRaws.includes(raw);
+  });
+  return matches.length === 1 ? matches[0] : null;
 }
 
 // Palavras de conexão que não identificam o produto — filtradas antes do
@@ -2032,6 +2076,8 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
       ? "bridge_title_variation_alias"
       : identity.source === "product_unique"
       ? "bridge_product_unique"
+      : identity.source === SHOPEE_PRINCIPAL_SKU_RAW_EXACT_SOURCE
+      ? "bridge_principal_sku_raw_exact"
       : modelId
       ? "bridge_variation_id"
       : "bridge_item_id";
@@ -2040,7 +2086,8 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
   // product_unique sem Model ID na Performance: o custo pelo Item ID só vale
   // se o bloco do item na base não divergir (ver shopeeItemCostBlockIssue).
   const itemCostBlockedBy =
-    identity.source === "product_unique" && !modelId
+    (identity.source === "product_unique" ||
+      identity.source === SHOPEE_PRINCIPAL_SKU_RAW_EXACT_SOURCE) && !modelId
       ? shopeeItemCostBlockIssue(costMap, itemId)
       : null;
   if (itemCostBlockedBy) {
@@ -2371,6 +2418,7 @@ function processShopeeFinancialOrders({
   let bridgeProductUniqueMatchCount = 0;
   let bridgeItemFinancialEquivalentMatchCount = 0;
   let bridgeItemSingleModelMatchCount = 0;
+  let bridgePrincipalSkuRawExactMatchCount = 0;
   let bridgeParentItemSingleModelMatchCount = 0;
   let revenueParentItemFallback = 0;
   // Pendências com custo SÓ no pai e sem evidência para usá-lo.
@@ -2581,6 +2629,9 @@ function processShopeeFinancialOrders({
           }
           if (costMatch.identitySource === "item_financial_equivalent") {
             bridgeItemFinancialEquivalentMatchCount += 1;
+          }
+          if (costMatch.identitySource === SHOPEE_PRINCIPAL_SKU_RAW_EXACT_SOURCE) {
+            bridgePrincipalSkuRawExactMatchCount += 1;
           }
           if (costMatch.identitySource === "item_single_model") {
             bridgeItemSingleModelMatchCount += 1;
@@ -2880,6 +2931,7 @@ function processShopeeFinancialOrders({
       bridgeProductUniqueMatchCount,
       bridgeItemFinancialEquivalentMatchCount,
       bridgeItemSingleModelMatchCount,
+      bridgePrincipalSkuRawExactMatchCount,
       bridgeParentItemSingleModelMatchCount,
       parentItemFallbackCoverage: coveragePercent(revenueParentItemFallback),
       parentOnlyCostPendingCount,

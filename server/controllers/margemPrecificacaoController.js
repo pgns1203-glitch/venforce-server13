@@ -120,6 +120,8 @@ function createMargemPrecificacaoController({ service = defaultService, oportuni
       periodo: req.query.periodo,
       veredito: req.query.veredito,
       tipo: req.query.tipo,
+      busca: req.query.busca,
+      ordem: req.query.ordem,
       cotacao: req.query.cotacao,
       page: req.query.page,
       limit: req.query.limit,

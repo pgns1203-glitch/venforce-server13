@@ -27,6 +27,7 @@ const ARQUIVOS = [
   "css/pages/central-margem-layout.css",
   "central-margem-api.js",
   "central-margem-promo-fonte.js",
+  "central-margem-promo-sync.js",
   "central-margem.js",
 ];
 

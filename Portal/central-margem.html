@@ -10,8 +10,8 @@
   <link rel="stylesheet" href="style.css">
   <link rel="stylesheet" href="css/vf-tokens-v2.css">
   <link rel="stylesheet" href="css/vf-components-v2.css">
-  <link rel="stylesheet" href="css/pages/central-margem-v2.css?v=e1a9d4e162">
-  <link rel="stylesheet" href="css/pages/central-margem-layout.css?v=e85e407a91">
+  <link rel="stylesheet" href="css/pages/central-margem-v2.css?v=26bbe28ad5">
+  <link rel="stylesheet" href="css/pages/central-margem-layout.css?v=6167072bfc">
   <link rel="stylesheet" href="css/vf-shell.css">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
 </head>
@@ -195,17 +195,29 @@
                    do mesmo cálculo do simulador. Fonte bulk persistida; a página
                    é cotada ao vivo em segundo plano. -->
               <div class="cm-promos" id="cm-promos" hidden>
+                <!-- Atualização das promoções DA CONTA (Promo Snapshot): uma
+                     linha com conta, idade da leitura, progresso real e o botão
+                     Atualizar — sem a tela antiga. -->
+                <div class="cm-promo-sync" id="cm-promo-sync" aria-live="polite" hidden></div>
+                <!-- Fluxo do gestor: escolher o recorte (veredito, com a contagem
+                     do servidor) → buscar o anúncio → ordenar pelo que decide.
+                     O <select> de veredito continua sendo a fonte da verdade
+                     (oculto); os botões só o pilotam. -->
+                <div class="cm-promos__seg" id="cm-promo-seg" role="group" aria-label="Filtrar por veredito"></div>
                 <div class="cm-promos__bar">
-                  <span class="cm-promos__badge" id="cm-opps-meta"></span>
-                  <label class="vf-filter-group">
-                    <span class="vf-visually-hidden">Filtrar por veredito</span>
-                    <select class="vf-select vf-select--sm" id="cm-promo-veredito">
-                      <option value="">Veredito: oportunidades</option>
-                      <option value="entrar">Entrar</option>
-                      <option value="entrar_se_girar">Entrar se girar</option>
-                      <option value="nao_entrar">Não entrar</option>
-                      <option value="bloqueado">Bloqueado</option>
-                      <option value="todos">Todos</option>
+                  <div class="vf-field cm-promos__busca">
+                    <label class="vf-visually-hidden" for="cm-promo-busca">Buscar anúncio nas promoções</label>
+                    <input class="vf-input vf-input--sm vf-search" id="cm-promo-busca" type="search" placeholder="Buscar por título ou MLB" autocomplete="off">
+                  </div>
+                  <label class="vf-filter-group cm-promos__ordem">
+                    <span class="cm-promos__rotulo">Ordenar por</span>
+                    <select class="vf-select vf-select--sm" id="cm-promo-ordem">
+                      <option value="">Maior impacto no período</option>
+                      <option value="subsidio">Maior subsídio do ML</option>
+                      <option value="lucro">Maior ganho por unidade</option>
+                      <option value="margem">Maior margem na promoção</option>
+                      <option value="desconto">Maior desconto</option>
+                      <option value="fim">Termina antes</option>
                     </select>
                   </label>
                   <label class="vf-filter-group">
@@ -214,7 +226,30 @@
                       <option value="">Tipo: todos</option>
                     </select>
                   </label>
+                  <label class="vf-visually-hidden">
+                    <span>Filtrar por veredito</span>
+                    <select id="cm-promo-veredito" tabindex="-1" aria-hidden="true">
+                      <option value="">Oportunidades</option>
+                      <option value="entrar">Vale entrar</option>
+                      <option value="entrar_se_girar">Só se vender mais</option>
+                      <option value="nao_entrar">Não vale</option>
+                      <option value="bloqueado">Bloqueado</option>
+                      <option value="todos">Todos</option>
+                    </select>
+                  </label>
+                  <span class="cm-promos__total" id="cm-promo-total" aria-live="polite"></span>
+                </div>
+                <!-- De onde vêm a lista e os números: uma linha discreta, com a
+                     legenda do "≈" (estimado) — nunca rotula estimativa como cotação. -->
+                <div class="cm-promos__fonte">
                   <span class="cm-promos__live" id="cm-promos-live" aria-live="polite"></span>
+                  <div class="cm-promos__decisao">
+                    <span class="cm-promos__resumo" id="cm-promo-resumo" aria-live="polite"></span>
+                    <!-- Central decide; Anúncios ML executa. Participação em massa e Radar de
+                         subsídios moram lá — aqui só a navegação contextual para a MESMA conta. -->
+                    <a class="cm-promos__executar" id="cm-promo-executar" href="anuncios-meli.html" hidden>Executar no Radar de subsídios (Anúncios ML) →</a>
+                  </div>
+                  <span class="cm-promos__badge" id="cm-opps-meta"></span>
                 </div>
                 <div class="cm-promos__host" id="cm-opps-host"></div>
               </div>
@@ -293,8 +328,9 @@
   <script type="module" src="vf-shell.js"></script>
   <!-- Confirmação e toast da Fundação V2 (VF.confirm / VF.toast) -->
   <script src="vf-ui.js"></script>
-  <script src="central-margem-api.js?v=0ebff64be8"></script>
+  <script src="central-margem-api.js?v=80e65eb6fd"></script>
   <script src="central-margem-promo-fonte.js?v=4752ecd8f1"></script>
-  <script src="central-margem.js?v=b5f5a60782"></script>
+  <script src="central-margem-promo-sync.js?v=5c6d26de94"></script>
+  <script src="central-margem.js?v=f41c333681"></script>
 </body>
 </html>

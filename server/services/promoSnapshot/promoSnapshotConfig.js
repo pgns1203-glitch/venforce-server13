@@ -12,6 +12,9 @@
 // = nenhum; `*` = todos os clientes elegíveis, mesmo misturado a slugs). Ligar o worker sem a lista não sincroniza conta nenhuma: só os
 // clientes listados são enfileirados — pelo orquestrador, pelo auto-trigger ao
 // abrir a Central e pelo POST /promocoes/sync (ver avaliarPiloto).
+// PROMO_SNAPSHOT_CONTAS=87,90 (allowlist de CONTAS por cliente_conta_id)
+// soma-se à de clientes: libera só aquela conta, nunca as outras contas do
+// mesmo cliente — é o jeito de pilotar uma conta de um cliente com várias.
 
 function inteiroEntre(raw, { padrao, min, max }) {
   const n = Number(raw);
@@ -115,19 +118,40 @@ function resolvePromoSnapshotConfig(env = process.env) {
   return config;
 }
 
+// "87, 86,abc,87" → [87, 86] (ids inteiros positivos, sem repetição).
+function listaDeContas(raw) {
+  if (raw === undefined || raw === null) return [];
+  const vistos = new Set();
+  for (const parte of String(raw).split(",")) {
+    const t = parte.trim();
+    if (!/^[0-9]+$/.test(t)) continue;
+    const n = Number(t);
+    if (Number.isSafeInteger(n) && n > 0) vistos.add(n);
+  }
+  return [...vistos];
+}
+
 /**
- * A conta (pelo slug do cliente) pode ser sincronizada automaticamente?
- * `motivo` quando não: WORKER_DESABILITADO | PILOTO_VAZIO | FORA_DO_PILOTO.
- * Slug ausente nunca entra — exceto com `*` (todos os clientes). É a ÚNICA regra de allowlist: orquestrador,
- * auto-trigger, POST /sync e o estado exibido às telas usam esta função.
+ * A conta pode ser sincronizada? `motivo` quando não:
+ * WORKER_DESABILITADO | PILOTO_VAZIO | FORA_DO_PILOTO.
+ *
+ * Duas allowlists, somadas: PROMO_SNAPSHOT_CLIENTES (slugs — todas as contas
+ * do cliente; `*` = todos) e PROMO_SNAPSHOT_CONTAS (cliente_conta_id — UMA
+ * conta, sem liberar as outras contas do mesmo cliente). Slug ausente nunca
+ * entra — exceto com `*`. É a ÚNICA regra de allowlist: orquestrador,
+ * auto-trigger, POST /sync, run-once e o estado exibido às telas usam esta
+ * função.
  */
-function avaliarPiloto(config, clienteSlug) {
+function avaliarPiloto(config, clienteSlug, clienteContaId = null) {
   if (!config.workerEnabled) return { noPiloto: false, motivo: "WORKER_DESABILITADO" };
   const lista = config.clientesPiloto || [];
-  if (!lista.length) return { noPiloto: false, motivo: "PILOTO_VAZIO" };
+  const contas = config.contasPiloto || [];
+  if (!lista.length && !contas.length) return { noPiloto: false, motivo: "PILOTO_VAZIO" };
   if (lista.includes(TODOS_OS_CLIENTES)) return { noPiloto: true, motivo: null };
   const slug = String(clienteSlug || "").trim().toLowerCase();
   if (slug && lista.includes(slug)) return { noPiloto: true, motivo: null };
+  const conta = Number(clienteContaId);
+  if (Number.isSafeInteger(conta) && conta > 0 && contas.includes(conta)) return { noPiloto: true, motivo: null };
   return { noPiloto: false, motivo: "FORA_DO_PILOTO" };
 }
 
@@ -136,6 +160,9 @@ function resolverBruto(env) {
     workerEnabled: flagLigada(env.PROMO_SNAPSHOT_WORKER_ENABLED),
     // Allowlist de clientes (slugs) do piloto; vazio = nenhum; ["*"] = todos.
     clientesPiloto: listaDeSlugs(env.PROMO_SNAPSHOT_CLIENTES),
+    // Allowlist de CONTAS (cliente_conta_id) — piloto de uma conta só, sem
+    // liberar as demais contas do mesmo cliente. Soma-se à de clientes.
+    contasPiloto: listaDeContas(env.PROMO_SNAPSHOT_CONTAS),
 
     // Freshness — REUTILIZA PROMO_SNAPSHOT_FRESH_MINUTES da tela antiga
     // (promocoesDiagnosticoService). Default conservador: 12 h.
@@ -188,6 +215,11 @@ function resolverBruto(env) {
     manualCooldownMinutes: inteiroEntre(env.PROMO_SAME_CLIENT_COOLDOWN_MINUTES, { padrao: 15, min: 0, max: 1440 }),
     failedRetryMinutes: inteiroEntre(env.PROMO_SNAPSHOT_FAILED_RETRY_MINUTES, { padrao: 30, min: 1, max: 1440 }),
 
+    // Retenção: runs TERMINADOS guardados por conta (além do snapshot atual,
+    // do anterior, dos ativos e dos retomáveis, que nunca são podados). Runs
+    // mais velhos saem com as linhas e lotes (ON DELETE CASCADE).
+    runsRetidosPorConta: inteiroEntre(env.PROMO_SNAPSHOT_RUNS_RETIDOS, { padrao: 20, min: 3, max: 500 }),
+
     // Orquestrador (mesmo runtime do worker): a cada intervalo enfileira até N
     // contas elegíveis vencidas/sem snapshot.
     orchestratorIntervalMs: inteiroEntre(env.PROMO_SNAPSHOT_ORCHESTRATOR_INTERVAL_MS, { padrao: 300000, min: 10000, max: 86400000 }),
@@ -203,6 +235,7 @@ function resolverBruto(env) {
 module.exports = {
   resolvePromoSnapshotConfig,
   avaliarPiloto,
+  listaDeContas,
   TODOS_OS_CLIENTES,
   validarInvariantesHeartbeat,
   piorIntervaloSemHeartbeatMs,

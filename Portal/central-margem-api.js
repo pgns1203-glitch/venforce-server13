@@ -2157,9 +2157,34 @@
       var slug = String(params.clientSlug || "").trim();
       return call(precificacaoBase(slug) + "/oportunidades" + buildQuery({
         clienteContaId: params.clienteContaId, periodo: params.periodo, page: params.page, limit: params.limit,
-        veredito: params.veredito, tipo: params.tipo, cotacao: params.cotacao,
+        veredito: params.veredito, tipo: params.tipo, busca: params.busca, ordem: params.ordem, cotacao: params.cotacao,
       }), { signal: signal })
         .then(function (result) { return pricingResult(result, "Não foi possível carregar as oportunidades."); });
+    }
+
+    /* Promo Snapshot da CONTA (aba Promoções): estado, run em andamento
+       (progresso real), última tentativa e se o Atualizar está disponível.
+       Só lê o banco — nunca enfileira nada. */
+    function promoSnapshotBase(slug) {
+      return "/operacao/central-margem/" + encodeURIComponent(slug) + "/promocoes";
+    }
+
+    function getPromoSyncStatus(params, signal) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
+      return call(promoSnapshotBase(slug) + "/status" + buildQuery({ clienteContaId: params.clienteContaId }), { signal: signal })
+        .then(function (result) { return pricingResult(result, "Não foi possível ler o estado das promoções."); });
+    }
+
+    /* POST sync: SÓ enfileira a leitura (dedupe por conta + cooldown no
+       servidor). Nunca aplica promoção nem altera preço. */
+    function requestPromoSync(params) {
+      params = params || {};
+      var slug = String(params.clientSlug || "").trim();
+      if (!slug) return Promise.resolve({ ok: false, status: 400, error: "Selecione um cliente.", type: "no-client" });
+      return call(promoSnapshotBase(slug) + "/sync", { method: "POST", body: { clienteContaId: params.clienteContaId } })
+        .then(function (result) { return pricingResult(result, "Não foi possível pedir a atualização das promoções."); });
     }
 
     return {
@@ -2170,6 +2195,8 @@
       getSnapshotItens: getSnapshotItens,
       getSnapshotRealizado: getSnapshotRealizado,
       requestSnapshotRefresh: requestSnapshotRefresh,
+      getPromoSyncStatus: getPromoSyncStatus,
+      requestPromoSync: requestPromoSync,
       getSnapshotRefreshStatus: getSnapshotRefreshStatus,
       calcularComposicoes: calcularComposicoes,
       simular: simular,

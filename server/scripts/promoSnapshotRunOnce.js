@@ -47,7 +47,7 @@ function parseArgs(argv) {
 }
 
 function erroForaDoPiloto(run) {
-  const err = new Error(`cliente ${run.clienteSlug} fora de PROMO_SNAPSHOT_CLIENTES — run não processado`);
+  const err = new Error(`conta ${run.clienteContaId} (cliente ${run.clienteSlug || "?"}) fora da allowlist do piloto (PROMO_SNAPSHOT_CLIENTES/PROMO_SNAPSHOT_CONTAS) — run não processado`);
   err.code = "PROMO_SNAPSHOT_FORA_DO_PILOTO";
   return err;
 }
@@ -66,8 +66,8 @@ async function executarPassada(argv = [], deps = {}) {
     logger.log?.(`${LOG} desabilitado (PROMO_SNAPSHOT_WORKER_ENABLED != true) — nada a fazer`);
     return { codigo: 0, motivo: "WORKER_DESABILITADO", reconciliados: 0, enfileirados: [], runs: [] };
   }
-  if (!config.clientesPiloto.length) {
-    logger.log?.(`${LOG} PROMO_SNAPSHOT_CLIENTES vazio — nada a fazer`);
+  if (!config.clientesPiloto.length && !config.contasPiloto.length) {
+    logger.log?.(`${LOG} PROMO_SNAPSHOT_CLIENTES e PROMO_SNAPSHOT_CONTAS vazios — nada a fazer`);
     return { codigo: 0, motivo: "PILOTO_VAZIO", reconciliados: 0, enfileirados: [], runs: [] };
   }
 
@@ -94,7 +94,7 @@ async function executarPassada(argv = [], deps = {}) {
   // 3. Processa a fila, um run por vez, até o limite.
   const processar = deps.processor || ((run, ctx) => require("../services/promoSnapshot/promoSnapshotProcessor").processPromoSnapshotRun(run, { ...ctx, config }));
   const processor = async (run, ctx) => {
-    if (run.clienteSlug && !avaliarPiloto(config, run.clienteSlug).noPiloto) throw erroForaDoPiloto(run);
+    if (!avaliarPiloto(config, run.clienteSlug, run.clienteContaId).noPiloto) throw erroForaDoPiloto(run);
     return processar(run, ctx);
   };
   const criarWorker = deps.criarWorker || require("../services/promoSnapshot/promoSnapshotRuntime").criarWorker;
@@ -126,7 +126,7 @@ async function main(argv = process.argv.slice(2)) {
   let pool = null;
   try {
     const config = resolvePromoSnapshotConfig(process.env);
-    if (config.workerEnabled && config.clientesPiloto.length) pool = require("../config/database");
+    if (config.workerEnabled && (config.clientesPiloto.length || config.contasPiloto.length)) pool = require("../config/database");
     codigo = (await executarPassada(argv, { db: pool || undefined })).codigo;
   } catch (err) {
     const { sanitizeErrorMessage } = require("../services/mlTokenService");

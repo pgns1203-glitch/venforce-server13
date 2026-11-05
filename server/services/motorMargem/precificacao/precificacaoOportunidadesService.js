@@ -363,12 +363,53 @@ function compararCandidatas(a, b) {
   return ca < cb ? -1 : ca > cb ? 1 : 0;
 }
 
+// Ordens que a tela oferece (só leitura; nenhuma muda o cálculo nem a melhor
+// promoção do anúncio — só a sequência da lista). Ausente = "impacto", a ordem
+// padrão (compararCandidatas). Valor nulo vai para o fim; empate cai na padrão.
+const ORDENS = {
+  impacto: null,
+  subsidio: { campo: (c) => c.ml_banca, sentido: -1 },
+  lucro: { campo: (c) => c.delta_lc, sentido: -1 },
+  margem: { campo: (c) => c.margemDepois, sentido: -1 },
+  desconto: { campo: (c) => c.desconto_ratio, sentido: -1 },
+  fim: { campo: (c) => { const t = c.promocao && c.promocao.fim ? Date.parse(c.promocao.fim) : NaN; return Number.isFinite(t) ? t : null; }, sentido: 1 },
+};
+
+function comparadorDaOrdem(ordem) {
+  const spec = ordem ? ORDENS[ordem] : null;
+  if (!spec) return compararCandidatas;
+  return (a, b) => {
+    const va = num(spec.campo(a));
+    const vb = num(spec.campo(b));
+    if (va !== vb) {
+      if (va === null) return 1;
+      if (vb === null) return -1;
+      return (va - vb) * spec.sentido;
+    }
+    return compararCandidatas(a, b);
+  };
+}
+
+// Busca por título ou MLB, sem acento e sem caixa ("mlb123", "123" ou parte do título).
+function normalizarBusca(texto) {
+  return String(texto || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+}
+
+function casaBusca(c, termo) {
+  if (!termo) return true;
+  const titulo = normalizarBusca(c.titulo);
+  const item = normalizarBusca(c.itemId);
+  const semPrefixo = termo.replace(/^mlb/, "");
+  return titulo.includes(termo) || item.includes(termo) || (semPrefixo !== "" && item.replace(/^mlb/, "").includes(semPrefixo));
+}
+
 /**
  * Ranking das candidatas: UMA linha por anúncio (a melhor promoção), filtro por
  * veredito sobre essa linha, ordem e página. Pura — o serviço e os testes usam
- * a mesma função.
+ * a mesma função. `busca` e `tipo` recortam ANTES da contagem por veredito (os
+ * números dos filtros falam do mesmo recorte); `ordem` só muda a sequência.
  */
-function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PADRAO, tipo = null }) {
+function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PADRAO, tipo = null, busca = null, ordem = null }) {
   // Tipos de promoção presentes (para o filtro da tela): contados ANTES de filtrar por tipo.
   const tiposMap = new Map();
   for (const c of candidatas) {
@@ -377,7 +418,9 @@ function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PA
   }
   const tipos = Array.from(tiposMap, ([nome, total]) => ({ tipo: nome, total })).sort((a, b) => (a.tipo < b.tipo ? -1 : 1));
   const alvo = tipo ? String(tipo).toLowerCase() : null;
-  const base = alvo ? candidatas.filter((c) => String((c.promocao && c.promocao.tipo) || "").toLowerCase() === alvo) : candidatas;
+  const termo = busca ? normalizarBusca(busca) : "";
+  const base = candidatas.filter((c) =>
+    (!alvo || String((c.promocao && c.promocao.tipo) || "").toLowerCase() === alvo) && casaBusca(c, termo));
 
   const porItem = new Map();
   for (const c of base) {
@@ -406,7 +449,7 @@ function rankearOportunidades(candidatas, { page, limit, veredito = VEREDITOS_PA
     sem_historico: entrar.length - comImpacto.length,
   };
   const aceitos = veredito === null ? melhores : melhores.filter((c) => veredito.includes(c.veredito));
-  aceitos.sort(compararCandidatas);
+  aceitos.sort(comparadorDaOrdem(ordem));
   const inicio = (page - 1) * limit;
   return {
     total: aceitos.length,
@@ -437,6 +480,23 @@ function parseVeredito(bruto) {
 function parseTipo(bruto) {
   if (bruto === undefined || bruto === null || String(bruto).trim() === "") return null;
   return String(bruto).trim().slice(0, 80);
+}
+
+// `busca`: texto livre (título ou MLB); vazio = sem busca.
+function parseBusca(bruto) {
+  if (bruto === undefined || bruto === null || String(bruto).trim() === "") return null;
+  return String(bruto).trim().slice(0, 80);
+}
+
+// `ordem`: uma das ORDENS; vazio = impacto. Desconhecida = 400 (ordem ignorada
+// mostraria a padrão como se fosse a pedida).
+function parseOrdem(bruto) {
+  if (bruto === undefined || bruto === null || String(bruto).trim() === "") return null;
+  const v = String(bruto).trim().toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(ORDENS, v)) {
+    throw erroHttp(400, "FILTRO_INVALIDO", `Parâmetro "ordem" inválido. Aceitos: ${Object.keys(ORDENS).join(", ")}.`);
+  }
+  return v === "impacto" ? null : v;
 }
 
 // `cotacao`: "estimada" (padrão, sem ML) ou "viva" (cota só a página, ao vivo).
@@ -518,7 +578,7 @@ function candidataDaLinha(r, promocao, vendasPorMlb, vendasIndisponivel, rebates
  * não some com a linha: ela vira `bloqueado` com o motivo (sem voltar à
  * estimativa). Dentro da página a ordem é refeita pelo mesmo critério.
  */
-async function refinarPaginaAoVivo({ pagina, d, cliente, sellerId }) {
+async function refinarPaginaAoVivo({ pagina, d, cliente, sellerId, ordem = null }) {
   const anuncios = await d.obterAnuncios(cliente.id, pagina.map((c) => c.itemId));
   let consultas = 0;
   const refinadas = await mapComLimite(pagina, 4, async (c) => {
@@ -532,16 +592,16 @@ async function refinarPaginaAoVivo({ pagina, d, cliente, sellerId }) {
     const nova = montarCandidata({ ...c.__args, cotacaoReal: cotacao });
     return nova ? copiarCandidata(nova, { opcoes_total: c.opcoes_total, opcoes: c.opcoes }) : c;
   });
-  refinadas.sort(compararCandidatas);
+  refinadas.sort(comparadorDaOrdem(ordem));
   return { pagina: refinadas, consultas };
 }
 
-async function respostaDaLista({ base, candidatas, pag, veredito, tipo, cotacao, d, cliente, sellerId }) {
-  const ranking = rankearOportunidades(candidatas, { page: pag.page, limit: pag.limit, veredito, tipo });
+async function respostaDaLista({ base, candidatas, pag, veredito, tipo, busca = null, ordem = null, cotacao, d, cliente, sellerId }) {
+  const ranking = rankearOportunidades(candidatas, { page: pag.page, limit: pag.limit, veredito, tipo, busca, ordem });
   let pagina = ranking.pagina;
   let consultas = 0;
   if (cotacao === "viva" && pagina.length) {
-    const r = await refinarPaginaAoVivo({ pagina, d, cliente, sellerId });
+    const r = await refinarPaginaAoVivo({ pagina, d, cliente, sellerId, ordem });
     pagina = r.pagina;
     consultas = r.consultas;
   }
@@ -551,7 +611,7 @@ async function respostaDaLista({ base, candidatas, pag, veredito, tipo, cotacao,
     limit: pag.limit,
     total: ranking.total,
     hasNext: ranking.hasNext,
-    filtro: { veredito: veredito === null ? "todos" : veredito, tipo },
+    filtro: { veredito: veredito === null ? "todos" : veredito, tipo, busca, ordem: ordem || "impacto" },
     contagem: ranking.contagem,
     resumo: ranking.resumo,
     tipos: ranking.tipos,
@@ -561,7 +621,7 @@ async function respostaDaLista({ base, candidatas, pag, veredito, tipo, cotacao,
 }
 
 // ─── Fonte principal: Promo Snapshot ─────────────────────────────────────────
-async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, fontePromocoes, params, deps, pag, veredito, tipo, cotacao }) {
+async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sync, fontePromocoes, params, deps, pag, veredito, tipo, busca, ordem, cotacao }) {
   const { vendasPorMlb, periodo, indisponivel } = await carregarVendas(d, cliente, conta, params, deps);
   const { rows } = await d.promo.listarElegiveis({ clienteId: cliente.id, clienteContaId: conta.id, sellerId, runId: estado.snapshotRunId });
   // Retorno ML das promoções EM ANDAMENTO da conta — uma consulta (a margem
@@ -583,7 +643,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
     observadaEm: r.promo_observado_em || null,
   }, d), vendasPorMlb, Boolean(indisponivel), rebates, { fonte: "promo_snapshot" })).filter(Boolean);
   return respostaDaLista({
-    d, cliente, sellerId, tipo, cotacao,
+    d, cliente, sellerId, tipo, busca, ordem, cotacao,
     base: {
       ok: true,
       disponivel: true,
@@ -610,7 +670,7 @@ async function oportunidadesDoSnapshot({ d, cliente, conta, sellerId, estado, sy
 }
 
 // ─── Compatibilidade: diagnóstico da tela antiga ─────────────────────────────
-async function oportunidadesDoLegado({ d, cliente, conta, sellerId, diagnostico, sync, fontePromocoes, params, deps, pag, veredito, tipo, cotacao }) {
+async function oportunidadesDoLegado({ d, cliente, conta, sellerId, diagnostico, sync, fontePromocoes, params, deps, pag, veredito, tipo, busca, ordem, cotacao }) {
   const diag = diagnostico;
   const base = {
     ok: true,
@@ -652,7 +712,7 @@ async function oportunidadesDoLegado({ d, cliente, conta, sellerId, diagnostico,
     estimativa: true,
   }, d), vendasPorMlb, Boolean(indisponivel), rebates, { fonte: "diagnostico_legado", observadaEm: diag.created_at })).filter(Boolean);
   return respostaDaLista({
-    d, cliente, sellerId, tipo, cotacao,
+    d, cliente, sellerId, tipo, busca, ordem, cotacao,
     base: { ...base, periodo: periodoPublico(periodo), ...vendasPublico(indisponivel) },
     candidatas,
     pag,
@@ -665,6 +725,8 @@ async function listarOportunidades(params = {}, deps = {}) {
   // Filtro inválido recusa antes de qualquer leitura.
   const veredito = parseVeredito(params.veredito);
   const tipo = parseTipo(params.tipo);
+  const busca = parseBusca(params.busca);
+  const ordem = parseOrdem(params.ordem);
   const cotacao = parseCotacao(params.cotacao);
   const { cliente, conta } = await d.resolverContaDoCliente(
     { clienteSlug: params.clienteSlug, clienteContaId: params.clienteContaId },
@@ -681,14 +743,17 @@ async function listarOportunidades(params = {}, deps = {}) {
     return { ok: true, disponivel: false, motivo: "CONTA_SEM_GRANT_ML", mensagem: "A conta não tem conexão do Mercado Livre vinculada.", page: pag.page, limit: pag.limit, total: 0, hasNext: false, oportunidades: [] };
   }
 
-  // Estado do Promo Snapshot + auto-trigger (nunca bloqueia; falha aqui não
-  // derruba a lista — cai no legado/indisponível).
+  // Estado do Promo Snapshot (falha aqui não derruba a lista — cai no
+  // legado/indisponível). Ler a lista NÃO enfileira varredura: abrir ou
+  // trocar de aba nunca dispara scan. Quem atualiza é o orquestrador
+  // (frescor/allowlist) ou o botão Atualizar da Central (POST /promocoes/sync).
+  // `autoTrigger: true` explícito mantém o comportamento antigo para quem pedir.
   let estado = null;
   let sync = null;
   try {
     const r = await d.promo.estadoComAutoTrigger(
       { clienteId: cliente.id, clienteSlug: cliente.slug, clienteContaId: conta.id, marketplace: "meli", sellerId },
-      { autoTrigger: params.autoTrigger !== false }
+      { autoTrigger: params.autoTrigger === true }
     );
     estado = r.estado;
     sync = d.promo.syncPublico(r.estado, r.gatilho);
@@ -700,10 +765,10 @@ async function listarOportunidades(params = {}, deps = {}) {
   const temSnapshot = Boolean(estado && estado.hasSnapshot);
   const diagnostico = temSnapshot ? null : await obterDiagnosticoLegado({ db: d.db, clienteId: cliente.id, sellerId });
   const fontePromocoes = montarFontePromocoes({
-    estado, config: resolvePromoSnapshotConfig(d.env), clienteSlug: cliente.slug, legado: diagnostico,
+    estado, config: resolvePromoSnapshotConfig(d.env), clienteSlug: cliente.slug, clienteContaId: conta.id, legado: diagnostico,
   });
 
-  const ctx = { d, cliente, conta, sellerId, estado, diagnostico, sync, fontePromocoes, params, deps, pag, veredito, tipo, cotacao };
+  const ctx = { d, cliente, conta, sellerId, estado, diagnostico, sync, fontePromocoes, params, deps, pag, veredito, tipo, busca, ordem, cotacao };
   if (temSnapshot) return oportunidadesDoSnapshot(ctx);
   if (diagnostico) return oportunidadesDoLegado(ctx);
 
@@ -730,6 +795,9 @@ module.exports = {
   compararCandidatas,
   parseVeredito,
   parseTipo,
+  parseBusca,
+  parseOrdem,
+  ORDENS,
   parseCotacao,
   motivoForaDoRanking,
   MOTIVO_FORA_DO_RANKING,

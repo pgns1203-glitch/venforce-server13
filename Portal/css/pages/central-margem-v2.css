@@ -2484,6 +2484,33 @@
 .vf-page-central-margem .cm-promos__badge { margin-right: auto; color: var(--vf-text-secondary); font-size: var(--vf-fs-xs); }
 .vf-page-central-margem .cm-promos__live { color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
 .vf-page-central-margem .cm-promos__host { overflow-x: auto; }
+/* Barra de atualização das promoções (Promo Snapshot da conta). */
+.vf-page-central-margem .cm-promo-sync[hidden] { display: none; }
+.vf-page-central-margem .cm-promo-sync {
+  display: flex; align-items: flex-start; gap: var(--vf-sp-3);
+  padding: var(--vf-sp-2) var(--vf-sp-3); border-bottom: 1px solid var(--vf-border);
+  border-left: 3px solid var(--vf-border-strong); background: var(--vf-surface);
+}
+.vf-page-central-margem .cm-promo-sync.is-ok { border-left-color: var(--vf-success); }
+.vf-page-central-margem .cm-promo-sync.is-info { border-left-color: var(--vf-info); background: var(--vf-info-bg, var(--vf-surface)); }
+.vf-page-central-margem .cm-promo-sync.is-warning { border-left-color: var(--vf-warning); background: var(--vf-warning-bg, var(--vf-surface)); }
+.vf-page-central-margem .cm-promo-sync.is-danger { border-left-color: var(--vf-danger); background: var(--vf-danger-bg, var(--vf-surface)); }
+.vf-page-central-margem .cm-promo-sync__texto { flex: 1 1 auto; min-width: 0; }
+.vf-page-central-margem .cm-promo-sync__titulo { margin: 0; font-size: var(--vf-fs-sm); font-weight: 600; color: var(--vf-text); }
+.vf-page-central-margem .cm-promo-sync__detalhe,
+.vf-page-central-margem .cm-promo-sync__conta { margin: 2px 0 0; font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); overflow-wrap: anywhere; }
+.vf-page-central-margem .cm-promo-sync__conta { color: var(--vf-text-muted); }
+.vf-page-central-margem .cm-promo-sync__aviso { margin: var(--vf-sp-1) 0 0; font-size: var(--vf-fs-xs); }
+.vf-page-central-margem .cm-promo-sync__aviso.is-danger { color: var(--vf-danger-strong); }
+.vf-page-central-margem .cm-promo-sync__aviso.is-ok { color: var(--vf-success-strong); }
+.vf-page-central-margem .cm-promo-sync__barra {
+  height: 6px; margin-top: var(--vf-sp-1); border-radius: 3px; background: var(--vf-border); overflow: hidden; max-width: 420px;
+}
+.vf-page-central-margem .cm-promo-sync__barra > span { display: block; height: 100%; background: var(--vf-info); transition: width .3s ease; }
+.vf-page-central-margem .cm-promo-sync > .vf-btn { flex: 0 0 auto; }
+@media (max-width: 640px) {
+  .vf-page-central-margem .cm-promo-sync { flex-direction: column; }
+}
 .vf-page-central-margem .cm-promo-arrow { color: var(--vf-text-muted); padding: 0 var(--vf-sp-1); }
 .vf-page-central-margem .cm-promo-delta { display: block; font-size: var(--vf-fs-2xs); }
 .vf-page-central-margem .cm-promo-delta.is-good { color: var(--vf-success-strong); }

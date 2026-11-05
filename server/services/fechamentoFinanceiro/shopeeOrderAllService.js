@@ -1354,9 +1354,7 @@ function selectShopeeBridgeIdentity(line, costBridge) {
 // Nunca atribui um Model ID (nunca "candidates[0]") e nunca normaliza
 // vocabulário de variação (sem "Preto"="Pretas", sem "Multicolorido"=combo
 // nenhum) — a causa que este resolvedor ataca é financeira, não linguística.
-function selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap) {
-  if (!costMap || typeof costMap.get !== "function") return null;
-
+function selectShopeeBridgeConfirmedItem(line, costBridge) {
   const allRecords = getShopeeCostBridgeRecords(costBridge);
   if (allRecords.length === 0) return null;
 
@@ -1405,7 +1403,141 @@ function selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap) {
   if (topItems.length !== 1) return null;
 
   const { itemId, records } = topItems[0];
-  return resolveShopeeItemFinancialEquivalence(line, itemId, records, costMap);
+  return { itemId, records };
+}
+
+function selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap) {
+  if (!costMap || typeof costMap.get !== "function") return null;
+  const confirmed = selectShopeeBridgeConfirmedItem(line, costBridge);
+  if (!confirmed) return null;
+  return resolveShopeeItemFinancialEquivalence(line, confirmed.itemId, confirmed.records, costMap);
+}
+
+const SHOPEE_LOOSE_SKU_CACHE = new WeakMap();
+
+function looseShopeeSku(value) {
+  return normalizeShopeeIdentityText(value).replace(/[^a-z0-9]+/g, "").replace(/^0+/, "");
+}
+
+// SKUs registrados na Performance em forma "frouxa" (sem zeros à esquerda,
+// caixa e pontuação). Calculado uma vez por ponte.
+function getShopeeLooseRegisteredSkus(costBridge) {
+  if (!costBridge || typeof costBridge !== "object") return new Set();
+  let cached = SHOPEE_LOOSE_SKU_CACHE.get(costBridge);
+  if (cached) return cached;
+  cached = new Set();
+  for (const indexName of ["variation", "principal"]) {
+    const index = getShopeeCostBridgeIndex(costBridge, indexName);
+    if (!index || typeof index.keys !== "function") continue;
+    for (const key of index.keys()) {
+      const loose = looseShopeeSku(key);
+      if (loose) cached.add(loose);
+    }
+  }
+  SHOPEE_LOOSE_SKU_CACHE.set(costBridge, cached);
+  return cached;
+}
+
+// Prova de Item para a regra "único Model" — mais estrita que o corte de
+// título da equivalência financeira, porque aqui um Item errado vira custo
+// errado (na equivalência todos os Models custam igual). Além do Item
+// comprovado por selectShopeeBridgeConfirmedItem:
+//   1. título do Order.all IGUAL (normalizado) ao título do Item na
+//      Performance — nada de sobreposição parcial;
+//   2. sem variação no Order.all: variação declarada que as estratégias de
+//      variação já recusaram (ex.: "G" x "GG") é evidência CONTRA o único
+//      Model conhecido, nunca a favor;
+//   3. nenhum SKU do Order.all pode ser quase-igual (só zeros à esquerda/
+//      caixa/pontuação) a um SKU registrado na Performance: isso indica
+//      OUTRA identidade que não pode herdar custo ("7654352998" x
+//      "0007654352998"). SKU simplesmente diferente (o caso FIN-865, texto
+//      mudou) não bloqueia: o Item já foi provado pelo título.
+function selectShopeeBridgeConfirmedItemForSingleModel(line, costBridge) {
+  if (normalizeShopeeIdentityText(line.variationName)) return null;
+  const productKey = normalizeShopeeIdentityText(line.product);
+  if (!productKey) return null;
+
+  const confirmed = selectShopeeBridgeConfirmedItem(line, costBridge);
+  if (!confirmed) return null;
+  const titleMatches = confirmed.records.every(
+    (record) => normalizeShopeeIdentityText(record.productName) === productKey
+  );
+  if (!titleMatches) return null;
+
+  const registered = getShopeeLooseRegisteredSkus(costBridge);
+  for (const field of SHOPEE_BRIDGE_SKU_FIELDS) {
+    const raw = normalizeShopeeId(line[field]);
+    const loose = raw ? looseShopeeSku(raw) : "";
+    if (!loose || !registered.has(loose)) continue;
+    // Mesmo texto exato já teria sido resolvido antes; qualquer SKU registrado
+    // que só difere na forma é identidade diferente.
+    return null;
+  }
+  return confirmed;
+}
+
+// ── Item comprovado com EXATAMENTE UM Model na Base (FIN-865) ───────────────
+//
+// O Item já foi comprovado pelas estratégias existentes
+// (selectShopeeBridgeConfirmedItem) mas nenhuma determinou o Model: o SKU do
+// Order.all mudou de texto e a equivalência financeira recusa item com um
+// candidato só. Se a Base de custos tem UM único Model para esse Item, não há
+// variação indeterminada — esse Model é o vendido.
+//
+// Retorna:
+//   { resolved: {...} }  — exatamente 1 Model válido (custo > 0, costValid);
+//   { ambiguous: ids }   — 2+ Models distintos (nunca escolhe um);
+//   null                 — nada a afirmar (0 Models, inválido, ou evidência
+//                          contraditória): a linha segue como estava.
+//
+// Nunca: primeiro registro, média, menor/maior custo, ordem do arquivo.
+// Guardas (qualquer uma falhando -> null):
+//   1. bloco do Item na Base sem linha sem identificador logo abaixo;
+//   2. toda linha do bloco tem Model ID (custo só no pai não é este caso);
+//   3. o mesmo Model repetido com custo/imposto/validade divergentes;
+//   4. a Performance lista Model(s) para o Item: só pode ser ESTE Model
+//      (se lista outro, o vendido pode não ter custo cadastrado).
+function resolveSingleModelFromConfirmedItem(costMap, itemId, performanceRecords) {
+  const index = getShopeeCostBaseIndex(costMap);
+  const item = normalizeShopeeId(itemId);
+  if (!index || !(index.rowsByBlockItemId instanceof Map) || !item) return null;
+  if (index.itemsWithUnidentifiedRowsBelow.has(item)) return null;
+
+  const rows = index.rowsByBlockItemId.get(item) || [];
+  if (rows.length === 0) return null;
+  if (rows.some((row) => !normalizeShopeeId(row.modelId))) return null;
+
+  const byModel = new Map();
+  for (const row of rows) {
+    const modelId = normalizeShopeeId(row.modelId);
+    if (!byModel.has(modelId)) byModel.set(modelId, []);
+    byModel.get(modelId).push(row);
+  }
+
+  const sameFinancials = (a, b) =>
+    round2(Number(a.cost || 0)) === round2(Number(b.cost || 0)) &&
+    round2(Number(a.taxPercent || 0)) === round2(Number(b.taxPercent || 0)) &&
+    shopeeCostIssue(a) === shopeeCostIssue(b);
+  for (const modelRows of byModel.values()) {
+    if (!modelRows.every((row) => sameFinancials(row, modelRows[0]))) return null;
+  }
+
+  const modelIds = Array.from(byModel.keys()).sort();
+  if (modelIds.length > 1) return { ambiguous: modelIds };
+
+  const modelId = modelIds[0];
+  const costRow = byModel.get(modelId)[0];
+  if (shopeeCostIssue(costRow)) return null;
+
+  const performanceModelIds = new Set(
+    (performanceRecords || [])
+      .map((record) => normalizeShopeeId(record.modelId || record.variationId))
+      .filter(Boolean)
+  );
+  if (performanceModelIds.size > 1) return null;
+  if (performanceModelIds.size === 1 && !performanceModelIds.has(modelId)) return null;
+
+  return { resolved: { costRow, modelId, itemId: item } };
 }
 
 // Guardas 4–10 da equivalência financeira por item, para um item JÁ
@@ -1652,6 +1784,30 @@ function shopeeItemFinancialEquivalenceMatch(itemEquivalence, line, debugCollect
   };
 }
 
+function shopeeItemSingleModelMatch(resolved, confirmedItem, line, debugCollector) {
+  if (debugCollector) {
+    debugCollector.recordMatchAttempt({
+      engine: "shopee_real",
+      stage: "cost_bridge_item_single_model",
+      orderId: line.id,
+      field: "bridge_item_single_model",
+      rawValue: [line.product, line.variationName].filter(Boolean).join(" | "),
+      normalizedKey: `${resolved.itemId}/${resolved.modelId}`,
+      result: "hit",
+    });
+  }
+  return {
+    costRow: resolved.costRow,
+    source: "bridge_item_single_model",
+    bridgeUsed: true,
+    bridgeIds: { variationIds: [resolved.modelId], itemIds: [resolved.itemId] },
+    identitySource: "item_single_model",
+    matchedId: resolved.modelId,
+    matchedValue: resolved.modelId,
+    ambiguous: false,
+  };
+}
+
 function shopeeParentItemMatch(parent, identitySource, bridgeSku, debugCollector, line) {
   if (debugCollector) {
     debugCollector.recordMatchAttempt({
@@ -1750,6 +1906,26 @@ function resolveShopeeLineCost(costMap, line, costBridge, debugCollector) {
     const itemEquivalence = selectShopeeBridgeItemFinancialEquivalence(line, costBridge, costMap);
     if (itemEquivalence) {
       return shopeeItemFinancialEquivalenceMatch(itemEquivalence, line, debugCollector);
+    }
+    const confirmedItem = selectShopeeBridgeConfirmedItemForSingleModel(line, costBridge);
+    const singleModel = confirmedItem
+      ? resolveSingleModelFromConfirmedItem(costMap, confirmedItem.itemId, confirmedItem.records)
+      : null;
+    if (singleModel && singleModel.resolved) {
+      return shopeeItemSingleModelMatch(singleModel.resolved, confirmedItem, line, debugCollector);
+    }
+    if (singleModel && singleModel.ambiguous) {
+      return {
+        costRow: null,
+        source: "ambiguous",
+        bridgeUsed: true,
+        bridgeIds: bridgeIdsFromRecords(confirmedItem.records),
+        bridgeSku: null,
+        ambiguityKey: line.product,
+        identitySource: "item_models_in_base",
+        ambiguous: true,
+        ambiguousCandidates: singleModel.ambiguous,
+      };
     }
     return { costRow: null, source: "miss", bridgeUsed: true, bridgeIds: null, skuTried, ambiguous: false };
   }
@@ -2173,6 +2349,7 @@ function processShopeeFinancialOrders({
   let bridgeSkuTokenFuzzyMatchCount = 0;
   let bridgeProductUniqueMatchCount = 0;
   let bridgeItemFinancialEquivalentMatchCount = 0;
+  let bridgeItemSingleModelMatchCount = 0;
   let bridgeParentItemSingleModelMatchCount = 0;
   let revenueParentItemFallback = 0;
   // Pendências com custo SÓ no pai e sem evidência para usá-lo.
@@ -2383,6 +2560,9 @@ function processShopeeFinancialOrders({
           }
           if (costMatch.identitySource === "item_financial_equivalent") {
             bridgeItemFinancialEquivalentMatchCount += 1;
+          }
+          if (costMatch.identitySource === "item_single_model") {
+            bridgeItemSingleModelMatchCount += 1;
           }
           if (costMatch.parentItemFallback) {
             bridgeParentItemSingleModelMatchCount += 1;
@@ -2678,6 +2858,7 @@ function processShopeeFinancialOrders({
       bridgeSkuTokenFuzzyMatchCount,
       bridgeProductUniqueMatchCount,
       bridgeItemFinancialEquivalentMatchCount,
+      bridgeItemSingleModelMatchCount,
       bridgeParentItemSingleModelMatchCount,
       parentItemFallbackCoverage: coveragePercent(revenueParentItemFallback),
       parentOnlyCostPendingCount,

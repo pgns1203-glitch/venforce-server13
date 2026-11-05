@@ -1425,7 +1425,7 @@ async function run() {
       for (const t of ["Desconto total", "R$ 20,00", "ML banca", "R$ 5,20", "Você banca", "R$ 14,80", "Precisa vender +1,8", "Lista: Promo Snapshot", "Números: cotação ao vivo"]) assert.ok(detalhe.includes(t), `falta ${t}: ${detalhe}`);
       // O MESMO componente de detalhe da Bancada: resposta (veredito + frase) e a tabela Hoje | Cenário | Diferença.
       assert.strictEqual(await cdp.evaluate("Boolean(document.querySelector('tr[data-promo-detail=\"MLB1002\"] [data-cm-resposta]') && document.querySelector('tr[data-promo-detail=\"MLB1002\"] [data-cm-numeros-grandes]'))"), true, "resposta + Hoje × Cenário da Bancada");
-      assert.ok(/Hoje Cenário Diferença/.test(detalhe), `cabeçalho em caixa normal: ${detalhe}`);
+      assert.ok(/Hoje Promoção Diferença/.test(detalhe), `cabeçalho em caixa normal (Hoje × Promoção): ${detalhe}`);
       assert.strictEqual(await cdp.evaluate("document.querySelector('tr[data-promo-detail=\"MLB1002\"] [data-hip]')"), null, "no accordion os custos são só leitura");
       // clicar de novo recolhe e limpa o conteúdo
       await cdp.evaluate(`document.querySelector('${sel} .cm-c-produto').click()`);

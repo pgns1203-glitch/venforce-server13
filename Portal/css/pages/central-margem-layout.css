@@ -442,10 +442,26 @@
 /* Detalhe expandido: o mesmo componente de detalhe do drawer (mesmas regras de tabela da Bancada) */
 .vf-page-central-margem .cm-promo-detail > td { padding: var(--vf-sp-3) 16px var(--vf-sp-4); background: var(--vf-surface-2); border-bottom: 1px solid var(--vf-border); }
 .vf-page-central-margem .cm-promo-detail[hidden] { display: none; }
-/* Esquerda = o MESMO detalhe da Bancada (resposta, Hoje × Cenário, efeitos, conta completa); direita = quem banca e a origem. */
-.vf-page-central-margem .cm-promo-detail__grid { display: grid; grid-template-columns: minmax(0, 500px) minmax(0, 1fr); gap: var(--vf-sp-10); align-items: start; }
-.vf-page-central-margem .cm-promo-detail__esq { display: flex; flex-direction: column; gap: var(--vf-sp-5); min-width: 0; }
-.vf-page-central-margem .cm-promo-detail__dir { display: flex; flex-direction: column; gap: var(--vf-sp-2); }
+/* Duas colunas de largura igual: esquerda = decisão (resposta, Hoje × Promoção, efeitos); direita = evidências
+   (promoção, quem banca, frete, conta completa, premissas, origem), separada por um fio. Empilha em tela estreita. */
+.vf-page-central-margem .cm-promo-detail__grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--vf-sp-6); align-items: start; }
+.vf-page-central-margem .cm-promo-detail__esq { display: flex; flex-direction: column; gap: var(--vf-sp-3); min-width: 0; }
+.vf-page-central-margem .cm-promo-detail__dir { display: flex; flex-direction: column; gap: var(--vf-sp-2); min-width: 0; padding-left: var(--vf-sp-6); border-left: 1px solid var(--vf-border); }
+.vf-page-central-margem .cm-promo-detail__sec { margin: 0; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); font-weight: var(--vf-fw-semibold); letter-spacing: .06em; text-transform: uppercase; }
+.vf-page-central-margem .cm-promo-detail__fatos { display: flex; flex-direction: column; gap: var(--vf-sp-1); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__resposta { padding: var(--vf-sp-2) var(--vf-sp-4); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__frase { margin: 0; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__cmp th, .vf-page-central-margem .cm-promo-detail .cm-banc__cmp td,
+.vf-page-central-margem .cm-promo-detail .cm-efeitos th, .vf-page-central-margem .cm-promo-detail .cm-efeitos td,
+.vf-page-central-margem .cm-promo-detail .cm-banc__tabela th, .vf-page-central-margem .cm-promo-detail .cm-banc__tabela td { height: 32px; vertical-align: middle; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__efeitos { gap: 0; }
+.vf-page-central-margem .cm-promo-detail .cm-banc__sub { margin: var(--vf-sp-1) 0; font-size: var(--vf-fs-sm); }
+.vf-page-central-margem .cm-promo-detail details > summary { cursor: pointer; color: var(--vf-text); font-size: var(--vf-fs-sm); font-weight: var(--vf-fw-medium); padding: var(--vf-sp-1) 0; }
+.vf-page-central-margem .cm-promo-detail details[open] > summary { margin-bottom: var(--vf-sp-2); }
+.vf-page-central-margem .cm-promo-detail .cm-banc__conta-completa, .vf-page-central-margem .cm-promo-detail .cm-promo-detail__premissas { border-top: 1px solid var(--vf-border); padding-top: var(--vf-sp-1); }
+.vf-page-central-margem .cm-promo-detail__premissas .cm-banc__conta-feita .cm-banc__sub { display: none; }
+.vf-page-central-margem .cm-promo-detail__premissas ul { margin: 0; padding-left: var(--vf-sp-5); font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); font-variant-numeric: tabular-nums; }
+.vf-page-central-margem .cm-promo-detail__premissas .cm-banc__fonte { margin: var(--vf-sp-1) 0 0; font-size: var(--vf-fs-xs); color: var(--vf-text-muted); }
 /* As tabelas do detalhe moram DENTRO da .cm-opps-table: anulam o cabeçalho sticky/caixa alta dela. */
 .vf-page-central-margem .cm-opps-table .cm-promo-detail thead th {
   position: static; height: 36px; padding: 0 var(--vf-sp-3); background: none; border-bottom: 1px solid var(--vf-border);
@@ -455,7 +471,16 @@
 .vf-page-central-margem .cm-opps-table .cm-promo-detail .cm-banc__cmp td:nth-child(n + 2), .vf-page-central-margem .cm-opps-table .cm-promo-detail .cm-banc__cmp th:nth-child(n + 2) { width: 96px; }
 .vf-page-central-margem .cm-promo-detail .cm-banc__banca-linha, .vf-page-central-margem .cm-promo-detail .cm-banc__empate { margin: 0; font-size: var(--vf-fs-sm); color: var(--vf-text-secondary); }
 .vf-page-central-margem .cm-promo-origem { margin: 0; color: var(--vf-text-muted); font-size: var(--vf-fs-2xs); }
-@media (max-width: 960px) { .vf-page-central-margem .cm-promo-detail__grid { grid-template-columns: minmax(0, 1fr); } }
+/* Tabela mais larga que a tela (rolagem horizontal da .cm-opps-wrap): o detalhe acompanha a área VISÍVEL
+   (sticky + largura do contêiner) e empilha em uma coluna — nada fica cortado fora da rolagem. */
+.vf-page-central-margem .cm-opps-wrap { container-type: inline-size; }
+.vf-page-central-margem .cm-promo-detail__grid { position: sticky; left: 16px; width: calc(100cqi - 32px); }
+/* Tela muito estreita: a tabela interna mais larga que a coluna rola dentro da própria seção (nunca fica fora de alcance). */
+.vf-page-central-margem .cm-promo-detail__esq, .vf-page-central-margem .cm-promo-detail__dir { overflow-x: auto; }
+@container (max-width: 900px) {
+  .vf-page-central-margem .cm-promo-detail__grid { grid-template-columns: minmax(0, 1fr); }
+  .vf-page-central-margem .cm-promo-detail__dir { padding-left: 0; border-left: 0; padding-top: var(--vf-sp-3); border-top: 1px solid var(--vf-border); }
+}
 
 /* ── Drawer: Evidências e Projetado × Realizado na mesma linguagem da Bancada ─────────
    Tabela-padrão: células 12px × 16px, cabeçalho discreto, separador de 1px, números à

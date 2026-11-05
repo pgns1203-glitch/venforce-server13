@@ -2565,9 +2565,10 @@
     return '<p class="cm-promo-origem" data-cm-origem-linha="' + escapeHtml(num.origem || "") + '">Lista: ' + escapeHtml(origemLista) + " · " + escapeHtml(quando) + " · Números: " + escapeHtml(numerosTxt) + ".</p>";
   }
 
-  // Detalhe expansível: o MESMO componente de detalhe da Bancada (resposta → Hoje × Cenário →
-  // de onde sai a diferença → Ver conta completa); à direita, a promoção, quem banca, o frete,
-  // o empate e a origem da linha — tudo o que saiu da linha principal continua aqui.
+  // Detalhe expansível em duas colunas, com as MESMAS peças da Bancada (nada é recalculado):
+  //  esquerda = decisão (veredito e frase → Hoje × Promoção → de onde sai a diferença);
+  //  direita  = evidências (promoção, quem banca, frete, empate → conta completa → premissas → origem).
+  // Em tela estreita as colunas empilham (CSS). Tudo o que saiu da linha principal continua aqui.
   function promoDetalheConteudoHtml(op) {
     // `op` (oportunidades) usa `veredito_motivo`; o detalhe espera `motivo` (/simular) — normaliza na borda.
     var r = Object.assign({}, op, { motivo: op.veredito_motivo });
@@ -2575,9 +2576,16 @@
     var promoLinha = '<p class="cm-promo-detail__promo"><strong>' + escapeHtml(promo.nome || promo.tipo || "Promoção") + "</strong>" +
       (promoMetaTexto(promo) ? " · " + escapeHtml(promoMetaTexto(promo)) : "") +
       (op.retornoMl ? " · retorno ML de " + escapeHtml(formatMoney(op.retornoMl)) + " por unidade" : "") + "</p>";
-    return '<div class="cm-promo-detail__grid">' +
-      '<div class="cm-promo-detail__esq">' + cenarioDetalheHtml(r, op.atual, null, { bancaFora: true }) + "</div>" +
-      '<div class="cm-promo-detail__dir">' + promoLinha + bancaRodapeHtml(op) + freteDetalheHtml(op) + empateHtml(op) + promoFlagsHtml(op) + origemLinhaHtml(op) + "</div></div>";
+    var exibicao = { resultado: r, hipotese: false, somenteLeitura: true };
+    var premissas = comoAContaFoiFeitaHtml(r, op.atual) + evidenciaBancadaHtml(r);
+    var decisao = '<section class="cm-promo-detail__esq" aria-label="Decisão financeira"><h4 class="cm-promo-detail__sec">Decisão</h4>' +
+      respostaHtml(r) + comparativoHtml(op.atual, r, "Promoção") + efeitosHtml(r) + "</section>";
+    var evidencias = '<section class="cm-promo-detail__dir" aria-label="Detalhamento e evidências"><h4 class="cm-promo-detail__sec">Detalhamento</h4>' +
+      promoLinha + '<div class="cm-promo-detail__fatos">' + bancaRodapeHtml(op) + freteDetalheHtml(op) + empateHtml(op) + "</div>" + promoFlagsHtml(op) +
+      '<details class="cm-banc__conta-completa" data-cm-conta-completa><summary>Conta completa: Hoje | Cenário | Diferença</summary>' + cascataHtml(op.atual, exibicao) + "</details>" +
+      (premissas ? '<details class="cm-promo-detail__premissas" data-cm-premissas><summary>Premissas e fontes do cálculo</summary>' + premissas + "</details>" : "") +
+      origemLinhaHtml(op) + "</section>";
+    return '<div class="cm-promo-detail__grid">' + decisao + evidencias + "</div>";
   }
 
   var OPPS_COLS = 8;
@@ -4436,15 +4444,15 @@
       (frase ? '<p class="cm-banc__frase" data-cm-motivo>' + escapeHtml(frase) + "</p>" : "") + avisos.join("") + "</div>";
   }
 
-  /** Hoje | Cenário | Diferença: Preço, LC por unidade (negrito), Margem (diferença em pp). */
-  function comparativoHtml(atual, r) {
+  /** Hoje | Cenário | Diferença: Preço, LC por unidade (negrito), Margem (diferença em pp). Na linha de Promoções a coluna se chama "Promoção". */
+  function comparativoHtml(atual, r, rotuloCenario) {
     if (!atual || !r) return "";
     var cen = r.cenario || {};
     var linha = function (rotulo, hoje, cenario, dif, tom, forte) {
       return '<tr data-cm-numero="' + escapeHtml(rotulo) + '"' + (forte ? ' class="is-forte"' : "") + '><th scope="row">' + escapeHtml(rotulo) + '</th><td class="num">' + escapeHtml(hoje) +
         '</td><td class="num">' + escapeHtml(cenario) + '</td><td class="num' + tom + '">' + escapeHtml(dif) + "</td></tr>";
     };
-    return '<table class="cm-banc__cmp" data-cm-numeros-grandes><thead><tr><th></th><th class="num">Hoje</th><th class="num">Cenário</th><th class="num">Diferença</th></tr></thead><tbody>' +
+    return '<table class="cm-banc__cmp" data-cm-numeros-grandes><thead><tr><th></th><th class="num">Hoje</th><th class="num">' + escapeHtml(rotuloCenario || "Cenário") + '</th><th class="num">Diferença</th></tr></thead><tbody>' +
       linha("Preço", formatNumero(atual.preco), formatNumero(cen.preco), formatNumero(r.delta_preco, true), tomGanho(r.delta_preco)) +
       linha("LC por unidade", formatNumero(atual.lc), formatNumero(cen.lc), formatNumero(r.delta_lc, true), tomGanho(r.delta_lc), true) +
       linha("Margem", formatPct1(atual.margem_ratio), formatPct1(cen.margem_ratio), formatPp1(r.delta_margem_ratio), tomGanho(r.delta_margem_ratio)) +

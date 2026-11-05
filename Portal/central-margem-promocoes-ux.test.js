@@ -701,6 +701,34 @@ async function run() {
       await shot("10-linha-aberta");
       const det = (await texto("tr.cm-promo-detail:not([hidden])")).replace(/\s+/g, " ");
       for (const t of ["Hoje", "ML banca", "Você banca", "Frete:", "na promoção", "Lista: Promo Snapshot"]) assert.ok(det.includes(t), `falta ${t}: ${det}`);
+      // Duas colunas lado a lado: decisão (resposta, Hoje × Promoção, efeitos) | evidências (conta, frete, origem).
+      const col = await cdp.evaluate("(function(){var d=document.querySelector('tr.cm-promo-detail:not([hidden])');var e=d.querySelector('.cm-promo-detail__esq'),r=d.querySelector('.cm-promo-detail__dir');var a=e.getBoundingClientRect(),b=r.getBoundingClientRect();" +
+        "return {lado:a.right<=b.left&&Math.abs(a.top-b.top)<4, esq:!!(e.querySelector('[data-cm-resposta]')&&e.querySelector('[data-cm-numeros-grandes]')), dir:!!(r.querySelector('[data-cm-conta-completa] [data-cm-bancada-cascata]')&&r.querySelector('[data-cm-frete]')&&r.querySelector('[data-cm-origem-linha]'))};})()");
+      assert.deepStrictEqual(col, { lado: true, esq: true, dir: true }, "duas colunas com decisão à esquerda e evidências à direita");
+      const altFechada = await cdp.evaluate("document.querySelector('tr.cm-promo-detail:not([hidden])').getBoundingClientRect().height");
+      await cdp.evaluate("document.querySelector('tr.cm-promo-detail:not([hidden]) [data-cm-conta-completa] > summary').click()");
+      assert.ok(await cdp.evaluate("document.querySelector('tr.cm-promo-detail:not([hidden]) [data-cm-conta-completa]').open"), "conta completa abre");
+      await semOverflow("linha aberta com a conta completa");
+      await cdp.evaluate("document.querySelector('tr.cm-promo-detail:not([hidden]) [data-cm-conta-completa] > summary').click()");
+      assert.ok(Math.abs(await cdp.evaluate("document.querySelector('tr.cm-promo-detail:not([hidden])').getBoundingClientRect().height") - altFechada) < 2, "conta completa fecha");
+      // Tela estreita: uma coluna, presa à área visível da tabela mesmo rolada; conta e premissas abertas
+      // nunca ficam fora de alcance (o que não cabe rola dentro da própria seção).
+      for (const w of [820, 560]) {
+        await tamanho(w);
+        await sleep(150);
+        await cdp.evaluate("(function(){var w=document.querySelector('.cm-opps-wrap');w.scrollLeft=w.scrollWidth;document.querySelectorAll('tr.cm-promo-detail:not([hidden]) details').forEach(function(d){d.open=true;});})()");
+        await sleep(100);
+        const estreita = await cdp.evaluate(`(function(){var wr=document.querySelector('.cm-opps-wrap').getBoundingClientRect();var d=document.querySelector('tr.cm-promo-detail:not([hidden])');
+          var g=d.querySelector('.cm-promo-detail__grid').getBoundingClientRect(),e=d.querySelector('.cm-promo-detail__esq'),r=d.querySelector('.cm-promo-detail__dir');
+          var foraSecao=[].slice.call(d.querySelectorAll('.cm-promo-detail__esq, .cm-promo-detail__dir')).filter(function(s){var b=s.getBoundingClientRect();return b.left<wr.left-1||b.right>wr.right+1;}).length;
+          var semRolagem=[e,r].every(function(s){return s.scrollWidth<=s.clientWidth+1;});
+          return {umaColuna:r.getBoundingClientRect().top>=e.getBoundingClientRect().bottom-1, dentro:g.left>=wr.left-1&&g.right<=wr.right+1&&foraSecao===0, alcancavel:semRolagem||[e,r].some(function(s){return getComputedStyle(s).overflowX==='auto';}), doc:document.documentElement.scrollWidth<=window.innerWidth+1};})()`);
+        assert.deepStrictEqual(estreita, { umaColuna: true, dentro: true, alcancavel: true, doc: true }, `detalhe em ${w}px`);
+        await shot(`10b-linha-aberta-${w}`);
+        await cdp.evaluate("(function(){document.querySelector('.cm-opps-wrap').scrollLeft=0;document.querySelectorAll('tr.cm-promo-detail:not([hidden]) details').forEach(function(d){d.open=false;});})()");
+      }
+      await tamanho(1440);
+      await sleep(150);
       await semOverflow("linha aberta");
       await cdp.evaluate("document.querySelector('#cm-opps-host tr.cm-promo-row .cm-c-produto').click()");
       const comMais = await cdp.evaluate("(function(){var b=document.querySelector('#cm-opps-host [data-promo-more]'); if(!b) return null; b.click(); return b.getAttribute('data-promo-more');})()");

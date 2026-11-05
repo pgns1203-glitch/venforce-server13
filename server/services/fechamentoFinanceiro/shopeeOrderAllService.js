@@ -717,14 +717,35 @@ function selectShopeeIdentityFromRecords(rawRecords, line, source, bridgeSku) {
 
   // O mesmo SKU da Variação pode existir em anúncios diferentes. Nessa
   // situação, somente os campos exatos compartilhados pelas duas planilhas
-  // podem reduzir os candidatos.
+  // podem reduzir os candidatos — e TODOS eles reduzem, em sequência:
+  // SKU principal ∩ produto exato ∩ variação exata. Uma evidência que não
+  // reconhece nenhum candidato (ex.: título do pedido diferente do da
+  // Performance) é INFORMATIVA ZERO e não encerra a resolução: só uma
+  // evidência que reconhece candidatos pode reduzir o conjunto.
   let narrowed = records;
+
+  // 1. SKU principal do Order.all × SKU principal da Performance. É o que
+  // separa "ROSA" do combo de "ROSA" do mini-escova quando o SKU da variação
+  // se repete entre anúncios.
+  const principalKeys = [line.skuMainRef, line.skuPrinciple]
+    .map((value) => normalizeShopeeId(value))
+    .filter((value, index, all) => value && !SHOPEE_IDENTITY_PLACEHOLDERS.has(value.toLowerCase()) && all.indexOf(value) === index);
+  if (principalKeys.length > 0) {
+    const byPrincipal = narrowed.filter((record) =>
+      (Array.isArray(record.principalSkus) ? record.principalSkus : []).some((sku) =>
+        principalKeys.includes(sku)
+      )
+    );
+    if (byPrincipal.length > 0) narrowed = uniqueBridgeRecords(byPrincipal);
+    if (narrowed.length === 1) {
+      return { ambiguous: false, record: narrowed[0], records: narrowed, source, bridgeSku, ambiguityKey };
+    }
+  }
+
+  // 2. Produto exato, só quando reconhece algum candidato.
   if (productKey) {
     const byProduct = narrowed.filter((record) => recordProduct(record) === productKey);
-    if (byProduct.length === 0) {
-      return { ambiguous: true, record: null, records, source, bridgeSku, ambiguityKey };
-    }
-    narrowed = byProduct;
+    if (byProduct.length > 0) narrowed = byProduct;
   }
   if (variationKey) {
     const byVariation = narrowed.filter((record) => recordVariation(record) === variationKey);

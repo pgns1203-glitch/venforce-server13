@@ -2251,6 +2251,8 @@ function etapasDeBoot() {
       // Shopee LIVE — grants por Conta (tokens cifrados).
       nome: "shopee-grants",
       executar: () => ensureShopeeGrantsSchema(),
+      // Refresh dos grants LIVE: só com SHOPEE_LIVE_REFRESH_WORKER_ENABLED=true.
+      aoConcluir: () => require("./services/shopee/shopeeRefreshWorker").shopeeRefreshWorker.iniciar(),
       aoFalhar: (err) => console.error("[schema] erro ao garantir schema de shopee_grants no boot:", err.message),
     },
     {

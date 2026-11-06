@@ -260,4 +260,44 @@ console.log("\n▸ CLI — arquivos de saída, sem banco");
   ok("nenhum driver de banco carregado", !loaded.some((file) => /node_modules[\\/]pg[\\/]/.test(file) || /[\\/]config[\\/]db/.test(file)));
 }
 
-console.log(`\n✓ fechamentoAssistido: ${checks} verificações`);
+// ── Servidor local ─────────────────────────────────────────────────────────
+
+async function testServer() {
+  console.log("\n▸ Servidor local — API da interface web");
+  const { createServer } = require("../scripts/financeiro/fechamentoAssistidoServer");
+  const toB64 = (rows) => {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "Sheet1");
+    return { name: "x.xlsx", base64: XLSX.write(wb, { type: "buffer", bookType: "xlsx" }).toString("base64") };
+  };
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const post = async (url, body) => {
+    const res = await fetch(base + url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    return [res.status, await res.json()];
+  };
+  try {
+    const html = await (await fetch(base + "/")).text();
+    ok("GET / serve a página", html.includes("Processar fechamento"));
+    let [status, data] = await post("/api/load", { performance: toB64(performanceRows), orders: toB64(ordersRows), costs: toB64(costRows) });
+    eq("load 200", status, 200);
+    eq("load sem override = oficial", data.summaryAssisted, data.summaryOriginal);
+    ok("cancelados vêm nas linhas fora da receita", data.outOfRevenueAssisted.some((row) => row.Classificação === "cancelledConfirmed"));
+    [status, data] = await post("/api/run", { sessionId: data.sessionId, overrides: { models: { "5001": { cost: 15, reason: "reunião" } } } });
+    eq("recalcular com override", [status, data.comparison.cmv.delta], [200, -20]);
+    [status, data] = await post("/api/run", { sessionId: data.sessionId, overrides: { models: { "5001": { cost: 15 } } } });
+    ok("override sem motivo → 400", status === 400 && /reason/.test(data.error));
+    [status] = await post("/api/run", { sessionId: "inexistente", overrides: null });
+    eq("sessão inexistente → 404", status, 404);
+  } finally {
+    server.close();
+  }
+}
+
+testServer()
+  .then(() => console.log(`\n✓ fechamentoAssistido: ${checks} verificações`))
+  .catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });

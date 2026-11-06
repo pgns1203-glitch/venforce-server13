@@ -137,10 +137,15 @@ function readInputFiles({ performance, orders, costs }) {
   if (!ordersBuffer) throw bancadaError("Informe --orders (Order.all).");
   if (!costsBuffer) throw bancadaError("Informe --costs (base de custos).");
 
+  return { files, ...parseInputBuffers({ performanceBuffer, ordersBuffer, costsBuffer }) };
+}
+
+// Idêntico a fechamentosFinanceiroController: detecção de cabeçalho Shopee
+// para Performance/Order.all e parser FIN-508 para a base.
+function parseInputBuffers({ performanceBuffer, ordersBuffer, costsBuffer }) {
+  if (!ordersBuffer) throw bancadaError("Envie o Order.all.");
+  if (!costsBuffer) throw bancadaError("Envie a base de custos.");
   return {
-    files,
-    // Idêntico a fechamentosFinanceiroController: detecção de cabeçalho
-    // Shopee para Performance/Order.all e parser FIN-508 para a base.
     performanceRows: performanceBuffer
       ? parseSpreadsheet(performanceBuffer, detectShopeeHeaderRow(performanceBuffer))
       : null,
@@ -728,6 +733,9 @@ function runFechamentoAssistido({
     comparison: compareSummaries(summaryOriginal, summaryAssisted),
     rowsOriginal: stripInternal(originalRows),
     rowsAssisted: stripInternal(assistedRows),
+    // Pedidos fora da receita (cancelados, devoluções, não pagos), como o motor os registra.
+    outOfRevenueOriginal: original.auditRows,
+    outOfRevenueAssisted: assisted.auditRows,
     differences: diffRows(originalRows, assistedRows, applied.audit),
     audit: applied.audit,
     warnings: applied.warnings,
@@ -923,5 +931,7 @@ module.exports = {
   validateOverrides,
   writeOutputs,
   readInputFiles,
+  parseInputBuffers,
+  sha256,
   main,
 };

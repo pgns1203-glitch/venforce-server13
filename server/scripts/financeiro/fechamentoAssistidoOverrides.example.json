@@ -1,0 +1,20 @@
+{
+  "$comment": "Overrides TEMPORÁRIOS da bancada de fechamento assistido (só valem para o run local). Todo override exige 'reason' e aparece em override-audit.json. orders.<pedido>: { itemId, modelId, line? (obrigatório se o pedido tiver mais de uma linha) } OU { exclude: true }. models.<modelId>: { cost (unitário), taxPercent? (obrigatório se o Model não existir na base), itemId? }.",
+  "orders": {
+    "260710972Q1P05": {
+      "itemId": "28444420351",
+      "modelId": "325668993895",
+      "reason": "validação manual"
+    },
+    "2607109ABCDEF0": {
+      "exclude": true,
+      "reason": "pedido de teste interno, fora do fechamento"
+    }
+  },
+  "models": {
+    "325668993895": {
+      "cost": 19.49,
+      "reason": "custo informado manualmente para fechamento assistido"
+    }
+  }
+}

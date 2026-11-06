@@ -8,12 +8,14 @@
 // - GET  /shopee/test/status | /shopee/live/status (admin): sem segredo nem token.
 // TEST não persiste tokens. LIVE grava cifrado em shopee_grants (shopeeGrantService).
 const { readTestConfig } = require("../services/shopee/shopeeTestConfig");
-const { shopeeOAuthStateStore } = require("../services/shopee/shopeeOAuthState");
-const { buildAuthorizationUrl, exchangeCodeForToken, ShopeeAuthError, DIAGNOSTICOS } = require("../services/shopee/shopeeTestAuth");
+const { shopeeOAuthStateStore, DEFAULT_TTL_MS } = require("../services/shopee/shopeeOAuthState");
+const { buildAuthorizationUrl, exchangeCodeForToken, refreshAccessToken, ShopeeAuthError, DIAGNOSTICOS } = require("../services/shopee/shopeeTestAuth");
 const { readLiveConfig } = require("../services/shopee/shopeeLiveConfig");
 const shopeeGrantService = require("../services/shopee/shopeeGrantService");
+const { lerConfigWorker } = require("../services/shopee/shopeeRefreshWorker");
 
 const LOG = "[Shopee OAuth TEST]";
+const MAX_LINKS_POR_LOTE = 10;
 
 function renderPagina(titulo, mensagem = "") {
   return `<!doctype html>
@@ -81,6 +83,7 @@ function createShopeeController({
   readLive = readLiveConfig,
   grants = shopeeGrantService,
   exchange = exchangeCodeForToken,
+  refresh = refreshAccessToken,
   logger = console,
 } = {}) {
   let ultimoGrant = null;
@@ -230,24 +233,124 @@ function createShopeeController({
     } catch (err) {
       return erroGrantJson(res, err, "validar Conta LIVE");
     }
-    const clienteContaId = Number(conta.id);
-    const { state, expiresAt } = stateStore.emitir({ app, ambiente: "live", userId: req.user ? req.user.id : null, clienteContaId });
     try {
-      const url = buildAuthorizationUrl(config, state);
-      logger.log(`${LOG} link LIVE emitido: app=${app} conta=${clienteContaId} user=${req.user ? req.user.id : "?"}`);
+      const link = emitirLinkLive(config, conta, app, req.user ? req.user.id : null);
       return res.json({
         ok: true,
         app,
         ambiente: "live",
+        clienteContaId: link.clienteContaId,
+        lojaJaVinculada: link.lojaJaVinculada,
+        url: link.url,
+        stateExpiraEm: link.expiraEm,
+      });
+    } catch (_) {
+      return res.status(500).json({ ok: false, erro: "Falha ao montar a URL de autorização." });
+    }
+  }
+
+  // Um state NOVO e independente por Conta, preso a ela (o callback só usa a
+  // Conta do state). Falhou ao montar a URL ⇒ o state é descartado na hora.
+  function emitirLinkLive(config, conta, app, userId) {
+    const clienteContaId = Number(conta.id);
+    const { state, expiresAt } = stateStore.emitir({ app, ambiente: "live", userId, clienteContaId });
+    try {
+      const url = buildAuthorizationUrl(config, state);
+      logger.log(`${LOG} link LIVE emitido: app=${app} conta=${clienteContaId} user=${userId ?? "?"}`);
+      return {
         clienteContaId,
         lojaJaVinculada: conta.external_account_id ? String(conta.external_account_id) : null,
         url,
-        stateExpiraEm: new Date(expiresAt).toISOString(),
-      });
+        expiraEm: new Date(expiresAt).toISOString(),
+      };
     } catch (err) {
       stateStore.consumir(state);
       logger.error(`${LOG} falha ao montar URL LIVE: ${err && err.code ? err.code : "ERRO_INTERNO"}`);
-      return res.status(500).json({ ok: false, erro: "Falha ao montar a URL de autorização." });
+      throw err;
+    }
+  }
+
+  // POST /shopee/live/links {clienteContaIds: [..], app?}. Admin. Gera, para
+  // cada Conta Shopee ativa, um link de autorização NOVO (state próprio, uso
+  // único, expira em 10 min). Conta inválida/de outro marketplace volta com
+  // ok:false e sem link; as demais seguem. Nada é persistido.
+  async function gerarLinksLiveController(req, res) {
+    const app = String((req.body && req.body.app) || "marketing").trim().toLowerCase();
+    const config = readLive(app);
+    if (!config.appValido) return res.status(400).json({ ok: false, erro: "App Shopee desconhecido." });
+    if (!config.configured) {
+      return res.status(503).json({ ok: false, erro: "App Shopee LIVE não configurado.", faltando: config.faltando });
+    }
+    const bruto = req.body && req.body.clienteContaIds;
+    if (!Array.isArray(bruto) || bruto.length === 0 || bruto.length > MAX_LINKS_POR_LOTE) {
+      return res.status(400).json({ ok: false, erro: `Informe clienteContaIds: lista com 1 a ${MAX_LINKS_POR_LOTE} ids.` });
+    }
+    const ids = [...new Set(bruto.map((v) => String(v).trim()))];
+    const links = [];
+    for (const id of ids) {
+      try {
+        const conta = await grants.validarContaShopee(id);
+        const link = emitirLinkLive(config, conta, app, req.user ? req.user.id : null);
+        links.push({ ok: true, clienteContaId: link.clienteContaId, cliente: conta.cliente_nome || null, conta: conta.conta_nome || null, lojaJaVinculada: link.lojaJaVinculada, url: link.url, expiraEm: link.expiraEm });
+      } catch (err) {
+        const conhecido = err instanceof shopeeGrantService.ShopeeGrantError;
+        links.push({ ok: false, clienteContaId: Number(id) || id, code: conhecido ? err.code : "ERRO_INTERNO", erro: conhecido ? err.message : "Falha ao gerar o link." });
+      }
+    }
+    return res.json({
+      ok: links.every((l) => l.ok),
+      app,
+      ambiente: "live",
+      validadeMinutos: Math.round(DEFAULT_TTL_MS / 60000),
+      aviso: "Cada link vale uma vez, por 10 min, e só para a Conta indicada. Um deploy/restart do servidor invalida os links ainda não usados.",
+      links,
+    });
+  }
+
+  // GET /shopee/live/contas[?busca=]. Admin. Contas Shopee com o clienteContaId
+  // e o estado do grant (sem token).
+  async function contasLiveController(req, res) {
+    try {
+      const contas = await grants.listarContasShopee({ app: "marketing", busca: req.query && req.query.busca });
+      return res.json({ ok: true, ambiente: "live", contas });
+    } catch (err) {
+      return erroGrantJson(res, err, "contas LIVE");
+    }
+  }
+
+  // POST /shopee/live/refresh {clienteContaId, app?}. Admin. Força o refresh do
+  // grant (validação). Resposta só com metadados — nunca token.
+  async function refreshLiveController(req, res) {
+    const app = String((req.body && req.body.app) || "marketing").trim().toLowerCase();
+    const config = readLive(app);
+    if (!config.appValido) return res.status(400).json({ ok: false, erro: "App Shopee desconhecido." });
+    if (!config.configured) {
+      return res.status(503).json({ ok: false, erro: "App Shopee LIVE não configurado.", faltando: config.faltando });
+    }
+    try {
+      const r = await grants.refreshGrantLive({ clienteContaId: req.body && req.body.clienteContaId, app }, { config, refresh, logger });
+      logger.log(`${LOG} refresh manual: conta=${r.clienteContaId} shop_id=${r.shopId} user=${req.user ? req.user.id : "?"}`);
+      return res.json({
+        ok: true,
+        clienteContaId: r.clienteContaId,
+        shopId: String(r.shopId),
+        accessTokenExpiraEm: r.accessTokenExpiresAt,
+        refreshedAt: r.refreshedAt,
+        shopeeRequestId: r.shopeeRequestId,
+      });
+    } catch (err) {
+      if (err instanceof shopeeGrantService.ShopeeGrantError) {
+        const d = err.detalhe || null;
+        logger.error(`${LOG} refresh manual falhou: conta=${req.body && req.body.clienteContaId} code=${err.code}`
+          + (d ? ` causa=${d.code} request_id=${d.shopeeRequestId} diagnostico=${d.diagnostico}` : ""));
+        return res.status(err.status).json({
+          ok: false,
+          code: err.code,
+          erro: err.message,
+          ...(d ? { causa: d.code, shopeeError: d.shopeeError, shopeeRequestId: d.shopeeRequestId, dica: d.diagnostico ? DIAGNOSTICOS[d.diagnostico] : null } : {}),
+        });
+      }
+      return erroGrantJson(res, err, "refresh LIVE");
     }
   }
 
@@ -271,6 +374,10 @@ function createShopeeController({
         redirectUrl: config.redirectUrl || null,
         transport: config.transport || null,
       },
+      refreshWorker: (() => {
+        const w = lerConfigWorker();
+        return { ligado: w.ligado, intervaloMinutos: Math.round(w.intervaloMs / 60000), margemMinutos: 30 };
+      })(),
       ...(clienteContaId !== null ? { clienteContaId: Number(clienteContaId), autorizado: lista.some((g) => g.status === "active") } : {}),
       grants: lista,
     });
@@ -319,6 +426,9 @@ function createShopeeController({
     statusTestController,
     iniciarAutorizacaoLiveController,
     statusLiveController,
+    gerarLinksLiveController,
+    contasLiveController,
+    refreshLiveController,
   };
 }
 
@@ -331,4 +441,7 @@ module.exports = {
   statusTestController: padrao.statusTestController,
   iniciarAutorizacaoLiveController: padrao.iniciarAutorizacaoLiveController,
   statusLiveController: padrao.statusLiveController,
+  gerarLinksLiveController: padrao.gerarLinksLiveController,
+  contasLiveController: padrao.contasLiveController,
+  refreshLiveController: padrao.refreshLiveController,
 };

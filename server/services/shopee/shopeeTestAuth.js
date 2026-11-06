@@ -16,6 +16,7 @@ const { shopeeGatewayClient } = require("./shopeeGatewayClient");
 
 const AUTH_PARTNER_PATH = "/api/v2/shop/auth_partner";
 const TOKEN_GET_PATH = "/api/v2/auth/token/get";
+const ACCESS_TOKEN_GET_PATH = "/api/v2/auth/access_token/get";
 
 const CODES = Object.freeze({
   NAO_CONFIGURADO: "SHOPEE_TEST_NAO_CONFIGURADO",
@@ -123,7 +124,7 @@ function parseJson(raw) {
 }
 
 // Converte (status HTTP, corpo cru) da Shopee em resultado ou ShopeeAuthError.
-function interpretarTokenGet(status, raw, shopId, code) {
+function interpretarTokenGet(status, raw, shopId, code, rotulo = "token/get") {
   const data = parseJson(raw);
   const meta = {
     upstreamStatus: status,
@@ -132,10 +133,10 @@ function interpretarTokenGet(status, raw, shopId, code) {
     shopeeMessage: mensagemSegura(data && data.message, code),
   };
 
-  if (status >= 500) throw new ShopeeAuthError(CODES.UPSTREAM_5XX, `Shopee falhou no token/get (${status}).`, meta);
+  if (status >= 500) throw new ShopeeAuthError(CODES.UPSTREAM_5XX, `Shopee falhou no ${rotulo} (${status}).`, meta);
   if (!data) throw new ShopeeAuthError(CODES.RESPOSTA_INVALIDA, "Shopee devolveu resposta em formato inesperado.", meta);
   if (status >= 400 || (typeof data.error === "string" && data.error !== "")) {
-    throw new ShopeeAuthError(CODES.UPSTREAM_4XX, `Shopee recusou o token/get${meta.shopeeError ? ` (${meta.shopeeError})` : ""}.`, meta);
+    throw new ShopeeAuthError(CODES.UPSTREAM_4XX, `Shopee recusou o ${rotulo}${meta.shopeeError ? ` (${meta.shopeeError})` : ""}.`, meta);
   }
   if (status < 200 || status >= 300) throw new ShopeeAuthError(CODES.RESPOSTA_INVALIDA, `Status inesperado da Shopee (${status}).`, meta);
 
@@ -180,9 +181,9 @@ async function postDireto(config, url, body, doFetch) {
 // Via gateway de IPv4 fixo (o gateway precisa estar com SHOPEE_API_ORIGIN = host
 // de teste e TOKEN_GET_PATH na allowlist). 4xx/5xx da Shopee chegam como erro do
 // gateway com `upstreamStatus` e `upstreamBody` (não enumerável).
-async function postViaGateway(config, query, body, gateway) {
+async function postViaGateway(config, query, body, gateway, path = TOKEN_GET_PATH) {
   try {
-    const r = await gateway.forward({ method: "POST", path: TOKEN_GET_PATH, query, body }, { timeoutMs: config.timeoutMs });
+    const r = await gateway.forward({ method: "POST", path, query, body }, { timeoutMs: config.timeoutMs });
     return { status: r.status, raw: r.body };
   } catch (err) {
     if (err && Number.isInteger(err.upstreamStatus)) return { status: err.upstreamStatus, raw: err.upstreamBody || "" };
@@ -225,9 +226,43 @@ async function exchangeCodeForToken(config, { code, shopId }, { fetchImpl, gatew
   return interpretarTokenGet(resposta.status, resposta.raw, shopId, code);
 }
 
+// ── Refresh LIVE ─────────────────────────────────────────────────────────
+// POST /api/v2/auth/access_token/get?partner_id&timestamp&sign
+//   corpo JSON {refresh_token, partner_id, shop_id}; mesma assinatura pública.
+// A Shopee devolve um access_token E um refresh_token NOVOS (o refresh é
+// rotativo). Só LIVE, só pelo gateway de IPv4 fixo: não existe ramo direto
+// aqui, nem para TEST. Sem retry: uma resposta perdida depois de a Shopee
+// rotacionar não se recupera repetindo (quem chama registra e não insiste).
+async function refreshAccessToken(config, { refreshToken, shopId }, { gateway = shopeeGatewayClient, now = Date.now } = {}) {
+  exigirConfig(config);
+  if (config.ambiente !== "live" || config.transport !== "gateway") {
+    throw new ShopeeAuthError(CODES.NAO_CONFIGURADO, "Refresh Shopee só existe no LIVE via gateway.");
+  }
+  if (typeof refreshToken !== "string" || !refreshToken) throw new ShopeeAuthError(CODES.PARAMETRO_INVALIDO, "refresh_token ausente.");
+  if (!Number.isSafeInteger(shopId) || shopId <= 0) throw new ShopeeAuthError(CODES.PARAMETRO_INVALIDO, "shop_id inválido.");
+
+  const timestamp = Math.floor(now() / 1000);
+  const query = {
+    partner_id: String(config.partnerId),
+    timestamp: String(timestamp),
+    sign: signPublic({ partnerId: config.partnerId, partnerKey: config.partnerKey, path: ACCESS_TOKEN_GET_PATH, timestamp }),
+  };
+  const body = { refresh_token: refreshToken, partner_id: config.partnerId, shop_id: shopId };
+  const resposta = await postViaGateway(config, query, body, gateway, ACCESS_TOKEN_GET_PATH);
+  const resultado = interpretarTokenGet(resposta.status, resposta.raw, shopId, refreshToken, "access_token/get");
+  // A loja da resposta (quando vem) tem que ser a do grant.
+  const data = parseJson(resposta.raw);
+  if (data && data.shop_id !== undefined && data.shop_id !== null && Number(data.shop_id) !== shopId) {
+    throw new ShopeeAuthError(CODES.RESPOSTA_INVALIDA, "Shopee respondeu o refresh de outra loja.", { upstreamStatus: resposta.status, shopeeRequestId: resultado.shopeeRequestId });
+  }
+  return resultado;
+}
+
 module.exports = {
   buildAuthorizationUrl,
   exchangeCodeForToken,
+  refreshAccessToken,
+  ACCESS_TOKEN_GET_PATH,
   signPublic,
   ShopeeAuthError,
   CODES,

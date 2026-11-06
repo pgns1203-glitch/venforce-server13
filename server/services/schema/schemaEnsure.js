@@ -351,11 +351,16 @@ async function ensureFinanceiroAdsCacheSchema(db = pool) {
 // ───────────────────────────────────────────────────────────────────────────
 // Shopee LIVE — grants (tokens cifrados) por Conta. Mesmo desenho das trilhas acima.
 const SHOPEE_GRANTS_MIGRATION = "20261029_shopee_grants.sql";
+// Metadados do refresh (colunas anuláveis): aplicada na MESMA trilha, depois da
+// tabela. O hash do SQL concatenado muda ⇒ o marcador de versão aplica 1 vez.
+const SHOPEE_GRANTS_REFRESH_MIGRATION = "20261106_shopee_grants_refresh.sql";
 const SHOPEE_GRANTS_LOCK_KEY = "vf:schema:shopee_grants";
 const shopeeGrantsEmCurso = new WeakMap();
 
 function shopeeGrantsDdl() {
-  return fs.readFileSync(path.join(migrationsDir, SHOPEE_GRANTS_MIGRATION), "utf8");
+  return [SHOPEE_GRANTS_MIGRATION, SHOPEE_GRANTS_REFRESH_MIGRATION]
+    .map((arquivo) => fs.readFileSync(path.join(migrationsDir, arquivo), "utf8"))
+    .join("\n");
 }
 
 async function ensureShopeeGrantsSchema(db = pool) {
@@ -580,6 +585,21 @@ const MIGRATIONS_INVENTARIO = [
       "pg_advisory_xact_lock: seguro com duas instâncias subindo ao mesmo tempo",
     rollback: "DROP TABLE shopee_grants (nenhuma tabela existente é alterada)",
   },
+  {
+    arquivo: SHOPEE_GRANTS_REFRESH_MIGRATION,
+    descricao:
+      "adiciona a shopee_grants os metadados do refresh do access_token (last_refresh_at, " +
+      "last_refresh_request_id, last_refresh_attempt_at, last_refresh_error), todos anuláveis",
+    tipo: "estrutural-aditiva",
+    auto: true,
+    runner: "schemaEnsure.ensureShopeeGrantsSchema",
+    idempotente: true,
+    risco: "baixo",
+    prerequisito:
+      "20261029_shopee_grants.sql (aplicada antes, na mesma transação/trilha). ADD COLUMN " +
+      "IF NOT EXISTS anulável, sem backfill; tabela pequena, lock_timeout do schemaVersionado",
+    rollback: "ALTER TABLE shopee_grants DROP COLUMN das quatro colunas last_refresh_*",
+  },
 ];
 
 // Arquivos que QUALQUER runner automático tem permissão de aplicar. Usado por
@@ -610,6 +630,7 @@ module.exports = {
   ensureShopeeGrantsSchema,
   shopeeGrantsDdl,
   SHOPEE_GRANTS_MIGRATION,
+  SHOPEE_GRANTS_REFRESH_MIGRATION,
   SHOPEE_GRANTS_LOCK_KEY,
   MIGRATIONS_INVENTARIO,
   MIGRATIONS_AUTO,

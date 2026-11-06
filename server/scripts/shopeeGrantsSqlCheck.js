@@ -21,7 +21,10 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || "postgres://127.0.0.1:1/n
 const { salvarGrantLive, statusGrantsLive, validarContaShopee } = require("../services/shopee/shopeeGrantService");
 const { decifrar } = require("../services/shopee/shopeeTokenCrypto");
 
-const MIGRATION = fs.readFileSync(path.join(__dirname, "..", "sql", "migrations", "20261029_shopee_grants.sql"), "utf8");
+// Mesma ordem do schemaEnsure.ensureShopeeGrantsSchema (tabela + metadados do refresh).
+const MIGRATION = ["20261029_shopee_grants.sql", "20261106_shopee_grants_refresh.sql"]
+  .map((f) => fs.readFileSync(path.join(__dirname, "..", "sql", "migrations", f), "utf8"))
+  .join("\n");
 const CHAVE = crypto.randomBytes(32);
 const noop = async () => {};
 
@@ -134,7 +137,7 @@ async function rejeita(promise, code, label) {
   // 8. status: só metadados
   const st = await statusGrantsLive({ clienteContaId: 10 }, opts);
   assert.strictEqual(st.length, 1);
-  assert.deepStrictEqual(Object.keys(st[0]).sort(), ["accessTokenExpiraEm", "app", "atualizadoEm", "autorizadoEm", "autorizadoPor", "clienteContaId", "grantId", "refreshTokenPresente", "shopId", "status", "tokenPresente"]);
+  assert.deepStrictEqual(Object.keys(st[0]).sort(), ["accessTokenExpiraEm", "app", "ativo", "atualizadoEm", "autorizadoEm", "autorizadoPor", "cliente", "clienteContaId", "conta", "expirado", "grantId", "pertoDeExpirar", "refreshTokenPresente", "shopId", "status", "tokenPresente", "ultimaTentativaRefreshEm", "ultimoErroRefresh", "ultimoRefreshEm", "ultimoRefreshRequestId"]);
   assert.strictEqual(st[0].tokenPresente, true);
   assert.ok(!JSON.stringify(st).includes("v1."), "nenhum texto cifrado no status");
   assert.strictEqual((await statusGrantsLive({}, opts)).length, 2);

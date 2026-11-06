@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex">
+  <title>Venforce — Shopee LIVE</title>
+  <style>
+    *{box-sizing:border-box}
+    body{margin:0;font:14px/1.4 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#f4f5f7;color:#1c1f26}
+    main{max-width:1200px;margin:0 auto;padding:16px}
+    h1{font-size:20px;margin:0 0 12px;letter-spacing:.04em}
+    .card{background:#fff;border:1px solid #dfe2e8;border-radius:8px;padding:12px;margin-bottom:12px}
+    .row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    .grow{flex:1 1 200px}
+    input[type=search]{padding:8px;border:1px solid #c5cad3;border-radius:6px;width:100%;font:inherit}
+    button{padding:7px 12px;border:1px solid #98a1b0;background:#fff;border-radius:6px;cursor:pointer;font:inherit}
+    button.primary{background:#1c4fd8;color:#fff;border-color:#1c4fd8}
+    button:disabled{opacity:.5;cursor:not-allowed}
+    .tablewrap{overflow-x:auto}
+    table{border-collapse:collapse;width:100%;min-width:900px;background:#fff}
+    th,td{border-bottom:1px solid #e6e8ee;padding:6px 8px;text-align:left;vertical-align:top}
+    th{background:#eef0f4;font-size:12px;text-transform:uppercase}
+    .mono{font-family:ui-monospace,Menlo,monospace;font-size:12px;word-break:break-all}
+    .muted{color:#667085;font-size:12px}
+    .msg{padding:8px 10px;border-radius:6px;margin-top:6px}
+    .msg.err{background:#fde8e8;color:#8a1c1c}
+    .msg.ok{background:#e6f6ea;color:#17602b}
+    .msg.warn{background:#fff4d6;color:#7a5200}
+    .detail td{background:#fafbfc}
+    .actions{display:flex;flex-direction:column;gap:4px}
+  </style>
+</head>
+<body>
+<main>
+  <h1>SHOPEE LIVE</h1>
+  <div class="card" id="topo">
+    <div class="row">
+      <div class="grow" id="topoInfo">Carregando…</div>
+      <button id="btnAtualizar" type="button">Atualizar</button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="row">
+      <div class="grow"><input type="search" id="busca" placeholder="Buscar por cliente ou conta" aria-label="Buscar"></div>
+      <button id="btnLinksSel" type="button" class="primary" disabled>Gerar links dos selecionados</button>
+    </div>
+    <p class="muted">Links de autorização valem uma vez, por 10 min; deploy/restart do servidor invalida. Não são salvos em lugar nenhum: copie logo após gerar.</p>
+    <div id="aviso"></div>
+  </div>
+  <div class="card" id="painelLinks" hidden>
+    <strong>Links gerados</strong>
+    <div id="listaLinks"></div>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr>
+        <th><input type="checkbox" id="chkTodos" aria-label="Selecionar todos"></th>
+        <th>Cliente</th><th>Conta</th><th>Shop ID</th><th>Status</th><th>Token</th><th>Refresh</th><th>Expira</th><th>Último refresh</th><th>Ações</th>
+      </tr></thead>
+      <tbody id="corpo"><tr><td colspan="10">Carregando…</td></tr></tbody>
+    </table>
+  </div>
+</main>
+<script src="shopee-admin.js"></script>
+</body>
+</html>

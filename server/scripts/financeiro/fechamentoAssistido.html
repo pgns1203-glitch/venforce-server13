@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bancada de Fechamento</title>
+<link rel="icon" href="data:,">
+<style>
+  :root { --bg:#fff; --fg:#1d2330; --muted:#667085; --line:#d9dee7; --soft:#f4f6fa; --accent:#2457d6; --bad:#b42318; --good:#067647; --warn:#b54708; --hl:#fff7d6; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:13px/1.4 system-ui, sans-serif; color:var(--fg); background:var(--bg); }
+  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0 12px 0 0; }
+  header .tag { font-size:11px; color:var(--muted); }
+  main { padding:12px 16px 40px; }
+  fieldset { border:1px solid var(--line); border-radius:6px; margin:0 0 12px; padding:8px 12px; display:flex; gap:16px; flex-wrap:wrap; align-items:flex-end; }
+  label.file { display:flex; flex-direction:column; gap:2px; font-weight:600; }
+  label.file span { font-weight:400; color:var(--muted); font-size:11px; }
+  button { font:inherit; padding:6px 12px; border:1px solid var(--accent); background:var(--accent); color:#fff; border-radius:5px; cursor:pointer; }
+  button.ghost { background:#fff; color:var(--accent); }
+  button.small { padding:2px 8px; font-size:12px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .msg { padding:8px 12px; border-radius:5px; margin:0 0 12px; white-space:pre-wrap; }
+  .msg.err { background:#fef3f2; color:var(--bad); border:1px solid #fecdca; }
+  .msg.info { background:var(--soft); color:var(--muted); }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:8px; margin-bottom:12px; }
+  .card { border:1px solid var(--line); border-radius:6px; padding:6px 10px; }
+  .card.changed { background:var(--hl); border-color:#f5d76e; }
+  .card .k { color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.03em; }
+  .card .v { font-size:16px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .card .o { font-size:11px; color:var(--muted); font-variant-numeric:tabular-nums; }
+  .neg { color:var(--bad); } .pos { color:var(--good); }
+  .impact { border:2px solid var(--accent); border-radius:6px; padding:8px 12px; margin-bottom:12px; display:none; }
+  .impact table { border-collapse:collapse; }
+  .impact td, .impact th { padding:2px 14px 2px 0; text-align:right; font-variant-numeric:tabular-nums; }
+  .impact th:first-child, .impact td:first-child { text-align:left; }
+  .toolbar { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:6px; }
+  .toolbar button.f { background:#fff; color:var(--fg); border-color:var(--line); }
+  .toolbar button.f.on { background:var(--fg); color:#fff; border-color:var(--fg); }
+  .toolbar input { padding:5px 8px; border:1px solid var(--line); border-radius:5px; min-width:220px; font:inherit; }
+  .layout { display:flex; gap:12px; align-items:flex-start; }
+  .tablewrap { flex:1; min-width:0; overflow:auto; max-height:70vh; border:1px solid var(--line); border-radius:6px; }
+  table.rows { border-collapse:collapse; width:100%; }
+  table.rows th { position:sticky; top:0; background:var(--soft); text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); white-space:nowrap; font-size:12px; }
+  table.rows td { padding:4px 6px; border-bottom:1px solid #eef1f5; white-space:nowrap; font-variant-numeric:tabular-nums; }
+  table.rows td.num { text-align:right; }
+  table.rows td.prod { max-width:260px; overflow:hidden; text-overflow:ellipsis; }
+  table.rows tr { cursor:pointer; }
+  table.rows tr:hover td { background:#f0f4ff; }
+  table.rows tr.sel td { background:#dfe8ff; }
+  table.rows tr.changed td { background:var(--hl); }
+  table.rows tr.out td { color:var(--muted); }
+  .pill { display:inline-block; padding:0 6px; border-radius:9px; font-size:11px; background:var(--soft); }
+  .pill.bad { background:#fef3f2; color:var(--bad); } .pill.warn { background:#fffaeb; color:var(--warn); } .pill.ok { background:#ecfdf3; color:var(--good); } .pill.ov { background:#eef4ff; color:var(--accent); }
+  aside { width:340px; flex:none; border:1px solid var(--line); border-radius:6px; padding:10px 12px; position:sticky; top:8px; }
+  aside h3 { margin:0 0 6px; font-size:13px; }
+  aside .kv { display:grid; grid-template-columns:110px 1fr; gap:2px 8px; font-size:12px; margin-bottom:8px; }
+  aside .kv div:nth-child(odd) { color:var(--muted); }
+  aside label { display:block; margin:6px 0 2px; font-weight:600; font-size:12px; }
+  aside input[type=text], aside input[type=number], aside textarea { width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:5px; font:inherit; }
+  aside .hint { color:var(--muted); font-size:11px; }
+  .overrides { margin-top:12px; }
+  .overrides li { margin:3px 0; }
+  .warnings { color:var(--warn); }
+  details { margin-top:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Bancada de Fechamento Assistido — Shopee</h1>
+  <span class="tag">Local (127.0.0.1) · motor oficial · overrides só neste processamento · nada é gravado em banco nem na Base</span>
+</header>
+<main>
+  <fieldset>
+    <label class="file">Performance <span>.xlsx (opcional, ponte de identidade)</span><input type="file" id="fPerformance" accept=".xlsx,.xls,.csv"></label>
+    <label class="file">Order.all <span>.xlsx</span><input type="file" id="fOrders" accept=".xlsx,.xls,.csv"></label>
+    <label class="file">Base de custos <span>.xlsx</span><input type="file" id="fCosts" accept=".xlsx,.xls,.csv"></label>
+    <label class="file">overrides.json <span>opcional</span><input type="file" id="fOverrides" accept=".json"></label>
+    <button id="btnProcess">Processar fechamento</button>
+  </fieldset>
+
+  <div id="msg"></div>
+  <div id="impact" class="impact"></div>
+  <div id="cards" class="cards"></div>
+
+  <div id="workspace" style="display:none">
+    <div class="toolbar">
+      <span id="filters"></span>
+      <input id="search" placeholder="Buscar pedido, SKU, produto, Model…">
+      <span id="count" class="tag"></span>
+      <span style="flex:1"></span>
+      <button class="ghost small" id="btnRecalc">Recalcular</button>
+      <button class="ghost small" id="btnDownload">Baixar overrides.json</button>
+    </div>
+    <div class="layout">
+      <div class="tablewrap"><table class="rows"><thead id="thead"></thead><tbody id="tbody"></tbody></table></div>
+      <aside id="panel"><h3>Override temporário</h3><div class="hint">Clique numa linha da tabela.</div></aside>
+    </div>
+    <div class="overrides">
+      <h3>Overrides ativos (<span id="ovCount">0</span>)</h3>
+      <ul id="ovList"></ul>
+      <div id="warnings" class="warnings"></div>
+    </div>
+    <details><summary>Notas do motor</summary><ul id="notes"></ul></details>
+  </div>
+</main>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = { sessionId: null, data: null, overrides: { orders: {}, models: {} }, filter: "todos", selected: null, busy: false };
+
+const BRL = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmt = (v) => v === null || v === undefined || v === "" ? "—" : typeof v === "number" ? BRL.format(v) : String(v);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const signClass = (v) => typeof v === "number" && v !== 0 ? (v < 0 ? "neg" : "pos") : "";
+
+function showMsg(text, kind = "err") { $("msg").innerHTML = text ? `<div class="msg ${kind}">${esc(text)}</div>` : ""; }
+
+function readFileBase64(input) {
+  const file = input.files[0];
+  if (!file) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, base64: String(reader.result).split(",")[1] || "" });
+    reader.onerror = () => reject(new Error(`Falha lendo ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function post(url, body) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const json = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
+}
+
+function setBusy(busy, label) {
+  state.busy = busy;
+  for (const id of ["btnProcess", "btnRecalc"]) $(id).disabled = busy;
+  if (busy) showMsg(label || "Processando…", "info");
+}
+
+function cleanOverrides() {
+  const out = {};
+  if (Object.keys(state.overrides.orders).length) out.orders = state.overrides.orders;
+  if (Object.keys(state.overrides.models).length) out.models = state.overrides.models;
+  return Object.keys(out).length ? out : null;
+}
+
+$("btnProcess").onclick = async () => {
+  try {
+    const [performance, orders, costs] = await Promise.all([readFileBase64($("fPerformance")), readFileBase64($("fOrders")), readFileBase64($("fCosts"))]);
+    if (!orders || !costs) return showMsg("Selecione pelo menos o Order.all e a Base de custos.");
+    const ovFile = $("fOverrides").files[0];
+    if (ovFile) {
+      const parsed = JSON.parse(await ovFile.text());
+      state.overrides = { orders: { ...(parsed.orders || {}) }, models: { ...(parsed.models || {}) } };
+    } else {
+      state.overrides = { orders: {}, models: {} };
+    }
+    setBusy(true, "Processando as planilhas pelo motor oficial…");
+    const data = await post("/api/load", { performance, orders, costs, overrides: cleanOverrides() });
+    state.sessionId = data.sessionId;
+    state.selected = null;
+    render(data);
+    showMsg("");
+  } catch (error) {
+    showMsg(error.message);
+  } finally {
+    setBusy(false);
+  }
+};
+
+let runSeq = 0;
+async function recalc(previousOverrides) {
+  if (!state.sessionId) return;
+  const seq = ++runSeq; // só a resposta do pedido mais recente é exibida
+  try {
+    setBusy(true, "Recalculando…");
+    const data = await post("/api/run", { sessionId: state.sessionId, overrides: cleanOverrides() });
+    if (seq !== runSeq) return;
+    render(data);
+    showMsg("");
+  } catch (error) {
+    if (seq !== runSeq) return;
+    if (previousOverrides) state.overrides = previousOverrides; // desfaz o override recusado
+    showMsg(error.message);
+    renderOverrides();
+  } finally {
+    if (seq === runSeq) setBusy(false);
+  }
+}
+$("btnRecalc").onclick = () => recalc();
+
+$("btnDownload").onclick = () => {
+  const blob = new Blob([JSON.stringify(cleanOverrides() || {}, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "overrides.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
+
+// ── Cards e impacto ─────────────────────────────────────────────────────────
+const CARDS = [
+  ["Receita bruta", (s) => s.receitaBruta, true],
+  ["Receita líquida", (s) => s.receitaLiquida, true],
+  ["Taxas", (s) => s.taxas, true],
+  ["Frete", (s) => s.frete, true],
+  ["Imposto", (s) => s.imposto, true],
+  ["CMV", (s) => s.cmv, true],
+  ["LC", (s) => s.lc, true],
+  ["MC %", (s) => s.mcPercent, true],
+  ["Pedidos", (s) => s.pedidos, false],
+  ["Cancelados", (s) => s.cancelados.pedidos, false],
+  ["Devoluções", (s) => s.devolucoes.pedidos, false],
+  ["Sem custo (linhas)", (s) => s.semCusto.linhas, false],
+  ["Ambíguos", (s) => s.ambiguos.linhas, false],
+  ["Cobertura %", (s) => s.coberturaPercent, true],
+];
+
+function renderCards(data) {
+  const o = data.summaryOriginal, a = data.summaryAssisted;
+  $("cards").innerHTML = CARDS.map(([label, get, money]) => {
+    const ov = get(o), av = get(a);
+    const changed = ov !== av;
+    const show = (v) => money ? fmt(v) : (v ?? "—");
+    const d = typeof ov === "number" && typeof av === "number" ? Math.round((av - ov) * 100) / 100 : null;
+    return `<div class="card ${changed ? "changed" : ""}"><div class="k">${esc(label)}</div>
+      <div class="v">${esc(show(av))}</div>
+      <div class="o">${changed ? `original ${esc(show(ov))} · Δ <span class="${signClass(d)}">${esc(show(d))}</span>` : "= original"}</div></div>`;
+  }).join("");
+
+  const c = data.comparison;
+  const anyOverride = data.audit.length > 0;
+  $("impact").style.display = anyOverride ? "block" : "none";
+  if (anyOverride) {
+    const rows = [["Receita bruta", c.receitaBruta], ["CMV", c.cmv], ["LC", c.lc], ["MC (p.p.)", c.mcPercent], ["Resultado final", c.resultadoFinal]];
+    $("impact").innerHTML = `<b>Original × Assistido</b> — ${data.audit.length} override(s), ${data.differences.length} linha(s) alterada(s)
+      <table><tr><th></th><th>Original</th><th>Assistido</th><th>Δ</th></tr>
+      ${rows.map(([l, e]) => `<tr><td>${l}</td><td>${fmt(e.original)}</td><td>${fmt(e.assistido)}</td><td class="${signClass(e.delta)}"><b>${fmt(e.delta)}</b></td></tr>`).join("")}</table>`;
+  }
+}
+
+// ── Tabela ──────────────────────────────────────────────────────────────────
+const KIND_LABEL = { cancelledConfirmed: "cancelado", returnOrRefund: "devolução", unpaid: "não pago" };
+
+function buildTableRows(data) {
+  const origByKey = new Map(data.rowsOriginal.map((r) => [r["Chave da linha"], r]));
+  const changed = new Set(data.differences.map((d) => d["Chave da linha"]));
+  const rows = data.rowsAssisted.map((r) => ({
+    key: r["Chave da linha"], orderId: r["ID do pedido"], line: Number(String(r["Chave da linha"]).split("#").pop()),
+    sku: r.SKU, produto: r.Produto, item: r["ID item (Order.all)"] || r["Item da base usado"], model: r["ID model (Order.all)"] || r["Model da base usado"],
+    itemOrderAll: r["ID item (Order.all)"], modelOrderAll: r["ID model (Order.all)"], itemBase: r["Item da base usado"], modelBase: r["Model da base usado"],
+    qtd: r.Quantidade, receita: r["Receita bruta"], custo: r["Custo unitário usado"], cmv: r.CMV, lc: r.LC, mc: r.MC,
+    status: r["Status do pedido"], kind: "receita", match: r["Match de custo"], origemCusto: r["Origem do custo"], cobertura: r["Cobertura de custo"],
+    override: r.overrideApplied ? r.overrideType : "", reason: r.overrideReason, changed: changed.has(r["Chave da linha"]), orig: origByKey.get(r["Chave da linha"]) || null,
+  }));
+  const seen = new Map();
+  for (const r of data.outOfRevenueAssisted || []) {
+    const n = (seen.get(r["ID do pedido"]) || 0) + 1; seen.set(r["ID do pedido"], n);
+    rows.push({ key: `${r["ID do pedido"]}#${n}`, orderId: r["ID do pedido"], line: n, sku: "", produto: r.Produto, item: "", model: "", qtd: r.Quantidade,
+      receita: r["Receita bruta"], custo: null, cmv: null, lc: null, mc: null, status: r["Status do pedido"], kind: r.Classificação,
+      match: "", cobertura: "fora da receita", override: "", reason: "", changed: false, out: true, orig: null });
+  }
+  // Pedidos excluídos por override: continuam visíveis para poder reincluir.
+  for (const d of data.differences.filter((d) => d.Mudança === "removida")) {
+    const o = data.rowsOriginal.find((r) => r["Chave da linha"] === d["Chave da linha"]);
+    if (!o) continue;
+    rows.push({ key: o["Chave da linha"], orderId: o["ID do pedido"], line: Number(String(o["Chave da linha"]).split("#").pop()), sku: o.SKU, produto: o.Produto,
+      item: o["ID item (Order.all)"] || o["Item da base usado"], model: o["ID model (Order.all)"] || o["Model da base usado"],
+      itemOrderAll: o["ID item (Order.all)"], modelOrderAll: o["ID model (Order.all)"], itemBase: o["Item da base usado"], modelBase: o["Model da base usado"],
+      origemCusto: o["Origem do custo"], qtd: o.Quantidade, receita: o["Receita bruta"],
+      custo: o["Custo unitário usado"], cmv: o.CMV, lc: o.LC, mc: o.MC, status: "EXCLUÍDO (override)", kind: "excluido", match: o["Match de custo"],
+      cobertura: o["Cobertura de custo"], override: "order_exclude", reason: d.overrideReason, changed: true, out: true, orig: o });
+  }
+  return rows;
+}
+
+const FILTERS = [
+  ["todos", "Todos", () => true],
+  ["semcusto", "Sem custo", (r) => r.cobertura === "sem custo"],
+  ["ambiguos", "Ambíguos", (r) => r.match === "ambiguous"],
+  ["override", "Com override", (r) => !!r.override],
+  ["alteradas", "Alteradas", (r) => r.changed],
+  ["cancelados", "Cancelados", (r) => r.kind === "cancelledConfirmed"],
+  ["devolucoes", "Devoluções", (r) => r.kind === "returnOrRefund"],
+];
+
+function renderFilters(rows) {
+  $("filters").innerHTML = FILTERS.map(([id, label, fn]) =>
+    `<button class="f small ${state.filter === id ? "on" : ""}" data-f="${id}">${label} (${rows.filter(fn).length})</button>`).join(" ");
+  for (const b of $("filters").querySelectorAll("button")) b.onclick = () => { state.filter = b.dataset.f; renderTable(); };
+}
+
+function statusPill(r) {
+  if (r.kind === "cancelledConfirmed") return `<span class="pill bad">cancelado</span>`;
+  if (r.kind === "returnOrRefund") return `<span class="pill bad">devolução</span>`;
+  if (r.kind === "unpaid") return `<span class="pill warn">não pago</span>`;
+  if (r.kind === "excluido") return `<span class="pill ov">excluído</span>`;
+  return esc(r.status);
+}
+function matchPill(r) {
+  if (!r.match) return "";
+  if (r.match === "ambiguous") return `<span class="pill warn">ambiguous</span>`;
+  if (r.match === "miss") return `<span class="pill bad">miss</span>`;
+  return `<span class="pill ${r.cobertura === "com custo" ? "ok" : ""}">${esc(r.match)}</span>`;
+}
+
+const COLS = ["Pedido", "SKU", "Produto", "Item", "Model", "Qtd", "Receita", "Custo", "CMV", "LC", "MC %", "Status", "Match source", "Override"];
+function renderTable() {
+  const rows = state.tableRows || [];
+  renderFilters(rows);
+  const filterFn = FILTERS.find(([id]) => id === state.filter)[2];
+  const q = $("search").value.trim().toLowerCase();
+  const visible = rows.filter(filterFn).filter((r) => !q || [r.orderId, r.sku, r.produto, r.item, r.model].some((v) => String(v || "").toLowerCase().includes(q)));
+  $("count").textContent = `${visible.length} de ${rows.length} linha(s)`;
+  $("thead").innerHTML = `<tr>${COLS.map((c) => `<th>${c}</th>`).join("")}</tr>`;
+  const cell = (v, r, field) => {
+    const before = r.orig && !r.out ? r.orig[field] : undefined;
+    const diff = before !== undefined && before !== v;
+    return `<td class="num ${signClass(field === "LC" ? v : null)}" ${diff ? `title="original: ${esc(fmt(before))}"` : ""}>${fmt(v)}${diff ? " ✱" : ""}</td>`;
+  };
+  $("tbody").innerHTML = visible.slice(0, 3000).map((r) => `<tr data-k="${esc(r.key)}" class="${r.changed ? "changed" : ""} ${r.out ? "out" : ""} ${state.selected === r.key ? "sel" : ""}">
+    <td>${esc(r.orderId)}</td><td>${esc(r.sku)}</td><td class="prod" title="${esc(r.produto)}">${esc(r.produto)}</td><td>${esc(r.item)}</td><td>${esc(r.model)}</td>
+    <td class="num">${esc(r.qtd)}</td><td class="num">${fmt(r.receita)}</td>${cell(r.custo, r, "Custo unitário usado")}${cell(r.cmv, r, "CMV")}${cell(r.lc, r, "LC")}${cell(r.mc, r, "MC")}
+    <td>${statusPill(r)}</td><td>${matchPill(r)}</td><td>${r.override ? `<span class="pill ov" title="${esc(r.reason)}">${esc(r.override)}</span>` : ""}</td></tr>`).join("");
+  for (const tr of $("tbody").querySelectorAll("tr")) tr.onclick = () => { state.selected = tr.dataset.k; renderTable(); renderPanel(); };
+}
+$("search").oninput = () => renderTable();
+
+// ── Painel de override ─────────────────────────────────────────────────────
+function renderPanel() {
+  const r = (state.tableRows || []).find((x) => x.key === state.selected);
+  if (!r) { $("panel").innerHTML = `<h3>Override temporário</h3><div class="hint">Clique numa linha da tabela.</div>`; return; }
+  const linesInOrder = state.tableRows.filter((x) => x.orderId === r.orderId && !x.out).length;
+  const existingOrder = state.overrides.orders[r.orderId] || null;
+  const excluded = !!(existingOrder && existingOrder.exclude);
+  const model = r.modelOrderAll || r.modelBase || "";
+  const kv = [["Pedido", r.orderId], ["Linha", `${r.line} de ${Math.max(linesInOrder, 1)}`], ["Produto", r.produto], ["SKU", r.sku], ["Item Order.all", r.itemOrderAll || "—"],
+    ["Model Order.all", r.modelOrderAll || "—"], ["Item da base", r.itemBase || "—"], ["Model da base", r.modelBase || "—"], ["Custo unit.", fmt(r.custo)],
+    ["Match", r.match || "—"], ["Origem custo", r.origemCusto || "—"], ["Cobertura", r.cobertura]];
+  const canEdit = !r.out || r.kind === "excluido";
+  $("panel").innerHTML = `<h3>Override temporário</h3>
+    <div class="kv">${kv.map(([k, v]) => `<div>${k}</div><div>${esc(v)}</div>`).join("")}</div>
+    ${!canEdit ? `<div class="hint">Pedido fora da receita (${esc(KIND_LABEL[r.kind] || r.kind)}): o motor não calcula custo para ele. Só é possível excluí-lo.</div>` : ""}
+    <label><input type="checkbox" id="pExclude" ${excluded ? "checked" : ""}> Ignorar este pedido (todas as linhas)</label>
+    ${canEdit && r.kind !== "excluido" ? `
+    <label>Item ID</label><input type="text" id="pItem" value="${esc(r.itemOrderAll || r.itemBase || "")}">
+    <label>Model ID</label><input type="text" id="pModel" value="${esc(model)}">
+    <div class="hint">Trocar Item/Model injeta a identidade nesta linha do Order.all; o custo continua vindo da base pelo motor.</div>
+    <label>Custo unitário do Model (R$)</label><input type="number" step="0.01" min="0" id="pCost" value="${r.custo ?? ""}">
+    <label>Imposto % <span class="hint">(só se o Model não existir na base)</span></label><input type="number" step="0.01" min="0" id="pTax" value="">
+    <div class="hint">Custo vale para TODAS as linhas que usam esse Model.</div>` : ""}
+    <label>Motivo (obrigatório)</label><textarea id="pReason" rows="2">${esc(existingOrder?.reason || "")}</textarea>
+    <div style="margin-top:8px;display:flex;gap:6px"><button id="pApply">Recalcular</button></div>`;
+  $("pApply").onclick = () => applyPanel(r, linesInOrder);
+}
+
+function applyPanel(r, linesInOrder) {
+  const reason = $("pReason").value.trim();
+  if (!reason) return showMsg("Informe o motivo do override.");
+  const previous = JSON.parse(JSON.stringify(state.overrides));
+  const exclude = $("pExclude").checked;
+  let changed = false;
+
+  if (exclude) {
+    state.overrides.orders[r.orderId] = { exclude: true, reason };
+    changed = true;
+  } else if (state.overrides.orders[r.orderId]?.exclude) {
+    delete state.overrides.orders[r.orderId]; // reincluir
+    changed = true;
+  }
+
+  if (!exclude && $("pModel")) {
+    const item = $("pItem").value.trim();
+    const model = $("pModel").value.trim();
+    const cost = $("pCost").value.trim();
+    const tax = $("pTax").value.trim();
+    if (model && (model !== (r.modelOrderAll || r.modelBase || "") || (item && item !== (r.itemOrderAll || r.itemBase || "")))) {
+      const entry = { modelId: model, reason };
+      if (item) entry.itemId = item;
+      if (linesInOrder > 1) entry.line = r.line;
+      state.overrides.orders[r.orderId] = entry;
+      changed = true;
+    }
+    if (cost !== "" && model && Number(cost) !== Number(r.custo)) {
+      const entry = { cost: Number(cost), reason };
+      if (tax !== "") { entry.taxPercent = Number(tax); if (item) entry.itemId = item; }
+      state.overrides.models[model] = entry;
+      changed = true;
+    } else if (cost !== "" && !model) {
+      return showMsg("Para trocar o custo, informe o Model ID.");
+    }
+  }
+  if (!changed) return showMsg("Nada mudou nesta linha — nenhum override criado.", "info");
+  renderOverrides();
+  recalc(previous);
+}
+
+function renderOverrides() {
+  const items = [
+    ...Object.entries(state.overrides.orders).map(([id, e]) => ["orders", id, e.exclude ? `Pedido ${id}: IGNORAR` : `Pedido ${id}${e.line ? ` linha ${e.line}` : ""} → Item ${e.itemId || "—"} / Model ${e.modelId}`, e.reason]),
+    ...Object.entries(state.overrides.models).map(([id, e]) => ["models", id, `Model ${id} → custo R$ ${fmt(e.cost)}${e.taxPercent !== undefined ? `, imposto ${e.taxPercent}%` : ""}`, e.reason]),
+  ];
+  $("ovCount").textContent = items.length;
+  $("ovList").innerHTML = items.length ? items.map(([type, id, text, reason]) =>
+    `<li>${esc(text)} — <i>${esc(reason)}</i> <button class="ghost small" data-t="${type}" data-id="${esc(id)}">remover</button></li>`).join("") : "<li class='tag'>nenhum</li>";
+  for (const b of $("ovList").querySelectorAll("button")) b.onclick = () => {
+    const previous = JSON.parse(JSON.stringify(state.overrides));
+    delete state.overrides[b.dataset.t][b.dataset.id];
+    renderOverrides();
+    recalc(previous);
+  };
+}
+
+function render(data) {
+  state.data = data;
+  state.tableRows = buildTableRows(data);
+  $("workspace").style.display = "block";
+  renderCards(data);
+  renderTable();
+  renderPanel();
+  renderOverrides();
+  const warn = [...data.warnings, ...data.audit.flatMap((e) => (e.warnings || []).map((w) => `${e.overrideType}: ${w}`))];
+  $("warnings").innerHTML = warn.map((w) => `⚠ ${esc(w)}`).join("<br>");
+  $("notes").innerHTML = (data.executiveNotes || []).map((n) => `<li>${esc(n)}</li>`).join("");
+}
+</script>
+</body>
+</html>

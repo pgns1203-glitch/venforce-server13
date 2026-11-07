@@ -280,6 +280,11 @@ async function testServer() {
   try {
     const html = await (await fetch(base + "/")).text();
     ok("GET / serve a página", html.includes("Processar fechamento"));
+    ok(
+      "página tem filtro, cópia e CSV de Match source",
+      ['id="matchFilter"', 'id="btnCopyMatch"', 'id="btnCsvMatch"', "match-sources.csv", "MATCH SOURCES — BANCADA SHOPEE"].every((s) => html.includes(s))
+    );
+    ok("Match source não é traduzido (usa o 'Match de custo' bruto)", html.includes('match: r["Match de custo"]'));
     let [status, data] = await post("/api/load", { performance: toB64(performanceRows), orders: toB64(ordersRows), costs: toB64(costRows) });
     eq("load 200", status, 200);
     eq("load sem override = oficial", data.summaryAssisted, data.summaryOriginal);

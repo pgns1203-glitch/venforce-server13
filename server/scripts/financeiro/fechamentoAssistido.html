@@ -37,6 +37,10 @@
   .toolbar { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin-bottom:6px; }
   .toolbar button.f { background:#fff; color:var(--fg); border-color:var(--line); }
   .toolbar button.f.on { background:var(--fg); color:#fff; border-color:var(--fg); }
+  .toolbar select { padding:4px 6px; border:1px solid var(--line); border-radius:5px; font:inherit; max-width:320px; }
+  .copyable { cursor:copy; font-family:ui-monospace, monospace; font-size:11px; }
+  .copyable:hover { outline:1px solid var(--accent); }
+  #toast { position:fixed; bottom:16px; right:16px; background:var(--fg); color:#fff; padding:6px 12px; border-radius:5px; display:none; z-index:10; }
   .toolbar input { padding:5px 8px; border:1px solid var(--line); border-radius:5px; min-width:220px; font:inherit; }
   .layout { display:flex; gap:12px; align-items:flex-start; }
   .tablewrap { flex:1; min-width:0; overflow:auto; max-height:70vh; border:1px solid var(--line); border-radius:6px; }
@@ -86,9 +90,12 @@
   <div id="workspace" style="display:none">
     <div class="toolbar">
       <span id="filters"></span>
+      <label class="tag">Match source <select id="matchFilter"></select></label>
       <input id="search" placeholder="Buscar pedido, SKU, produto, Model…">
       <span id="count" class="tag"></span>
       <span style="flex:1"></span>
+      <button class="ghost small" id="btnCopyMatch">Copiar Match sources</button>
+      <button class="ghost small" id="btnCsvMatch">Baixar match-sources.csv</button>
       <button class="ghost small" id="btnRecalc">Recalcular</button>
       <button class="ghost small" id="btnDownload">Baixar overrides.json</button>
     </div>
@@ -104,10 +111,12 @@
     <details><summary>Notas do motor</summary><ul id="notes"></ul></details>
   </div>
 </main>
+<div id="toast"></div>
 <script>
 "use strict";
 const $ = (id) => document.getElementById(id);
-const state = { sessionId: null, data: null, overrides: { orders: {}, models: {} }, filter: "todos", selected: null, busy: false };
+const ALL_MATCH = "*todos*"; // sentinela: nenhum valor do motor tem asteriscos
+const state = { sessionId: null, data: null, overrides: { orders: {}, models: {} }, filter: "todos", matchFilter: ALL_MATCH, selected: null, busy: false };
 
 const BRL = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt = (v) => v === null || v === undefined || v === "" ? "—" : typeof v === "number" ? BRL.format(v) : String(v);
@@ -300,20 +309,147 @@ function statusPill(r) {
   if (r.kind === "excluido") return `<span class="pill ov">excluído</span>`;
   return esc(r.status);
 }
+// O valor exibido/copiado é SEMPRE o "Match de custo" bruto do motor (sem tradução).
 function matchPill(r) {
   if (!r.match) return "";
-  if (r.match === "ambiguous") return `<span class="pill warn">ambiguous</span>`;
-  if (r.match === "miss") return `<span class="pill bad">miss</span>`;
-  return `<span class="pill ${r.cobertura === "com custo" ? "ok" : ""}">${esc(r.match)}</span>`;
+  const cls = r.match === "ambiguous" ? "warn" : r.match === "miss" ? "bad" : r.cobertura === "com custo" ? "ok" : "";
+  return `<span class="pill copyable ${cls}" data-copy="${esc(r.match)}" title="${esc(r.match)} — clique para copiar">${esc(r.match)}</span>`;
 }
+
+// Linhas fora da receita (cancelados/devoluções) não passam pelo match de custo
+// do motor: ficam com valor vazio, exibido como rótulo à parte.
+const EMPTY_MATCH_LABEL = "(vazio — fora da receita)";
+const matchLabel = (value) => value === "" ? EMPTY_MATCH_LABEL : value;
+
+function toast(text) {
+  const el = $("toast");
+  el.textContent = text;
+  el.style.display = "block";
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { el.style.display = "none"; }, 1200);
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    ta.remove();
+  }
+  toast("Copiado");
+}
+
+function countBy(rows, fn) {
+  const counts = new Map();
+  for (const r of rows) counts.set(fn(r), (counts.get(fn(r)) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || String(a[0]).localeCompare(String(b[0])));
+}
+
+// Recorte atual = filtro rápido + busca + Match source.
+function currentSlice() {
+  const rows = state.tableRows || [];
+  const filterFn = FILTERS.find(([id]) => id === state.filter)[2];
+  const q = $("search").value.trim().toLowerCase();
+  const base = rows.filter(filterFn).filter((r) => !q || [r.orderId, r.sku, r.produto, r.item, r.model].some((v) => String(v || "").toLowerCase().includes(q)));
+  const visible = state.matchFilter === ALL_MATCH ? base : base.filter((r) => (r.match || "") === state.matchFilter);
+  return { rows, base, visible, q };
+}
+
+function renderMatchFilter(base) {
+  // Opções montadas a partir das linhas carregadas: origem nova do motor aparece sozinha.
+  const counts = countBy(base, (r) => r.match || "");
+  if (state.matchFilter !== ALL_MATCH && !counts.some(([value]) => value === state.matchFilter)) {
+    counts.push([state.matchFilter, 0]); // mantém a seleção visível mesmo com 0 no recorte
+  }
+  const select = $("matchFilter");
+  select.innerHTML = `<option value="${esc(ALL_MATCH)}">Todos (${base.length})</option>` +
+    counts.map(([value, n]) => `<option value="${esc(value)}">${esc(matchLabel(value))} (${n})</option>`).join("");
+  select.value = state.matchFilter;
+}
+$("matchFilter").onchange = () => { state.matchFilter = $("matchFilter").value; renderTable(); };
+
+function filtersDescription(slice) {
+  const quick = FILTERS.find(([id]) => id === state.filter)[1];
+  return [
+    `- Filtro rápido: ${quick}`,
+    `- Match source: ${state.matchFilter === ALL_MATCH ? "Todos" : matchLabel(state.matchFilter)}`,
+    `- Busca: ${slice.q ? `"${slice.q}"` : "(nenhuma)"}`,
+  ].join("\n");
+}
+
+function sampleBlock(r) {
+  return [
+    `Pedido: ${r.orderId}`,
+    `SKU: ${r.sku || ""}`,
+    `Produto: ${r.produto || ""}`,
+    `Item: ${r.item || ""}`,
+    `Model: ${r.model || ""}`,
+    `Match source: ${matchLabel(r.match || "")}`,
+    `Status: ${r.out ? `${r.status} (${r.kind})` : r.status || ""}`,
+    `Custo: ${fmt(r.custo)}`,
+    `LC: ${fmt(r.lc)}`,
+  ].join("\n");
+}
+
+function buildMatchDiagnostic() {
+  const slice = currentSlice();
+  const counts = countBy(slice.visible, (r) => r.match || "");
+  const perSource = state.matchFilter === ALL_MATCH ? 5 : 20;
+  const samples = [];
+  for (const [value] of counts) {
+    for (const r of slice.visible.filter((x) => (x.match || "") === value).slice(0, perSource)) samples.push(sampleBlock(r));
+  }
+  return [
+    "MATCH SOURCES — BANCADA SHOPEE",
+    "",
+    "Filtros atuais:",
+    filtersDescription(slice),
+    "",
+    `Total de linhas: ${slice.visible.length}`,
+    "",
+    "Resumo:",
+    ...counts.map(([value, n]) => `${matchLabel(value)}: ${n}`),
+    "",
+    `AMOSTRAS (até ${perSource} por Match source):`,
+    "",
+    samples.join("\n\n---\n\n"),
+  ].join("\n");
+}
+
+function csvCell(value) {
+  if (value === null || value === undefined) return "";
+  const text = String(value);
+  return /[",\n\r;]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+}
+
+function buildMatchCsv() {
+  const header = ["pedido", "sku", "produto", "item", "model", "matchSource", "status", "custo", "cmv", "lc", "mc", "overrideApplied"];
+  const lines = currentSlice().visible.map((r) => [
+    r.orderId, r.sku, r.produto, r.item, r.model, r.match || "", r.out ? `${r.status} (${r.kind})` : r.status,
+    r.custo, r.cmv, r.lc, r.mc, r.override ? "true" : "false",
+  ].map(csvCell).join(","));
+  return "\uFEFF" + [header.join(","), ...lines].join("\n") + "\n";
+}
+
+$("btnCopyMatch").onclick = () => copyText(buildMatchDiagnostic());
+$("btnCsvMatch").onclick = () => {
+  const blob = new Blob([buildMatchCsv()], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "match-sources.csv";
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 
 const COLS = ["Pedido", "SKU", "Produto", "Item", "Model", "Qtd", "Receita", "Custo", "CMV", "LC", "MC %", "Status", "Match source", "Override"];
 function renderTable() {
-  const rows = state.tableRows || [];
+  const { rows, base, visible } = currentSlice();
   renderFilters(rows);
-  const filterFn = FILTERS.find(([id]) => id === state.filter)[2];
-  const q = $("search").value.trim().toLowerCase();
-  const visible = rows.filter(filterFn).filter((r) => !q || [r.orderId, r.sku, r.produto, r.item, r.model].some((v) => String(v || "").toLowerCase().includes(q)));
+  renderMatchFilter(base);
   $("count").textContent = `${visible.length} de ${rows.length} linha(s)`;
   $("thead").innerHTML = `<tr>${COLS.map((c) => `<th>${c}</th>`).join("")}</tr>`;
   const cell = (v, r, field) => {
@@ -326,6 +462,7 @@ function renderTable() {
     <td class="num">${esc(r.qtd)}</td><td class="num">${fmt(r.receita)}</td>${cell(r.custo, r, "Custo unitário usado")}${cell(r.cmv, r, "CMV")}${cell(r.lc, r, "LC")}${cell(r.mc, r, "MC")}
     <td>${statusPill(r)}</td><td>${matchPill(r)}</td><td>${r.override ? `<span class="pill ov" title="${esc(r.reason)}">${esc(r.override)}</span>` : ""}</td></tr>`).join("");
   for (const tr of $("tbody").querySelectorAll("tr")) tr.onclick = () => { state.selected = tr.dataset.k; renderTable(); renderPanel(); };
+  for (const el of $("tbody").querySelectorAll(".copyable")) el.onclick = (event) => { event.stopPropagation(); copyText(el.dataset.copy); };
 }
 $("search").oninput = () => renderTable();
 

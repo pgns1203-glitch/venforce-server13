@@ -741,7 +741,7 @@
   letter-spacing: var(--vf-ls-tight);
   color: var(--vf-text);
 }
-.vf-ph-stat__s { margin: 1px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
+.vf-ph-stat__s { margin: 1px 0 0; overflow: hidden; overflow-wrap: anywhere; font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
 .vf-ph-stat.is-quebra .vf-ph-stat__s { white-space: normal; }
 .vf-ph-stat__d { margin: 2px 0 0; white-space: nowrap; font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); }
 
@@ -1257,3 +1257,8 @@
   .vf-ph-toolbar .vf-ph-busca { flex-basis: 200px; }
   .vf-ph-header__lado .vf-ph-regra { display: none; }
 }
+
+/* Acabamento: o selo da conta (ex.: "Aguarda lançamento") quebra ao lado do
+   botão em vez de ser cortado; a prévia vazia do drawer não abre espaço. */
+.vf-pb-conta .vf-pb-dados__txt .vf-status { white-space: normal; line-height: 1.25; text-align: left; }
+.vf-ph-drawer__previa:empty { display: none; }

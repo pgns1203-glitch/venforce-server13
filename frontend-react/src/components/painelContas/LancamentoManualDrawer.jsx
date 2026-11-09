@@ -527,7 +527,8 @@ export function LancamentoManualDrawer({
     lc: lc ?? lcDerivado,
     mc: mc ?? mcDerivada,
   };
-  const temNovo = !vazio && !invalido;
+  // Reabrir um lançamento sem mexer não é "novo": o painel segue usando o atual.
+  const temNovo = alterado && !vazio && !invalido;
   const rotuloCompetenciaCurta = rotularCompetenciaCurta(competencia);
 
   // Casca, foco inicial no 1º campo, ESC, clique fora e devolução do foco vêm

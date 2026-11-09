@@ -302,3 +302,19 @@ describe("V4: drawer fiel ao B Realistic", () => {
     expect(campo("Dados até")).toHaveValue("2026-09-30");
   });
 });
+
+describe("acabamento: reabrir sem mexer", () => {
+  it("lançamento existente sem alteração não aparece como 'Novo' nem risca o manual atual", async () => {
+    const vigente = conta(61, {
+      fonte: { tipo: "manual", rotulo: "Manual" }, resumo: { fat: 5000, lc: 750, mc: 0.15, ads: null },
+      status: { codigo: "manual", rotulo: "Lançado manualmente" },
+      manual: { valores: { fat: 5000, lc: 750, mc: 0.15, ads: null }, statusRegistro: "vigente" },
+    });
+    abrir({ cliente: { id: 6, nome: "Acme", contas: [vigente] }, contaInicial: vigente });
+    const res = screen.getByTestId("resultado-lancamento");
+    expect(res.querySelectorAll(".is-velho")).toHaveLength(0);
+    await userEvent.clear(campo("Faturamento (R$)"));
+    await userEvent.type(campo("Faturamento (R$)"), "6000");
+    expect(screen.getByTestId("resultado-lancamento").querySelectorAll(".is-velho").length).toBeGreaterThan(0);
+  });
+});

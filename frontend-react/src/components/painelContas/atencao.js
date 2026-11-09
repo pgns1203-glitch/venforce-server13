@@ -65,7 +65,7 @@ export function regrasAtencao(clientes = []) {
     {
       chave: "aguardam",
       titulo: "Aguardam lançamento",
-      explicacao: "conta sem integração automática, sem valores no mês",
+      explicacao: "conta manual sem valores no mês",
       itens: aguardam,
       acao: { tipo: "fila", rotulo: "Abrir fila" },
       forte: true,

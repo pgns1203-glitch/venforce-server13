@@ -60,7 +60,7 @@ function semDados(over = {}) {
   });
 }
 
-function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, semanasContasPorCliente = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), carregarSemanasContas = vi.fn(), onLancar = vi.fn(), grupos = GRUPOS_PADRAO, mostrarHistoricoCliente = true }) {
+function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, semanasContasPorCliente = {}, carregarMeses = vi.fn(), carregarSemanas = vi.fn(), carregarSemanasContas = vi.fn(), onLancar = vi.fn(), grupos = GRUPOS_PADRAO, mostrarHistoricoCliente = true, vista, agruparPorSquad = false }) {
   const expansao = useExpansao();
   return (
     <TabelaHierarquica
@@ -77,6 +77,8 @@ function Casca({ clientes, mesesPorCliente = {}, semanasPorChave = {}, semanasCo
       carregarSemanasContas={carregarSemanasContas}
       onLancar={onLancar}
       mostrarHistoricoCliente={mostrarHistoricoCliente}
+      vista={vista}
+      agruparPorSquad={agruparPorSquad}
     />
   );
 }
@@ -178,7 +180,9 @@ describe("acabamento visual: origem, ação e ferramentas do cliente aberto", ()
     await abrirCliente();
     const [api, man] = container.querySelectorAll(".vf-ph-row--conta");
     expect(within(api).getByText("API")).toHaveClass("vf-ph-origem", "is-api");
-    expect(within(api).getByRole("button", { name: "Lançar dados — Mercado Livre 1 · LOJA 1" })).toHaveTextContent("Lançar dados");
+    // Conta COM dado da API (modo manual): a correção mora no detalhe da conta,
+    // não na linha — a linha só lança (sem dado) ou edita (manual).
+    expect(within(api).queryByRole("button", { name: /lançar dados/i })).toBeNull();
     expect(within(man).getByText("Manual")).toHaveClass("vf-ph-origem", "is-manual");
     const editar = within(man).getByRole("button", { name: "Editar dados — Shopee 1 · LOJA" });
     expect(editar).toHaveClass("is-editar");
@@ -187,6 +191,34 @@ describe("acabamento visual: origem, ação e ferramentas do cliente aberto", ()
     expect(api.querySelector(".vf-ph-valor__origem")).toBeNull();
     await userEvent.click(editar);
     expect(onLancar).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 2 }));
+  });
+
+  it("detalhe da conta: API → 'Corrigir com lançamento manual'; manual sobre API → selo e 'Voltar ao automático'", async () => {
+    const onLancar = vi.fn();
+    const sobreApi = conta(2, {
+      rotulo: "Mercado Livre 2 · LOJA 2", fonte: { tipo: "manual", rotulo: "Manual" },
+      status: { codigo: "manual", rotulo: "Lançado manualmente" }, podeLancarManual: true,
+      manual: { valores: resumo({ fat: 90 }), atualizadoPor: "Ana", observacao: "planilha do cliente" },
+      referenciaApi: { fat: 1200, lc: 180, mc: 0.15, dadosAte: "2026-09-28", rotulo: "API" },
+    });
+    render(<Casca clientes={[cliente({ contas: [conta(1, { podeLancarManual: true }), sobreApi] })]} onLancar={onLancar} />);
+    await abrirCliente();
+    expect(screen.getByText("Manual sobre API")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 1.*expandir semanas/i }));
+    const detApi = screen.getByTestId("detalhe-conta-1");
+    expect(detApi).toHaveTextContent("OrigemAPI");
+    await userEvent.click(within(detApi).getByRole("button", { name: "Corrigir com lançamento manual" }));
+    expect(onLancar).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 1 }), null);
+
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 2.*expandir semanas/i }));
+    const detMan = screen.getByTestId("detalhe-conta-2");
+    expect(detMan).toHaveTextContent("Manual sobre API (override)");
+    expect(detMan).toHaveTextContent("ResponsávelAna");
+    expect(detMan).toHaveTextContent(/API \(referência\)FAT R\$\s?1\.200/);
+    expect(detMan).toHaveTextContent("“planilha do cliente”");
+    await userEvent.click(within(detMan).getByRole("button", { name: "Voltar ao automático" }));
+    expect(onLancar).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 2 }), "remover");
   });
 
   it("cliente com dado: estado e 'dados até' numa linha, a ação na linha de baixo", () => {
@@ -657,5 +689,64 @@ describe("atualizar dados (admin)", () => {
     const faixa = container.querySelector(".vf-ph-row--atualizacao");
     expect(faixa).toHaveClass("is-falha");
     expect(faixa).toHaveTextContent("Não foi possível atualizar: Nenhuma conta Mercado Livre ativa e conectada.");
+  });
+});
+
+
+describe("V4: vista essencial (mesmos campos, outra disposição)", () => {
+  it("cabeçalho Cliente · FAT · Margem · Ads · Dados; Margem = MC com LC embaixo, Ads = invest. com TACoS", () => {
+    render(<Casca clientes={[cliente()]} vista="essencial" />);
+    expect(screen.getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["Cliente", "FAT", "Margem", "Ads", "Dados"]);
+    const linha = screen.getByRole("button", { name: /Cliente Acme Comércio/ }).closest("tr");
+    expect(linha).toHaveTextContent("18,1%");
+    expect(linha).toHaveTextContent("LC R$ 20.400");
+    expect(linha).toHaveTextContent("TACoS 3,6%");
+  });
+
+  it("nome com a composição das contas e Dados com a situação no vocabulário V4", () => {
+    render(<Casca clientes={[cliente({
+      status: { codigo: "parcial", rotulo: "Parcial", motivo: "2 de 3 contas com dados", precisaAtencao: false },
+      escopo: { tipo: "consolidado", rotulo: "Consolidado · 2 de 3 contas", contasOperacionais: 3, contasComDado: 2 },
+      contas: [conta(1), conta(2), conta(3, { marketplace: "shopee", rotulo: "Shopee 1 · LOJA", resumo: null, status: { codigo: "sem_integracao", rotulo: "Sem integração" }, precisaAcao: true })],
+    })]} vista="essencial" />);
+    expect(screen.getByText("3 contas · ML 2 · Shopee 1")).toBeInTheDocument();
+    expect(screen.getByText("Parcial · 2 de 3")).toBeInTheDocument();
+    // Um quadradinho por conta ativa; forma diferente para quem pede ação.
+    const pips = document.querySelectorAll("tbody .vf-ph-row--cliente .vf-ph-pip");
+    expect([...pips].map((p) => p.className)).toEqual(["vf-ph-pip is-a", "vf-ph-pip is-a", "vf-ph-pip is-w"]);
+  });
+
+  it("completo e sem dados mantêm a competência explícita", () => {
+    render(<Casca clientes={[cliente(), semDados({ id: 2, nome: "Coremix" })]} vista="essencial" />);
+    expect(screen.getByText("Completo · 3 de 3")).toBeInTheDocument();
+    expect(screen.getByText("Sem dados em set/2026")).toBeInTheDocument();
+  });
+
+  it("a conta mantém o estado e a ação de lançar na coluna Dados", async () => {
+    const onLancar = vi.fn();
+    const c = semDados({ id: 2, nome: "Coremix" });
+    render(<Casca clientes={[c]} vista="essencial" onLancar={onLancar} />);
+    await abrirCliente("Coremix");
+    const linhaConta = screen.getByRole("button", { name: /Conta Shopee 1 · COREMIX/ }).closest("tr");
+    expect(within(linhaConta).getByText("Sem integração")).toBeInTheDocument();
+    await userEvent.click(within(linhaConta).getByRole("button", { name: /Lançar dados — Shopee 1 · COREMIX/ }));
+    expect(onLancar).toHaveBeenCalledWith(c, c.contas[0]);
+  });
+
+  it("agrupa por Squad só com contagens (nenhuma soma em R$) e o grupo recolhe localmente", async () => {
+    render(<Casca
+      clientes={[cliente(), cliente({ id: 2, nome: "Beta Loja", squad: { id: 9, nome: "Squad Beta" } }), semDados({ id: 3, nome: "Coremix", squad: { id: 9, nome: "Squad Beta" } })]}
+      vista="essencial"
+      agruparPorSquad
+    />);
+    const grupos = screen.getAllByRole("button", { name: /^Squad / });
+    expect(grupos.map((g) => g.textContent)).toEqual([
+      "Squad Alpha1 cliente1 de 1 com dados",
+      "Squad Beta2 clientes1 de 2 com dados · 1 pede ação",
+    ]);
+    expect(grupos[1].closest("tr")).not.toHaveTextContent("R$");
+    await userEvent.click(grupos[1]);
+    expect(screen.queryByText("Beta Loja")).toBeNull();
+    expect(screen.getByText("Acme Comércio")).toBeInTheDocument();
   });
 });

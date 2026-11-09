@@ -34,6 +34,8 @@ function abrir(props = {}) {
       onSalvar={onSalvar}
       onRemover={onRemover}
       onFechar={onFechar}
+      modoManual={props.modoManual}
+      intencao={props.intencao}
     />
   );
   return { onSalvar, onFechar, onRemover };
@@ -54,11 +56,12 @@ describe("lerNumeroBR", () => {
 describe("escopo explícito", () => {
   it("mostra cliente, competência e só as contas sem automático", () => {
     abrir();
-    expect(screen.getByRole("dialog", { name: /lançar dados manuais/i })).toBeInTheDocument();
-    expect(screen.getByText("Coremix Loja")).toBeInTheDocument();
-    expect(screen.getByText("Setembro/2026")).toBeInTheDocument();
-    const opcoes = Array.from(campo("Conta/operação").options).map((o) => o.textContent);
-    expect(opcoes).toEqual(["Conta 31"]);
+    // V4: o drawer é DA conta — ação · competência no sobretítulo, conta no
+    // título, cliente no subtítulo. Uma conta lançável só: sem seletor.
+    const dialogo = screen.getByRole("dialog", { name: /lançar dados · set\/2026.*conta 31/i });
+    expect(dialogo).toHaveAccessibleDescription(/Coremix Loja/);
+    expect(screen.queryByRole("combobox", { name: "Conta/operação" })).toBeNull();
+    expect(screen.getByTestId("no-painel")).toHaveTextContent("Sem dado");
   });
 });
 
@@ -143,7 +146,8 @@ describe("servidor e edição", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /^remover lançamento$/i }));
     expect(onRemover).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByRole("button", { name: /confirmar remoção/i }));
+    // Manual sem API embaixo: remover deixa a conta sem dado — e o botão diz isso.
+    await userEvent.click(screen.getByRole("button", { name: /confirmar: deixar sem dado/i }));
     expect(onRemover).toHaveBeenCalledWith(3, 31);
   });
 
@@ -254,5 +258,63 @@ describe("modo manual", () => {
     expect(campo("Lucro de contribuição (R$)")).toHaveValue("450000");
     expect(screen.getByTestId("referencia-api")).toHaveTextContent("Referência da API");
     expect(screen.getByText(/prevalece sobre a API/)).toBeInTheDocument();
+  });
+});
+
+describe("V4: drawer fiel ao B Realistic", () => {
+  const apiConta = conta(51, {
+    rotulo: "Mercado Livre 1 · ACME", fonte: { tipo: "api", rotulo: "API" }, dadosAte: "2026-09-28",
+    resumo: { fat: 10000, lc: 1500, mc: 0.15, ads: null }, status: { codigo: "sincronizado", rotulo: "Sincronizado" },
+  });
+
+  it("conta com API: título 'Corrigir…', 'No painel' diz a API e 'Partir dos valores' preenche FAT + LC", async () => {
+    abrir({ cliente: { id: 5, nome: "Acme", contas: [apiConta] }, contaInicial: apiConta, modoManual: true });
+    expect(screen.getByRole("dialog", { name: /corrigir com lançamento manual/i })).toBeInTheDocument();
+    expect(screen.getByTestId("no-painel")).toHaveTextContent(/API · FAT R\$\s?10\.000 · MC 15,0%/);
+    expect(campo("Faturamento (R$)")).toHaveAttribute("placeholder", expect.stringMatching(/^API: R\$/));
+    await userEvent.click(screen.getByRole("button", { name: "Partir dos valores da API" }));
+    expect(campo("Faturamento (R$)")).toHaveValue("10000");
+    expect(campo("Lucro de contribuição (R$)")).toHaveValue("1500");
+    expect(campo("Margem de contribuição (%)")).toHaveValue("");
+    const res = screen.getByTestId("resultado-lancamento");
+    expect(res).toHaveTextContent("Usado no painel");
+    expect(screen.getByText(/Override explícito/)).toBeInTheDocument();
+  });
+
+  it("manual sobre a API: 'Voltar ao automático' e a confirmação diz para onde volta", async () => {
+    const sobre = conta(52, {
+      rotulo: "Mercado Livre 2 · ACME", fonte: { tipo: "manual", rotulo: "Manual" },
+      resumo: { fat: 8000, lc: 800, mc: 0.1, ads: null }, status: { codigo: "manual", rotulo: "Lançado manualmente" },
+      manual: { valores: { fat: 8000, lc: 800, mc: 0.1, ads: null }, atualizadoPor: "Ana", statusRegistro: "vigente" },
+      referenciaApi: { fat: 9100, lc: 900, mc: 0.1, dadosAte: "2026-09-28", rotulo: "API" },
+    });
+    const { onRemover } = abrir({ cliente: { id: 5, nome: "Acme", contas: [sobre] }, contaInicial: sobre, modoManual: true, intencao: "remover" });
+    expect(screen.getByRole("dialog", { name: /editar lançamento/i })).toBeInTheDocument();
+    expect(screen.getByTestId("no-painel")).toHaveTextContent(/sobre a API/);
+    // Veio de "Voltar ao automático" na lista: já pede a confirmação.
+    await userEvent.click(screen.getByRole("button", { name: /confirmar: voltar para API \(R\$\s?9\.100\)/i }));
+    expect(onRemover).toHaveBeenCalledWith(5, 52);
+  });
+
+  it("'Dados até' de um clique (mês fechado = último dia)", async () => {
+    abrir();
+    await userEvent.click(screen.getByRole("button", { name: /Mês inteiro \(30\/09\)/ }));
+    expect(campo("Dados até")).toHaveValue("2026-09-30");
+  });
+});
+
+describe("acabamento: reabrir sem mexer", () => {
+  it("lançamento existente sem alteração não aparece como 'Novo' nem risca o manual atual", async () => {
+    const vigente = conta(61, {
+      fonte: { tipo: "manual", rotulo: "Manual" }, resumo: { fat: 5000, lc: 750, mc: 0.15, ads: null },
+      status: { codigo: "manual", rotulo: "Lançado manualmente" },
+      manual: { valores: { fat: 5000, lc: 750, mc: 0.15, ads: null }, statusRegistro: "vigente" },
+    });
+    abrir({ cliente: { id: 6, nome: "Acme", contas: [vigente] }, contaInicial: vigente });
+    const res = screen.getByTestId("resultado-lancamento");
+    expect(res.querySelectorAll(".is-velho")).toHaveLength(0);
+    await userEvent.clear(campo("Faturamento (R$)"));
+    await userEvent.type(campo("Faturamento (R$)"), "6000");
+    expect(screen.getByTestId("resultado-lancamento").querySelectorAll(".is-velho").length).toBeGreaterThan(0);
   });
 });

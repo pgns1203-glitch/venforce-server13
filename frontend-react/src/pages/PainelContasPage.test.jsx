@@ -9,7 +9,7 @@
 // conta.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PainelContasPage, { descreverAcesso } from "./PainelContasPage.jsx";
 
@@ -103,14 +103,30 @@ describe("cabeçalho: a competência está escrita", () => {
 });
 
 describe("barra de filtros", () => {
-  it("expõe busca, competência, squad, status e legado (marketplace virou seção)", () => {
+  it("expõe busca, competência, squad, filtros rápidos e — em Filtros ▾ — status completo e legado", async () => {
     render(<PainelContasPage />);
     expect(screen.getByRole("searchbox", { name: /buscar cliente/i })).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /competência/i })).toHaveValue("2026-09");
     expect(screen.getByRole("combobox", { name: /filtrar por squad/i })).toBeInTheDocument();
-    expect(screen.getByRole("combobox", { name: /filtrar por status/i })).toBeInTheDocument();
     expect(screen.queryByRole("combobox", { name: /filtrar por marketplace/i })).toBeNull();
+    const rapidos = screen.getByRole("group", { name: /filtro rápido de status/i });
+    expect(within(rapidos).getAllByRole("button").map((b) => b.textContent)).toEqual([
+      "Todos 67", "Completos 42", "Parciais 5", "Sem dados 20", "Pedem ação 8",
+    ]);
+    // Status completo (manual/automático) e legado continuam disponíveis.
+    await userEvent.click(screen.getByRole("button", { name: /^filtros/i }));
+    expect(screen.getByRole("combobox", { name: /filtrar por status/i })).toBeInTheDocument();
     expect(screen.getByRole("checkbox", { name: /mostrar legado/i })).not.toBeChecked();
+  });
+
+  it("competência tem passos ‹ › além do select", async () => {
+    const e = estado({ competencia: "2026-08" });
+    mocks.usePainelContas.mockReturnValue(e);
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Competência anterior" }));
+    expect(e.setCompetencia).toHaveBeenCalledWith("2026-07");
+    await userEvent.click(screen.getByRole("button", { name: "Próxima competência" }));
+    expect(e.setCompetencia).toHaveBeenCalledWith("2026-09");
   });
 
   it("competência lista meses por extenso, sem 'ano' solto", () => {
@@ -127,8 +143,11 @@ describe("barra de filtros", () => {
     render(<PainelContasPage />);
     await userEvent.selectOptions(screen.getByRole("combobox", { name: /competência/i }), "2026-08");
     expect(e.setCompetencia).toHaveBeenCalledWith("2026-08");
-    await userEvent.selectOptions(screen.getByRole("combobox", { name: /filtrar por status/i }), "sem_dados");
-    expect(e.setStatus).toHaveBeenCalledWith("sem_dados");
+    await userEvent.click(within(screen.getByRole("group", { name: /filtro rápido/i })).getByRole("button", { name: /^Parciais/ }));
+    expect(e.setStatus).toHaveBeenCalledWith("parcial");
+    await userEvent.click(screen.getByRole("button", { name: /^filtros/i }));
+    await userEvent.selectOptions(screen.getByRole("combobox", { name: /filtrar por status/i }), "manual");
+    expect(e.setStatus).toHaveBeenCalledWith("manual");
     await userEvent.click(screen.getByRole("checkbox", { name: /mostrar legado/i }));
     expect(e.setMostrarLegado).toHaveBeenCalledWith(true);
   });
@@ -156,35 +175,40 @@ describe("barra de filtros", () => {
 });
 
 describe("resumo da carteira (do servidor, na competência)", () => {
-  it("leitura executiva: cobertura primeiro, depois o que falta e o que pede ação", () => {
+  it("leitura executiva só com CONTAGENS do servidor: carteira, dados, sem dados, ação e fonte", () => {
     render(<PainelContasPage />);
     const resumoEl = screen.getByTestId("resumo-carteira");
-    expect(resumoEl).toHaveTextContent("42 de 67 clientes com dados");
-    expect(resumoEl).toHaveTextContent("5 parciais");
-    expect(resumoEl).toHaveTextContent("20 sem dados");
-    expect(resumoEl).toHaveTextContent("8 precisam de ação");
+    expect(resumoEl).toHaveTextContent("67 clientes");
+    // Com dados = completos + parciais (vocabulário V4).
+    expect(resumoEl).toHaveTextContent("47 de 67");
+    expect(resumoEl).toHaveTextContent("com dados · 42 completos · 5 parciais");
+    expect(resumoEl).toHaveTextContent(/Sem dados\s*20/);
+    expect(resumoEl).toHaveTextContent(/Pedem ação\s*8/);
+    expect(resumoEl).toHaveTextContent("3 manuais");
     expect(resumoEl).toHaveTextContent("26 do legado ocultos");
-    // Manual/automático é FONTE, não situação: fica no filtro, fora da frase.
-    expect(resumoEl).not.toHaveTextContent("manuais");
+    // Nenhum total financeiro da carteira é calculado no front.
+    expect(resumoEl).not.toHaveTextContent("R$");
   });
 
-  it("zeros não viram ruído na frase", () => {
+  it("zeros: composição sem segmento vazio e nada pendente", () => {
     mocks.usePainelContas.mockReturnValue(estado({
       resumoCarteira: { operacionais: 10, comDados: 10, semDados: 0, parciais: 0, manuais: 0, automaticos: 10, atencao: 0, legadoOcultos: 0 },
     }));
     render(<PainelContasPage />);
     const resumoEl = screen.getByTestId("resumo-carteira");
-    expect(resumoEl).toHaveTextContent("10 de 10 clientes com dados");
-    expect(resumoEl).not.toHaveTextContent("sem dados");
-    expect(resumoEl).not.toHaveTextContent("precisa");
+    expect(resumoEl).toHaveTextContent("10 de 10");
+    expect(within(resumoEl).queryByRole("button", { name: /parciais/i })).toBeNull();
+    expect(screen.getByText(/nenhuma regra com clientes neste recorte/i)).toBeInTheDocument();
   });
 
-  it("clicar num número do resumo filtra por aquele status", async () => {
+  it("chips e a composição de Dados filtram pelo mesmo status do servidor", async () => {
     const e = estado();
     mocks.usePainelContas.mockReturnValue(e);
     render(<PainelContasPage />);
-    await userEvent.click(screen.getByRole("button", { name: /8 precisam de ação/i }));
+    await userEvent.click(within(screen.getByRole("group", { name: /filtro rápido/i })).getByRole("button", { name: /^Pedem ação/ }));
     expect(e.setStatus).toHaveBeenCalledWith("atencao");
+    await userEvent.click(within(screen.getByTestId("resumo-carteira")).getByRole("button", { name: /^Parciais/ }));
+    expect(e.setStatus).toHaveBeenCalledWith("parcial");
   });
 
   it("afirma a atualização em TEXTO, não só em opacidade", () => {
@@ -193,6 +217,13 @@ describe("resumo da carteira (do servidor, na competência)", () => {
     expect(screen.getByText("Atualizando…")).toBeInTheDocument();
     expect(screen.getByText("Acme Comércio")).toBeInTheDocument();
   });
+});
+
+// A investigação do cliente só carrega histórico/composição quando fica
+// VISÍVEL. Aqui o observador nunca dispara: abrir clientes não pode, sozinho,
+// gerar requisição.
+beforeEach(() => {
+  window.IntersectionObserver = class { observe() {} disconnect() {} };
 });
 
 describe("lançamento manual", () => {
@@ -205,8 +236,8 @@ describe("lançamento manual", () => {
     expect(screen.queryByRole("button", { name: /lançar dados — coremix loja/i })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /Cliente Coremix Loja/ }));
     await userEvent.click(screen.getByRole("button", { name: /lançar dados — shopee 1 · coremix/i }));
-    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
-    expect(within(drawer).getByText("Coremix Loja")).toBeInTheDocument();
+    const drawer = screen.getByRole("dialog", { name: /lançar dados.*shopee 1 · coremix/i });
+    expect(drawer).toHaveAccessibleDescription(/Coremix Loja/);
     await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "5000");
     await userEvent.click(within(drawer).getByRole("button", { name: /salvar lançamento/i }));
     expect(e.salvarManual).toHaveBeenCalledWith(3, 31, expect.objectContaining({ faturamento: 5000 }));
@@ -238,17 +269,20 @@ describe("atualizar dados", () => {
     mocks.usePainelContas.mockReturnValue(e);
     render(<PainelContasPage />);
     expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("Atualizar agora: inclui dados parciais de hoje");
-    const botao = screen.getByRole("button", { name: "Atualizar dados de Acme Comércio" });
+    // B: "↻ Atualizar dados" mora na barra "Investigar <cliente>".
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
+    const botao = within(screen.getByRole("region", { name: "Investigar Acme Comércio" })).getByRole("button", { name: "Atualizar dados de Acme Comércio" });
     expect(botao).toHaveAttribute("title", expect.stringMatching(/até hoje, incluindo dados parciais de hoje.*até ontem/));
     await userEvent.click(botao);
     expect(e.atualizarCliente).toHaveBeenCalledWith(1);
   });
 
-  it("admin: cliente sem conta ML conectada tem o botão travado e diz por quê", () => {
+  it("admin: cliente sem conta ML conectada tem o botão travado e diz por quê", async () => {
     mocks.usePainelContas.mockReturnValue(estado({
       permissoes: { lancarManual: true, atualizarDados: true }, clientes: [semDadosShopee()],
     }));
     render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Coremix Loja/ }));
     const botao = screen.getByRole("button", { name: "Atualizar dados de Coremix Loja" });
     expect(botao).toBeDisabled();
     expect(botao).toHaveAttribute("title", expect.stringMatching(/nenhuma conta mercado livre/i));
@@ -261,18 +295,19 @@ describe("atualizar dados", () => {
     expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("reprocessa o mês completo");
   });
 
-  it("em curso: progresso na linha, botão travado, dados continuam na tela", () => {
+  it("em curso: progresso na linha, botão travado, dados continuam na tela", async () => {
     mocks.usePainelContas.mockReturnValue(estado({
       permissoes: { lancarManual: true, atualizarDados: true },
       atualizacoes: { 1: { competencia: "2026-09", job: job(), erro: null, iniciando: false } },
     }));
     render(<PainelContasPage />);
-    const linha = screen.getByText("Acme Comércio").closest("tr");
-    expect(within(linha).getByText("Atualizando até hoje")).toBeInTheDocument();
-    const botao = within(linha).getByRole("button", { name: /atualizar dados de/i });
+    const linha = screen.getByRole("button", { name: /Cliente Acme Comércio/ }).closest("tr");
+    expect(within(linha).getByText(/atualizando…/)).toBeInTheDocument();
+    expect(within(linha).getByText("R$ 600")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
+    const botao = within(screen.getByRole("region", { name: "Investigar Acme Comércio" })).getByRole("button", { name: /atualizar dados de/i });
     expect(botao).toHaveTextContent("Atualizando 1/2");
     expect(botao).toBeDisabled();
-    expect(within(linha).getByText("R$ 600")).toBeInTheDocument();
   });
 
   it("falha de uma conta: diz qual conta e por quê, com tentar de novo e dispensar", async () => {
@@ -309,27 +344,30 @@ describe("atualizar dados", () => {
   });
 });
 
-describe("controle de colunas", () => {
-  it("esconde Operação por padrão, mantendo Financeiro e Ads", () => {
+describe("vistas da tabela (B Realistic)", () => {
+  it("vista essencial é o padrão: FAT · Margem · Ads · Dados, sem menu de colunas", () => {
+    window.localStorage.clear();
     render(<PainelContasPage />);
-    expect(screen.getByRole("columnheader", { name: "FAT" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Financeiro" })).toBeInTheDocument();
-    expect(screen.queryByText("NPS")).toBeNull();
+    expect(screen.getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["Cliente", "FAT", "Margem", "Ads", "Dados"]);
+    expect(screen.queryByRole("button", { name: /colunas/i })).toBeNull();
+    expect(screen.getByRole("button", { name: "Essencial" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("devolve as colunas de Operação — a capacidade não foi removida", async () => {
+  it("Detalhada é a MESMA tabela com LC, ACOS e TACoS; a escolha fica guardada", async () => {
+    window.localStorage.clear();
     render(<PainelContasPage />);
-    await userEvent.click(screen.getByRole("button", { name: /colunas/i }));
-    await userEvent.click(screen.getByRole("checkbox", { name: /operação/i }));
-    expect(screen.getByText("NPS")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Detalhada" }));
+    expect(window.localStorage.getItem("vf:painel-contas:vista")).toBe("detalhada");
+    expect(screen.getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["Cliente", "FAT", "LC", "MC", "Ads", "ACOS", "TACoS", "Dados"]);
   });
 
-  it("guarda a preferência entre sessões, com chave namespaced", async () => {
-    const { unmount } = render(<PainelContasPage />);
-    await userEvent.click(screen.getByRole("button", { name: /colunas/i }));
-    await userEvent.click(screen.getByRole("checkbox", { name: /operação/i }));
-    unmount();
-    expect(window.localStorage.getItem("vf:painel-contas:grupos-colunas")).toContain("operacao");
+  it("ordena pelo cabeçalho (FAT ↓ por padrão; clicar inverte)", async () => {
+    window.localStorage.clear();
+    render(<PainelContasPage />);
+    const fat = screen.getByRole("columnheader", { name: /FAT/ });
+    expect(fat).toHaveAttribute("aria-sort", "descending");
+    await userEvent.click(within(fat).getByRole("button"));
+    expect(fat).toHaveAttribute("aria-sort", "ascending");
   });
 });
 
@@ -373,7 +411,8 @@ describe("estados vazios distintos", () => {
     mocks.usePainelContas.mockReturnValue(estado({ competencia: "2026-10", clientes: [semDadosShopee()] }));
     render(<PainelContasPage />);
     expect(screen.getByText(/nenhum cliente listado tem dados em outubro\/2026/i)).toBeInTheDocument();
-    expect(screen.getByText("Coremix Loja")).toBeInTheDocument();
+    // O cliente continua na tabela (e também é citado em "Merece atenção").
+    expect(screen.getByRole("button", { name: /Cliente Coremix Loja/ })).toBeInTheDocument();
   });
 });
 
@@ -410,7 +449,8 @@ describe("seções por marketplace", () => {
   it("Consolidado é a aba padrão e ML/Shopee/TikTok aparecem com a contagem", () => {
     render(<PainelContasPage />);
     const abas = screen.getAllByRole("tab");
-    expect(abas.map((a) => a.textContent)).toEqual(["Consolidado", "Mercado Livre1", "Shopee1", "TikTok Shop0"]);
+    // Nome · fonte (API/manual) · contagem.
+    expect(abas.map((a) => a.textContent)).toEqual([`Consolidado${estado().resumoCarteira.operacionais}`, "Mercado LivreAPI1", "Shopeemanual1", "TikTok Shopmanual0"]);
     expect(screen.getByRole("tab", { name: /consolidado/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByTestId("secao-descricao")).toHaveTextContent(/soma de todas as contas/i);
   });
@@ -548,7 +588,9 @@ describe("modo manual (PAINEL_CONTAS_AUTO_UPDATE_ENABLED desligada)", () => {
     expect(indicador).toHaveTextContent("Modo manual");
     expect(indicador).toHaveTextContent(/prevalecem sobre a API/);
     expect(within(screen.getByRole("banner")).getByTestId("banner-modo-manual")).toBe(indicador);
-    expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("Modo manual");
+    // O selo já diz "Modo manual"; a nota ao lado da competência diz o estado
+    // do mês e que não há atualização automática — sem prometer "até ontem".
+    expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("Mês em andamento · sem atualização automática");
     expect(screen.getByTestId("regra-atualizacao")).not.toHaveTextContent("até ontem");
     expect(screen.queryByRole("button", { name: /atualizar dados de/i })).toBeNull();
   });
@@ -582,8 +624,10 @@ describe("modo manual (PAINEL_CONTAS_AUTO_UPDATE_ENABLED desligada)", () => {
     mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual, clientes: [mlComApi()], salvarManual }));
     render(<PainelContasPage />);
     await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
-    await userEvent.click(screen.getByRole("button", { name: /lançar dados — mercado livre 1 · acme/i }));
-    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
+    // Conta com dado da API: corrigir por cima mora no detalhe da conta.
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 1 · acme.*expandir/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Corrigir com lançamento manual" }));
+    const drawer = screen.getByRole("dialog", { name: /corrigir com lançamento manual/i });
     expect(within(drawer).getByTestId("referencia-api")).toHaveTextContent("Referência da API");
     expect(within(drawer).getByText(/prevalece sobre a API/)).toBeInTheDocument();
     await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "7000");
@@ -600,11 +644,148 @@ describe("modo manual (PAINEL_CONTAS_AUTO_UPDATE_ENABLED desligada)", () => {
     mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual, clientes: [mlComApi()], salvarManual }));
     render(<PainelContasPage />);
     await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
-    await userEvent.click(screen.getByRole("button", { name: /lançar dados — mercado livre 1 · acme/i }));
-    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
+    // Conta com dado da API: corrigir por cima mora no detalhe da conta.
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 1 · acme.*expandir/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Corrigir com lançamento manual" }));
+    const drawer = screen.getByRole("dialog", { name: /corrigir com lançamento manual/i });
     await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "7000");
     await userEvent.click(within(drawer).getByRole("button", { name: /salvar lançamento/i }));
     expect(await within(drawer).findByRole("alert")).toHaveTextContent("Seu papel não permite");
     expect(screen.queryByTestId("confirmacao-lancamento")).toBeNull();
+  });
+});
+
+describe("V4: Merece atenção e fila de lançamento", () => {
+  const dois = () => [cliente(), semDadosShopee(), cliente({
+    id: 4, nome: "Duplo Shop", status: { codigo: "parcial", rotulo: "Parcial", motivo: "1 de 2 contas com dados", precisaAtencao: true },
+    escopo: { tipo: "consolidado", rotulo: "Consolidado · 1 de 2 contas", contasOperacionais: 2, contasComDado: 1 },
+    contas: [cliente().contas[0], {
+      id: 42, rotulo: "Shopee 1 · DUPLO", marketplace: "shopee", ativa: true, avisos: [],
+      status: { codigo: "sem_integracao", rotulo: "Sem integração", motivo: "Marketplace sem integração automática" },
+      fonte: null, resumo: null, podeLancarManual: true, manual: null, precisaAcao: true,
+    }],
+  })];
+
+  it("mostra só regras com fonte real, cada uma com os clientes e a saída", () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: dois() }));
+    render(<PainelContasPage />);
+    const att = screen.getByTestId("merece-atencao");
+    expect(within(att).getByText("Sem dados")).toBeInTheDocument();
+    expect(within(att).getByText("Aguardam lançamento")).toBeInTheDocument();
+    expect(within(att).getByText("Dados parciais")).toBeInTheDocument();
+    expect(within(att).queryByText(/margem baixa|tacos elevado/i)).toBeNull();
+    expect(within(att).getByRole("button", { name: "Ver todos (3)" })).toBeInTheDocument();
+  });
+
+  it("'Lançar pendentes' abre o drawer na 1ª conta pendente, com a posição na fila", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: dois() }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Lançar pendentes (2)" }));
+    const dialogo = await screen.findByRole("dialog");
+    expect(within(dialogo).getByTestId("fila-lancamento")).toHaveTextContent("Fila 1 de 2");
+    expect(within(dialogo).getByTestId("fila-lancamento")).toHaveTextContent("0 lançadas");
+    expect(dialogo).toHaveAccessibleDescription(/Coremix Loja/);
+    expect(within(dialogo).getByRole("button", { name: "Salvar e próxima" })).toBeInTheDocument();
+    expect(within(dialogo).getByRole("button", { name: "Anterior da fila" })).toBeDisabled();
+    await userEvent.click(within(dialogo).getByRole("button", { name: "Pular" }));
+    expect(await screen.findByRole("dialog", { name: /shopee 1 · duplo/i })).toHaveAccessibleDescription(/Duplo Shop/);
+    expect(screen.getByTestId("fila-lancamento")).toHaveTextContent("Fila 2 de 2");
+    // A pulada continua navegável para trás.
+    expect(screen.getByRole("button", { name: "Anterior da fila" })).toBeEnabled();
+    // Pular a última encerra a fila e oferece voltar às puladas.
+    await userEvent.click(screen.getByRole("button", { name: "Pular" }));
+    const fim = await screen.findByTestId("fila-concluida");
+    expect(fim).toHaveTextContent("0 de 2 contas lançadas");
+    expect(fim).toHaveTextContent("2 contas puladas continuam pendentes");
+    await userEvent.click(screen.getByRole("button", { name: "Voltar às puladas" }));
+    expect(await screen.findByTestId("fila-lancamento")).toHaveTextContent("Fila 1 de 2");
+  });
+
+  it("'Salvar e próxima' grava, conta como lançada e segue; a última fecha a fila", async () => {
+    const e = estado({ clientes: dois() });
+    mocks.usePainelContas.mockReturnValue(e);
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Lançar pendentes (2)" }));
+    await userEvent.type(screen.getByLabelText("Faturamento (R$)"), "5000");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar e próxima" }));
+    expect(e.salvarManual).toHaveBeenCalledWith(3, 31, expect.objectContaining({ faturamento: 5000 }));
+    expect(await screen.findByRole("dialog", { name: /shopee 1 · duplo/i })).toBeInTheDocument();
+    expect(screen.getByTestId("fila-lancamento")).toHaveTextContent("1 lançada");
+    await userEvent.type(screen.getByLabelText("Faturamento (R$)"), "800");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar e próxima" }));
+    expect(e.salvarManual).toHaveBeenLastCalledWith(4, 42, expect.objectContaining({ faturamento: 800 }));
+    expect(await screen.findByTestId("fila-concluida")).toHaveTextContent("2 de 2 contas lançadas");
+    expect(screen.queryByRole("button", { name: "Voltar às puladas" })).toBeNull();
+  });
+
+  it("fechar o drawer com alterações não salvas pede confirmação", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: dois() }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Lançar pendentes (2)" }));
+    await userEvent.type(screen.getByLabelText("Faturamento (R$)"), "5000");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByText("Descartar o que foi digitado?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Continuar editando" }));
+    expect(screen.getByLabelText("Faturamento (R$)")).toHaveValue("5000");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByRole("button", { name: "Descartar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("sem permissão de lançar, não há fila nem botão de lançar pendentes", () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: dois(), permissoes: { lancarManual: false, atualizarDados: false } }));
+    render(<PainelContasPage />);
+    expect(screen.queryByRole("button", { name: /lançar pendentes/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Abrir fila" })).toBeNull();
+  });
+
+  it("'Abrir pendentes' abre os clientes que pedem ação sem nova requisição", async () => {
+    const e = estado({ clientes: dois() });
+    mocks.usePainelContas.mockReturnValue(e);
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Abrir pendentes (2)" }));
+    expect(screen.getByRole("button", { name: /Cliente Coremix Loja — recolher/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Cliente Duplo Shop — recolher/ })).toBeInTheDocument();
+    expect(e.carregarMeses).not.toHaveBeenCalled();
+  });
+});
+
+describe("V4: Filtros avançados e Exibir", () => {
+  beforeEach(() => { try { window.localStorage.clear(); } catch { /* jsdom */ } });
+
+  it("MC abaixo de recorta a lista carregada, diz 'N de M' e 'Limpar filtros' zera", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: [cliente(), semDadosShopee()] }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /^Filtros/ }));
+    await userEvent.type(screen.getByLabelText("MC abaixo de (%)"), "50");
+    await userEvent.click(screen.getByRole("button", { name: "Aplicar" }));
+    expect(screen.getByRole("button", { name: /^Filtros · 1/ })).toBeInTheDocument();
+    expect(screen.getByText(/1 de 2/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Cliente Coremix Loja/ })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Limpar filtros" }));
+    expect(screen.getByRole("button", { name: /Cliente Coremix Loja/ })).toBeInTheDocument();
+  });
+
+  it("filtro que esvazia a lista mostra o aviso com a saída", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: [cliente()] }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /^Filtros/ }));
+    await userEvent.type(screen.getByLabelText("MC abaixo de (%)"), "1");
+    await userEvent.click(screen.getByRole("button", { name: "Aplicar" }));
+    const aviso = screen.getByTestId("filtros-locais-vazio");
+    await userEvent.click(within(aviso).getByRole("button", { name: "Limpar filtros avançados" }));
+    expect(screen.queryByTestId("filtros-locais-vazio")).toBeNull();
+  });
+
+  it("Exibir: densidade compacta marca a lista; agrupar fica desligado com um squad só", async () => {
+    const { container } = render((() => {
+      mocks.usePainelContas.mockReturnValue(estado({ clientes: [cliente()] }));
+      return <PainelContasPage />;
+    })());
+    await userEvent.click(screen.getByRole("button", { name: /^Exibir/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Compacta" }));
+    expect(container.querySelector(".vf-ph-lista")).toHaveClass("is-compacta");
+    expect(screen.getByRole("checkbox", { name: "Agrupar por squad" })).toBeDisabled();
+    expect(screen.getByText("Sua carteira tem um squad só")).toBeInTheDocument();
   });
 });

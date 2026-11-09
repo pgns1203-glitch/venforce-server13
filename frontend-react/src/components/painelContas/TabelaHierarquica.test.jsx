@@ -180,7 +180,9 @@ describe("acabamento visual: origem, ação e ferramentas do cliente aberto", ()
     await abrirCliente();
     const [api, man] = container.querySelectorAll(".vf-ph-row--conta");
     expect(within(api).getByText("API")).toHaveClass("vf-ph-origem", "is-api");
-    expect(within(api).getByRole("button", { name: "Lançar dados — Mercado Livre 1 · LOJA 1" })).toHaveTextContent("Lançar dados");
+    // Conta COM dado da API (modo manual): a correção mora no detalhe da conta,
+    // não na linha — a linha só lança (sem dado) ou edita (manual).
+    expect(within(api).queryByRole("button", { name: /lançar dados/i })).toBeNull();
     expect(within(man).getByText("Manual")).toHaveClass("vf-ph-origem", "is-manual");
     const editar = within(man).getByRole("button", { name: "Editar dados — Shopee 1 · LOJA" });
     expect(editar).toHaveClass("is-editar");
@@ -189,6 +191,34 @@ describe("acabamento visual: origem, ação e ferramentas do cliente aberto", ()
     expect(api.querySelector(".vf-ph-valor__origem")).toBeNull();
     await userEvent.click(editar);
     expect(onLancar).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 2 }));
+  });
+
+  it("detalhe da conta: API → 'Corrigir com lançamento manual'; manual sobre API → selo e 'Voltar ao automático'", async () => {
+    const onLancar = vi.fn();
+    const sobreApi = conta(2, {
+      rotulo: "Mercado Livre 2 · LOJA 2", fonte: { tipo: "manual", rotulo: "Manual" },
+      status: { codigo: "manual", rotulo: "Lançado manualmente" }, podeLancarManual: true,
+      manual: { valores: resumo({ fat: 90 }), atualizadoPor: "Ana", observacao: "planilha do cliente" },
+      referenciaApi: { fat: 1200, lc: 180, mc: 0.15, dadosAte: "2026-09-28", rotulo: "API" },
+    });
+    render(<Casca clientes={[cliente({ contas: [conta(1, { podeLancarManual: true }), sobreApi] })]} onLancar={onLancar} />);
+    await abrirCliente();
+    expect(screen.getByText("Manual sobre API")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 1.*expandir semanas/i }));
+    const detApi = screen.getByTestId("detalhe-conta-1");
+    expect(detApi).toHaveTextContent("OrigemAPI");
+    await userEvent.click(within(detApi).getByRole("button", { name: "Corrigir com lançamento manual" }));
+    expect(onLancar).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 1 }), null);
+
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 2.*expandir semanas/i }));
+    const detMan = screen.getByTestId("detalhe-conta-2");
+    expect(detMan).toHaveTextContent("Manual sobre API (override)");
+    expect(detMan).toHaveTextContent("ResponsávelAna");
+    expect(detMan).toHaveTextContent(/API \(referência\)FAT R\$\s?1\.200/);
+    expect(detMan).toHaveTextContent("“planilha do cliente”");
+    await userEvent.click(within(detMan).getByRole("button", { name: "Voltar ao automático" }));
+    expect(onLancar).toHaveBeenLastCalledWith(expect.objectContaining({ id: 1 }), expect.objectContaining({ id: 2 }), "remover");
   });
 
   it("cliente com dado: estado e 'dados até' numa linha, a ação na linha de baixo", () => {

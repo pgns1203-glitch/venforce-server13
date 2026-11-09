@@ -9,7 +9,7 @@
 // conta.
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import PainelContasPage, { descreverAcesso } from "./PainelContasPage.jsx";
 
@@ -229,8 +229,8 @@ describe("lançamento manual", () => {
     expect(screen.queryByRole("button", { name: /lançar dados — coremix loja/i })).toBeNull();
     await userEvent.click(screen.getByRole("button", { name: /Cliente Coremix Loja/ }));
     await userEvent.click(screen.getByRole("button", { name: /lançar dados — shopee 1 · coremix/i }));
-    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
-    expect(within(drawer).getByText("Coremix Loja")).toBeInTheDocument();
+    const drawer = screen.getByRole("dialog", { name: /lançar dados.*shopee 1 · coremix/i });
+    expect(drawer).toHaveAccessibleDescription(/Coremix Loja/);
     await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "5000");
     await userEvent.click(within(drawer).getByRole("button", { name: /salvar lançamento/i }));
     expect(e.salvarManual).toHaveBeenCalledWith(3, 31, expect.objectContaining({ faturamento: 5000 }));
@@ -628,8 +628,10 @@ describe("modo manual (PAINEL_CONTAS_AUTO_UPDATE_ENABLED desligada)", () => {
     mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual, clientes: [mlComApi()], salvarManual }));
     render(<PainelContasPage />);
     await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
-    await userEvent.click(screen.getByRole("button", { name: /lançar dados — mercado livre 1 · acme/i }));
-    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
+    // Conta com dado da API: corrigir por cima mora no detalhe da conta.
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 1 · acme.*expandir/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Corrigir com lançamento manual" }));
+    const drawer = screen.getByRole("dialog", { name: /corrigir com lançamento manual/i });
     expect(within(drawer).getByTestId("referencia-api")).toHaveTextContent("Referência da API");
     expect(within(drawer).getByText(/prevalece sobre a API/)).toBeInTheDocument();
     await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "7000");
@@ -646,8 +648,10 @@ describe("modo manual (PAINEL_CONTAS_AUTO_UPDATE_ENABLED desligada)", () => {
     mocks.usePainelContas.mockReturnValue(estado({ modo: modoManual, clientes: [mlComApi()], salvarManual }));
     render(<PainelContasPage />);
     await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
-    await userEvent.click(screen.getByRole("button", { name: /lançar dados — mercado livre 1 · acme/i }));
-    const drawer = screen.getByRole("dialog", { name: /lançar dados manuais/i });
+    // Conta com dado da API: corrigir por cima mora no detalhe da conta.
+    await userEvent.click(screen.getByRole("button", { name: /conta mercado livre 1 · acme.*expandir/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Corrigir com lançamento manual" }));
+    const drawer = screen.getByRole("dialog", { name: /corrigir com lançamento manual/i });
     await userEvent.type(within(drawer).getByLabelText("Faturamento (R$)"), "7000");
     await userEvent.click(within(drawer).getByRole("button", { name: /salvar lançamento/i }));
     expect(await within(drawer).findByRole("alert")).toHaveTextContent("Seu papel não permite");
@@ -682,14 +686,54 @@ describe("V4: Merece atenção e fila de lançamento", () => {
     render(<PainelContasPage />);
     await userEvent.click(screen.getByRole("button", { name: "Lançar pendentes (2)" }));
     const dialogo = await screen.findByRole("dialog");
-    expect(within(dialogo).getByTestId("fila-lancamento")).toHaveTextContent("Pendência 1 de 2");
-    expect(within(dialogo).getByText("Coremix Loja")).toBeInTheDocument();
+    expect(within(dialogo).getByTestId("fila-lancamento")).toHaveTextContent("Fila 1 de 2");
+    expect(within(dialogo).getByTestId("fila-lancamento")).toHaveTextContent("0 lançadas");
+    expect(dialogo).toHaveAccessibleDescription(/Coremix Loja/);
     expect(within(dialogo).getByRole("button", { name: "Salvar e próxima" })).toBeInTheDocument();
+    expect(within(dialogo).getByRole("button", { name: "Anterior da fila" })).toBeDisabled();
     await userEvent.click(within(dialogo).getByRole("button", { name: "Pular" }));
-    expect(await screen.findByText("Duplo Shop", { selector: "dd" })).toBeInTheDocument();
-    expect(screen.getByTestId("fila-lancamento")).toHaveTextContent("Pendência 2 de 2");
-    // Última da fila: volta a ser "Salvar lançamento".
-    expect(screen.getByRole("button", { name: "Salvar lançamento" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: /shopee 1 · duplo/i })).toHaveAccessibleDescription(/Duplo Shop/);
+    expect(screen.getByTestId("fila-lancamento")).toHaveTextContent("Fila 2 de 2");
+    // A pulada continua navegável para trás.
+    expect(screen.getByRole("button", { name: "Anterior da fila" })).toBeEnabled();
+    // Pular a última encerra a fila e oferece voltar às puladas.
+    await userEvent.click(screen.getByRole("button", { name: "Pular" }));
+    const fim = await screen.findByTestId("fila-concluida");
+    expect(fim).toHaveTextContent("0 de 2 contas lançadas");
+    expect(fim).toHaveTextContent("2 contas puladas continuam pendentes");
+    await userEvent.click(screen.getByRole("button", { name: "Voltar às puladas" }));
+    expect(await screen.findByTestId("fila-lancamento")).toHaveTextContent("Fila 1 de 2");
+  });
+
+  it("'Salvar e próxima' grava, conta como lançada e segue; a última fecha a fila", async () => {
+    const e = estado({ clientes: dois() });
+    mocks.usePainelContas.mockReturnValue(e);
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Lançar pendentes (2)" }));
+    await userEvent.type(screen.getByLabelText("Faturamento (R$)"), "5000");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar e próxima" }));
+    expect(e.salvarManual).toHaveBeenCalledWith(3, 31, expect.objectContaining({ faturamento: 5000 }));
+    expect(await screen.findByRole("dialog", { name: /shopee 1 · duplo/i })).toBeInTheDocument();
+    expect(screen.getByTestId("fila-lancamento")).toHaveTextContent("1 lançada");
+    await userEvent.type(screen.getByLabelText("Faturamento (R$)"), "800");
+    await userEvent.click(screen.getByRole("button", { name: "Salvar e próxima" }));
+    expect(e.salvarManual).toHaveBeenLastCalledWith(4, 42, expect.objectContaining({ faturamento: 800 }));
+    expect(await screen.findByTestId("fila-concluida")).toHaveTextContent("2 de 2 contas lançadas");
+    expect(screen.queryByRole("button", { name: "Voltar às puladas" })).toBeNull();
+  });
+
+  it("fechar o drawer com alterações não salvas pede confirmação", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: dois() }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Lançar pendentes (2)" }));
+    await userEvent.type(screen.getByLabelText("Faturamento (R$)"), "5000");
+    await userEvent.keyboard("{Escape}");
+    expect(screen.getByText("Descartar o que foi digitado?")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Continuar editando" }));
+    expect(screen.getByLabelText("Faturamento (R$)")).toHaveValue("5000");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByRole("button", { name: "Descartar" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
   it("sem permissão de lançar, não há fila nem botão de lançar pendentes", () => {
@@ -707,5 +751,45 @@ describe("V4: Merece atenção e fila de lançamento", () => {
     expect(screen.getByRole("button", { name: /Cliente Coremix Loja — recolher/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Cliente Duplo Shop — recolher/ })).toBeInTheDocument();
     expect(e.carregarMeses).not.toHaveBeenCalled();
+  });
+});
+
+describe("V4: Filtros avançados e Exibir", () => {
+  beforeEach(() => { try { window.localStorage.clear(); } catch { /* jsdom */ } });
+
+  it("MC abaixo de recorta a lista carregada, diz 'N de M' e 'Limpar filtros' zera", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: [cliente(), semDadosShopee()] }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /^Filtros/ }));
+    await userEvent.type(screen.getByLabelText("MC abaixo de (%)"), "50");
+    await userEvent.click(screen.getByRole("button", { name: "Aplicar" }));
+    expect(screen.getByRole("button", { name: /^Filtros · 1/ })).toBeInTheDocument();
+    expect(screen.getByText(/1 de 2/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Cliente Coremix Loja/ })).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Limpar filtros" }));
+    expect(screen.getByRole("button", { name: /Cliente Coremix Loja/ })).toBeInTheDocument();
+  });
+
+  it("filtro que esvazia a lista mostra o aviso com a saída", async () => {
+    mocks.usePainelContas.mockReturnValue(estado({ clientes: [cliente()] }));
+    render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /^Filtros/ }));
+    await userEvent.type(screen.getByLabelText("MC abaixo de (%)"), "1");
+    await userEvent.click(screen.getByRole("button", { name: "Aplicar" }));
+    const aviso = screen.getByTestId("filtros-locais-vazio");
+    await userEvent.click(within(aviso).getByRole("button", { name: "Limpar filtros avançados" }));
+    expect(screen.queryByTestId("filtros-locais-vazio")).toBeNull();
+  });
+
+  it("Exibir: densidade compacta marca a lista; agrupar fica desligado com um squad só", async () => {
+    const { container } = render((() => {
+      mocks.usePainelContas.mockReturnValue(estado({ clientes: [cliente()] }));
+      return <PainelContasPage />;
+    })());
+    await userEvent.click(screen.getByRole("button", { name: /^Exibir/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Compacta" }));
+    expect(container.querySelector(".vf-ph-lista")).toHaveClass("is-compacta");
+    expect(screen.getByRole("checkbox", { name: "Agrupar por squad" })).toBeDisabled();
+    expect(screen.getByText("Sua carteira tem um squad só")).toBeInTheDocument();
   });
 });

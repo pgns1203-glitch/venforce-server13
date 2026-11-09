@@ -314,7 +314,7 @@ function progressoBotao(job) {
 // do botão é a do maior dos dois, então trocar o texto não desloca nada.
 // O nome acessível continua "Atualizar dados de <cliente>" (+ o estado, quando
 // não é o normal) e o `title` segue explicando a regra de período.
-function BotaoAtualizar({ cliente, competencia, competenciaAtual, atualizacao, onAtualizar }) {
+export function BotaoAtualizar({ cliente, competencia, competenciaAtual, atualizacao, onAtualizar }) {
   const sincronizavel = (cliente.contas || []).some((c) => c.ativa && c.marketplace === "meli" && c.conectada);
   const fase = faseAtualizacao(atualizacao);
   const emCurso = fase === "andamento";
@@ -374,7 +374,7 @@ function progressoTexto(job, competencia, competenciaAtual) {
 
 // Desfecho da atualização com pendência ou falha: logo abaixo do cliente,
 // visível mesmo com a linha recolhida — diz QUAL conta e POR QUÊ.
-function LinhaAtualizacao({ cliente, atualizacao, colSpan, onAtualizar, onDispensar }) {
+export function LinhaAtualizacao({ cliente, atualizacao, colSpan, onAtualizar, onDispensar }) {
   const { job, erro } = atualizacao;
   const rotuloConta = (id) => cliente.contas?.find((c) => c.id === id)?.rotulo || `Conta #${id}`;
   const pendentes = (job?.contas || []).filter((c) => c.estado !== "ok");
@@ -613,7 +613,7 @@ const CAUSAS_TECNICAS = new Set(["sem_conexao", "erro_sync", "nao_publicado"]);
 // Detalhe da conta (abre junto com as semanas): situação, origem, frescor,
 // responsável, referência da API e as AÇÕES da conta. Só leitura do que a
 // lista já trouxe — nenhuma requisição nova.
-function LinhaDetalheConta({ cliente, conta, colSpan, onLancar }) {
+export function LinhaDetalheConta({ cliente, conta, colSpan, onLancar, children = null }) {
   const sobreApi = manualSobreApi(conta);
   const ref = conta.referenciaApi;
   const itens = [
@@ -674,6 +674,7 @@ function LinhaDetalheConta({ cliente, conta, colSpan, onLancar }) {
               )}
             </div>
           )}
+          {children}
         </div>
       </td>
     </tr>

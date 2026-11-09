@@ -21,7 +21,7 @@ const CONSOLIDADO = { codigo: null, rotulo: "Consolidado", descricao: "Todas as 
 // V4: a faixa de ESCOPO junta as duas escolhas que mudam o recorte — seção
 // (abas, à esquerda) e Squad (à direita, `lado`). A fonte de cada seção
 // (API · manual) aparece ao lado do nome; a descrição continua logo abaixo.
-export function SecoesMarketplace({ secoes = [], ativa = null, onSelecionar, lado = null }) {
+export function SecoesMarketplace({ secoes = [], ativa = null, onSelecionar, lado = null, totalConsolidado = null }) {
   const abas = [CONSOLIDADO, ...secoes];
   const indiceAtivo = Math.max(0, abas.findIndex((a) => a.codigo === ativa));
   const atual = abas[indiceAtivo];
@@ -41,6 +41,11 @@ export function SecoesMarketplace({ secoes = [], ativa = null, onSelecionar, lad
               <span>{aba.rotulo}</span>
               {aba.codigo !== null && aba.fonte && (
                 <span className="vf-ph-secoes__fonte">{aba.fonte === "manual" ? "manual" : "API"}</span>
+              )}
+              {aba.codigo === null && totalConsolidado != null && (
+                <span className="vf-ph-secoes__n" aria-label={`${totalConsolidado} ${totalConsolidado === 1 ? "cliente" : "clientes"}`}>
+                  {totalConsolidado}
+                </span>
               )}
               {aba.codigo !== null && (
                 <span className="vf-ph-secoes__n" aria-label={`${aba.clientes} ${aba.clientes === 1 ? "cliente" : "clientes"}`}>

@@ -37,7 +37,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { formatarNumero } from "../../utils/numbers.js";
 import { rotularCompetencia, competenciaAnterior } from "../../utils/dates.js";
-import { MenuColunas } from "./MenuColunas.jsx";
 import { VISTAS } from "./colunas.js";
 import { FILTROS_LOCAIS_VAZIOS, contarFiltrosLocais } from "./filtrosLocais.js";
 
@@ -301,7 +300,7 @@ export function ToolbarLista({
   mostrarLegado, onMostrarLegado,
   temFiltroAtivo, onLimpar,
   resumoCarteira, atualizando,
-  vista, onVista, grupos, onAlternarGrupo,
+  vista, onVista,
   temExpandido, onRecolherTudo, pendentes = 0, onAbrirPendentes,
   filtrosLocais = FILTROS_LOCAIS_VAZIOS, onFiltrosLocais = () => {},
   densidade = "confortavel", onDensidade = () => {},
@@ -338,8 +337,14 @@ export function ToolbarLista({
       </span>
 
       {pendentes > 0 && (
-        <button type="button" className="vf-btn vf-btn--sm" onClick={onAbrirPendentes} title="Abre de uma vez os clientes que pedem ação (sem nova requisição)">
-          Abrir pendentes ({pendentes})
+        <button
+          type="button"
+          className="vf-btn vf-btn--sm"
+          onClick={onAbrirPendentes}
+          aria-label={`Abrir pendentes (${pendentes})`}
+          title={`Abre de uma vez os ${pendentes} clientes que pedem ação (sem nova requisição)`}
+        >
+          Pendentes
         </button>
       )}
 
@@ -382,8 +387,7 @@ export function ToolbarLista({
       {atualizando && <span className="vf-ph-resumo__atualizando">Atualizando…</span>}
 
       <span className="vf-ph-toolbar__acoes">
-        {/* Na vista detalhada "Recolher tudo" mora no cabeçalho da tabela. */}
-        {temExpandido && vista !== "detalhada" && (
+        {temExpandido && (
           <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm vf-ph-recolher" onClick={onRecolherTudo}>Recolher tudo</button>
         )}
         <span className="vf-segmented vf-ph-vista" role="group" aria-label="Vista da tabela">
@@ -399,7 +403,6 @@ export function ToolbarLista({
             </button>
           ))}
         </span>
-        {vista === "detalhada" && <MenuColunas grupos={grupos} onAlternar={onAlternarGrupo} />}
         <MenuExibir
           densidade={densidade}
           onDensidade={onDensidade}

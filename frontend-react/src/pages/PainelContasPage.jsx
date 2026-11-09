@@ -13,8 +13,9 @@
 // Layout V4 (artefato aprovado painel-contas-v4-b-realistic): container WIDE
 // + densidade compacta; cabeçalho com competência · faixa de escopo (seção ×
 // Squad) · Resumo da carteira + Merece atenção · lista com filtros rápidos e
-// cabeçalho presos. Na vista "Detalhada" a tabela por grupos de antes continua
-// inteira (rolagem interna).
+// cabeçalho presos. A tabela é a do artefato (TabelaCarteira.jsx) nas duas
+// vistas: Essencial (FAT · Margem · Ads · Dados) e Detalhada (+ LC, ACOS,
+// TACoS); histórico, semanas e composição moram na investigação do cliente.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePainelContas } from "../hooks/usePainelContas.js";
@@ -22,13 +23,13 @@ import {
   ToolbarLista, SeletorCompetencia, RegraAtualizacao, OPCOES_STATUS,
 } from "../components/painelContas/ToolbarPainel.jsx";
 import { SecoesMarketplace } from "../components/painelContas/SecoesMarketplace.jsx";
-import { useGruposDeColunas } from "../components/painelContas/MenuColunas.jsx";
-import { TabelaHierarquica, useExpansao } from "../components/painelContas/TabelaHierarquica.jsx";
+import { useExpansao } from "../components/painelContas/TabelaHierarquica.jsx";
+import { TabelaCarteira } from "../components/painelContas/TabelaCarteira.jsx";
 import { LancamentoManualDrawer, FilaConcluida } from "../components/painelContas/LancamentoManualDrawer.jsx";
 import { ResumoCarteira, MereceAtencao, lerRecolhido, gravarRecolhido } from "../components/painelContas/VisaoCarteira.jsx";
 import { FILTROS_LOCAIS_VAZIOS, aplicarFiltrosLocais, contarFiltrosLocais } from "../components/painelContas/filtrosLocais.js";
 import { regrasAtencao, filaDeLancamento, contaAguardaLancamento } from "../components/painelContas/atencao.js";
-import { colunasVisiveis, VISTAS, VISTA_PADRAO } from "../components/painelContas/colunas.js";
+import { VISTAS, VISTA_PADRAO } from "../components/painelContas/colunas.js";
 import { rotularCompetencia, rotularCompetenciaCurta } from "../utils/dates.js";
 import { formatarMoeda } from "../utils/currency.js";
 
@@ -226,7 +227,7 @@ function SeletorSquad({ squadId, onSquad, squadsDisponiveis, totalClientes }) {
         value={squadId ?? ""}
         onChange={(e) => onSquad(e.target.value === "" ? null : Number(e.target.value))}
       >
-        <option value="">Todos os squads</option>
+        <option value="">Todos os squads{squadId == null && totalClientes != null ? ` · ${totalClientes}` : ""}</option>
         {squadsDisponiveis.map((s) => (
           <option key={s.id} value={s.id}>{s.nome}</option>
         ))}
@@ -275,9 +276,7 @@ export default function PainelContasPage() {
   } = painel;
   const modoManual = modo?.codigo === "manual";
 
-  const { grupos, alternar: alternarGrupo } = useGruposDeColunas();
   const expansao = useExpansao();
-  const colunas = colunasVisiveis(grupos);
   const [vista, setVistaEstado] = useState(lerVista);
   const setVista = useCallback((v) => {
     setVistaEstado(v);
@@ -489,6 +488,12 @@ export default function PainelContasPage() {
     squadId != null ? (squadsDisponiveis.find((s) => s.id === squadId)?.nome || "squad") : "todos os squads",
     visao?.codigo ? visao.rotulo : "consolidado",
   ].join(" · ");
+  // Contagem da aba Consolidado: a do servidor quando a seção é o consolidado
+  // (lembrada ao trocar de aba — nenhuma conta nova).
+  const [totalConsolidado, setTotalConsolidado] = useState(null);
+  useEffect(() => {
+    if (!marketplace && resumoCarteira?.operacionais != null) setTotalConsolidado(resumoCarteira.operacionais);
+  }, [marketplace, resumoCarteira]);
   const essencial = vista === "essencial";
   const variosSquads = new Set((clientes || []).map((c) => c.squad?.id ?? null)).size > 1;
 
@@ -562,6 +567,7 @@ export default function PainelContasPage() {
               secoes={secoesMarketplace}
               ativa={marketplace}
               onSelecionar={setMarketplace}
+              totalConsolidado={totalConsolidado}
               lado={(
                 <SeletorSquad
                   squadId={squadId}
@@ -625,7 +631,7 @@ export default function PainelContasPage() {
                   agruparDisponivel={variosSquads && squadId == null}
                   motivoAgrupar={!variosSquads ? "Sua carteira tem um squad só" : squadId != null ? "Desligado com um squad selecionado" : "Separa a lista por squad"}
                   resumoCarteira={resumoCarteira} atualizando={atualizando}
-                  vista={vista} onVista={setVista} grupos={grupos} onAlternarGrupo={alternarGrupo}
+                  vista={vista} onVista={setVista}
                   temExpandido={expansao.temExpandido} onRecolherTudo={expansao.recolherTudo}
                   pendentes={idsPedemAcao.length}
                   onAbrirPendentes={() => expansao.abrirClientes(idsPedemAcao)}
@@ -672,12 +678,27 @@ export default function PainelContasPage() {
               )}
 
               {temClientes && clientesVisiveis.length > 0 && (
-                <TabelaHierarquica
+                <TabelaCarteira
                   clientes={clientesVisiveis}
                   competencia={competencia}
-                  colunas={colunas}
-                  grupos={grupos}
+                  competenciaAtual={competenciaAtual}
+                  vista={vista}
+                  densidade={densidade}
+                  agrupar={agrupar && squadId == null && variosSquads}
+                  ordemSquads={squadsDisponiveis.map((sq) => sq.id)}
                   expansao={expansao}
+                  atualizando={atualizando}
+                  destaqueId={destaqueId}
+                  marketplaceRotulo={marketplace ? visao?.rotulo || marketplace : null}
+                  podeLancar={podeLancar}
+                  onLancar={abrirLancamento}
+                  onLancarPendentes={(cliente) => iniciarFila(filaDeLancamento([cliente]))}
+                  podeAtualizar={permissoes.atualizarDados === true}
+                  atualizacoes={atualizacoes}
+                  onAtualizar={atualizarCliente}
+                  onDispensarAtualizacao={dispensarAtualizacao}
+                  mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
+                  onIrParaCompetencia={setCompetencia}
                   mesesPorCliente={mesesPorCliente}
                   carregarMeses={carregarMeses}
                   semanasPorChave={semanasPorChave}
@@ -686,17 +707,6 @@ export default function PainelContasPage() {
                   carregarSemanasContas={carregarSemanasContas}
                   composicaoPorCliente={composicaoPorCliente}
                   carregarComposicao={carregarComposicao}
-                  atualizando={atualizando}
-                  onLancar={abrirLancamento}
-                  competenciaAtual={competenciaAtual}
-                  atualizacoes={atualizacoes}
-                  podeAtualizar={permissoes.atualizarDados === true}
-                  onAtualizar={atualizarCliente}
-                  onDispensarAtualizacao={dispensarAtualizacao}
-                  mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
-                  vista={vista}
-                  agruparPorSquad={agrupar && squadId == null && variosSquads}
-                  destaqueId={destaqueId}
                 />
               )}
             </section>

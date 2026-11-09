@@ -189,12 +189,17 @@ const CAMPOS = [
 export function LancamentoManualDrawer({
   cliente, contaInicial, competencia, onSalvar, onRemover, onFechar,
   onCarregarLancamentos, onCarregarHistorico, onIrParaCompetencia, modoManual = false,
+  // V4 — fila de pendências ("Lançar pendentes"): { posicao, total, onProxima }.
+  // Só muda a navegação: salvar continua indo para o mesmo endpoint.
+  fila = null,
 }) {
   const idForm = useId();
   const contas = useMemo(() => (cliente?.contas || []).filter((c) => c.podeLancarManual), [cliente]);
   const [contaId, setContaId] = useState(() => (contaInicial && contaInicial.podeLancarManual ? contaInicial.id : contas[0]?.id ?? null));
   const conta = contas.find((c) => c.id === contaId) || null;
   const [campos, setCampos] = useState(() => valoresIniciais(conta));
+  const alterado = JSON.stringify(campos) !== JSON.stringify(valoresIniciais(conta));
+  const temProxima = Boolean(fila && fila.posicao < fila.total);
   const [enviando, setEnviando] = useState(false);
   const [erroServidor, setErroServidor] = useState(null);
   const [confirmarRemocao, setConfirmarRemocao] = useState(false);
@@ -253,7 +258,8 @@ export function LancamentoManualDrawer({
         dataReferencia: campos.dataReferencia || null,
         observacao: campos.observacao.trim() || null,
       });
-      onFechar();
+      if (temProxima) fila.onProxima();
+      else onFechar();
     } catch (err) {
       setErroServidor(err?.message || "Não foi possível salvar o lançamento.");
     } finally {
@@ -294,6 +300,12 @@ export function LancamentoManualDrawer({
               {confirmarRemocao ? "Confirmar remoção" : "Remover lançamento"}
             </button>
           )}
+          {alterado && <span className="vf-ph-drawer__dirty" role="status">● Alterações não salvas</span>}
+          {temProxima && (
+            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={fila.onProxima} disabled={enviando}>
+              Pular
+            </button>
+          )}
           <VFDrawerClose>
             <button type="button" className="vf-btn vf-btn--sm">Cancelar</button>
           </VFDrawerClose>
@@ -303,12 +315,17 @@ export function LancamentoManualDrawer({
             className="vf-btn vf-btn--primary vf-btn--sm"
             disabled={!conta || invalido || vazio || inconsistente || dataRefInvalida || enviando}
           >
-            {enviando ? "Salvando…" : "Salvar lançamento"}
+            {enviando ? "Salvando…" : temProxima ? "Salvar e próxima" : "Salvar lançamento"}
           </button>
         </>
       }
     >
       <form id={idForm} className="vf-ph-drawer__body" onSubmit={salvar} noValidate>
+        {fila && (
+          <p className="vf-ph-drawer__fila" data-testid="fila-lancamento">
+            Pendência {fila.posicao} de {fila.total} · contas sem integração automática e sem valores no mês
+          </p>
+        )}
         <dl className="vf-ph-drawer__escopo">
           <div><dt>Cliente</dt><dd>{cliente?.nome}</dd></div>
           <div><dt>Competência</dt><dd>{rotularCompetencia(competencia)}</dd></div>

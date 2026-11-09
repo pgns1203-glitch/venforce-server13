@@ -18,13 +18,17 @@ import { VFTabs } from "../ui/VFTabs/index.js";
 
 const CONSOLIDADO = { codigo: null, rotulo: "Consolidado", descricao: "Todas as contas de cada cliente" };
 
-export function SecoesMarketplace({ secoes = [], ativa = null, onSelecionar }) {
+// V4: a faixa de ESCOPO junta as duas escolhas que mudam o recorte — seção
+// (abas, à esquerda) e Squad (à direita, `lado`). A fonte de cada seção
+// (API · manual) aparece ao lado do nome; a descrição continua logo abaixo.
+export function SecoesMarketplace({ secoes = [], ativa = null, onSelecionar, lado = null }) {
   const abas = [CONSOLIDADO, ...secoes];
   const indiceAtivo = Math.max(0, abas.findIndex((a) => a.codigo === ativa));
   const atual = abas[indiceAtivo];
 
   return (
     <div className="vf-ph-secoes">
+      <div className="vf-ph-faixa">
       <VFTabs
         className="vf-ph-secoes__abas"
         ariaLabel="Seção do painel por marketplace"
@@ -35,6 +39,9 @@ export function SecoesMarketplace({ secoes = [], ativa = null, onSelecionar }) {
           label: (
             <>
               <span>{aba.rotulo}</span>
+              {aba.codigo !== null && aba.fonte && (
+                <span className="vf-ph-secoes__fonte">{aba.fonte === "manual" ? "manual" : "API"}</span>
+              )}
               {aba.codigo !== null && (
                 <span className="vf-ph-secoes__n" aria-label={`${aba.clientes} ${aba.clientes === 1 ? "cliente" : "clientes"}`}>
                   {aba.clientes}
@@ -49,6 +56,8 @@ export function SecoesMarketplace({ secoes = [], ativa = null, onSelecionar }) {
           ? "Consolidado: soma de todas as contas de cada cliente."
           : `${atual.rotulo}: ${atual.descricao.charAt(0).toLowerCase()}${atual.descricao.slice(1)}. Só as contas ${atual.rotulo} entram no número.`}
       </p>
+      {lado && <div className="vf-ph-faixa__lado">{lado}</div>}
+      </div>
     </div>
   );
 }

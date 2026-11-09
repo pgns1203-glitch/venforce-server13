@@ -32,13 +32,13 @@
 // NÃO existe "expandir todos": seria uma requisição de histórico por cliente,
 // o oposto do que o lazy loading protege.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { VFTooltip } from "../ui/VFTooltip/index.js";
 import { formatarMoeda } from "../../utils/currency.js";
 import { formatarPercentual, formatarVariacaoPercentual, formatarPontosPercentuais } from "../../utils/percentage.js";
 import { AUSENTE, ehAusente, direcao } from "../../utils/numbers.js";
 import { rotularCompetenciaCurta, formatarData, formatarDataHora } from "../../utils/dates.js";
-import { colunasVisiveis, gruposVisiveis } from "./colunas.js";
+import { colunasVisiveis, gruposVisiveis, COLUNAS_ESSENCIAIS } from "./colunas.js";
 import { atualizacaoEmCurso } from "../../utils/painelContasAtualizacao.js";
 import { DemonstrativoComposicao } from "./ComposicaoFaturamento.jsx";
 import "./TabelaHierarquica.css";
@@ -68,6 +68,73 @@ const TOM_STATUS = {
 };
 
 const NOTA_ADS_POR_CONTA = "Ads é medido por cliente (todas as contas juntas) — não existe valor por conta, e nada é rateado.";
+
+// ── Vista (V4) ──────────────────────────────────────────────────────────────
+// "detalhada" é a tabela por grupos (contexto logo depois do nome).
+// "essencial" é a worklist V4: Cliente · FAT · Margem · Ads · Dados — a
+// coluna de contexto vira "Dados" e vai para o FIM da linha. As duas vistas
+// leem exatamente os mesmos campos; só a disposição muda.
+const VistaContext = createContext("detalhada");
+const useEssencial = () => useContext(VistaContext) === "essencial";
+
+// Âncora primeiro, sempre; o contexto troca de lado conforme a vista.
+function dispor(essencial, contexto, celulas) {
+  return essencial ? <>{celulas}{contexto}</> : <>{contexto}{celulas}</>;
+}
+
+const SIGLA_MARKETPLACE = { meli: "ML", shopee: "Shopee", tiktok: "TikTok" };
+
+// "8 contas · ML 4 · Shopee 2 · TikTok 2" — só CONTAGEM das contas ativas que
+// já vêm na lista. Uma conta só: o próprio rótulo do servidor.
+export function composicaoContas(cliente) {
+  const ativas = (cliente.contas || []).filter((c) => c.ativa);
+  if (ativas.length === 0) return cliente.escopo?.rotulo || "Nenhuma conta ativa";
+  if (ativas.length === 1) return ativas[0].rotulo || cliente.escopo?.rotulo || "1 conta";
+  const porMp = new Map();
+  for (const c of ativas) {
+    const mp = String(c.marketplace || "").toLowerCase();
+    porMp.set(mp, (porMp.get(mp) || 0) + 1);
+  }
+  const partes = [...porMp.entries()].map(([mp, n]) => `${SIGLA_MARKETPLACE[mp] || (mp ? mp[0].toUpperCase() + mp.slice(1) : "Outro")} ${n}`);
+  return `${ativas.length} contas · ${partes.join(" · ")}`;
+}
+
+// Vocabulário V4 sobre o status do SERVIDOR (nenhuma reclassificação):
+// sincronizado/manual → Completo · parcial → Parcial · sem_dados/sem_conta →
+// Sem dados. "k de n" é o escopo que o servidor já devolve.
+export function rotuloSituacao(cliente, competencia) {
+  const codigo = cliente.status?.codigo;
+  const n = cliente.escopo?.contasOperacionais;
+  const k = cliente.escopo?.contasComDado;
+  const fracao = n > 1 && k != null ? ` · ${k} de ${n}` : "";
+  if (codigo === "sincronizado" || codigo === "manual") return { texto: `Completo${fracao}`, tom: "ok" };
+  if (codigo === "parcial") return { texto: `Parcial${fracao}`, tom: "parc" };
+  if (codigo === "sem_dados") return { texto: `Sem dados em ${rotularCompetenciaCurta(competencia)}`, tom: "nd" };
+  if (codigo === "sem_conta") return { texto: "Sem conta ativa", tom: "nd" };
+  return { texto: cliente.status?.rotulo || "—", tom: "nd" };
+}
+
+// Um quadradinho por conta ativa: ● API · ● manual (azul) · ◇ pede ação ·
+// ○ sem dado. Forma + cor + título: nunca só a cor.
+export function pipConta(conta) {
+  if (!conta.ativa) return { classe: "x", titulo: "inativa" };
+  if (conta.resumo) return conta.fonte?.tipo === "manual" ? { classe: "m", titulo: "manual" } : { classe: "a", titulo: "API" };
+  if (conta.precisaAcao) return { classe: "w", titulo: conta.status?.rotulo || "pede ação" };
+  return { classe: "o", titulo: conta.status?.rotulo || "sem dados" };
+}
+
+function Pips({ contas }) {
+  const lista = (contas || []).filter((c) => c.ativa);
+  if (lista.length === 0) return <span className="vf-ph-pips" aria-hidden="true" />;
+  return (
+    <span className="vf-ph-pips" aria-hidden="true">
+      {lista.map((c) => {
+        const p = pipConta(c);
+        return <i key={c.id} className={`vf-ph-pip is-${p.classe}`} title={`${c.rotulo}: ${p.titulo}`} />;
+      })}
+    </span>
+  );
+}
 
 function formatarValor(tipo, valor) {
   if (tipo === "indisponivel") return AUSENTE;
@@ -128,7 +195,7 @@ function marcaParcial(coluna, custos) {
 
 // `manual`: o FAT LANÇADO numa conta ganha uma legenda discreta embaixo —
 // só no FAT e só na conta (no cliente, estado e selo de origem já dizem).
-function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false }) {
+function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false, subValor = null, fracao = null }) {
   const texto = formatarValor(coluna.tipo, valor);
   const delta = lerVariacao(coluna.tipo, variacao);
   const indisponivel = coluna.tipo === "indisponivel";
@@ -148,6 +215,12 @@ function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false
       <span className={`vf-ph-valor${ausente ? " is-ausente" : ""}${negativo ? " is-negativo" : ""}`}>{texto}</span>
       {delta && <Delta sentido={coluna.sentido} valor={delta.valor} texto={delta.texto} />}
       {manual && coluna.chave === "fat" && !ausente && <span className="vf-ph-valor__origem">manual</span>}
+      {coluna.sub && !ehAusente(subValor) && (
+        <span className="vf-ph-sub" title={coluna.sub.definicao}>{coluna.sub.prefixo}{formatarValor(coluna.sub.tipo, subValor)}</span>
+      )}
+      {coluna.barra && !ausente && fracao != null && (
+        <span className="vf-ph-share" aria-hidden="true"><span style={{ width: `${Math.max(2, Math.min(100, fracao * 100))}%` }} /></span>
+      )}
       {!ausente && marcaParcial(coluna, custos) && (
         <VFTooltip content={textoCoberturaParcial(custos)}>
           <span className="vf-ph-parcial" tabIndex={0} aria-label={textoCoberturaParcial(custos)}>
@@ -419,7 +492,12 @@ function BotaoLancar({ rotulo, onClick, editar = false }) {
   );
 }
 
+function classeContexto(essencial) {
+  return essencial ? "vf-ph-contexto vf-ph-dados-cel" : "vf-table__sticky-cell vf-ph-contexto";
+}
+
 function LinhaSemana({ semana, colunas, origem = "consolidado" }) {
+  const essencial = useEssencial();
   const intervalo = `${String(semana.de).slice(8)}–${String(semana.ate).slice(8)}`;
   return (
     <tr className={`vf-ph-row vf-ph-row--semana vf-ph-row--semana-${origem}`}>
@@ -429,15 +507,15 @@ function LinhaSemana({ semana, colunas, origem = "consolidado" }) {
           <span className="vf-ph-semana__dias">{intervalo}</span>
         </span>
       </th>
-      <td className="vf-table__sticky-cell vf-ph-contexto" />
-      {colunas.map((c) => (
-        <Celula key={c.chave} coluna={c} valor={semana.resumo?.[c.chave] ?? null} />
-      ))}
+      {dispor(essencial, <td className={classeContexto(essencial)} />, colunas.map((c) => (
+        <Celula key={c.chave} coluna={c} valor={semana.resumo?.[c.chave] ?? null} subValor={c.sub ? semana.resumo?.[c.sub.chave] ?? null : null} />
+      )))}
     </tr>
   );
 }
 
 function LinhaMes({ clienteId, clienteNome, mes, selecionada, aberto, onAlternar, semanasPorChave, carregarSemanas, colunas }) {
+  const essencial = useEssencial();
   const chave = `${clienteId}:${mes.competencia}`;
   const estado = semanasPorChave[chave];
   const colSpan = colunas.length + 2;
@@ -461,16 +539,23 @@ function LinhaMes({ clienteId, clienteNome, mes, selecionada, aberto, onAlternar
             {selecionada && <span className="vf-ph-meta"> · selecionada</span>}
           </span>
         </CelulaExpansivel>
-        <td className="vf-table__sticky-cell vf-ph-contexto">
-          {mes.sincronizadoEm && (
-            <span className="vf-ph-meta" title={`Snapshot sincronizado em ${formatarDataHora(mes.sincronizadoEm)}`}>
-              sync {formatarData(mes.sincronizadoEm)}
-            </span>
-          )}
-        </td>
-        {colunas.map((c) => (
-          <Celula key={c.chave} coluna={c} valor={mes.resumo?.[c.chave] ?? null} variacao={mes.variacaoVsMesAnterior?.[c.chave]} />
-        ))}
+        {dispor(essencial, (
+          <td className={classeContexto(essencial)}>
+            {mes.sincronizadoEm && (
+              <span className="vf-ph-meta" title={`Snapshot sincronizado em ${formatarDataHora(mes.sincronizadoEm)}`}>
+                sync {formatarData(mes.sincronizadoEm)}
+              </span>
+            )}
+          </td>
+        ), colunas.map((c) => (
+          <Celula
+            key={c.chave}
+            coluna={c}
+            valor={mes.resumo?.[c.chave] ?? null}
+            variacao={mes.variacaoVsMesAnterior?.[c.chave]}
+            subValor={c.sub ? mes.resumo?.[c.sub.chave] ?? null : null}
+          />
+        )))}
       </tr>
 
       {aberto && estado?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={2} rotulo="Carregando semanas" />}
@@ -530,12 +615,49 @@ function LinhaConta({
   const motivo = semDado && !sincronizandoAgora && conta.status?.motivo && conta.status.codigo !== "sem_integracao"
     ? conta.status.motivo
     : null;
+  const essencial = useEssencial();
   const colSpan = colunas.length + 2;
   const semanasConta = estadoSemanas?.contas?.find((item) => Number(item.contaId) === Number(conta.id))?.semanas;
 
   useEffect(() => {
     if (aberto && !estadoSemanas) carregarSemanasContas(cliente.id, competencia);
   }, [aberto, estadoSemanas, carregarSemanasContas, cliente.id, competencia]);
+
+  const metaConta = (
+    <span className="vf-ph-conta__meta">
+      <StatusCompacto status={conta.status} />
+      {motivo && <span className="vf-ph-meta vf-ph-conta__motivo">· {motivo}</span>}
+      {!semDado && conta.dadosAte && (
+        <span
+          className="vf-ph-meta"
+          title={`Dados até ${formatarData(conta.dadosAte)}${conta.atualizadoEm ? ` · atualizado ${formatarDataHora(conta.atualizadoEm)}` : ""}`}
+        >
+          · dados até {dataCurta(conta.dadosAte, competencia)}
+        </span>
+      )}
+      {conta.avisos?.length > 0 && (
+        <VFTooltip content={conta.avisos.join("\n")}>
+          <span className="vf-ph-aviso" tabIndex={0} aria-label={conta.avisos.join(". ")}>⚠</span>
+        </VFTooltip>
+      )}
+      <EstadoNaAtualizacao estadoConta={estadoConta} emCurso={atualizacaoEmCurso(atualizacao)} />
+      {manualSubstituido && (
+        <span
+          className="vf-ph-meta"
+          title={`Lançamento manual guardado (FAT ${formatarMoeda(conta.manual.valores?.fat, { casas: 0 })}${conta.manual.atualizadoPor ? `, por ${conta.manual.atualizadoPor}` : ""}) — o dado automático é o exibido.`}
+        >
+          · manual substituído pelo automático
+        </span>
+      )}
+    </span>
+  );
+  const botaoLancar = conta.podeLancarManual && (
+    <BotaoLancar
+      rotulo={`${conta.fonte?.tipo === "manual" ? "Editar dados" : "Lançar dados"} — ${conta.rotulo}`}
+      editar={conta.fonte?.tipo === "manual"}
+      onClick={() => onLancar(cliente, conta)}
+    />
+  );
 
   return (
     <>
@@ -548,47 +670,27 @@ function LinhaConta({
         >
           <span className="vf-ph-indent">
             <span className="vf-ph-conta__rotulo" title={conta.rotulo}><RotuloConta rotulo={conta.rotulo} /></span>
-            <span className="vf-ph-conta__meta">
-              <StatusCompacto status={conta.status} />
-              {motivo && <span className="vf-ph-meta vf-ph-conta__motivo">· {motivo}</span>}
-              {!semDado && conta.dadosAte && (
-                <span
-                  className="vf-ph-meta"
-                  title={`Dados até ${formatarData(conta.dadosAte)}${conta.atualizadoEm ? ` · atualizado ${formatarDataHora(conta.atualizadoEm)}` : ""}`}
-                >
-                  · dados até {dataCurta(conta.dadosAte, competencia)}
-                </span>
-              )}
-              {conta.avisos?.length > 0 && (
-                <VFTooltip content={conta.avisos.join("\n")}>
-                  <span className="vf-ph-aviso" tabIndex={0} aria-label={conta.avisos.join(". ")}>⚠</span>
-                </VFTooltip>
-              )}
-              <EstadoNaAtualizacao estadoConta={estadoConta} emCurso={atualizacaoEmCurso(atualizacao)} />
-              {manualSubstituido && (
-                <span
-                  className="vf-ph-meta"
-                  title={`Lançamento manual guardado (FAT ${formatarMoeda(conta.manual.valores?.fat, { casas: 0 })}${conta.manual.atualizadoPor ? `, por ${conta.manual.atualizadoPor}` : ""}) — o dado automático é o exibido.`}
-                >
-                  · manual substituído pelo automático
-                </span>
-              )}
-            </span>
+            {!essencial && metaConta}
           </span>
         </CelulaExpansivel>
-        <td className="vf-table__sticky-cell vf-ph-contexto">
-          <span className="vf-ph-contexto__linha vf-ph-contexto__conta">
-            <Origem fonte={conta.fonte} vazio={null} />
-            {conta.podeLancarManual && (
-              <BotaoLancar
-                rotulo={`${conta.fonte?.tipo === "manual" ? "Editar dados" : "Lançar dados"} — ${conta.rotulo}`}
-                editar={conta.fonte?.tipo === "manual"}
-                onClick={() => onLancar(cliente, conta)}
-              />
+        {dispor(essencial, (
+          <td className={classeContexto(essencial)}>
+            {essencial ? (
+              <span className="vf-ph-dados">
+                <span className="vf-ph-pips" aria-hidden="true"><i className={`vf-ph-pip is-${pipConta(conta).classe}`} /></span>
+                <span className="vf-ph-dados__txt">{metaConta}</span>
+                {/* A origem da conta já está no estado (Sincronizado = API ·
+                    Manual = lançado); aqui sobra espaço para o motivo. */}
+                {botaoLancar && <span className="vf-ph-dados__acoes">{botaoLancar}</span>}
+              </span>
+            ) : (
+              <span className="vf-ph-contexto__linha vf-ph-contexto__conta">
+                <Origem fonte={conta.fonte} vazio={null} />
+                {botaoLancar}
+              </span>
             )}
-          </span>
-        </td>
-        {colunas.map((c) => {
+          </td>
+        ), colunas.map((c) => {
           const semAdsPorConta = c.grupo === "ads" && adsPorCliente;
           return (
             <Celula
@@ -598,9 +700,10 @@ function LinhaConta({
               titulo={semAdsPorConta ? NOTA_ADS_POR_CONTA : undefined}
               custos={conta.custos}
               manual={conta.fonte?.tipo === "manual"}
+              subValor={c.sub && !semAdsPorConta ? conta.resumo?.[c.sub.chave] ?? null : null}
             />
           );
-        })}
+        }))}
       </tr>
       {aberto && estadoSemanas?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={2} rotulo="Carregando semanas da conta" />}
       {aberto && estadoSemanas?.erro && !estadoSemanas.carregando && (
@@ -713,7 +816,7 @@ function LinhasComposicao({ cliente, competencia, aberto, estado, carregar, colS
 //   Cliente X            Mercado Livre 1 · LOJA
 //   ○ Sem dados em set/2026
 //   Mercado Livre não conectado · último dado: ago/2026
-function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
+function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao, essencial = false }) {
   const emCurso = atualizacaoEmCurso(atualizacao);
   const acoes = cliente.escopo?.contasPrecisamAcao
     ?? (cliente.contas || []).filter((c) => c.precisaAcao).length;
@@ -731,7 +834,12 @@ function MetaCliente({ cliente, competencia, competenciaAtual, atualizacao }) {
     detalhe = <span className="vf-ph-motivo" title={cliente.status.motivo}>{cliente.status.motivo}</span>;
   }
 
-  const status = (
+  const situacao = essencial ? rotuloSituacao(cliente, competencia) : null;
+  const status = essencial ? (
+    <span className={`vf-ph-situacao is-${situacao.tom}`} title={cliente.status?.motivo || cliente.status?.rotulo || undefined}>
+      {situacao.texto}
+    </span>
+  ) : (
     <StatusCompacto
       status={cliente.status}
       rotulo={semDado && cliente.status?.codigo === "sem_dados" ? `Sem dados em ${rotularCompetenciaCurta(competencia)}` : undefined}
@@ -768,8 +876,9 @@ function LinhaCliente({
   semanasContasPorCliente, carregarSemanasContas,
   composicaoPorCliente = {}, carregarComposicao = () => {},
   colunas, onLancar, atualizacao, podeAtualizar, onAtualizar, onDispensar,
-  mostrarHistoricoCliente = true,
+  mostrarHistoricoCliente = true, agrupado = false, fracaoFat = null, destaque = false,
 }) {
+  const essencial = useEssencial();
   const aberto = expansao.clientesAbertos.has(cliente.id);
   // O histórico mensal é o snapshot CONSOLIDADO do cliente (Central/ML): numa
   // seção Shopee/TikTok ele mostraria número de outro marketplace.
@@ -790,7 +899,10 @@ function LinhaCliente({
 
   return (
     <>
-      <tr className={`vf-ph-row vf-ph-row--cliente${semDado ? " is-sem-dado" : ""}${cliente.status?.precisaAtencao ? " is-atencao" : ""}${emCurso ? " is-atualizando-linha" : ""}${aberto ? " is-aberto" : ""}`}>
+      <tr
+        id={`vf-ph-cliente-${cliente.id}`}
+        className={`vf-ph-row vf-ph-row--cliente${semDado ? " is-sem-dado" : ""}${cliente.status?.precisaAtencao ? " is-atencao" : ""}${emCurso ? " is-atualizando-linha" : ""}${aberto ? " is-aberto" : ""}${destaque ? " is-destaque" : ""}`}
+      >
         <CelulaExpansivel
           aberto={aberto}
           onClick={() => expansao.alternarCliente(cliente.id)}
@@ -800,34 +912,72 @@ function LinhaCliente({
           <span className="vf-ph-cliente">
             <span className="vf-ph-cliente__linha">
               <span className="vf-ph-cliente__nome">{cliente.nome}</span>
-              {cliente.escopo?.rotulo && <span className="vf-ph-escopo">{cliente.escopo.rotulo}</span>}
+              {!essencial && cliente.escopo?.rotulo && <span className="vf-ph-escopo">{cliente.escopo.rotulo}</span>}
             </span>
-            <MetaCliente cliente={cliente} competencia={competencia} competenciaAtual={competenciaAtual} atualizacao={atualizacao} />
+            {essencial
+              ? <span className="vf-ph-cliente__comp" title={cliente.escopo?.rotulo || undefined}>{composicaoContas(cliente)}</span>
+              : <MetaCliente cliente={cliente} competencia={competencia} competenciaAtual={competenciaAtual} atualizacao={atualizacao} />}
           </span>
         </CelulaExpansivel>
 
-        <td className="vf-table__sticky-cell vf-ph-contexto">
-          <span className="vf-ph-contexto__linha vf-ph-contexto__topo">
-            {cliente.squad
-              ? <span className={`vf-tag vf-ph-tag ${TOM_SQUAD}`} title={`Squad: ${cliente.squad.nome}`}>{cliente.squad.nome}</span>
-              : <span className="vf-ph-meta is-vazio">sem squad</span>}
-            <Origem fonte={cliente.fonte} />
-            {podeAtualizar && (
-              <BotaoAtualizar
-                cliente={cliente}
-                competencia={competencia}
-                competenciaAtual={competenciaAtual}
-                atualizacao={atualizacao}
-                onAtualizar={onAtualizar}
-              />
-            )}
-          </span>
-          <FrescorCliente cliente={cliente} concluidaAgora={job?.estado === "concluida"} />
-        </td>
-
-        {colunas.map((c) => (
-          <Celula key={c.chave} coluna={c} valor={cliente.resumo?.[c.chave] ?? null} custos={cliente.custos} />
-        ))}
+        {dispor(essencial, essencial ? (
+          <td className={classeContexto(true)}>
+            <span className="vf-ph-dados">
+              <Pips contas={cliente.contas} />
+              <span className="vf-ph-dados__txt">
+                <MetaCliente cliente={cliente} competencia={competencia} competenciaAtual={competenciaAtual} atualizacao={atualizacao} essencial />
+                <span className="vf-ph-dados__origem">
+                  {!agrupado && (cliente.squad
+                    ? <span className={`vf-tag vf-ph-tag ${TOM_SQUAD}`} title={`Squad: ${cliente.squad.nome}`}>{cliente.squad.nome}</span>
+                    : <span className="vf-ph-meta is-vazio">sem squad</span>)}
+                  {cliente.fonte && <Origem fonte={cliente.fonte} />}
+                  {(cliente.atualizadoEm || job?.estado === "concluida") && (
+                    <FrescorCliente cliente={cliente} concluidaAgora={job?.estado === "concluida"} />
+                  )}
+                </span>
+              </span>
+              {podeAtualizar && (
+                <span className="vf-ph-dados__acoes">
+                  <BotaoAtualizar
+                    cliente={cliente}
+                    competencia={competencia}
+                    competenciaAtual={competenciaAtual}
+                    atualizacao={atualizacao}
+                    onAtualizar={onAtualizar}
+                  />
+                </span>
+              )}
+            </span>
+          </td>
+        ) : (
+          <td className="vf-table__sticky-cell vf-ph-contexto">
+            <span className="vf-ph-contexto__linha vf-ph-contexto__topo">
+              {cliente.squad
+                ? <span className={`vf-tag vf-ph-tag ${TOM_SQUAD}`} title={`Squad: ${cliente.squad.nome}`}>{cliente.squad.nome}</span>
+                : <span className="vf-ph-meta is-vazio">sem squad</span>}
+              <Origem fonte={cliente.fonte} />
+              {podeAtualizar && (
+                <BotaoAtualizar
+                  cliente={cliente}
+                  competencia={competencia}
+                  competenciaAtual={competenciaAtual}
+                  atualizacao={atualizacao}
+                  onAtualizar={onAtualizar}
+                />
+              )}
+            </span>
+            <FrescorCliente cliente={cliente} concluidaAgora={job?.estado === "concluida"} />
+          </td>
+        ), colunas.map((c) => (
+          <Celula
+            key={c.chave}
+            coluna={c}
+            valor={cliente.resumo?.[c.chave] ?? null}
+            custos={cliente.custos}
+            subValor={c.sub ? cliente.resumo?.[c.sub.chave] ?? null : null}
+            fracao={c.barra ? fracaoFat : null}
+          />
+        )))}
       </tr>
 
       {mostrarDesfecho && (
@@ -941,6 +1091,16 @@ export function useExpansao() {
   const alternarMes = useCallback((clienteId, competencia) => alternarEm(setMesesAbertos, `${clienteId}:${competencia}`), []);
   const alternarComposicao = useCallback((id) => alternarEm(setComposicoesAbertas, id), []);
 
+  // "Abrir pendentes": abre de uma vez os clientes indicados (as contas já
+  // vieram na lista — nenhuma requisição).
+  const abrirClientes = useCallback((ids) => {
+    setClientesAbertos((prev) => {
+      const proximo = new Set(prev);
+      for (const id of ids) proximo.add(id);
+      return proximo;
+    });
+  }, []);
+
   const recolherTudo = useCallback(() => {
     setClientesAbertos(new Set());
     setContasAbertas(new Set());
@@ -951,7 +1111,7 @@ export function useExpansao() {
 
   return {
     clientesAbertos, contasAbertas, historicosAbertos, mesesAbertos, composicoesAbertas,
-    alternarCliente, alternarConta, alternarHistorico, alternarMes, alternarComposicao, recolherTudo,
+    alternarCliente, alternarConta, alternarHistorico, alternarMes, alternarComposicao, recolherTudo, abrirClientes,
     temExpandido: clientesAbertos.size > 0,
   };
 }
@@ -1014,20 +1174,54 @@ export function TabelaHierarquica({
   atualizando, onLancar = () => {},
   atualizacoes = {}, podeAtualizar = false, onAtualizar = () => {}, onDispensarAtualizacao = () => {},
   mostrarHistoricoCliente = true,
+  // V4: "essencial" (worklist, página rola com cabeçalho preso) ou
+  // "detalhada" (tabela por grupos, rolagem interna — o comportamento de
+  // antes). `agruparPorSquad` só agrupa a lista já carregada.
+  vista = "detalhada", agruparPorSquad = false, destaqueId = null,
 }) {
+  const essencial = vista === "essencial";
   // `inicioGrupo` é só apresentação (divisor vertical entre grupos, do
   // cabeçalho ao corpo); a lista e a ordem das colunas não mudam.
   const colunas = useMemo(
-    () => (colunasProp ?? colunasVisiveis(grupos)).map((c, i, todas) => ({
+    () => (essencial ? COLUNAS_ESSENCIAIS : colunasProp ?? colunasVisiveis(grupos)).map((c, i, todas) => ({
       ...c,
-      inicioGrupo: i > 0 && todas[i - 1].grupo !== c.grupo,
+      inicioGrupo: !essencial && i > 0 && todas[i - 1].grupo !== c.grupo,
     })),
-    [colunasProp, grupos],
+    [essencial, colunasProp, grupos],
   );
   const cabecalhoGrupos = useMemo(() => gruposVisiveis(grupos), [grupos]);
   const [ordem, setOrdem] = useState(null);
 
   const ordenados = useMemo(() => ordenarClientes(clientes, ordem), [clientes, ordem]);
+
+  // Barra discreta sob o FAT: proporção do maior FAT DA LISTA na tela — só
+  // apresentação, o número exibido continua o do servidor.
+  const maiorFat = useMemo(() => {
+    let max = 0;
+    for (const c of clientes) {
+      const v = Number(c.resumo?.fat);
+      if (Number.isFinite(v) && v > max) max = v;
+    }
+    return max;
+  }, [clientes]);
+
+  const grupoDeSquad = useMemo(() => {
+    if (!agruparPorSquad) return null;
+    const mapa = new Map();
+    for (const c of ordenados) {
+      const chave = c.squad?.id ?? "sem";
+      if (!mapa.has(chave)) mapa.set(chave, { chave, nome: c.squad?.nome || "Sem squad", clientes: [] });
+      mapa.get(chave).clientes.push(c);
+    }
+    // Ordem estável do cadastro (id do Squad); "sem squad" por último.
+    return [...mapa.values()].sort((a, b) => {
+      if (a.chave === "sem") return 1;
+      if (b.chave === "sem") return -1;
+      return Number(a.chave) - Number(b.chave) || compararTexto(a.nome, b.nome);
+    });
+  }, [agruparPorSquad, ordenados]);
+  const [gruposFechados, setGruposFechados] = useState(() => new Set());
+  const alternarGrupoSquad = useCallback((chave) => alternarEm(setGruposFechados, chave), []);
 
   const ordenar = useCallback((chave) => {
     setOrdem((prev) => {
@@ -1060,6 +1254,13 @@ export function TabelaHierarquica({
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return undefined;
+    // Vista essencial: a PÁGINA rola (filtros e cabeçalho presos); sem altura
+    // máxima medida.
+    if (essencial) {
+      wrap.style.maxHeight = "";
+      wrap.style.setProperty("--vf-ph-viewport", `${wrap.clientWidth}px`);
+      return undefined;
+    }
     const ajustar = () => {
       wrap.style.maxHeight = "";
       wrap.style.setProperty("--vf-ph-viewport", `${wrap.clientWidth}px`);
@@ -1096,12 +1297,40 @@ export function TabelaHierarquica({
   });
 
   return (
-    <div ref={wrapRef} className={`vf-table-wrap vf-ph-wrap${atualizando ? " is-atualizando" : ""}`}>
-      <table className={`vf-table vf-table--compact vf-ph-table${podeAtualizar ? " tem-atualizar" : ""}`} style={{ "--vf-ph-head-2": `${alturaGrupo}px` }}>
+    <VistaContext.Provider value={essencial ? "essencial" : "detalhada"}>
+    <div ref={wrapRef} className={`vf-table-wrap vf-ph-wrap${atualizando ? " is-atualizando" : ""}${essencial ? " is-pagina" : ""}`}>
+      <table
+        className={`vf-table vf-table--compact vf-ph-table${podeAtualizar ? " tem-atualizar" : ""}${essencial ? " vf-ph-table--essencial" : ""}`}
+        style={{ "--vf-ph-head-2": `${alturaGrupo}px` }}
+      >
         <caption className="vf-visually-hidden">
           Clientes da carteira na competência selecionada. Cada linha é o número consolidado do cliente; ao expandir,
           aparecem as contas/operações expansíveis por semana e o histórico do consolidado semanal do cliente.
         </caption>
+        {essencial ? (
+          <>
+            <colgroup>
+              <col className="vf-ph-colw--ancora" />
+              {colunas.map((c) => <col key={c.chave} className={`vf-ph-colw--${c.chave}`} />)}
+              <col className="vf-ph-colw--dados" />
+            </colgroup>
+            <thead>
+              <tr className="vf-ph-thead-metricas">
+                <th scope="col" className="vf-ph-th-ancora">
+                  <span className="vf-ph-th-ancora__conteudo">
+                    <BotaoOrdenar chave="nome" label="Cliente" titulo="nome do cliente" ordem={ordem} onOrdenar={ordenar} />
+                  </span>
+                </th>
+                {colunas.map((c) => (
+                  <th key={c.chave} scope="col" className="num vf-ph-th-metrica">
+                    <BotaoOrdenar chave={c.chave} label={c.label} titulo={c.definicao} ordem={ordem} onOrdenar={ordenar} />
+                  </th>
+                ))}
+                <th scope="col" className="vf-ph-th-dados">Dados</th>
+              </tr>
+            </thead>
+          </>
+        ) : (
         <thead>
           <tr className="vf-ph-thead-grupos" ref={linhaGrupoRef}>
             <th scope="col" rowSpan={2} className="vf-table__sticky-cell vf-ph-th-ancora">
@@ -1142,8 +1371,18 @@ export function TabelaHierarquica({
             ))}
           </tr>
         </thead>
-        <tbody>
-          {ordenados.map((cliente) => (
+        )}
+        {(grupoDeSquad || [{ chave: "todos", clientes: ordenados }]).map((grupo) => (
+        <tbody key={grupo.chave} className="vf-ph-tbody">
+          {grupoDeSquad && (
+            <LinhaGrupoSquad
+              grupo={grupo}
+              colSpan={colunas.length + 2}
+              aberto={!gruposFechados.has(grupo.chave)}
+              onAlternar={() => alternarGrupoSquad(grupo.chave)}
+            />
+          )}
+          {!gruposFechados.has(grupo.chave) && grupo.clientes.map((cliente) => (
             <LinhaCliente
               key={cliente.id}
               cliente={cliente}
@@ -1165,10 +1404,38 @@ export function TabelaHierarquica({
               onAtualizar={onAtualizar}
               onDispensar={onDispensarAtualizacao}
               mostrarHistoricoCliente={mostrarHistoricoCliente}
+              agrupado={Boolean(grupoDeSquad)}
+              fracaoFat={maiorFat > 0 && !ehAusente(cliente.resumo?.fat) ? Number(cliente.resumo.fat) / maiorFat : null}
+              destaque={destaqueId === cliente.id}
             />
           ))}
         </tbody>
+        ))}
       </table>
     </div>
+    </VistaContext.Provider>
+  );
+}
+
+// Cabeçalho do grupo (Squad): nome, quantos clientes e a situação em
+// CONTAGEM (nenhuma soma de dinheiro — agregado financeiro por Squad depende
+// do backend). Recolher o grupo é local.
+function LinhaGrupoSquad({ grupo, colSpan, aberto, onAlternar }) {
+  const n = grupo.clientes.length;
+  const comDado = grupo.clientes.filter((c) => c.resumo).length;
+  const acao = grupo.clientes.filter((c) => c.status?.precisaAtencao).length;
+  return (
+    <tr className="vf-ph-row vf-ph-row--grupo">
+      <th scope="rowgroup" colSpan={colSpan}>
+        <button type="button" className="vf-ph-grupo" aria-expanded={aberto} onClick={onAlternar}>
+          <Chevron aberto={aberto} />
+          <span className="vf-ph-grupo__nome">{grupo.nome}</span>
+          <span className="vf-ph-grupo__n">{n} {n === 1 ? "cliente" : "clientes"}</span>
+          <span className="vf-ph-grupo__sit">
+            {comDado} de {n} com dados{acao > 0 ? ` · ${acao} ${acao === 1 ? "pede" : "pedem"} ação` : ""}
+          </span>
+        </button>
+      </th>
+    </tr>
   );
 }

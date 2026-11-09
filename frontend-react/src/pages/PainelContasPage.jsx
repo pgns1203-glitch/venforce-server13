@@ -10,17 +10,24 @@
 //   - por cliente: o número é consolidado ou de uma conta, de quantas contas,
 //     de que fonte, atualizado quando e até que dia — ou, sem número, POR QUÊ.
 //
-// Layout: container WIDE + densidade compacta. Header e toolbar são fixos em
-// altura; só a tabela cresce.
+// Layout V4 (artefato aprovado painel-contas-v4-b-realistic): container WIDE
+// + densidade compacta; cabeçalho com competência · faixa de escopo (seção ×
+// Squad) · Resumo da carteira + Merece atenção · lista com filtros rápidos e
+// cabeçalho presos. Na vista "Detalhada" a tabela por grupos de antes continua
+// inteira (rolagem interna).
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePainelContas } from "../hooks/usePainelContas.js";
-import { ToolbarPainel, OPCOES_STATUS } from "../components/painelContas/ToolbarPainel.jsx";
+import {
+  ToolbarLista, SeletorCompetencia, RegraAtualizacao, OPCOES_STATUS,
+} from "../components/painelContas/ToolbarPainel.jsx";
 import { SecoesMarketplace } from "../components/painelContas/SecoesMarketplace.jsx";
 import { useGruposDeColunas } from "../components/painelContas/MenuColunas.jsx";
 import { TabelaHierarquica, useExpansao } from "../components/painelContas/TabelaHierarquica.jsx";
 import { LancamentoManualDrawer } from "../components/painelContas/LancamentoManualDrawer.jsx";
-import { colunasVisiveis } from "../components/painelContas/colunas.js";
+import { ResumoCarteira, MereceAtencao, lerRecolhido, gravarRecolhido } from "../components/painelContas/VisaoCarteira.jsx";
+import { regrasAtencao, filaDeLancamento, contaAguardaLancamento } from "../components/painelContas/atencao.js";
+import { colunasVisiveis, VISTAS, VISTA_PADRAO } from "../components/painelContas/colunas.js";
 import { rotularCompetencia, rotularCompetenciaCurta } from "../utils/dates.js";
 import { formatarMoeda } from "../utils/currency.js";
 
@@ -175,6 +182,68 @@ export function descreverAcesso(acesso) {
   return partes.join(" · ") || null;
 }
 
+// Squad: segmentado quando cabe (até 5), select sempre disponível (no
+// notebook o CSS troca o segmentado pelo select). Controle sem efeito não
+// aparece: um squad só vira texto.
+const MAX_SQUADS_SEGMENTADO = 5;
+
+function SeletorSquad({ squadId, onSquad, squadsDisponiveis, totalClientes }) {
+  if (squadsDisponiveis.length <= 1 && squadId == null) {
+    return squadsDisponiveis.length === 1
+      ? <span className="vf-ph-faixa__unico">Squad <b>{squadsDisponiveis[0].nome}</b></span>
+      : null;
+  }
+  return (
+    <span className="vf-ph-faixa__squad">
+      <span className="vf-ph-faixa__rotulo">Squad</span>
+      {squadsDisponiveis.length <= MAX_SQUADS_SEGMENTADO && (
+        <span className="vf-segmented vf-ph-sq-seg" role="group" aria-label="Squad">
+          <button
+            type="button"
+            className={`vf-segmented__item${squadId == null ? " is-active" : ""}`}
+            aria-pressed={squadId == null}
+            onClick={() => onSquad(null)}
+          >
+            Todos{squadId == null && totalClientes != null ? <small>{totalClientes}</small> : null}
+          </button>
+          {squadsDisponiveis.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`vf-segmented__item${squadId === s.id ? " is-active" : ""}`}
+              aria-pressed={squadId === s.id}
+              onClick={() => onSquad(squadId === s.id ? null : s.id)}
+            >
+              {s.nome}
+            </button>
+          ))}
+        </span>
+      )}
+      <select
+        className={`vf-select vf-select--sm vf-ph-filtro vf-ph-sq-sel${squadsDisponiveis.length <= MAX_SQUADS_SEGMENTADO ? " is-alternativo" : ""}`}
+        aria-label="Filtrar por Squad"
+        value={squadId ?? ""}
+        onChange={(e) => onSquad(e.target.value === "" ? null : Number(e.target.value))}
+      >
+        <option value="">Todos os squads</option>
+        {squadsDisponiveis.map((s) => (
+          <option key={s.id} value={s.id}>{s.nome}</option>
+        ))}
+      </select>
+    </span>
+  );
+}
+
+const CHAVE_VISTA = "vf:painel-contas:vista";
+function lerVista() {
+  try {
+    const v = window.localStorage.getItem(CHAVE_VISTA);
+    return VISTAS.some((x) => x.valor === v) ? v : VISTA_PADRAO;
+  } catch {
+    return VISTA_PADRAO;
+  }
+}
+
 export default function PainelContasPage() {
   const painel = usePainelContas();
   const {
@@ -195,10 +264,51 @@ export default function PainelContasPage() {
   const { grupos, alternar: alternarGrupo } = useGruposDeColunas();
   const expansao = useExpansao();
   const colunas = colunasVisiveis(grupos);
-  const [lancamento, setLancamento] = useState(null); // { cliente, conta }
+  const [vista, setVistaEstado] = useState(lerVista);
+  const setVista = useCallback((v) => {
+    setVistaEstado(v);
+    try { window.localStorage.setItem(CHAVE_VISTA, v); } catch { /* preferência visual */ }
+  }, []);
+  const [resumoRecolhido, setResumoRecolhido] = useState(lerRecolhido);
+  const alternarResumo = useCallback(() => {
+    setResumoRecolhido((v) => { gravarRecolhido(!v); return !v; });
+  }, []);
 
-  const abrirLancamento = useCallback((cliente, conta) => setLancamento({ cliente, conta }), []);
-  const fecharLancamento = useCallback(() => setLancamento(null), []);
+  // Lançamento: { cliente, conta } — com `fila` quando veio de "Lançar pendentes".
+  const [lancamento, setLancamento] = useState(null);
+  const [fila, setFila] = useState(null); // { itens: [{clienteId, contaId}], pos }
+  const clientesRef = useRef(clientes);
+  clientesRef.current = clientes;
+
+  const abrirLancamento = useCallback((cliente, conta) => {
+    setFila(null);
+    setLancamento({ cliente, conta });
+  }, []);
+  const fecharLancamento = useCallback(() => { setLancamento(null); setFila(null); }, []);
+
+  // Abre o item `pos` da fila resolvendo SEMPRE contra a lista mais nova (a
+  // lista é relida depois de cada salvar); pula o que deixou de estar pendente.
+  const abrirDaFila = useCallback((itens, inicio) => {
+    const lista = clientesRef.current || [];
+    for (let pos = inicio; pos < itens.length; pos++) {
+      const { clienteId, contaId } = itens[pos];
+      const cliente = lista.find((c) => c.id === clienteId);
+      const conta = cliente?.contas?.find((c) => c.id === contaId);
+      if (cliente && conta && contaAguardaLancamento(conta)) {
+        setFila({ itens, pos });
+        setLancamento({ cliente, conta });
+        return true;
+      }
+    }
+    setFila(null);
+    setLancamento(null);
+    return false;
+  }, []);
+
+  const iniciarFila = useCallback(() => {
+    const itens = filaDeLancamento(clientesRef.current || []);
+    if (itens.length) abrirDaFila(itens, 0);
+  }, [abrirDaFila]);
 
   // Confirmação explícita: o drawer fecha ao salvar, então a tela diz O QUE
   // foi gravado (conta, competência, FAT) com o valor devolvido pelo servidor.
@@ -227,6 +337,7 @@ export default function PainelContasPage() {
   const [reabrir, setReabrir] = useState(null); // { clienteId, contaId, competencia }
   const irParaCompetencia = useCallback((clienteId, contaId, comp) => {
     setLancamento(null);
+    setFila(null);
     setReabrir({ clienteId, contaId, competencia: comp });
     setCompetencia(comp);
   }, [setCompetencia]);
@@ -245,6 +356,60 @@ export default function PainelContasPage() {
   // um vazio no lugar dela — os clientes existem e continuam na tela.
   const competenciaSemDado = temClientes && clientes.every((c) => !c.resumo);
 
+  // ── Merece atenção / pendentes (só leitura da lista carregada) ───────────
+  const regras = useMemo(() => regrasAtencao(clientes || []), [clientes]);
+  const pendentesLancamento = useMemo(() => filaDeLancamento(clientes || []).length, [clientes]);
+  const idsPedemAcao = useMemo(
+    () => (clientes || []).filter((c) => c.status?.precisaAtencao).map((c) => c.id),
+    [clientes],
+  );
+  const podeLancar = permissoes.lancarManual === true;
+
+  const [destaqueId, setDestaqueId] = useState(null);
+  useEffect(() => {
+    if (destaqueId == null) return undefined;
+    const t = setTimeout(() => setDestaqueId(null), 1800);
+    return () => clearTimeout(t);
+  }, [destaqueId]);
+  const irParaCliente = useCallback((cliente) => {
+    expansao.abrirClientes([cliente.id]);
+    setDestaqueId(cliente.id);
+    setTimeout(() => {
+      document.getElementById(`vf-ph-cliente-${cliente.id}`)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
+    }, 0);
+  }, [expansao]);
+
+  const agirNaRegra = useCallback((regra) => {
+    if (regra.acao.tipo === "filtrar") setStatus(regra.acao.status);
+    else if (regra.acao.tipo === "fila") iniciarFila();
+    else if (regra.itens.length) {
+      expansao.abrirClientes(regra.itens.map((it) => it.cliente.id));
+      irParaCliente(regra.itens[0].cliente);
+    }
+  }, [setStatus, iniciarFila, expansao, irParaCliente]);
+
+  // Filtros + cabeçalho da tabela presos ao rolar: a altura do bloco preso é
+  // medida e vira o `top` do cabeçalho da tabela.
+  const listaRef = useRef(null);
+  const presoRef = useRef(null);
+  useLayoutEffect(() => {
+    const preso = presoRef.current;
+    const lista = listaRef.current;
+    if (!preso || !lista) return undefined;
+    const medir = () => lista.style.setProperty("--vf-ph-preso-h", `${Math.round(preso.getBoundingClientRect().height)}px`);
+    medir();
+    if (typeof ResizeObserver === "undefined") return undefined;
+    const obs = new ResizeObserver(medir);
+    obs.observe(preso);
+    return () => obs.disconnect();
+  }, [temClientes]);
+
+  const descricaoEscopo = [
+    squadId != null ? (squadsDisponiveis.find((s) => s.id === squadId)?.nome || "squad") : "todos os squads",
+    visao?.codigo ? visao.rotulo : "consolidado",
+  ].join(" · ");
+  const essencial = vista === "essencial";
+
   return (
     <div className="vf-page-shell vf-ph-shell" data-vf-density="compact">
       <div className="vf-page-container vf-page-container--wide vf-ph-page">
@@ -256,7 +421,16 @@ export default function PainelContasPage() {
               {descreverAcesso(acesso) && <span data-testid="escopo-acesso"> · {descreverAcesso(acesso)}</span>}
             </p>
           </div>
-          {modoManual && <IndicadorModoManual />}
+          <div className="vf-ph-header__lado">
+            {modoManual && <IndicadorModoManual />}
+            <SeletorCompetencia competencia={competencia} onCompetencia={setCompetencia} competenciaPadrao={competenciaPadrao} />
+            <RegraAtualizacao
+              competencia={competencia}
+              competenciaAtual={competenciaAtual}
+              podeAtualizar={permissoes.atualizarDados === true}
+              modoManual={modoManual}
+            />
+          </div>
         </header>
 
         {confirmacao && (
@@ -300,79 +474,135 @@ export default function PainelContasPage() {
           </div>
         )}
 
-        {/* Um painel só: seções → filtros → resumo → tabela. A moldura é da
-            ferramenta inteira, não de cada peça — nada fica "solto" na tela. */}
         {clientes && (
-          <section className="vf-ph-painel" aria-label="Carteira">
-            <SecoesMarketplace secoes={secoesMarketplace} ativa={marketplace} onSelecionar={setMarketplace} />
-            <ToolbarPainel
-              busca={busca} onBusca={setBusca}
-              competencia={competencia} onCompetencia={setCompetencia} competenciaPadrao={competenciaPadrao}
-              squadId={squadId} onSquad={setSquadId} squadsDisponiveis={squadsDisponiveis}
-              status={status} onStatus={setStatus}
-              mostrarLegado={mostrarLegado} onMostrarLegado={setMostrarLegado}
-              temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
-              grupos={grupos} onAlternarGrupo={alternarGrupo}
-              resumoCarteira={resumoCarteira} atualizando={atualizando}
-              competenciaAtual={competenciaAtual} podeAtualizar={permissoes.atualizarDados === true}
-              modoManual={modoManual}
+          <>
+            <SecoesMarketplace
+              secoes={secoesMarketplace}
+              ativa={marketplace}
+              onSelecionar={setMarketplace}
+              lado={(
+                <SeletorSquad
+                  squadId={squadId}
+                  onSquad={setSquadId}
+                  squadsDisponiveis={squadsDisponiveis}
+                  totalClientes={resumoCarteira?.operacionais}
+                />
+              )}
             />
 
-            {clientes.length === 0 && (
-              <EstadoVazio
-                busca={busca}
-                squadId={squadId}
-                status={status}
-                competencia={competencia}
-                squadsDisponiveis={squadsDisponiveis}
-                onLimpar={limparFiltros}
-                onStatus={setStatus}
-                visao={visao}
-                onConsolidado={() => setMarketplace(null)}
-                acesso={acesso}
-              />
+            {resumoCarteira && (
+              <section className={`vf-ph-visao${resumoRecolhido ? " is-recolhida" : ""}`} aria-label="Visão da carteira">
+                <ResumoCarteira
+                  resumoCarteira={resumoCarteira}
+                  clientes={clientes}
+                  competencia={competencia}
+                  status={status}
+                  squadId={squadId}
+                  marketplace={marketplace}
+                  secoesMarketplace={secoesMarketplace}
+                  mostrarLegado={mostrarLegado}
+                  onStatus={setStatus}
+                  onSquad={setSquadId}
+                  onMarketplace={setMarketplace}
+                  recolhido={resumoRecolhido}
+                  onRecolher={alternarResumo}
+                  descricaoEscopo={descricaoEscopo}
+                />
+                {!resumoRecolhido && (
+                  <MereceAtencao
+                    regras={regras}
+                    competencia={competencia}
+                    onAcao={agirNaRegra}
+                    onCliente={irParaCliente}
+                    pendentesLancamento={pendentesLancamento}
+                    onResolver={iniciarFila}
+                    podeLancar={podeLancar}
+                  />
+                )}
+              </section>
             )}
 
-            {competenciaSemDado && (
-              <div className="vf-ph-aviso" role="status">
-                <p className="vf-ph-aviso__titulo">Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}</p>
-                <p className="vf-ph-aviso__texto">
-                  Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
-                  diferente.{visao?.fonte === "manual"
-                    ? ` ${visao.rotulo} não tem integração automática: os números entram por lançamento manual em cada conta.`
-                    : modoManual
-                      ? " O Painel está em modo manual: os números entram por lançamento em cada conta."
-                      : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
-                </p>
+            <section className={`vf-ph-lista${essencial ? " is-essencial" : ""}`} aria-label="Carteira" ref={listaRef}>
+              <div className="vf-ph-lista__preso" ref={presoRef}>
+                <div className="vf-ph-lista__head">
+                  <h2 className="vf-ph-lista__titulo">Clientes</h2>
+                  <span className="vf-ph-lista__meta">
+                    {clientes.length} {clientes.length === 1 ? "cliente" : "clientes"}
+                    {status !== "todos" && ` · ${(OPCOES_STATUS.find((o) => o.valor === status)?.rotulo || status).toLowerCase()}`}
+                  </span>
+                </div>
+                <ToolbarLista
+                  busca={busca} onBusca={setBusca}
+                  status={status} onStatus={setStatus}
+                  mostrarLegado={mostrarLegado} onMostrarLegado={setMostrarLegado}
+                  temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
+                  resumoCarteira={resumoCarteira} atualizando={atualizando}
+                  vista={vista} onVista={setVista} grupos={grupos} onAlternarGrupo={alternarGrupo}
+                  temExpandido={expansao.temExpandido} onRecolherTudo={expansao.recolherTudo}
+                  pendentes={idsPedemAcao.length}
+                  onAbrirPendentes={() => expansao.abrirClientes(idsPedemAcao)}
+                />
               </div>
-            )}
 
-            {temClientes && (
-              <TabelaHierarquica
-                clientes={clientes}
-                competencia={competencia}
-                colunas={colunas}
-                grupos={grupos}
-                expansao={expansao}
-                mesesPorCliente={mesesPorCliente}
-                carregarMeses={carregarMeses}
-                semanasPorChave={semanasPorChave}
-                carregarSemanas={carregarSemanas}
-                semanasContasPorCliente={semanasContasPorCliente}
-                carregarSemanasContas={carregarSemanasContas}
-                composicaoPorCliente={composicaoPorCliente}
-                carregarComposicao={carregarComposicao}
-                atualizando={atualizando}
-                onLancar={abrirLancamento}
-                competenciaAtual={competenciaAtual}
-                atualizacoes={atualizacoes}
-                podeAtualizar={permissoes.atualizarDados === true}
-                onAtualizar={atualizarCliente}
-                onDispensarAtualizacao={dispensarAtualizacao}
-                mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
-              />
-            )}
-          </section>
+              {clientes.length === 0 && (
+                <EstadoVazio
+                  busca={busca}
+                  squadId={squadId}
+                  status={status}
+                  competencia={competencia}
+                  squadsDisponiveis={squadsDisponiveis}
+                  onLimpar={limparFiltros}
+                  onStatus={setStatus}
+                  visao={visao}
+                  onConsolidado={() => setMarketplace(null)}
+                  acesso={acesso}
+                />
+              )}
+
+              {competenciaSemDado && (
+                <div className="vf-ph-aviso" role="status">
+                  <p className="vf-ph-aviso__titulo">Nenhum cliente listado tem dados em {rotularCompetencia(competencia)}</p>
+                  <p className="vf-ph-aviso__texto">
+                    Cada linha diz o motivo. Para ver outro mês, troque a competência — nada é preenchido com um mês
+                    diferente.{visao?.fonte === "manual"
+                      ? ` ${visao.rotulo} não tem integração automática: os números entram por lançamento manual em cada conta.`
+                      : modoManual
+                        ? " O Painel está em modo manual: os números entram por lançamento em cada conta."
+                        : competencia === competenciaAtual && " A atualização automática roda de madrugada, com dados até ontem."}
+                  </p>
+                </div>
+              )}
+
+              {temClientes && (
+                <TabelaHierarquica
+                  clientes={clientes}
+                  competencia={competencia}
+                  colunas={colunas}
+                  grupos={grupos}
+                  expansao={expansao}
+                  mesesPorCliente={mesesPorCliente}
+                  carregarMeses={carregarMeses}
+                  semanasPorChave={semanasPorChave}
+                  carregarSemanas={carregarSemanas}
+                  semanasContasPorCliente={semanasContasPorCliente}
+                  carregarSemanasContas={carregarSemanasContas}
+                  composicaoPorCliente={composicaoPorCliente}
+                  carregarComposicao={carregarComposicao}
+                  atualizando={atualizando}
+                  onLancar={abrirLancamento}
+                  competenciaAtual={competenciaAtual}
+                  atualizacoes={atualizacoes}
+                  podeAtualizar={permissoes.atualizarDados === true}
+                  onAtualizar={atualizarCliente}
+                  onDispensarAtualizacao={dispensarAtualizacao}
+                  mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
+                  vista={vista}
+                  agruparPorSquad={essencial && squadId == null && new Set(clientes.map((c) => c.squad?.id ?? null)).size > 1}
+                  destaqueId={destaqueId}
+                />
+              )}
+            </section>
+          </>
         )}
 
         {temClientes && (
@@ -385,12 +615,14 @@ export default function PainelContasPage() {
               : <>O número do cliente é o consolidado das contas indicadas ao lado do nome; ao expandir, cada conta mostra o
                   próprio número (o mesmo da Central de Vendas) e pode abrir suas semanas reais. Ads é medido por cliente.</>}
             {" "}API = sincronização; Manual = lançado pela equipe.
+            {essencial && <> Dados: <i className="vf-ph-pip is-a" /> API <i className="vf-ph-pip is-m" /> manual <i className="vf-ph-pip is-w" /> pede ação <i className="vf-ph-pip is-o" /> sem dado.</>}
           </p>
         )}
       </div>
 
       {lancamento && (
         <LancamentoManualDrawer
+          key={`${lancamento.cliente.id}:${lancamento.conta?.id ?? "x"}`}
           cliente={lancamento.cliente}
           contaInicial={lancamento.conta}
           competencia={competencia}
@@ -401,6 +633,11 @@ export default function PainelContasPage() {
           onCarregarLancamentos={lancamentosDaConta}
           onCarregarHistorico={historicoLancamento}
           onIrParaCompetencia={irParaCompetencia}
+          fila={fila && {
+            posicao: fila.pos + 1,
+            total: fila.itens.length,
+            onProxima: () => abrirDaFila(fila.itens, fila.pos + 1),
+          }}
         />
       )}
     </div>

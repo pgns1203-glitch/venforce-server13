@@ -131,3 +131,23 @@ export function gruposVisiveis(gruposAtivos) {
     colunas: COLUNAS.filter((c) => c.grupo === g.chave),
   }));
 }
+
+// ── Vistas (V4) ─────────────────────────────────────────────────────────────
+// "Essencial" é a leitura do dia a dia: três números por linha, cada um com a
+// sua leitura de apoio logo abaixo — os MESMOS campos do servidor, nenhum
+// cálculo novo (Margem = MC com o LC embaixo; Ads = investimento com o TACoS
+// embaixo). "Detalhada" é a tabela completa por grupos (Financeiro · Ads ·
+// Operação), com o menu "Exibir".
+export const VISTAS = [
+  { valor: "essencial", rotulo: "Essencial" },
+  { valor: "detalhada", rotulo: "Detalhada" },
+];
+export const VISTA_PADRAO = "essencial";
+
+const porChave = (chave) => COLUNAS.find((c) => c.chave === chave);
+
+export const COLUNAS_ESSENCIAIS = [
+  { ...porChave("fat"), barra: true },
+  { ...porChave("mc"), label: "Margem", sub: { ...porChave("lc"), prefixo: "LC " } },
+  { ...porChave("ads"), label: "Ads", sub: { ...porChave("tacos"), prefixo: "TACoS " } },
+];

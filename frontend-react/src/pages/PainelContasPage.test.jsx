@@ -219,6 +219,13 @@ describe("resumo da carteira (do servidor, na competência)", () => {
   });
 });
 
+// A investigação do cliente só carrega histórico/composição quando fica
+// VISÍVEL. Aqui o observador nunca dispara: abrir clientes não pode, sozinho,
+// gerar requisição.
+beforeEach(() => {
+  window.IntersectionObserver = class { observe() {} disconnect() {} };
+});
+
 describe("lançamento manual", () => {
   it("abre o drawer no cliente certo e salva pela ação do hook", async () => {
     const e = estado({ clientes: [cliente(), semDadosShopee()] });
@@ -262,17 +269,20 @@ describe("atualizar dados", () => {
     mocks.usePainelContas.mockReturnValue(e);
     render(<PainelContasPage />);
     expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("Atualizar agora: inclui dados parciais de hoje");
-    const botao = screen.getByRole("button", { name: "Atualizar dados de Acme Comércio" });
+    // B: "↻ Atualizar dados" mora na barra "Investigar <cliente>".
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
+    const botao = within(screen.getByRole("region", { name: "Investigar Acme Comércio" })).getByRole("button", { name: "Atualizar dados de Acme Comércio" });
     expect(botao).toHaveAttribute("title", expect.stringMatching(/até hoje, incluindo dados parciais de hoje.*até ontem/));
     await userEvent.click(botao);
     expect(e.atualizarCliente).toHaveBeenCalledWith(1);
   });
 
-  it("admin: cliente sem conta ML conectada tem o botão travado e diz por quê", () => {
+  it("admin: cliente sem conta ML conectada tem o botão travado e diz por quê", async () => {
     mocks.usePainelContas.mockReturnValue(estado({
       permissoes: { lancarManual: true, atualizarDados: true }, clientes: [semDadosShopee()],
     }));
     render(<PainelContasPage />);
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Coremix Loja/ }));
     const botao = screen.getByRole("button", { name: "Atualizar dados de Coremix Loja" });
     expect(botao).toBeDisabled();
     expect(botao).toHaveAttribute("title", expect.stringMatching(/nenhuma conta mercado livre/i));
@@ -285,18 +295,19 @@ describe("atualizar dados", () => {
     expect(screen.getByTestId("regra-atualizacao")).toHaveTextContent("reprocessa o mês completo");
   });
 
-  it("em curso: progresso na linha, botão travado, dados continuam na tela", () => {
+  it("em curso: progresso na linha, botão travado, dados continuam na tela", async () => {
     mocks.usePainelContas.mockReturnValue(estado({
       permissoes: { lancarManual: true, atualizarDados: true },
       atualizacoes: { 1: { competencia: "2026-09", job: job(), erro: null, iniciando: false } },
     }));
     render(<PainelContasPage />);
-    const linha = screen.getByText("Acme Comércio").closest("tr");
-    expect(within(linha).getByText("Atualizando até hoje")).toBeInTheDocument();
-    const botao = within(linha).getByRole("button", { name: /atualizar dados de/i });
+    const linha = screen.getByRole("button", { name: /Cliente Acme Comércio/ }).closest("tr");
+    expect(within(linha).getByText(/atualizando…/)).toBeInTheDocument();
+    expect(within(linha).getByText("R$ 600")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: /Cliente Acme Comércio/ }));
+    const botao = within(screen.getByRole("region", { name: "Investigar Acme Comércio" })).getByRole("button", { name: /atualizar dados de/i });
     expect(botao).toHaveTextContent("Atualizando 1/2");
     expect(botao).toBeDisabled();
-    expect(within(linha).getByText("R$ 600")).toBeInTheDocument();
   });
 
   it("falha de uma conta: diz qual conta e por quê, com tentar de novo e dispensar", async () => {
@@ -333,9 +344,7 @@ describe("atualizar dados", () => {
   });
 });
 
-describe("controle de colunas", () => {
-  beforeEach(() => { window.localStorage.setItem("vf:painel-contas:vista", "detalhada"); });
-
+describe("vistas da tabela (B Realistic)", () => {
   it("vista essencial é o padrão: FAT · Margem · Ads · Dados, sem menu de colunas", () => {
     window.localStorage.clear();
     render(<PainelContasPage />);
@@ -344,34 +353,21 @@ describe("controle de colunas", () => {
     expect(screen.getByRole("button", { name: "Essencial" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("a vista escolhida fica guardada", async () => {
+  it("Detalhada é a MESMA tabela com LC, ACOS e TACoS; a escolha fica guardada", async () => {
     window.localStorage.clear();
     render(<PainelContasPage />);
     await userEvent.click(screen.getByRole("button", { name: "Detalhada" }));
     expect(window.localStorage.getItem("vf:painel-contas:vista")).toBe("detalhada");
-    expect(screen.getByRole("columnheader", { name: "Financeiro" })).toBeInTheDocument();
+    expect(screen.getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["Cliente", "FAT", "LC", "MC", "Ads", "ACOS", "TACoS", "Dados"]);
   });
 
-  it("esconde Operação por padrão, mantendo Financeiro e Ads", () => {
+  it("ordena pelo cabeçalho (FAT ↓ por padrão; clicar inverte)", async () => {
+    window.localStorage.clear();
     render(<PainelContasPage />);
-    expect(screen.getByRole("columnheader", { name: "FAT" })).toBeInTheDocument();
-    expect(screen.getByRole("columnheader", { name: "Financeiro" })).toBeInTheDocument();
-    expect(screen.queryByText("NPS")).toBeNull();
-  });
-
-  it("devolve as colunas de Operação — a capacidade não foi removida", async () => {
-    render(<PainelContasPage />);
-    await userEvent.click(screen.getByRole("button", { name: /colunas/i }));
-    await userEvent.click(screen.getByRole("checkbox", { name: /operação/i }));
-    expect(screen.getByText("NPS")).toBeInTheDocument();
-  });
-
-  it("guarda a preferência entre sessões, com chave namespaced", async () => {
-    const { unmount } = render(<PainelContasPage />);
-    await userEvent.click(screen.getByRole("button", { name: /colunas/i }));
-    await userEvent.click(screen.getByRole("checkbox", { name: /operação/i }));
-    unmount();
-    expect(window.localStorage.getItem("vf:painel-contas:grupos-colunas")).toContain("operacao");
+    const fat = screen.getByRole("columnheader", { name: /FAT/ });
+    expect(fat).toHaveAttribute("aria-sort", "descending");
+    await userEvent.click(within(fat).getByRole("button"));
+    expect(fat).toHaveAttribute("aria-sort", "ascending");
   });
 });
 
@@ -454,7 +450,7 @@ describe("seções por marketplace", () => {
     render(<PainelContasPage />);
     const abas = screen.getAllByRole("tab");
     // Nome · fonte (API/manual) · contagem.
-    expect(abas.map((a) => a.textContent)).toEqual(["Consolidado", "Mercado LivreAPI1", "Shopeemanual1", "TikTok Shopmanual0"]);
+    expect(abas.map((a) => a.textContent)).toEqual([`Consolidado${estado().resumoCarteira.operacionais}`, "Mercado LivreAPI1", "Shopeemanual1", "TikTok Shopmanual0"]);
     expect(screen.getByRole("tab", { name: /consolidado/i })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByTestId("secao-descricao")).toHaveTextContent(/soma de todas as contas/i);
   });

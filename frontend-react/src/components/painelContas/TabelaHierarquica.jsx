@@ -195,12 +195,13 @@ function marcaParcial(coluna, custos) {
 
 // `manual`: o FAT LANÇADO numa conta ganha uma legenda discreta embaixo —
 // só no FAT e só na conta (no cliente, estado e selo de origem já dizem).
-function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false, subValor = null, fracao = null }) {
-  const texto = formatarValor(coluna.tipo, valor);
+function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false, subValor = null, fracao = null, rotuloAusente = null }) {
+  const formatado = formatarValor(coluna.tipo, valor);
   const delta = lerVariacao(coluna.tipo, variacao);
   const indisponivel = coluna.tipo === "indisponivel";
   const ausente = indisponivel || ehAusente(valor);
   const negativo = !ausente && Number(valor) < 0;
+  const texto = ausente && rotuloAusente ? rotuloAusente : formatado;
   const classes = [
     "num",
     `vf-ph-col--${coluna.chave}`,
@@ -212,7 +213,7 @@ function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false
       className={classes}
       title={titulo || (indisponivel ? "Sem fonte de dado auditada nesta versão" : valorExato(coluna.tipo, valor))}
     >
-      <span className={`vf-ph-valor${ausente ? " is-ausente" : ""}${negativo ? " is-negativo" : ""}`}>{texto}</span>
+      <span className={`vf-ph-valor${ausente ? " is-ausente" : ""}${negativo ? " is-negativo" : ""}${ausente && rotuloAusente ? " vf-ph-valor--nota" : ""}`}>{texto}</span>
       {delta && <Delta sentido={coluna.sentido} valor={delta.valor} texto={delta.texto} />}
       {manual && coluna.chave === "fat" && !ausente && <span className="vf-ph-valor__origem">manual</span>}
       {coluna.sub && !ehAusente(subValor) && (
@@ -232,10 +233,10 @@ function Celula({ coluna, valor, variacao, titulo, custos = null, manual = false
   );
 }
 
-function StatusCompacto({ status, rotulo }) {
+function StatusCompacto({ status, rotulo, titulo }) {
   if (!status) return null;
   return (
-    <span className={`vf-status vf-ph-status ${TOM_STATUS[status.codigo] ?? "is-empty"}`} title={status.motivo || undefined}>
+    <span className={`vf-status vf-ph-status ${TOM_STATUS[status.codigo] ?? "is-empty"}`} title={titulo || status.motivo || undefined}>
       {rotulo || status.rotulo}
     </span>
   );
@@ -601,6 +602,84 @@ function RotuloConta({ rotulo }) {
   );
 }
 
+// Manual lançado SOBRE o dado da API (modo manual): o servidor manda a
+// referência automática guardada em `referenciaApi`.
+export function manualSobreApi(conta) {
+  return Boolean(conta?.referenciaApi) && conta?.fonte?.tipo === "manual";
+}
+
+const CAUSAS_TECNICAS = new Set(["sem_conexao", "erro_sync", "nao_publicado"]);
+
+// Detalhe da conta (abre junto com as semanas): situação, origem, frescor,
+// responsável, referência da API e as AÇÕES da conta. Só leitura do que a
+// lista já trouxe — nenhuma requisição nova.
+function LinhaDetalheConta({ cliente, conta, colSpan, onLancar }) {
+  const sobreApi = manualSobreApi(conta);
+  const ref = conta.referenciaApi;
+  const itens = [
+    ["Situação", `${conta.status?.rotulo || "—"}${conta.status?.motivo && !["manual", "sincronizado"].includes(conta.status?.codigo) ? ` — ${conta.status.motivo}` : ""}`],
+    ["Origem", conta.fonte ? (sobreApi ? "Manual sobre API (override)" : conta.fonte.rotulo) : "—"],
+    ["Dados até", conta.dadosAte ? formatarData(conta.dadosAte) : "não informado"],
+    ["Atualizado em", conta.atualizadoEm ? formatarDataHora(conta.atualizadoEm) : AUSENTE],
+  ];
+  if (conta.manual && conta.fonte?.tipo === "manual") itens.push(["Responsável", conta.manual.atualizadoPor || AUSENTE]);
+  if (sobreApi) {
+    itens.push([`${ref.rotulo || "API"} (referência)`, [
+      `FAT ${formatarMoeda(ref.fat, { casas: 0 })}`,
+      ref.mc != null ? `MC ${formatarPercentual(ref.mc)}` : null,
+      ref.dadosAte ? `até ${formatarData(ref.dadosAte).slice(0, 5)}` : null,
+    ].filter(Boolean).join(" · ")]);
+  }
+  const acoes = [];
+  if (conta.ativa && conta.podeLancarManual) {
+    if (!conta.resumo) {
+      acoes.push({ chave: "lancar", rotulo: CAUSAS_TECNICAS.has(conta.status?.codigo) ? "Lançar como contingência" : "Lançar dados", primario: true });
+    } else if (conta.fonte?.tipo === "manual") {
+      acoes.push({ chave: "editar", rotulo: "Editar lançamento" });
+    } else {
+      acoes.push({ chave: "corrigir", rotulo: "Corrigir com lançamento manual", titulo: "Cria um lançamento manual que prevalece sobre a API (modo manual); a API continua guardada" });
+    }
+    if (sobreApi) acoes.push({ chave: "voltar", rotulo: "Voltar ao automático", fantasma: true, intencao: "remover" });
+  }
+  const codigo = conta.status?.codigo;
+  return (
+    <tr className="vf-ph-row vf-ph-row--detalhe-conta">
+      <td colSpan={colSpan}>
+        <div className="vf-ph-det" data-testid={`detalhe-conta-${conta.id}`}>
+          <dl className="vf-ph-det__grid">
+            {itens.map(([k, v]) => <div key={k}><dt>{k}</dt><dd>{v}</dd></div>)}
+          </dl>
+          {conta.manual?.observacao && conta.fonte?.tipo === "manual" && (
+            <p className="vf-ph-det__nota">“{conta.manual.observacao}”</p>
+          )}
+          {conta.avisos?.length > 0 && <p className="vf-ph-det__nota">⚠ {conta.avisos.join(" · ")}</p>}
+          {(acoes.length > 0 || CAUSAS_TECNICAS.has(codigo)) && (
+            <div className="vf-ph-det__acoes">
+              {acoes.map((a) => (
+                <button
+                  key={a.chave}
+                  type="button"
+                  className={`vf-btn vf-btn--sm${a.primario ? " vf-btn--primary" : ""}${a.fantasma ? " vf-btn--ghost" : ""}`}
+                  title={a.titulo}
+                  onClick={() => onLancar(cliente, conta, a.intencao || null)}
+                >
+                  {a.rotulo}
+                </button>
+              ))}
+              {codigo === "sem_conexao" && (
+                <a className="vf-btn vf-btn--ghost vf-btn--sm" href="clientes.html">Conectar em Clientes e Contas ↗</a>
+              )}
+              {(codigo === "erro_sync" || codigo === "nao_publicado") && (
+                <a className="vf-btn vf-btn--ghost vf-btn--sm" href="fechamentos-api.html">Ver sincronização na Central de Vendas ↗</a>
+              )}
+            </div>
+          )}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
 function LinhaConta({
   cliente, competencia, conta, colunas, onLancar, atualizacao,
   aberto, onAlternar, estadoSemanas, carregarSemanasContas,
@@ -625,7 +704,13 @@ function LinhaConta({
 
   const metaConta = (
     <span className="vf-ph-conta__meta">
-      <StatusCompacto status={conta.status} />
+      <StatusCompacto
+        status={conta.status}
+        rotulo={manualSobreApi(conta) ? "Manual sobre API" : undefined}
+        titulo={manualSobreApi(conta)
+          ? `${conta.referenciaApi.rotulo || "API"}: FAT ${formatarMoeda(conta.referenciaApi.fat, { casas: 0 })} · o lançamento manual prevalece (modo manual)`
+          : undefined}
+      />
       {motivo && <span className="vf-ph-meta vf-ph-conta__motivo">· {motivo}</span>}
       {!semDado && conta.dadosAte && (
         <span
@@ -651,7 +736,9 @@ function LinhaConta({
       )}
     </span>
   );
-  const botaoLancar = conta.podeLancarManual && (
+  // Na linha só "Lançar dados" (sem dado) e "Editar dados" (manual); corrigir
+  // um dado da API por cima mora no detalhe da conta.
+  const botaoLancar = conta.podeLancarManual && (!conta.resumo || conta.fonte?.tipo === "manual") && (
     <BotaoLancar
       rotulo={`${conta.fonte?.tipo === "manual" ? "Editar dados" : "Lançar dados"} — ${conta.rotulo}`}
       editar={conta.fonte?.tipo === "manual"}
@@ -698,6 +785,7 @@ function LinhaConta({
               coluna={c}
               valor={semAdsPorConta ? null : conta.resumo?.[c.chave] ?? null}
               titulo={semAdsPorConta ? NOTA_ADS_POR_CONTA : undefined}
+              rotuloAusente={semAdsPorConta && c.chave === "ads" && conta.resumo ? "no cliente" : null}
               custos={conta.custos}
               manual={conta.fonte?.tipo === "manual"}
               subValor={c.sub && !semAdsPorConta ? conta.resumo?.[c.sub.chave] ?? null : null}
@@ -705,6 +793,7 @@ function LinhaConta({
           );
         }))}
       </tr>
+      {aberto && <LinhaDetalheConta cliente={cliente} conta={conta} colSpan={colSpan} onLancar={onLancar} />}
       {aberto && estadoSemanas?.carregando && <LinhasEsqueleto colSpan={colSpan} linhas={2} rotulo="Carregando semanas da conta" />}
       {aberto && estadoSemanas?.erro && !estadoSemanas.carregando && (
         <LinhaErro

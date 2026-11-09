@@ -186,12 +186,200 @@ const CAMPOS = [
   { chave: "gmvAds", rotulo: "GMV Ads (R$)" },
 ];
 
+// Ação do drawer, dita pela situação da conta (a mesma leitura da lista):
+// manual vigente → editar; dado da API → corrigir por cima (modo manual);
+// sem dado → lançar.
+export function acaoDoLancamento(conta) {
+  if (conta?.fonte?.tipo === "manual") return "Editar lançamento";
+  if (conta?.fonte?.tipo === "api" && conta?.resumo) return "Corrigir com lançamento manual";
+  return "Lançar dados";
+}
+
+// Referência automática da conta: a guardada sob o manual (`referenciaApi`,
+// modo manual) ou o próprio dado da API exibido. Só leitura do servidor.
+function referenciaAutomatica(conta) {
+  if (conta?.referenciaApi) return conta.referenciaApi;
+  if (conta?.fonte?.tipo === "api" && conta?.resumo) {
+    return { fat: conta.resumo.fat, lc: conta.resumo.lc, mc: conta.resumo.mc, dadosAte: conta.dadosAte, rotulo: conta.fonte.rotulo };
+  }
+  return null;
+}
+
+function diaMesCurto(iso) {
+  return iso ? formatarData(iso).slice(0, 5) : "—";
+}
+
+// "Dados até" de um clique: mês fechado → último dia; mês corrente → ontem
+// (quando ontem ainda está na competência). Os limites são os do campo.
+function sugestaoDadosAte(limites, hoje = hojeEmSaoPaulo()) {
+  if (limites.max < hoje) return { valor: limites.max, rotulo: `Mês inteiro (${diaMesCurto(limites.max)})` };
+  const d = new Date(`${hoje}T12:00:00Z`);
+  d.setUTCDate(d.getUTCDate() - 1);
+  const ontem = d.toISOString().slice(0, 10);
+  return ontem >= limites.min ? { valor: ontem, rotulo: `Até ontem (${diaMesCurto(ontem)})` } : null;
+}
+
+// O que está no Painel AGORA para a conta (antes de salvar).
+function NoPainel({ conta }) {
+  let texto;
+  if (conta.fonte?.tipo === "manual" && conta.resumo) {
+    texto = (
+      <>
+        <b>Manual</b> · FAT {formatarMoeda(conta.resumo.fat, { casas: 0 })}
+        {conta.manual?.atualizadoPor ? ` · por ${conta.manual.atualizadoPor}` : ""}
+        {conta.atualizadoEm ? ` em ${formatarDataHora(conta.atualizadoEm)}` : ""}
+        {conta.referenciaApi && <> · <b>sobre a {conta.referenciaApi.rotulo || "API"}</b> ({formatarMoeda(conta.referenciaApi.fat, { casas: 0 })})</>}
+      </>
+    );
+  } else if (conta.resumo) {
+    texto = (
+      <>
+        <b>{conta.fonte?.rotulo || "API"}</b> · FAT {formatarMoeda(conta.resumo.fat, { casas: 0 })}
+        {conta.resumo.mc != null ? ` · MC ${formatarPercentual(conta.resumo.mc)}` : ""}
+        {conta.dadosAte ? ` · dados até ${diaMesCurto(conta.dadosAte)}` : ""}
+      </>
+    );
+  } else {
+    texto = (
+      <>
+        <b>Sem dado</b> · {conta.status?.rotulo || "sem dado na competência"}
+        {conta.status?.motivo && conta.status.motivo !== conta.status.rotulo ? ` — ${conta.status.motivo}` : ""}
+      </>
+    );
+  }
+  return (
+    <p className="vf-ph-agora" data-testid="no-painel">
+      <span className="vf-ph-agora__k">No painel</span>
+      <span>{texto}</span>
+    </p>
+  );
+}
+
+// API × manual atual × novo → o que o Painel passa a usar. Só EXIBE valores
+// que já existem (servidor) ou que o próprio formulário deriva (MC = LC ÷ FAT,
+// LC = FAT × MC) — nenhum número novo do cliente.
+function ResultadoLancamento({ refAuto, manualAtual, novo, temNovo, modoManual }) {
+  const linhas = [
+    { rotulo: "FAT", chave: "fat", tipo: "brl" },
+    { rotulo: "LC", chave: "lc", tipo: "brl" },
+    { rotulo: "MC", chave: "mc", tipo: "pct" },
+  ];
+  const f = (v, tipo) => (v == null || Number.isNaN(v) ? "—" : tipo === "pct" ? formatarPercentual(v) : formatarMoeda(v, { casas: 0 }));
+  const usado = temNovo ? "novo" : manualAtual ? "manual" : refAuto ? "api" : null;
+  return (
+    <div className="vf-ph-resultado">
+      <table className="vf-ph-resultado__tabela" data-testid="resultado-lancamento">
+        <caption>Resultado nesta competência</caption>
+        <thead>
+          <tr>
+            <th scope="col" aria-label="Indicador" />
+            {refAuto && <th scope="col">{refAuto.rotulo || "API"}</th>}
+            {manualAtual && <th scope="col">Manual atual</th>}
+            <th scope="col">Novo</th>
+            <th scope="col">Usado no painel</th>
+          </tr>
+        </thead>
+        <tbody>
+          {linhas.map((l) => {
+            const api = refAuto ? refAuto[l.chave] : null;
+            const man = manualAtual ? manualAtual[l.chave] : null;
+            const nv = temNovo ? novo[l.chave] : null;
+            const valorUsado = usado === "novo" ? nv : usado === "manual" ? man : api;
+            return (
+              <tr key={l.chave}>
+                <th scope="row">{l.rotulo}</th>
+                {refAuto && <td className={usado && usado !== "api" ? "is-velho" : ""}>{f(api, l.tipo)}</td>}
+                {manualAtual && <td className={usado === "novo" ? "is-velho" : ""}>{f(man, l.tipo)}</td>}
+                <td>{f(nv, l.tipo)}</td>
+                <td className="is-usado">{f(valorUsado, l.tipo)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {refAuto && (temNovo || manualAtual) && modoManual && (
+        <p className="vf-ph-drawer__nota">
+          Override explícito: o painel usa o <strong>manual</strong>; a {refAuto.rotulo || "API"} ({formatarMoeda(refAuto.fat, { casas: 0 })}) fica como referência.
+        </p>
+      )}
+    </div>
+  );
+}
+
+// Cabeçalho da fila: ‹ Fila 2 de 6 ▬▬▬ 1 lançada ›
+function CabecalhoFila({ fila, desabilitado }) {
+  const pct = fila.total ? Math.round((fila.feitos / fila.total) * 100) : 0;
+  return (
+    <div className="vf-ph-fila" data-testid="fila-lancamento">
+      <button
+        type="button"
+        className="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon"
+        onClick={fila.onAnterior}
+        disabled={desabilitado || !fila.temAnterior}
+        aria-label="Anterior da fila"
+        title="Anterior (Alt+←)"
+      >
+        ‹
+      </button>
+      <span>Fila <b>{fila.posicao} de {fila.total}</b></span>
+      <div className="vf-progress vf-progress--sm" role="progressbar" aria-label="Contas lançadas na fila" aria-valuemin={0} aria-valuemax={fila.total} aria-valuenow={fila.feitos}>
+        <div className="vf-progress__bar" style={{ width: `${pct}%` }} />
+      </div>
+      <span>{fila.feitos} {fila.feitos === 1 ? "lançada" : "lançadas"}</span>
+      <button
+        type="button"
+        className="vf-btn vf-btn--ghost vf-btn--sm vf-btn--icon"
+        onClick={fila.onPular}
+        disabled={desabilitado || !fila.temProxima}
+        aria-label="Próxima da fila"
+        title="Próxima (Alt+→)"
+      >
+        ›
+      </button>
+    </div>
+  );
+}
+
+// Fim da fila: quantas foram lançadas e o que ficou pulado.
+export function FilaConcluida({ feitos, total, pulados, onVoltarPuladas, onFechar }) {
+  return (
+    <VFDrawer
+      title="Fila concluída"
+      onClose={onFechar}
+      className="vf-ph-drawer"
+      footer={
+        <>
+          {pulados > 0 && (
+            <button type="button" className="vf-btn vf-btn--sm" onClick={onVoltarPuladas}>Voltar às puladas</button>
+          )}
+          <VFDrawerClose>
+            <button type="button" className="vf-btn vf-btn--primary vf-btn--sm">Fechar</button>
+          </VFDrawerClose>
+        </>
+      }
+    >
+      <div className="vf-ph-fila-fim" data-testid="fila-concluida">
+        <p className="vf-ph-fila-fim__ok" aria-hidden="true">✓</p>
+        <p className="vf-ph-fila-fim__titulo">{feitos} de {total} {total === 1 ? "conta lançada" : "contas lançadas"}</p>
+        <p>
+          {pulados > 0
+            ? `${pulados} ${pulados === 1 ? "conta pulada continua pendente" : "contas puladas continuam pendentes"} no Merece atenção.`
+            : "Nenhuma pendência desta fila."}
+        </p>
+      </div>
+    </VFDrawer>
+  );
+}
+
 export function LancamentoManualDrawer({
   cliente, contaInicial, competencia, onSalvar, onRemover, onFechar,
   onCarregarLancamentos, onCarregarHistorico, onIrParaCompetencia, modoManual = false,
-  // V4 — fila de pendências ("Lançar pendentes"): { posicao, total, onProxima }.
+  // V4 — fila de pendências ("Lançar pendentes"):
+  //   { posicao, total, feitos, temAnterior, temProxima, onPular, onAnterior, onSalvou(proxima) }
   // Só muda a navegação: salvar continua indo para o mesmo endpoint.
   fila = null,
+  // "Voltar ao automático" vindo da lista: abre já pedindo a confirmação.
+  intencao = null,
 }) {
   const idForm = useId();
   const contas = useMemo(() => (cliente?.contas || []).filter((c) => c.podeLancarManual), [cliente]);
@@ -199,10 +387,12 @@ export function LancamentoManualDrawer({
   const conta = contas.find((c) => c.id === contaId) || null;
   const [campos, setCampos] = useState(() => valoresIniciais(conta));
   const alterado = JSON.stringify(campos) !== JSON.stringify(valoresIniciais(conta));
-  const temProxima = Boolean(fila && fila.posicao < fila.total);
   const [enviando, setEnviando] = useState(false);
   const [erroServidor, setErroServidor] = useState(null);
-  const [confirmarRemocao, setConfirmarRemocao] = useState(false);
+  const [confirmarRemocao, setConfirmarRemocao] = useState(intencao === "remover");
+  // Fechar com alterações não salvas pede confirmação (Esc, ×, clique fora, Cancelar).
+  const [descartar, setDescartar] = useState(false);
+  const liberadoRef = useRef(false);
   const primeiroCampoRef = useRef(null);
 
   function trocarConta(id) {
@@ -230,10 +420,14 @@ export function LancamentoManualDrawer({
   const acos = !invalido && ads !== null && gmv > 0 ? ads / gmv : null;
   const tacos = !invalido && ads !== null && fat > 0 ? ads / fat : null;
   const temManual = Boolean(conta?.manual);
-  const ref = conta?.referenciaApi || (conta?.fonte?.tipo === "api" ? { fat: conta.resumo?.fat, dadosAte: conta.dadosAte, rotulo: conta.fonte.rotulo } : null);
+  const refAuto = referenciaAutomatica(conta);
+  const ref = refAuto ? { fat: refAuto.fat, dadosAte: refAuto.dadosAte, rotulo: refAuto.rotulo } : null;
+  const manualVigente = conta?.fonte?.tipo === "manual" && conta?.resumo ? conta.resumo : null;
   const limites = useMemo(() => limitesDataReferencia(competencia), [competencia]);
+  const sugestaoData = useMemo(() => sugestaoDadosAte(limites), [limites]);
   const dataRef = campos.dataReferencia;
   const dataRefInvalida = Boolean(dataRef) && (dataRef < limites.min || dataRef > limites.max);
+  const podeSalvar = Boolean(conta) && !invalido && !vazio && !inconsistente && !dataRefInvalida && !enviando;
   const carregarLancamentos = useMemo(
     () => (onCarregarLancamentos && conta ? () => onCarregarLancamentos(cliente.id, conta.id) : null),
     [onCarregarLancamentos, cliente, conta]
@@ -242,10 +436,42 @@ export function LancamentoManualDrawer({
     () => (onCarregarHistorico && conta ? () => onCarregarHistorico(cliente.id, conta.id, competencia) : null),
     [onCarregarHistorico, cliente, conta, competencia]
   );
+  const acao = acaoDoLancamento(conta);
+  // Remover um manual que está SOBRE a API devolve a conta ao automático.
+  const voltaParaApi = Boolean(conta?.referenciaApi) && conta?.fonte?.tipo === "manual";
+  const rotuloRemover = confirmarRemocao
+    ? voltaParaApi
+      ? `Confirmar: voltar para ${conta.referenciaApi.rotulo || "API"} (${formatarMoeda(conta.referenciaApi.fat, { casas: 0 })})`
+      : conta?.fonte?.tipo === "manual" ? "Confirmar: deixar sem dado" : "Confirmar remoção"
+    : voltaParaApi ? "Voltar ao automático" : "Remover lançamento";
 
-  async function salvar(evento) {
-    evento.preventDefault();
-    if (!conta || invalido || vazio || inconsistente || dataRefInvalida) return;
+  // Alt+← / Alt+→ navegam na fila.
+  useEffect(() => {
+    if (!fila) return undefined;
+    const aoTeclar = (e) => {
+      if (!e.altKey || enviando) return;
+      if (e.key === "ArrowLeft" && fila.temAnterior) { e.preventDefault(); fila.onAnterior(); }
+      if (e.key === "ArrowRight" && fila.temProxima) { e.preventDefault(); fila.onPular(); }
+    };
+    document.addEventListener("keydown", aoTeclar);
+    return () => document.removeEventListener("keydown", aoTeclar);
+  }, [fila, enviando]);
+
+  function partirDaApi() {
+    if (!refAuto) return;
+    setCampos((prev) => ({
+      ...prev,
+      faturamento: paraCampo(refAuto.fat),
+      // LC + FAT bastam: a MC sai deles (a MC da API pode estar sobre a base
+      // com custo, e repetir os três dispararia a checagem de consistência).
+      lucroContribuicao: paraCampo(refAuto.lc),
+      margemPct: refAuto.lc == null ? paraCampo(refAuto.mc, 100) : "",
+      dataReferencia: prev.dataReferencia || (refAuto.dadosAte && refAuto.dadosAte >= limites.min && refAuto.dadosAte <= limites.max ? refAuto.dadosAte : ""),
+    }));
+  }
+
+  async function gravar(irParaProxima) {
+    if (!podeSalvar) return;
     setEnviando(true);
     setErroServidor(null);
     try {
@@ -258,13 +484,18 @@ export function LancamentoManualDrawer({
         dataReferencia: campos.dataReferencia || null,
         observacao: campos.observacao.trim() || null,
       });
-      if (temProxima) fila.onProxima();
+      if (fila) fila.onSalvou(irParaProxima);
       else onFechar();
     } catch (err) {
       setErroServidor(err?.message || "Não foi possível salvar o lançamento.");
     } finally {
       setEnviando(false);
     }
+  }
+
+  function salvar(evento) {
+    evento.preventDefault();
+    gravar(Boolean(fila));
   }
 
   async function remover() {
@@ -276,6 +507,7 @@ export function LancamentoManualDrawer({
     setErroServidor(null);
     try {
       await onRemover(cliente.id, conta.id);
+      liberadoRef.current = true;
       onFechar();
     } catch (err) {
       setErroServidor(err?.message || "Não foi possível remover o lançamento.");
@@ -284,79 +516,141 @@ export function LancamentoManualDrawer({
     }
   }
 
+  function podeFechar() {
+    if (liberadoRef.current || !alterado || enviando) return true;
+    setDescartar(true);
+    return false;
+  }
+
+  const novo = {
+    fat,
+    lc: lc ?? lcDerivado,
+    mc: mc ?? mcDerivada,
+  };
+  const temNovo = !vazio && !invalido;
+  const rotuloCompetenciaCurta = rotularCompetenciaCurta(competencia);
+
   // Casca, foco inicial no 1º campo, ESC, clique fora e devolução do foco vêm
   // do VFDrawer. O <form> fica no corpo; o botão de salvar, no rodapé, aponta
   // para ele por `form=` (HTML padrão), então Enter num campo também salva.
   return (
     <VFDrawer
-      title="Lançar dados manuais"
+      title={(
+        <>
+          <span className="vf-ph-drawer__eyebrow">{acao} · {rotuloCompetenciaCurta}</span>
+          <span className="vf-ph-drawer__conta">{conta?.rotulo || cliente?.nome}</span>
+        </>
+      )}
+      subtitle={[cliente?.nome, cliente?.squad?.nome ? `Squad ${cliente.squad.nome}` : null, conta?.marketplaceRotulo].filter(Boolean).join(" · ")}
       onClose={onFechar}
+      podeFechar={podeFechar}
       className="vf-ph-drawer"
       initialFocusRef={primeiroCampoRef}
-      footer={
+      footer={descartar ? (
+        <>
+          <span className="vf-ph-drawer__pergunta">Descartar o que foi digitado?</span>
+          <button type="button" className="vf-btn vf-btn--sm" onClick={() => setDescartar(false)}>Continuar editando</button>
+          <VFDrawerClose>
+            <button type="button" className="vf-btn vf-btn--danger vf-btn--sm" onClick={() => { liberadoRef.current = true; }}>Descartar</button>
+          </VFDrawerClose>
+        </>
+      ) : (
         <>
           {temManual && (
-            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm vf-ph-drawer__remover" onClick={remover} disabled={enviando}>
-              {confirmarRemocao ? "Confirmar remoção" : "Remover lançamento"}
+            <button
+              type="button"
+              className={`vf-btn ${confirmarRemocao ? "vf-btn--danger" : "vf-btn--ghost"} vf-btn--sm vf-ph-drawer__remover`}
+              onClick={remover}
+              disabled={enviando}
+              title="Remove o lançamento desta competência"
+            >
+              {rotuloRemover}
             </button>
           )}
           {alterado && <span className="vf-ph-drawer__dirty" role="status">● Alterações não salvas</span>}
-          {temProxima && (
-            <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={fila.onProxima} disabled={enviando}>
-              Pular
-            </button>
+          {fila ? (
+            <>
+              <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={fila.onPular} disabled={enviando}>
+                Pular
+              </button>
+              <button type="button" className="vf-btn vf-btn--sm" onClick={() => gravar(false)} disabled={!podeSalvar}>
+                Salvar
+              </button>
+              <button type="submit" form={idForm} className="vf-btn vf-btn--primary vf-btn--sm" disabled={!podeSalvar}>
+                {enviando ? "Salvando…" : "Salvar e próxima"}
+              </button>
+            </>
+          ) : (
+            <>
+              <VFDrawerClose>
+                <button type="button" className="vf-btn vf-btn--sm">Cancelar</button>
+              </VFDrawerClose>
+              <button type="submit" form={idForm} className="vf-btn vf-btn--primary vf-btn--sm" disabled={!podeSalvar}>
+                {enviando ? "Salvando…" : manualVigente ? "Salvar alteração" : "Salvar lançamento"}
+              </button>
+            </>
           )}
-          <VFDrawerClose>
-            <button type="button" className="vf-btn vf-btn--sm">Cancelar</button>
-          </VFDrawerClose>
-          <button
-            type="submit"
-            form={idForm}
-            className="vf-btn vf-btn--primary vf-btn--sm"
-            disabled={!conta || invalido || vazio || inconsistente || dataRefInvalida || enviando}
-          >
-            {enviando ? "Salvando…" : temProxima ? "Salvar e próxima" : "Salvar lançamento"}
-          </button>
         </>
-      }
+      )}
     >
-      <form id={idForm} className="vf-ph-drawer__body" onSubmit={salvar} noValidate>
-        {fila && (
-          <p className="vf-ph-drawer__fila" data-testid="fila-lancamento">
-            Pendência {fila.posicao} de {fila.total} · contas sem integração automática e sem valores no mês
-          </p>
-        )}
-        <dl className="vf-ph-drawer__escopo">
-          <div><dt>Cliente</dt><dd>{cliente?.nome}</dd></div>
-          <div><dt>Competência</dt><dd>{rotularCompetencia(competencia)}</dd></div>
-        </dl>
+      <form
+        id={idForm}
+        className="vf-ph-drawer__body"
+        onSubmit={salvar}
+        onKeyDown={(e) => {
+          // Ctrl/⌘+Enter salva de qualquer campo (inclusive da observação).
+          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            gravar(Boolean(fila));
+          }
+        }}
+        noValidate
+      >
+        {fila && <CabecalhoFila fila={fila} desabilitado={enviando} />}
 
         {contas.length === 0 ? (
           <p className="vf-ph-drawer__nota">Todas as contas deste cliente já têm dado automático nesta competência.</p>
         ) : (
           <>
-            <VFField label="Conta/operação" hint={conta?.status?.motivo}>
-              <VFSelect
-                size="sm"
-                value={contaId ?? ""}
-                onChange={(e) => trocarConta(Number(e.target.value))}
-                options={contas.map((c) => ({ value: c.id, label: c.rotulo }))}
-              />
-            </VFField>
+            {conta && <NoPainel conta={conta} />}
+
+            {contas.length > 1 && (
+              <VFField label="Conta/operação" hint={conta?.status?.motivo}>
+                <VFSelect
+                  size="sm"
+                  value={contaId ?? ""}
+                  onChange={(e) => trocarConta(Number(e.target.value))}
+                  options={contas.map((c) => ({ value: c.id, label: c.rotulo }))}
+                />
+              </VFField>
+            )}
+
+            {refAuto && !manualVigente && (
+              <div className="vf-ph-drawer__rapido">
+                <button type="button" className="vf-chip" onClick={partirDaApi}>Partir dos valores da {refAuto.rotulo || "API"}</button>
+              </div>
+            )}
 
             <div className="vf-ph-drawer__grid">
-              {CAMPOS.map((c, i) => (
-                <VFField key={c.chave} label={c.rotulo} hint={c.dica} error={Number.isNaN(lerNumeroBR(campos[c.chave]))}>
-                  <VFInput
-                    ref={i === 0 ? primeiroCampoRef : undefined}
-                    size="sm"
-                    inputMode="decimal"
-                    autoComplete="off"
-                    value={campos[c.chave]}
-                    onChange={(e) => setCampos((prev) => ({ ...prev, [c.chave]: e.target.value }))}
-                  />
-                </VFField>
-              ))}
+              {CAMPOS.map((c, i) => {
+                const daApi = refAuto && { faturamento: refAuto.fat, lucroContribuicao: refAuto.lc, margemPct: refAuto.mc }[c.chave];
+                const placeholder = daApi == null
+                  ? undefined
+                  : `${refAuto.rotulo || "API"}: ${c.chave === "margemPct" ? formatarPercentual(daApi) : formatarMoeda(daApi, { casas: 0 })}`;
+                return (
+                  <VFField key={c.chave} label={c.rotulo} hint={c.dica} error={Number.isNaN(lerNumeroBR(campos[c.chave]))}>
+                    <VFInput
+                      ref={i === 0 ? primeiroCampoRef : undefined}
+                      size="sm"
+                      inputMode="decimal"
+                      autoComplete="off"
+                      placeholder={placeholder}
+                      value={campos[c.chave]}
+                      onChange={(e) => setCampos((prev) => ({ ...prev, [c.chave]: e.target.value }))}
+                    />
+                  </VFField>
+                );
+              })}
             </div>
 
             <VFField
@@ -377,6 +671,17 @@ export function LancamentoManualDrawer({
                 onChange={(e) => setCampos((prev) => ({ ...prev, dataReferencia: e.target.value }))}
               />
             </VFField>
+            {sugestaoData && campos.dataReferencia !== sugestaoData.valor && (
+              <div className="vf-ph-drawer__rapido">
+                <button
+                  type="button"
+                  className="vf-chip"
+                  onClick={() => setCampos((prev) => ({ ...prev, dataReferencia: sugestaoData.valor }))}
+                >
+                  {sugestaoData.rotulo}
+                </button>
+              </div>
+            )}
 
             <p className="vf-ph-drawer__previa" aria-live="polite">
               {mcDerivada !== null && <span>MC calculada: {formatarPercentual(mcDerivada)}</span>}
@@ -404,6 +709,16 @@ export function LancamentoManualDrawer({
             )}
             {erroServidor && <p className="vf-field__error" role="alert">{erroServidor}</p>}
 
+            {(refAuto || manualVigente || temNovo) && (
+              <ResultadoLancamento
+                refAuto={refAuto}
+                manualAtual={manualVigente}
+                novo={novo}
+                temNovo={temNovo}
+                modoManual={modoManual}
+              />
+            )}
+
             {ref && ref.fat != null && (
               <p className="vf-ph-drawer__nota" data-testid="referencia-api">
                 Referência da {ref.rotulo || "API"}: FAT {formatarMoeda(ref.fat, { casas: 2 })}
@@ -415,8 +730,9 @@ export function LancamentoManualDrawer({
               {modoManual ? (
                 <>
                   O dado fica marcado como <strong>MANUAL</strong> e <strong>prevalece sobre a API</strong> enquanto o
-                  Painel estiver em modo manual — nenhuma rotina automática o substitui. Cada competência é um registro
-                  próprio: salvar este mês não altera os outros.
+                  Painel estiver em modo manual — nenhuma rotina automática o substitui.
+                  {refAuto ? " O valor da API continua guardado — remover o lançamento volta ao automático." : ""} Cada
+                  competência é um registro próprio: salvar este mês não altera os outros.
                 </>
               ) : (
                 <>
@@ -437,6 +753,10 @@ export function LancamentoManualDrawer({
                 onAbrir={onIrParaCompetencia ? (comp) => onIrParaCompetencia(cliente.id, conta.id, comp) : null}
               />
             )}
+            <p className="vf-ph-drawer__kbd">
+              <kbd>Ctrl</kbd>+<kbd>Enter</kbd> {fila ? "salva e vai para a próxima · " : "salva · "}
+              {fila && <><kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> navega · </>}<kbd>Esc</kbd> fecha
+            </p>
           </>
         )}
       </form>

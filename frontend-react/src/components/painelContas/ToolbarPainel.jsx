@@ -39,6 +39,7 @@ import { formatarNumero } from "../../utils/numbers.js";
 import { rotularCompetencia, competenciaAnterior } from "../../utils/dates.js";
 import { MenuColunas } from "./MenuColunas.jsx";
 import { VISTAS } from "./colunas.js";
+import { FILTROS_LOCAIS_VAZIOS, contarFiltrosLocais } from "./filtrosLocais.js";
 
 const JANELA_COMPETENCIAS = 24;
 
@@ -147,11 +148,15 @@ function usePopover() {
   return { aberto, setAberto, ref, gatilhoRef };
 }
 
-function MenuFiltros({ status, onStatus, mostrarLegado, onMostrarLegado, legadoOcultos }) {
+function MenuFiltros({ status, onStatus, mostrarLegado, onMostrarLegado, legadoOcultos, filtrosLocais, onFiltrosLocais }) {
   const { aberto, setAberto, ref, gatilhoRef } = usePopover();
   const id = useId();
   const secundario = status === "manual" || status === "automatico";
-  const ativos = (secundario ? 1 : 0) + (mostrarLegado ? 1 : 0);
+  const ativos = (secundario ? 1 : 0) + (mostrarLegado ? 1 : 0) + contarFiltrosLocais(filtrosLocais);
+  // Rascunho: os campos numéricos só valem ao "Aplicar".
+  const [rascunho, setRascunho] = useState(filtrosLocais);
+  useEffect(() => { if (aberto) setRascunho(filtrosLocais); }, [aberto, filtrosLocais]);
+  const mudar = (chave) => (e) => setRascunho((r) => ({ ...r, [chave]: e.target.value }));
   return (
     <div className="vf-ph-menu" ref={ref}>
       <button
@@ -166,21 +171,123 @@ function MenuFiltros({ status, onStatus, mostrarLegado, onMostrarLegado, legadoO
         Filtros{ativos ? ` · ${ativos}` : ""} <span aria-hidden="true">▾</span>
       </button>
       {aberto && (
-        <div id={id} className="vf-popover vf-ph-menu__painel" role="group" aria-label="Mais filtros">
-          <label className="vf-ph-menu__campo">
-            <span>Status / fonte</span>
-            <select
-              className="vf-select vf-select--sm vf-ph-filtro"
-              aria-label="Filtrar por status"
-              value={status}
-              onChange={(e) => onStatus(e.target.value)}
-            >
-              {OPCOES_STATUS.map((o) => <option key={o.valor} value={o.valor}>{o.rotulo}</option>)}
-            </select>
-          </label>
-          <label className="vf-check vf-ph-legado">
-            <input type="checkbox" checked={mostrarLegado} onChange={(e) => onMostrarLegado(e.target.checked)} />
-            <span>Mostrar legado{legadoOcultos > 0 && !mostrarLegado ? ` (${formatarNumero(legadoOcultos)} ocultos)` : ""}</span>
+        <div id={id} className="vf-popover vf-ph-menu__painel vf-ph-menu__painel--filtros" role="group" aria-label="Mais filtros">
+          <p className="vf-popover__title">Mais filtros</p>
+          <form
+            className="vf-ph-menu__form"
+            onSubmit={(e) => { e.preventDefault(); onFiltrosLocais(rascunho); setAberto(false); }}
+          >
+            <label className="vf-ph-menu__campo vf-ph-menu__campo--cheio">
+              <span>Status / origem do dado</span>
+              <select
+                className="vf-select vf-select--sm vf-ph-filtro"
+                aria-label="Filtrar por status"
+                value={status}
+                onChange={(e) => onStatus(e.target.value)}
+              >
+                {OPCOES_STATUS.map((o) => <option key={o.valor} value={o.valor}>{o.rotulo}</option>)}
+              </select>
+            </label>
+            <label className="vf-ph-menu__campo">
+              <span>MC abaixo de (%)</span>
+              <input className="vf-input vf-input--sm" inputMode="decimal" placeholder="ex.: 8" value={rascunho.mcMax} onChange={mudar("mcMax")} />
+            </label>
+            <label className="vf-ph-menu__campo">
+              <span>TACoS acima de (%)</span>
+              <input className="vf-input vf-input--sm" inputMode="decimal" placeholder="ex.: 6" value={rascunho.tacosMin} onChange={mudar("tacosMin")} />
+            </label>
+            <label className="vf-ph-menu__campo">
+              <span>Ads</span>
+              <select className="vf-select vf-select--sm" value={rascunho.ads} onChange={mudar("ads")}>
+                <option value="todos">Com ou sem</option>
+                <option value="com">Com Ads</option>
+                <option value="sem">Sem Ads</option>
+              </select>
+            </label>
+            <label className="vf-ph-menu__campo">
+              <span>Contas no cliente</span>
+              <select className="vf-select vf-select--sm" value={rascunho.contasMin} onChange={mudar("contasMin")}>
+                <option value="">Qualquer</option>
+                <option value="2">2 ou mais</option>
+                <option value="4">4 ou mais</option>
+                <option value="8">8 ou mais</option>
+              </select>
+            </label>
+            <label className="vf-check vf-ph-legado vf-ph-menu__campo--cheio">
+              <input type="checkbox" checked={mostrarLegado} onChange={(e) => onMostrarLegado(e.target.checked)} />
+              <span>Mostrar legado{legadoOcultos > 0 && !mostrarLegado ? ` (${formatarNumero(legadoOcultos)} ocultos)` : ""}</span>
+            </label>
+            <p className="vf-ph-menu__nota vf-ph-menu__campo--cheio">
+              Status e legado filtram no servidor. MC, TACoS, Ads e nº de contas recortam a lista já carregada — sem endpoint novo.
+            </p>
+            <div className="vf-ph-menu__acoes vf-ph-menu__campo--cheio">
+              <button
+                type="button"
+                className="vf-btn vf-btn--ghost vf-btn--sm"
+                onClick={() => { setRascunho(FILTROS_LOCAIS_VAZIOS); onFiltrosLocais(FILTROS_LOCAIS_VAZIOS); }}
+              >
+                Limpar
+              </button>
+              <button type="submit" className="vf-btn vf-btn--primary vf-btn--sm">Aplicar</button>
+            </div>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export const DENSIDADES = [
+  { valor: "confortavel", rotulo: "Confortável" },
+  { valor: "compacta", rotulo: "Compacta" },
+];
+
+function MenuExibir({ densidade, onDensidade, agrupar, onAgrupar, agruparDisponivel, motivoAgrupar }) {
+  const { aberto, setAberto, ref, gatilhoRef } = usePopover();
+  const id = useId();
+  return (
+    <div className="vf-ph-menu" ref={ref}>
+      <button
+        ref={gatilhoRef}
+        type="button"
+        className="vf-btn vf-btn--sm vf-ph-menu__gatilho"
+        aria-expanded={aberto}
+        aria-haspopup="true"
+        aria-controls={id}
+        onClick={() => setAberto((v) => !v)}
+      >
+        Exibir <span aria-hidden="true">▾</span>
+      </button>
+      {aberto && (
+        <div id={id} className="vf-popover vf-ph-menu__painel vf-ph-menu__painel--exibir" role="group" aria-label="Exibir">
+          <p className="vf-popover__title">Exibir</p>
+          <div className="vf-ph-menu__linha">
+            <span>Densidade<small>Compacta esconde as linhas de apoio (LC, TACoS)</small></span>
+            <span className="vf-segmented" role="group" aria-label="Densidade">
+              {DENSIDADES.map((d) => (
+                <button
+                  key={d.valor}
+                  type="button"
+                  className={`vf-segmented__item${densidade === d.valor ? " is-active" : ""}`}
+                  aria-pressed={densidade === d.valor}
+                  onClick={() => onDensidade(d.valor)}
+                >
+                  {d.rotulo}
+                </button>
+              ))}
+            </span>
+          </div>
+          <label className="vf-ph-menu__linha">
+            <span>Agrupar por squad<small>{motivoAgrupar}</small></span>
+            <span className="vf-switch">
+              <input
+                type="checkbox"
+                aria-label="Agrupar por squad"
+                checked={agrupar && agruparDisponivel}
+                disabled={!agruparDisponivel}
+                onChange={(e) => onAgrupar(e.target.checked)}
+              />
+            </span>
           </label>
         </div>
       )}
@@ -196,6 +303,9 @@ export function ToolbarLista({
   resumoCarteira, atualizando,
   vista, onVista, grupos, onAlternarGrupo,
   temExpandido, onRecolherTudo, pendentes = 0, onAbrirPendentes,
+  filtrosLocais = FILTROS_LOCAIS_VAZIOS, onFiltrosLocais = () => {},
+  densidade = "confortavel", onDensidade = () => {},
+  agrupar = true, onAgrupar = () => {}, agruparDisponivel = false, motivoAgrupar = "",
 }) {
   const r = resumoCarteira;
   const buscaRef = useRef(null);
@@ -260,6 +370,8 @@ export function ToolbarLista({
         mostrarLegado={mostrarLegado}
         onMostrarLegado={onMostrarLegado}
         legadoOcultos={r?.legadoOcultos || 0}
+        filtrosLocais={filtrosLocais}
+        onFiltrosLocais={onFiltrosLocais}
       />
 
       {temFiltroAtivo && (
@@ -288,6 +400,14 @@ export function ToolbarLista({
           ))}
         </span>
         {vista === "detalhada" && <MenuColunas grupos={grupos} onAlternar={onAlternarGrupo} />}
+        <MenuExibir
+          densidade={densidade}
+          onDensidade={onDensidade}
+          agrupar={agrupar}
+          onAgrupar={onAgrupar}
+          agruparDisponivel={agruparDisponivel}
+          motivoAgrupar={motivoAgrupar}
+        />
       </span>
     </div>
   );

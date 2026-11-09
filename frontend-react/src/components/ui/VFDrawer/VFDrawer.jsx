@@ -39,6 +39,8 @@ const PRAZO_FECHAR = 400;
  * @param {string} [props.subtitleClassName]
  * @param {string} [props.bodyClassName]
  * @param {string} [props.footerClassName]
+ * @param {() => boolean} [props.podeFechar] Opcional: devolver `false` cancela o fechamento
+ *   (Esc, ×, clique fora, VFDrawerClose) — ex.: confirmar descarte de alterações.
  */
 export function VFDrawer({
   title,
@@ -55,6 +57,7 @@ export function VFDrawer({
   subtitleClassName,
   bodyClassName,
   footerClassName,
+  podeFechar,
   ...rest
 }) {
   const reduzido = usePrefersReducedMotion();
@@ -98,7 +101,7 @@ export function VFDrawer({
   }
 
   return (
-    <Dialog.Root open onOpenChange={(aberto) => !aberto && pedirFechar()}>
+    <Dialog.Root open onOpenChange={(aberto) => { if (!aberto && (!podeFechar || podeFechar() !== false)) pedirFechar(); }}>
       <Dialog.Portal>
         <Dialog.Overlay asChild>
           <div className={cx("vf-drawer-backdrop", visivel && "is-open")} />

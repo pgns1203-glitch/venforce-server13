@@ -1064,3 +1064,66 @@
   .vf-ph-att { grid-template-columns: 1fr; }
   .vf-ph-att__item:nth-child(2) { padding-top: 6px; border-top: 1px solid var(--vf-border); }
 }
+
+/* ── V4 · fidelidade ao B Realistic (2ª rodada) ─────────────────────────── */
+/* Filtros ▾ (avançados) e Exibir ▾ */
+.vf-ph-menu__painel--filtros { width: 360px; }
+.vf-ph-menu__painel--exibir { width: 340px; }
+.vf-ph-menu__form { display: grid; grid-template-columns: 1fr 1fr; gap: var(--vf-sp-3); }
+.vf-ph-menu__campo--cheio { grid-column: 1 / -1; }
+.vf-ph-menu__nota { margin: 0; font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); line-height: var(--vf-lh-normal); }
+.vf-ph-menu__acoes { display: flex; justify-content: space-between; gap: var(--vf-sp-2); padding-top: var(--vf-sp-3); border-top: 1px solid var(--vf-border); }
+.vf-ph-menu__linha { display: flex; align-items: center; justify-content: space-between; gap: var(--vf-sp-3); padding: 8px 0; border-top: 1px solid var(--vf-border); font-size: var(--vf-fs-sm); color: var(--vf-text); }
+.vf-ph-menu__linha:first-of-type { border-top: 0; padding-top: 0; }
+.vf-ph-menu__linha small { display: block; font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); }
+
+/* Densidade compacta: some a linha de apoio (LC, TACoS) e a barra de share */
+.vf-ph-lista.is-compacta .vf-ph-sub,
+.vf-ph-lista.is-compacta .vf-ph-share { display: none; }
+.vf-ph-lista.is-compacta .vf-ph-row > td { padding-top: 6px; padding-bottom: 6px; }
+
+/* Ads da conta: "no cliente" */
+.vf-ph-valor--nota { font-size: var(--vf-fs-xs); font-weight: var(--vf-fw-regular); color: var(--vf-text-placeholder); white-space: nowrap; }
+
+/* Detalhe da conta (abre com as semanas) */
+.vf-ph-row--detalhe-conta > td { padding: 0 !important; background: var(--vf-surface-2); }
+.vf-ph-det { margin: 0 var(--vf-sp-3) var(--vf-sp-3) 34px; padding: var(--vf-sp-3) var(--vf-sp-4); border: 1px solid var(--vf-border); border-radius: var(--vf-radius-sm); background: var(--vf-surface); }
+.vf-ph-det__grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--vf-sp-2) var(--vf-sp-4); margin: 0; }
+.vf-ph-det__grid div { min-width: 0; }
+.vf-ph-det__grid dt { font-size: var(--vf-fs-2xs); font-weight: var(--vf-fw-semibold); letter-spacing: var(--vf-ls-caps); text-transform: uppercase; color: var(--vf-text-muted); }
+.vf-ph-det__grid dd { margin: 2px 0 0; font-size: var(--vf-fs-sm); color: var(--vf-text); }
+.vf-ph-det__acoes { display: flex; align-items: center; gap: var(--vf-sp-2); flex-wrap: wrap; margin-top: var(--vf-sp-3); }
+.vf-ph-det__nota { margin: var(--vf-sp-2) 0 0; font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
+
+/* Drawer de lançamento */
+.vf-ph-drawer__eyebrow { display: block; margin: 0 0 2px; font-family: var(--vf-font-sans); font-size: var(--vf-fs-2xs); font-weight: var(--vf-fw-semibold); letter-spacing: var(--vf-ls-caps); text-transform: uppercase; color: var(--vf-text-muted); }
+.vf-ph-drawer__conta { display: block; }
+.vf-ph-fila { display: flex; align-items: center; gap: 6px; margin: calc(-1 * var(--vf-sp-2)) 0 0; padding: 6px var(--vf-sp-2); border: 1px solid var(--vf-border); border-radius: var(--vf-radius-sm); background: var(--vf-surface-2); font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
+.vf-ph-fila b { color: var(--vf-text); }
+.vf-ph-fila > span { white-space: nowrap; }
+.vf-ph-fila .vf-progress { flex: 1 1 auto; margin: 0 var(--vf-sp-2); }
+.vf-ph-agora { display: flex; gap: var(--vf-sp-3); align-items: baseline; margin: 0; padding: 10px var(--vf-sp-3); border: 1px solid var(--vf-border); border-radius: var(--vf-radius-sm); background: var(--vf-surface-2); font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
+.vf-ph-agora b { color: var(--vf-text); font-weight: var(--vf-fw-semibold); }
+.vf-ph-agora__k { flex: 0 0 auto; font-size: var(--vf-fs-2xs); font-weight: var(--vf-fw-semibold); letter-spacing: var(--vf-ls-caps); text-transform: uppercase; color: var(--vf-text-muted); }
+.vf-ph-drawer__rapido { display: flex; gap: 6px; flex-wrap: wrap; margin-top: calc(-1 * var(--vf-sp-2)); }
+.vf-ph-drawer__rapido .vf-chip { height: 24px; font-size: var(--vf-fs-xs); }
+.vf-ph-resultado__tabela { width: 100%; border-collapse: collapse; font-size: var(--vf-fs-xs); font-variant-numeric: tabular-nums; }
+.vf-ph-resultado__tabela caption { text-align: left; margin-bottom: 6px; font-size: var(--vf-fs-2xs); font-weight: var(--vf-fw-semibold); letter-spacing: var(--vf-ls-caps); text-transform: uppercase; color: var(--vf-text-muted); }
+.vf-ph-resultado__tabela th, .vf-ph-resultado__tabela td { padding: 5px 6px; border-bottom: 1px solid var(--vf-border); text-align: right; white-space: nowrap; }
+.vf-ph-resultado__tabela th:first-child { text-align: left; }
+.vf-ph-resultado__tabela thead th { font-size: 10px; font-weight: var(--vf-fw-semibold); letter-spacing: var(--vf-ls-caps); text-transform: uppercase; color: var(--vf-text-muted); }
+.vf-ph-resultado__tabela .is-usado { font-weight: var(--vf-fw-bold); color: var(--vf-text); background: var(--vf-primary-soft); }
+.vf-ph-resultado__tabela .is-velho { color: var(--vf-text-muted); text-decoration: line-through; text-decoration-color: var(--vf-border-hover); }
+.vf-ph-drawer__pergunta { margin-right: auto; font-size: var(--vf-fs-xs); color: var(--vf-text-secondary); }
+.vf-ph-drawer__kbd { margin: 0; font-size: var(--vf-fs-2xs); color: var(--vf-text-muted); }
+.vf-ph-drawer__kbd kbd { font-family: var(--vf-font-mono); font-size: 10px; border: 1px solid var(--vf-border-strong); border-radius: 3px; padding: 0 4px; background: var(--vf-surface-2); }
+.vf-ph-fila-fim { text-align: center; padding: var(--vf-sp-8) var(--vf-sp-4); }
+.vf-ph-fila-fim p { margin: 0 0 var(--vf-sp-2); color: var(--vf-text-secondary); }
+.vf-ph-fila-fim__ok { font-size: 32px; color: var(--vf-success); }
+.vf-ph-fila-fim__titulo { font-family: var(--vf-font-display); font-weight: var(--vf-fw-bold); font-size: var(--vf-fs-lg); color: var(--vf-text) !important; }
+.vf-ph-toolbar__acoes .vf-ph-menu__painel { left: auto; right: 0; }
+
+/* ⚠ da conta (avisos do servidor) não é a faixa de aviso da página: as duas
+   usam .vf-ph-aviso; dentro da tabela vale só o ícone. */
+.vf-ph-table .vf-ph-aviso,
+.vf-ph-wrap .vf-ph-aviso { display: inline; padding: 0; border: 0; background: none; color: var(--vf-warning-strong); font-size: inherit; }

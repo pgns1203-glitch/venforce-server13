@@ -24,8 +24,9 @@ import {
 import { SecoesMarketplace } from "../components/painelContas/SecoesMarketplace.jsx";
 import { useGruposDeColunas } from "../components/painelContas/MenuColunas.jsx";
 import { TabelaHierarquica, useExpansao } from "../components/painelContas/TabelaHierarquica.jsx";
-import { LancamentoManualDrawer } from "../components/painelContas/LancamentoManualDrawer.jsx";
+import { LancamentoManualDrawer, FilaConcluida } from "../components/painelContas/LancamentoManualDrawer.jsx";
 import { ResumoCarteira, MereceAtencao, lerRecolhido, gravarRecolhido } from "../components/painelContas/VisaoCarteira.jsx";
+import { FILTROS_LOCAIS_VAZIOS, aplicarFiltrosLocais, contarFiltrosLocais } from "../components/painelContas/filtrosLocais.js";
 import { regrasAtencao, filaDeLancamento, contaAguardaLancamento } from "../components/painelContas/atencao.js";
 import { colunasVisiveis, VISTAS, VISTA_PADRAO } from "../components/painelContas/colunas.js";
 import { rotularCompetencia, rotularCompetenciaCurta } from "../utils/dates.js";
@@ -235,6 +236,19 @@ function SeletorSquad({ squadId, onSquad, squadsDisponiveis, totalClientes }) {
 }
 
 const CHAVE_VISTA = "vf:painel-contas:vista";
+const CHAVE_DENSIDADE = "vf:painel-contas:densidade";
+const CHAVE_AGRUPAR = "vf:painel-contas:agrupar";
+function lerPreferencia(chave, padrao, validos) {
+  try {
+    const v = window.localStorage.getItem(chave);
+    return validos.includes(v) ? v : padrao;
+  } catch {
+    return padrao;
+  }
+}
+function gravarPreferencia(chave, valor) {
+  try { window.localStorage.setItem(chave, valor); } catch { /* preferência visual */ }
+}
 function lerVista() {
   try {
     const v = window.localStorage.getItem(CHAVE_VISTA);
@@ -269,46 +283,113 @@ export default function PainelContasPage() {
     setVistaEstado(v);
     try { window.localStorage.setItem(CHAVE_VISTA, v); } catch { /* preferência visual */ }
   }, []);
+  const [densidade, setDensidadeEstado] = useState(() => lerPreferencia(CHAVE_DENSIDADE, "confortavel", ["confortavel", "compacta"]));
+  const setDensidade = useCallback((v) => { setDensidadeEstado(v); gravarPreferencia(CHAVE_DENSIDADE, v); }, []);
+  const [agrupar, setAgruparEstado] = useState(() => lerPreferencia(CHAVE_AGRUPAR, "1", ["0", "1"]) === "1");
+  const setAgrupar = useCallback((v) => { setAgruparEstado(v); gravarPreferencia(CHAVE_AGRUPAR, v ? "1" : "0"); }, []);
+  // Filtros avançados locais (MC/TACoS/Ads/nº de contas) sobre a lista carregada.
+  const [filtrosLocais, setFiltrosLocais] = useState(FILTROS_LOCAIS_VAZIOS);
+  const nFiltrosLocais = contarFiltrosLocais(filtrosLocais);
+  const clientesVisiveis = useMemo(() => aplicarFiltrosLocais(clientes || [], filtrosLocais), [clientes, filtrosLocais]);
+  const limparTudo = useCallback(() => { limparFiltros(); setFiltrosLocais(FILTROS_LOCAIS_VAZIOS); }, [limparFiltros]);
   const [resumoRecolhido, setResumoRecolhido] = useState(lerRecolhido);
   const alternarResumo = useCallback(() => {
     setResumoRecolhido((v) => { gravarRecolhido(!v); return !v; });
   }, []);
 
-  // Lançamento: { cliente, conta } — com `fila` quando veio de "Lançar pendentes".
+  // Lançamento: { cliente, conta, intencao? } — com `fila` quando veio de "Lançar pendentes".
   const [lancamento, setLancamento] = useState(null);
-  const [fila, setFila] = useState(null); // { itens: [{clienteId, contaId}], pos }
+  // Fila: { itens: [{clienteId, contaId}], pos, feitos: [contaId], pulados: [contaId], fim }
+  const [fila, setFila] = useState(null);
   const clientesRef = useRef(clientes);
   clientesRef.current = clientes;
 
-  const abrirLancamento = useCallback((cliente, conta) => {
+  const abrirLancamento = useCallback((cliente, conta, intencao = null) => {
     setFila(null);
-    setLancamento({ cliente, conta });
+    setLancamento({ cliente, conta, intencao });
   }, []);
   const fecharLancamento = useCallback(() => { setLancamento(null); setFila(null); }, []);
 
-  // Abre o item `pos` da fila resolvendo SEMPRE contra a lista mais nova (a
-  // lista é relida depois de cada salvar); pula o que deixou de estar pendente.
-  const abrirDaFila = useCallback((itens, inicio) => {
-    const lista = clientesRef.current || [];
-    for (let pos = inicio; pos < itens.length; pos++) {
-      const { clienteId, contaId } = itens[pos];
-      const cliente = lista.find((c) => c.id === clienteId);
-      const conta = cliente?.contas?.find((c) => c.id === contaId);
-      if (cliente && conta && contaAguardaLancamento(conta)) {
-        setFila({ itens, pos });
-        setLancamento({ cliente, conta });
-        return true;
-      }
-    }
-    setFila(null);
-    setLancamento(null);
-    return false;
+  // Depois de salvar/remover a lista é relida: o drawer aberto passa a ler a
+  // conta NOVA (mesmo id) — "Salvar" sem sair da fila mostra o que gravou.
+  useEffect(() => {
+    if (!clientes) return;
+    setLancamento((atual) => {
+      if (!atual) return atual;
+      const cliente = clientes.find((c) => c.id === atual.cliente.id);
+      if (!cliente || cliente === atual.cliente) return atual;
+      const conta = cliente.contas?.find((c) => c.id === atual.conta?.id);
+      return conta ? { ...atual, cliente, conta } : atual;
+    });
+  }, [clientes]);
+
+  // Item da fila ainda pendente na lista MAIS NOVA (a lista é relida depois de
+  // cada salvar); o que deixou de estar pendente é pulado sem perguntar.
+  const resolverItem = useCallback((item) => {
+    const cliente = (clientesRef.current || []).find((c) => c.id === item.clienteId);
+    const conta = cliente?.contas?.find((c) => c.id === item.contaId);
+    return cliente && conta && contaAguardaLancamento(conta) ? { cliente, conta } : null;
   }, []);
 
-  const iniciarFila = useCallback(() => {
-    const itens = filaDeLancamento(clientesRef.current || []);
-    if (itens.length) abrirDaFila(itens, 0);
-  }, [abrirDaFila]);
+  // Próximo (dir = 1, dá a volta) ou anterior (dir = -1) navegável da fila.
+  const vizinhoNaFila = useCallback((f, dir) => {
+    const n = f.itens.length;
+    for (let passo = 1; passo < n; passo++) {
+      const pos = dir > 0 ? (f.pos + passo) % n : f.pos - passo;
+      if (pos < 0) break;
+      const item = f.itens[pos];
+      if (f.feitos.includes(item.contaId)) continue;
+      if (dir > 0 && f.pulados.includes(item.contaId)) continue;
+      const alvo = resolverItem(item);
+      if (alvo) return { pos, ...alvo };
+    }
+    return null;
+  }, [resolverItem]);
+
+  const irNaFila = useCallback((f, dir) => {
+    const v = vizinhoNaFila(f, dir);
+    if (v) {
+      setFila({ ...f, pos: v.pos, fim: false });
+      setLancamento({ cliente: v.cliente, conta: v.conta });
+    } else if (dir > 0) {
+      setFila({ ...f, fim: true });
+      setLancamento(null);
+    }
+  }, [vizinhoNaFila]);
+
+  const iniciarFila = useCallback((itens = filaDeLancamento(clientesRef.current || []), base = {}) => {
+    const f = { itens, pos: -1, feitos: [], pulados: [], fim: false, ...base };
+    for (let pos = 0; pos < itens.length; pos++) {
+      if (f.feitos.includes(itens[pos].contaId)) continue;
+      const alvo = resolverItem(itens[pos]);
+      if (alvo) {
+        setFila({ ...f, pos, fim: false });
+        setLancamento(alvo);
+        return;
+      }
+    }
+    if (base.feitos) setFila({ ...f, fim: true });
+  }, [resolverItem]);
+
+  const filaAtual = fila && !fila.fim && fila.pos >= 0 ? fila.itens[fila.pos] : null;
+  const propsFila = filaAtual && {
+    posicao: fila.pos + 1,
+    total: fila.itens.length,
+    feitos: fila.feitos.length,
+    temAnterior: Boolean(vizinhoNaFila(fila, -1)),
+    temProxima: Boolean(vizinhoNaFila(fila, 1)),
+    onAnterior: () => irNaFila(fila, -1),
+    onPular: () => irNaFila({ ...fila, pulados: [...new Set([...fila.pulados, filaAtual.contaId])] }, 1),
+    onSalvou: (proxima) => {
+      const f = {
+        ...fila,
+        feitos: [...new Set([...fila.feitos, filaAtual.contaId])],
+        pulados: fila.pulados.filter((id) => id !== filaAtual.contaId),
+      };
+      if (proxima) irNaFila(f, 1);
+      else setFila(f);
+    },
+  };
 
   // Confirmação explícita: o drawer fecha ao salvar, então a tela diz O QUE
   // foi gravado (conta, competência, FAT) com o valor devolvido pelo servidor.
@@ -409,6 +490,7 @@ export default function PainelContasPage() {
     visao?.codigo ? visao.rotulo : "consolidado",
   ].join(" · ");
   const essencial = vista === "essencial";
+  const variosSquads = new Set((clientes || []).map((c) => c.squad?.id ?? null)).size > 1;
 
   return (
     <div className="vf-page-shell vf-ph-shell" data-vf-density="compact">
@@ -515,19 +597,20 @@ export default function PainelContasPage() {
                     onAcao={agirNaRegra}
                     onCliente={irParaCliente}
                     pendentesLancamento={pendentesLancamento}
-                    onResolver={iniciarFila}
+                    onResolver={() => iniciarFila()}
                     podeLancar={podeLancar}
                   />
                 )}
               </section>
             )}
 
-            <section className={`vf-ph-lista${essencial ? " is-essencial" : ""}`} aria-label="Carteira" ref={listaRef}>
+            <section className={`vf-ph-lista${essencial ? " is-essencial" : ""}${densidade === "compacta" ? " is-compacta" : ""}`} aria-label="Carteira" ref={listaRef}>
               <div className="vf-ph-lista__preso" ref={presoRef}>
                 <div className="vf-ph-lista__head">
                   <h2 className="vf-ph-lista__titulo">Clientes</h2>
                   <span className="vf-ph-lista__meta">
-                    {clientes.length} {clientes.length === 1 ? "cliente" : "clientes"}
+                    {nFiltrosLocais > 0 ? `${clientesVisiveis.length} de ${clientes.length}` : clientes.length}{" "}
+                    {clientes.length === 1 ? "cliente" : "clientes"}
                     {status !== "todos" && ` · ${(OPCOES_STATUS.find((o) => o.valor === status)?.rotulo || status).toLowerCase()}`}
                   </span>
                 </div>
@@ -535,7 +618,12 @@ export default function PainelContasPage() {
                   busca={busca} onBusca={setBusca}
                   status={status} onStatus={setStatus}
                   mostrarLegado={mostrarLegado} onMostrarLegado={setMostrarLegado}
-                  temFiltroAtivo={temFiltroAtivo} onLimpar={limparFiltros}
+                  temFiltroAtivo={temFiltroAtivo || nFiltrosLocais > 0} onLimpar={limparTudo}
+                  filtrosLocais={filtrosLocais} onFiltrosLocais={setFiltrosLocais}
+                  densidade={densidade} onDensidade={setDensidade}
+                  agrupar={agrupar} onAgrupar={setAgrupar}
+                  agruparDisponivel={variosSquads && squadId == null}
+                  motivoAgrupar={!variosSquads ? "Sua carteira tem um squad só" : squadId != null ? "Desligado com um squad selecionado" : "Separa a lista por squad"}
                   resumoCarteira={resumoCarteira} atualizando={atualizando}
                   vista={vista} onVista={setVista} grupos={grupos} onAlternarGrupo={alternarGrupo}
                   temExpandido={expansao.temExpandido} onRecolherTudo={expansao.recolherTudo}
@@ -573,9 +661,19 @@ export default function PainelContasPage() {
                 </div>
               )}
 
-              {temClientes && (
+              {temClientes && clientesVisiveis.length === 0 && (
+                <div className="vf-ph-aviso" role="status" data-testid="filtros-locais-vazio">
+                  <p className="vf-ph-aviso__titulo">Nenhum cliente com os filtros atuais</p>
+                  <p className="vf-ph-aviso__texto">
+                    Revise os filtros avançados.{" "}
+                    <button type="button" className="vf-btn vf-btn--ghost vf-btn--sm" onClick={() => setFiltrosLocais(FILTROS_LOCAIS_VAZIOS)}>Limpar filtros avançados</button>
+                  </p>
+                </div>
+              )}
+
+              {temClientes && clientesVisiveis.length > 0 && (
                 <TabelaHierarquica
-                  clientes={clientes}
+                  clientes={clientesVisiveis}
                   competencia={competencia}
                   colunas={colunas}
                   grupos={grupos}
@@ -597,7 +695,7 @@ export default function PainelContasPage() {
                   onDispensarAtualizacao={dispensarAtualizacao}
                   mostrarHistoricoCliente={!marketplace || marketplace === "meli"}
                   vista={vista}
-                  agruparPorSquad={essencial && squadId == null && new Set(clientes.map((c) => c.squad?.id ?? null)).size > 1}
+                  agruparPorSquad={agrupar && squadId == null && variosSquads}
                   destaqueId={destaqueId}
                 />
               )}
@@ -633,11 +731,17 @@ export default function PainelContasPage() {
           onCarregarLancamentos={lancamentosDaConta}
           onCarregarHistorico={historicoLancamento}
           onIrParaCompetencia={irParaCompetencia}
-          fila={fila && {
-            posicao: fila.pos + 1,
-            total: fila.itens.length,
-            onProxima: () => abrirDaFila(fila.itens, fila.pos + 1),
-          }}
+          intencao={lancamento.intencao || null}
+          fila={propsFila}
+        />
+      )}
+      {fila?.fim && (
+        <FilaConcluida
+          feitos={fila.feitos.length}
+          total={fila.itens.length}
+          pulados={fila.pulados.length}
+          onFechar={fecharLancamento}
+          onVoltarPuladas={() => iniciarFila(fila.itens, { feitos: fila.feitos })}
         />
       )}
     </div>

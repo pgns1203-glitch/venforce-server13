@@ -33,6 +33,21 @@ async function validarTitularidadeSeller(cliente, conta, queryable = pool) {
   );
   if (contas.rows.some((c) => Number(c.cliente_id) !== Number(cliente.id)) ||
       grants.rows.some((g) => Number(g.cliente_id) !== Number(cliente.id))) {
+    // Allowlist explícita: nunca serializar Conta/Grant completo ou credenciais.
+    const conflictingAccounts = contas.rows.filter(c => Number(c.cliente_id) !== Number(cliente.id));
+    const conflictingGrants = grants.rows.filter(g => Number(g.cliente_id) !== Number(cliente.id));
+    console.warn(JSON.stringify({
+      event: "ml_seller_ownership_ambiguous",
+      code: "SELLER_OWNERSHIP_AMBIGUOUS",
+      seller: String(seller),
+      cliente_id: cliente.id,
+      cliente_conta_id: conta.id,
+      conflicting_cliente_ids: [...new Set([...conflictingAccounts, ...conflictingGrants].map(row => row.cliente_id))],
+      conflicts: [
+        ...conflictingAccounts.map(row => ({ source: "cliente_contas", id: row.id, cliente_id: row.cliente_id })),
+        ...conflictingGrants.map(row => ({ source: "ml_tokens", id: row.id, cliente_id: row.cliente_id, cliente_conta_id: row.cliente_conta_id })),
+      ],
+    }));
     throw erroContexto("SELLER_OWNERSHIP_AMBIGUOUS", "Seller vinculado a mais de um Cliente; revise a titularidade.", 409,
       { clienteId: cliente.id, clienteContaId: conta.id });
   }

@@ -38,48 +38,96 @@
 }
 
 /* ------------------------------------------------------------
- * 2. Barra global de contexto
- * Controla o conjunto de dados carregado (cliente + período) e
- * concentra estado do motor + ações administrativas. Sticky só no
- * desktop, logo abaixo da topbar de áreas (44px, ver style.css).
+ * 2. Topo da página e caixa de filtros
+ * Título à esquerda; à direita as ações e, embaixo delas, o estado
+ * do conjunto carregado. O período fica numa caixa só, logo abaixo.
  * ------------------------------------------------------------ */
+.vf-page-fechamentos-api .vf-cv-topo {
+  gap: var(--vf-sp-4) var(--vf-sp-6);
+}
+
+.vf-page-fechamentos-api .vf-cv-topo .vf-page-header__description {
+  max-width: 60ch;
+  text-wrap: pretty;
+}
+
+.vf-page-fechamentos-api .vf-cv-topo__lado {
+  display: grid;
+  gap: var(--vf-sp-2);
+  justify-items: end;
+  flex: 0 1 560px;
+  min-width: 0;
+}
+
+.vf-page-fechamentos-api .vf-cv-topo__acoes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-fechamentos-api .vf-cv-topo__estado {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--vf-sp-1) var(--vf-sp-4);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-estado__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.vf-page-fechamentos-api .vf-cv-estado__item b {
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+}
+
+.vf-page-fechamentos-api .vf-cv-estado__rotulo {
+  color: var(--vf-text-muted);
+}
+
 .vf-page-fechamentos-api .vf-fapi-context {
   display: flex;
   flex-direction: column;
   gap: var(--vf-sp-3);
-  padding: var(--vf-sp-3) var(--vf-sp-4);
+  padding: var(--vf-sp-3);
   background: var(--vf-surface);
   border: 1px solid var(--vf-border);
   border-radius: var(--vf-radius);
 }
 
-@media (min-width: 1025px) {
-  .vf-page-fechamentos-api .vf-fapi-context {
-    position: sticky;
-    top: 52px; /* topbar de áreas (44px) + respiro */
-    z-index: 30; /* acima do thead sticky das tabelas (z=2/3) */
-  }
-}
-
-.vf-page-fechamentos-api .vf-fapi-context__row {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: var(--vf-sp-4);
-  flex-wrap: wrap;
-}
-
+.vf-page-fechamentos-api .vf-fapi-context__row,
 .vf-page-fechamentos-api .vf-fapi-context__filters {
   display: flex;
-  align-items: flex-end;
-  gap: var(--vf-sp-3);
+  align-items: center;
+  gap: var(--vf-sp-3) var(--vf-sp-4);
   flex-wrap: wrap;
   min-width: 0;
 }
 
-.vf-page-fechamentos-api .vf-fapi-context__filters .vf-select {
+.vf-page-fechamentos-api .vf-cv-periodo {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-fechamentos-api .vf-cv-periodo .vf-select {
   width: auto;
-  min-width: 200px;
+  min-width: 190px;
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-fechamentos-api .vf-cv-periodo__intervalo {
+  font-size: var(--vf-fs-sm);
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
 }
 
 .vf-page-fechamentos-api .vf-fapi-context__filters .vf-input[type="date"] {
@@ -96,46 +144,6 @@
 
 .vf-page-fechamentos-api .vf-fapi-context__range-sep {
   font-size: var(--vf-fs-xs);
-  color: var(--vf-text-muted);
-}
-
-.vf-page-fechamentos-api .vf-fapi-context__actions {
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
-  flex: 0 0 auto;
-}
-
-/* Linha de status: motor, confiança, origem, geração, intervalo, base */
-.vf-page-fechamentos-api .vf-fapi-context__status {
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-2) var(--vf-sp-4);
-  flex-wrap: wrap;
-  padding-top: var(--vf-sp-2);
-  border-top: 1px solid var(--vf-border);
-  font-size: var(--vf-fs-xs);
-  color: var(--vf-text-secondary);
-}
-
-.vf-page-fechamentos-api .vf-fapi-context__status-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  white-space: nowrap;
-}
-
-.vf-page-fechamentos-api .vf-fapi-context__status-item b {
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text);
-}
-
-.vf-page-fechamentos-api .vf-fapi-context__status-label {
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-semibold);
-  letter-spacing: var(--vf-ls-caps);
-  text-transform: uppercase;
   color: var(--vf-text-muted);
 }
 
@@ -164,7 +172,7 @@
 
 .vf-page-fechamentos-api .vf-fapi-import-panel__hint {
   margin: 0;
-  font-size: var(--vf-fs-2xs);
+  font-size: var(--vf-fs-xs);
   color: var(--vf-text-muted);
 }
 
@@ -181,15 +189,30 @@
   border-radius: 0;
   padding: 0;
   margin-bottom: 0;
+  gap: var(--vf-sp-4);
 }
 
 .vf-page-fechamentos-api .vf-tab {
   flex: 0 0 auto;
   border-radius: 0;
+  padding-inline: var(--vf-sp-1);
+  font-size: var(--vf-fs-md);
+  font-weight: var(--vf-fw-semibold);
 }
 
 .vf-page-fechamentos-api .vf-tab:hover {
   background: transparent;
+}
+
+/* Contagem da aba: número discreto ao lado do nome, sem pílula. */
+.vf-page-fechamentos-api .vf-tab .vf-badge {
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  background: transparent;
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-text-muted);
 }
 
 .vf-page-fechamentos-api .vf-fapi-tabpanel {
@@ -199,232 +222,565 @@
   min-width: 0;
 }
 
+.vf-page-fechamentos-api #fapi-fech-host:empty,
+.vf-page-fechamentos-api #fapi-nota-host:empty {
+  display: none;
+}
+
 /* ------------------------------------------------------------
- * 4. Visão geral — KPIs, métricas secundárias, recortes
+ * 4. Peças compartilhadas da tela
+ * Controle segmentado, bloco, textos de apoio, lista rótulo→valor.
  * ------------------------------------------------------------ */
-.vf-page-fechamentos-api .vf-fapi-overview {
+
+/* Controle segmentado: recortes, modo da lista. O ligado fica na cor da marca. */
+.vf-page-fechamentos-api .vf-cv-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  max-width: 100%;
+  padding: 2px;
+  background: var(--vf-bg);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius-sm);
+}
+
+/* Muitos recortes: rolam de lado em vez de quebrar em várias linhas. */
+.vf-page-fechamentos-api .vf-cv-seg--rola {
+  flex-wrap: nowrap;
+  align-self: flex-start;
+  overflow-x: auto;
+}
+
+.vf-page-fechamentos-api .vf-cv-seg__item {
+  flex: none;
+  min-height: 30px;
+  padding: 0 var(--vf-sp-3);
+  border: 0;
+  border-radius: calc(var(--vf-radius-sm) - 2px);
+  background: transparent;
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color var(--vf-duration-fast) var(--vf-ease),
+    color var(--vf-duration-fast) var(--vf-ease);
+}
+
+.vf-page-fechamentos-api .vf-cv-seg__item small {
+  font-size: inherit;
+  font-weight: var(--vf-fw-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.vf-page-fechamentos-api .vf-cv-seg__item:hover {
+  color: var(--vf-text);
+  background: var(--vf-surface);
+}
+
+.vf-page-fechamentos-api .vf-cv-seg__item[aria-pressed="true"] {
+  color: var(--vf-text-on-primary);
+  background: var(--vf-primary);
+}
+
+/* Bloco: superfície com título, usada por gráfico, composição, listas e tabelas. */
+.vf-page-fechamentos-api .vf-cv-bloco {
   display: flex;
   flex-direction: column;
   gap: var(--vf-sp-4);
-}
-
-/* Faixa compacta de métricas secundárias (uma linha, sem cards grandes) */
-.vf-page-fechamentos-api .vf-fapi-secondary-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: var(--vf-sp-2) var(--vf-sp-4);
-  padding: var(--vf-sp-3) var(--vf-sp-4);
+  min-width: 0;
+  padding: var(--vf-sp-5);
   background: var(--vf-surface);
   border: 1px solid var(--vf-border);
   border-radius: var(--vf-radius);
 }
 
-.vf-page-fechamentos-api .vf-fapi-secondary-metrics__item {
+.vf-page-fechamentos-api .vf-cv-bloco__topo {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2) var(--vf-sp-5);
 }
 
-.vf-page-fechamentos-api .vf-fapi-secondary-metrics__label {
-  font-size: var(--vf-fs-2xs);
-  font-weight: var(--vf-fw-semibold);
-  letter-spacing: var(--vf-ls-caps);
-  text-transform: uppercase;
-  color: var(--vf-text-muted);
-  white-space: nowrap;
-}
-
-.vf-page-fechamentos-api .vf-fapi-secondary-metrics__value {
+.vf-page-fechamentos-api .vf-cv-bloco__titulo {
+  margin: 0;
   font-family: var(--vf-font-display);
-  font-variant-numeric: tabular-nums;
-  font-size: var(--vf-fs-sm);
+  font-size: var(--vf-fs-lg);
   font-weight: var(--vf-fw-semibold);
+  letter-spacing: var(--vf-ls-tight);
   color: var(--vf-text);
-  white-space: nowrap;
 }
 
-.vf-page-fechamentos-api .vf-fapi-secondary-metrics__value.is-muted {
-  color: var(--vf-text-muted);
-  font-weight: var(--vf-fw-medium);
+.vf-page-fechamentos-api .vf-cv-bloco__titulo small {
+  margin-left: var(--vf-sp-2);
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-regular);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+  color: var(--vf-text-secondary);
 }
 
-/* Recortes rápidos do fechamento (afetam só este bloco) */
-.vf-page-fechamentos-api .vf-fapi-fech-chips {
+.vf-page-fechamentos-api .vf-cv-bloco__acoes {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-2) var(--vf-sp-3);
+}
+
+.vf-page-fechamentos-api .vf-cv-ordenar {
+  display: inline-flex;
   align-items: center;
   gap: var(--vf-sp-2);
-  flex-wrap: wrap;
-}
-
-/* ------------------------------------------------------------
- * 5. Composição × Qualidade (lado a lado no desktop)
- * ------------------------------------------------------------ */
-.vf-page-fechamentos-api .vf-fapi-composition-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: var(--vf-sp-4);
-  align-items: start;
-}
-
-@media (min-width: 1024px) {
-  .vf-page-fechamentos-api .vf-fapi-composition-grid {
-    grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr);
-  }
-}
-
-.vf-page-fechamentos-api .vf-fapi-composition .vf-table td.vf-fapi-obs {
-  max-width: 220px;
-  color: var(--vf-text-muted);
-  font-size: var(--vf-fs-2xs);
-}
-
-.vf-page-fechamentos-api .vf-fapi-composition .vf-table td.vf-fapi-fonte {
-  font-family: var(--vf-font-mono);
-  font-size: var(--vf-fs-2xs);
-  color: var(--vf-text-muted);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
   white-space: nowrap;
 }
 
-.vf-page-fechamentos-api .vf-fapi-composition .vf-table td.vf-fapi-op {
-  width: 28px;
-  text-align: center;
+.vf-page-fechamentos-api .vf-cv-ordenar .vf-select {
+  width: auto;
+}
+
+.vf-page-fechamentos-api .vf-cv-sobre {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-normal);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-rodape {
+  margin: 0;
+  font-size: var(--vf-fs-xs);
+  line-height: var(--vf-lh-normal);
   color: var(--vf-text-muted);
-  font-weight: var(--vf-fw-bold);
 }
 
-/* Linha de total (Resultado parcial) */
-.vf-page-fechamentos-api .vf-table tr.vf-fapi-total-row td {
-  background: var(--vf-primary-soft);
-  border-top: 2px solid var(--vf-primary-border);
+.vf-page-fechamentos-api .vf-cv-rodape b,
+.vf-page-fechamentos-api .vf-cv-rodape strong {
   font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
 }
 
-.vf-page-fechamentos-api .vf-table tr.vf-fapi-total-row:hover td {
-  background: var(--vf-primary-soft);
+/* Aviso em linha (receita bloqueada, pós-venda não verificado). */
+.vf-page-fechamentos-api .vf-cv-nota {
+  margin: 0;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  font-size: var(--vf-fs-sm);
+  line-height: var(--vf-lh-normal);
+  color: var(--vf-text-secondary);
+  background: var(--vf-surface);
+  border-radius: var(--vf-radius-sm);
 }
 
-/* Qualidade do fechamento — lista compacta, sem oito cards */
-.vf-page-fechamentos-api .vf-fapi-quality__list {
-  display: flex;
-  flex-direction: column;
+.vf-page-fechamentos-api .vf-cv-nota--atencao {
+  color: var(--vf-warning-strong);
+  background: var(--vf-warning-bg);
 }
 
-.vf-page-fechamentos-api .vf-fapi-quality__row {
+.vf-page-fechamentos-api .vf-cv-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: var(--vf-fw-semibold);
+  color: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* Lista rótulo → valor (Qualidade do fechamento, Conciliação Mercado Pago). */
+.vf-page-fechamentos-api .vf-cv-kv {
+  display: grid;
+  margin: 0;
+}
+
+.vf-page-fechamentos-api .vf-cv-kv__linha {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
   gap: var(--vf-sp-3);
-  padding: var(--vf-sp-1) 0;
+  padding: var(--vf-sp-2) 0;
+  font-size: var(--vf-fs-sm);
+  border-bottom: 1px solid var(--vf-border);
 }
 
-.vf-page-fechamentos-api .vf-fapi-quality__row + .vf-fapi-quality__row {
-  border-top: 1px solid var(--vf-border);
+.vf-page-fechamentos-api .vf-cv-kv__linha:last-child {
+  border-bottom: 0;
 }
 
-.vf-page-fechamentos-api .vf-fapi-quality__label {
+.vf-page-fechamentos-api .vf-cv-kv dt,
+.vf-page-fechamentos-api .vf-cv-contador dt {
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-kv dd,
+.vf-page-fechamentos-api .vf-cv-contador dd {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text);
+  text-align: right;
+}
+
+.vf-page-fechamentos-api .vf-cv-kv dd.is-danger,
+.vf-page-fechamentos-api .vf-cv-contador dd.is-danger,
+.vf-page-fechamentos-api .vf-cv-cartao dd.is-danger { color: var(--vf-danger-strong); }
+.vf-page-fechamentos-api .vf-cv-kv dd.is-warning,
+.vf-page-fechamentos-api .vf-cv-contador dd.is-warning { color: var(--vf-warning-strong); }
+.vf-page-fechamentos-api .vf-cv-kv dd.is-success,
+.vf-page-fechamentos-api .vf-cv-contador dd.is-success { color: var(--vf-success-strong); }
+
+/* ------------------------------------------------------------
+ * 5. Visão geral — recorte, faixa de resumo e contadores
+ * ------------------------------------------------------------ */
+.vf-page-fechamentos-api .vf-cv-resumo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-4);
+  min-width: 0;
+}
+
+.vf-page-fechamentos-api .vf-cv-resumo__topo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--vf-sp-2) var(--vf-sp-4);
+}
+
+.vf-page-fechamentos-api .vf-cv-resumo__conf {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
   font-size: var(--vf-fs-xs);
   color: var(--vf-text-secondary);
 }
 
-.vf-page-fechamentos-api .vf-fapi-quality__value {
+/* Faixa de quatro números colados; o resultado é o único bloco na cor da marca. */
+.vf-page-fechamentos-api .vf-cv-cartoes {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  background: var(--vf-border);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-fechamentos-api .vf-cv-cartao {
+  display: grid;
+  gap: var(--vf-sp-1);
+  align-content: start;
+  min-width: 0;
+  padding: var(--vf-sp-4) var(--vf-sp-5);
+  background: var(--vf-surface);
+}
+
+.vf-page-fechamentos-api .vf-cv-cartao dt {
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-semibold);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-cartao dd {
+  margin: 0;
+  font-family: var(--vf-font-display);
+  font-size: var(--vf-fs-2xl);
+  font-weight: var(--vf-fw-bold);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: var(--vf-ls-tighter);
+  line-height: var(--vf-lh-tight);
+  color: var(--vf-text);
+  overflow-wrap: anywhere;
+}
+
+.vf-page-fechamentos-api .vf-cv-cartao small {
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-cartao--painel {
+  background: var(--vf-primary-active);
+}
+
+.vf-page-fechamentos-api .vf-cv-cartao--painel dt,
+.vf-page-fechamentos-api .vf-cv-cartao--painel small {
+  color: var(--vf-primary-border);
+}
+
+.vf-page-fechamentos-api .vf-cv-cartao--painel dd {
+  color: var(--vf-warning-border);
+}
+
+/* Faixa fina de contadores: o que ficou fora da venda boa. */
+.vf-page-fechamentos-api .vf-cv-contadores {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  background: var(--vf-border);
+  border: 1px solid var(--vf-border);
+  border-radius: var(--vf-radius);
+}
+
+.vf-page-fechamentos-api .vf-cv-contador {
+  flex: 1 1 180px;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+  padding: var(--vf-sp-2) var(--vf-sp-4);
+  font-size: var(--vf-fs-sm);
+  background: var(--vf-surface);
+}
+
+/* ------------------------------------------------------------
+ * 6. Visão geral — blocos lado a lado
+ * Gráfico largo ao lado da divisão do dinheiro; Qualidade ao lado
+ * da Conciliação Mercado Pago. Host vazio some e o vizinho ocupa a
+ * linha toda; os dois vazios, a linha inteira some.
+ * ------------------------------------------------------------ */
+.vf-page-fechamentos-api .vf-cv-duo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--vf-sp-4);
+  min-width: 0;
+}
+
+.vf-page-fechamentos-api .vf-cv-duo > * {
+  min-width: 0;
+}
+
+.vf-page-fechamentos-api .vf-cv-duo > :empty,
+.vf-page-fechamentos-api .vf-cv-duo:not(:has(> :not(:empty))) {
+  display: none;
+}
+
+.vf-page-fechamentos-api .vf-cv-duo__largo { flex: 1.7 1 480px; }
+.vf-page-fechamentos-api .vf-cv-duo__estreito { flex: 1 1 320px; }
+.vf-page-fechamentos-api .vf-cv-duo__metade { flex: 1 1 360px; }
+
+/* Para onde vai o dinheiro: rótulo e valor na primeira linha, trilho embaixo. */
+.vf-page-fechamentos-api .vf-cv-linhas {
+  display: grid;
+  gap: var(--vf-sp-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.vf-page-fechamentos-api .vf-cv-linha {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: var(--vf-sp-1) var(--vf-sp-3);
+  font-size: var(--vf-fs-sm);
+  color: var(--vf-text);
+}
+
+.vf-page-fechamentos-api .vf-cv-linha__rotulo small {
+  margin-left: var(--vf-sp-1);
+  font-family: var(--vf-font-mono);
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-muted);
+}
+
+.vf-page-fechamentos-api .vf-cv-linha__valor {
   font-family: var(--vf-font-display);
   font-variant-numeric: tabular-nums;
-  font-size: var(--vf-fs-sm);
-  font-weight: var(--vf-fw-semibold);
-  color: var(--vf-text);
+  text-align: right;
   white-space: nowrap;
 }
 
-.vf-page-fechamentos-api .vf-fapi-quality__value.is-danger { color: var(--vf-danger-strong); }
-.vf-page-fechamentos-api .vf-fapi-quality__value.is-warning { color: var(--vf-warning-strong); }
-.vf-page-fechamentos-api .vf-fapi-quality__value.is-success { color: var(--vf-success-strong); }
+.vf-page-fechamentos-api .vf-cv-linha__valor small {
+  font-size: var(--vf-fs-xs);
+  font-weight: var(--vf-fw-regular);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-trilho {
+  grid-column: 1 / -1;
+  height: 6px;
+  overflow: hidden;
+  background: var(--vf-bg-2);
+  border-radius: var(--vf-radius-pill);
+}
+
+.vf-page-fechamentos-api .vf-cv-trilho i {
+  display: block;
+  height: 100%;
+  background: var(--vf-neutral);
+  border-radius: var(--vf-radius-pill);
+}
+
+/* A receita abre a conta e o resultado fecha; as deduções ficam no meio, em cinza. */
+.vf-page-fechamentos-api .vf-cv-linha--inicio,
+.vf-page-fechamentos-api .vf-cv-linha--fim {
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-fechamentos-api .vf-cv-linha--inicio .vf-cv-trilho i,
+.vf-page-fechamentos-api .vf-cv-chave {
+  background: color-mix(in srgb, var(--vf-primary) 55%, var(--vf-surface));
+}
+
+.vf-page-fechamentos-api .vf-cv-linha--fim {
+  padding-top: var(--vf-sp-3);
+  border-top: 1px solid var(--vf-border);
+}
+
+.vf-page-fechamentos-api .vf-cv-linha--fim .vf-cv-trilho i {
+  background: var(--vf-primary);
+}
+
+.vf-page-fechamentos-api .vf-cv-linha--residuo {
+  color: var(--vf-warning-strong);
+}
 
 /* ------------------------------------------------------------
- * 6. Vendas por dia — régua horizontal + tabela diária
+ * 7. Faturamento por dia — barras + tabela diária recolhida
  * ------------------------------------------------------------ */
-.vf-page-fechamentos-api .vf-fapi-days__strip-wrap {
+.vf-page-fechamentos-api .vf-cv-legenda {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--vf-sp-2) var(--vf-sp-4);
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-legenda span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--vf-sp-2);
+}
+
+.vf-page-fechamentos-api .vf-cv-chave {
+  width: 12px;
+  height: 12px;
+  border-radius: calc(var(--vf-radius-sm) / 2);
+}
+
+.vf-page-fechamentos-api .vf-cv-grafico {
+  display: flex;
+  gap: var(--vf-sp-2);
+  min-width: 0;
+  padding-top: var(--vf-sp-2);
+}
+
+/* Eixo: topo, metade e zero, alinhados às três linhas da grade (200px). */
+.vf-page-fechamentos-api .vf-cv-grafico__eixo {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  height: 200px;
+  font-size: var(--vf-fs-xs);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: var(--vf-text-muted);
+  text-align: right;
+}
+
+.vf-page-fechamentos-api .vf-cv-grafico__eixo span:first-child { transform: translateY(-50%); }
+.vf-page-fechamentos-api .vf-cv-grafico__eixo span:last-child { transform: translateY(50%); }
+
+.vf-page-fechamentos-api .vf-cv-grafico__rolagem {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-x: auto;
   padding-bottom: var(--vf-sp-1);
 }
 
-.vf-page-fechamentos-api .vf-fapi-days__strip {
+.vf-page-fechamentos-api .vf-cv-grafico__barras {
+  position: relative;
   display: flex;
   gap: var(--vf-sp-1);
-  min-width: max-content;
+}
+
+.vf-page-fechamentos-api .vf-cv-grafico__grade {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 200px;
+  border-top: 1px solid var(--vf-border);
+  border-bottom: 1px solid var(--vf-border-strong);
+  pointer-events: none;
+}
+
+.vf-page-fechamentos-api .vf-cv-grafico__grade::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  right: 0;
+  left: 0;
+  border-top: 1px solid var(--vf-border);
 }
 
 .vf-page-fechamentos-api .vf-fapi-day {
-  flex: 0 0 64px;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: var(--vf-sp-2) var(--vf-sp-2) var(--vf-sp-1);
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius-sm);
-  background: var(--vf-surface);
+  align-items: center;
+  gap: var(--vf-sp-1);
+  padding: 0;
+  border: 0;
+  background: none;
   font-family: var(--vf-font-body);
-  text-align: left;
+  color: var(--vf-text-secondary);
   cursor: pointer;
-  transition: border-color var(--vf-duration-fast) var(--vf-ease),
-    background-color var(--vf-duration-fast) var(--vf-ease);
 }
 
-.vf-page-fechamentos-api .vf-fapi-day:hover {
-  border-color: var(--vf-border-hover);
-  background: var(--vf-surface-hover);
+.vf-page-fechamentos-api .vf-fapi-day__trilho {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 100%;
+  height: 200px;
 }
 
-/* Dia dentro do recorte ativo (semana/intervalo/últimos 7) */
-.vf-page-fechamentos-api .vf-fapi-day.is-scope {
-  border-color: var(--vf-primary-border);
-  background: var(--vf-primary-soft);
+.vf-page-fechamentos-api .vf-fapi-day__trilho i {
+  display: block;
+  width: 70%;
+  max-width: 34px;
+  border-radius: calc(var(--vf-radius-sm) / 2) calc(var(--vf-radius-sm) / 2) 0 0;
+  background: color-mix(in srgb, var(--vf-primary) 55%, var(--vf-surface));
+  transition: background-color var(--vf-duration-fast) var(--vf-ease);
 }
 
-/* Dia selecionado (filtro de 1 dia aplicado) */
-.vf-page-fechamentos-api .vf-fapi-day.is-selected {
-  border-color: var(--vf-primary);
-  background: var(--vf-primary-soft);
+/* Dia dentro do recorte ativo (intervalo filtrado na aba Pedidos) */
+.vf-page-fechamentos-api .vf-fapi-day.is-scope .vf-fapi-day__trilho i {
+  background: color-mix(in srgb, var(--vf-primary) 80%, var(--vf-surface));
 }
 
-.vf-page-fechamentos-api .vf-fapi-day.is-selected .vf-fapi-day__num {
-  color: var(--vf-primary-strong);
-}
-
-/* Dia sem vendas: presença mínima */
-.vf-page-fechamentos-api .vf-fapi-day.is-empty {
-  background: transparent;
-}
-
-.vf-page-fechamentos-api .vf-fapi-day.is-empty .vf-fapi-day__num,
-.vf-page-fechamentos-api .vf-fapi-day.is-empty .vf-fapi-day__value,
-.vf-page-fechamentos-api .vf-fapi-day.is-empty .vf-fapi-day__orders {
-  color: var(--vf-text-placeholder);
+/* Dia sob o ponteiro e dia selecionado (filtro de 1 dia aplicado) */
+.vf-page-fechamentos-api .vf-fapi-day:hover .vf-fapi-day__trilho i,
+.vf-page-fechamentos-api .vf-fapi-day.is-selected .vf-fapi-day__trilho i {
+  background: var(--vf-primary);
 }
 
 .vf-page-fechamentos-api .vf-fapi-day__num {
-  font-family: var(--vf-font-display);
-  font-size: var(--vf-fs-sm);
-  font-weight: var(--vf-fw-bold);
+  font-size: var(--vf-fs-xs);
   font-variant-numeric: tabular-nums;
   line-height: 1;
-  color: var(--vf-text);
 }
 
-.vf-page-fechamentos-api .vf-fapi-day__value {
-  font-size: var(--vf-fs-2xs);
-  font-variant-numeric: tabular-nums;
-  color: var(--vf-text-secondary);
-  white-space: nowrap;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
+.vf-page-fechamentos-api .vf-fapi-day.is-selected .vf-fapi-day__num {
+  font-weight: var(--vf-fw-bold);
+  color: var(--vf-primary-strong);
 }
 
-.vf-page-fechamentos-api .vf-fapi-day__orders {
-  font-size: var(--vf-fs-2xs);
-  font-variant-numeric: tabular-nums;
+.vf-page-fechamentos-api .vf-fapi-day.is-empty .vf-fapi-day__num {
   color: var(--vf-text-muted);
 }
 
@@ -436,6 +792,7 @@
 }
 
 .vf-page-fechamentos-api .vf-fapi-day__dot {
+  flex: none;
   width: 6px;
   height: 6px;
   border-radius: var(--vf-radius-pill);
@@ -444,7 +801,21 @@
 .vf-page-fechamentos-api .vf-fapi-day__dot--problem { background: var(--vf-warning); }
 .vf-page-fechamentos-api .vf-fapi-day__dot--blocked { background: var(--vf-danger); }
 
-/* Tabela diária: rola dentro do wrapper com header sticky */
+/* "Ver os dias em tabela": a mesma leitura do gráfico, em linhas. */
+.vf-page-fechamentos-api .vf-cv-detalhe summary {
+  font-size: var(--vf-fs-sm);
+  font-weight: var(--vf-fw-medium);
+  color: var(--vf-primary-strong);
+  cursor: pointer;
+}
+
+.vf-page-fechamentos-api .vf-cv-detalhe__corpo {
+  display: flex;
+  flex-direction: column;
+  gap: var(--vf-sp-3);
+  margin-top: var(--vf-sp-3);
+}
+
 .vf-page-fechamentos-api .vf-fapi-days__table-wrap {
   max-height: 420px;
 }
@@ -462,53 +833,30 @@
 }
 
 /* ------------------------------------------------------------
- * 7. Pedidos — toolbar em duas camadas + estados de linha
+ * 8. Tabelas dentro de bloco — pedidos, dias e Curva ABC
+ * O bloco já é a superfície: a tabela perde a moldura própria e o
+ * cabeçalho deixa de ser em caixa alta.
  * ------------------------------------------------------------ */
+.vf-page-fechamentos-api .vf-cv-bloco .vf-table-wrap {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+}
+
+.vf-page-fechamentos-api .vf-cv-bloco .vf-table thead th {
+  font-size: var(--vf-fs-xs);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .vf-page-fechamentos-api .vf-fapi-orders-toolbar {
   display: flex;
   flex-direction: column;
   gap: var(--vf-sp-3);
-  padding: var(--vf-toolbar-py) var(--vf-toolbar-px);
-  background: var(--vf-surface);
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius);
 }
 
-.vf-page-fechamentos-api .vf-fapi-orders-toolbar__main {
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
-}
-
-.vf-page-fechamentos-api .vf-fapi-orders-toolbar__main .vf-search {
-  flex: 1 1 240px;
-  max-width: 380px;
-}
-
-.vf-page-fechamentos-api .vf-fapi-orders-toolbar__sort {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-}
-
-.vf-page-fechamentos-api .vf-fapi-orders-toolbar__sort .vf-select {
-  width: auto;
-}
-
-.vf-page-fechamentos-api .vf-fapi-orders-toolbar__count {
-  margin-left: auto;
-  font-size: var(--vf-fs-xs);
-  font-variant-numeric: tabular-nums;
-  color: var(--vf-text-secondary);
-  white-space: nowrap;
-}
-
-.vf-page-fechamentos-api .vf-fapi-orders-toolbar__chips {
-  display: flex;
-  align-items: center;
-  gap: var(--vf-sp-2);
-  flex-wrap: wrap;
+.vf-page-fechamentos-api .vf-fapi-orders-toolbar .vf-search {
+  max-width: 420px;
 }
 
 /* Painel recolhível de filtros avançados dos pedidos */
@@ -534,15 +882,89 @@
 }
 
 .vf-page-fechamentos-api .vf-fapi-orders__table {
-  min-width: 1240px;
+  min-width: 1080px;
 }
 
-.vf-page-fechamentos-api .vf-fapi-orders__table tbody tr[data-pedido] {
+.vf-page-fechamentos-api .vf-fapi-orders__table tbody tr[data-row-id] {
   cursor: pointer;
 }
 
+.vf-page-fechamentos-api .vf-fapi-orders__table strong {
+  font-weight: var(--vf-fw-semibold);
+}
+
+.vf-page-fechamentos-api .vf-fapi-orders__table strong.is-danger {
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-fechamentos-api .vf-cv-data {
+  font-variant-numeric: tabular-nums;
+  color: var(--vf-text-secondary);
+  white-space: nowrap;
+}
+
+/* Célula do produto: título e, embaixo, MLB · SKU (· pedido no modo detalhado). */
+.vf-page-fechamentos-api .vf-table td.vf-cv-venda {
+  min-width: 220px;
+  max-width: 340px;
+}
+
+.vf-page-fechamentos-api .vf-cv-venda__titulo {
+  display: block;
+  font-weight: var(--vf-fw-semibold);
+  overflow-wrap: anywhere;
+}
+
+.vf-page-fechamentos-api .vf-cv-venda small,
+.vf-page-fechamentos-api .vf-cv-sit small {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--vf-fs-xs);
+  color: var(--vf-text-secondary);
+}
+
+.vf-page-fechamentos-api .vf-cv-venda small {
+  font-family: var(--vf-font-mono);
+  overflow-wrap: anywhere;
+}
+
+.vf-page-fechamentos-api .vf-table td.vf-cv-sit {
+  min-width: 150px;
+  max-width: 240px;
+}
+
+/* Modo compacto (padrão): uma linha por pedido, cortada com reticências. */
+.vf-page-fechamentos-api .vf-fapi-orders__table--compacto .vf-cv-venda__titulo,
+.vf-page-fechamentos-api .vf-fapi-orders__table--compacto .vf-cv-venda small,
+.vf-page-fechamentos-api .vf-fapi-orders__table--compacto .vf-cv-sit small,
+.vf-page-fechamentos-api .vf-fapi-abc-table .vf-cv-venda__titulo,
+.vf-page-fechamentos-api .vf-fapi-abc-table .vf-cv-venda small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vf-page-fechamentos-api .vf-fapi-orders__table--compacto .vf-cv-venda__pedido {
+  display: none;
+}
+
+/* Selo do pedido enviado pelo Full. */
+.vf-page-fechamentos-api .vf-cv-full {
+  display: inline-block;
+  padding: 0 5px;
+  border-radius: calc(var(--vf-radius-sm) - 2px);
+  background: var(--vf-neutral);
+  color: var(--vf-text-on-primary);
+  font-family: var(--vf-font-body);
+  font-size: var(--vf-fs-xs);
+  font-style: italic;
+  font-weight: var(--vf-fw-extrabold);
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+}
+
 /* Estados de linha: filete à esquerda + status textual nas colunas.
-   A cor nunca é o único canal — Status/Confiança/Pendência são texto. */
+   A cor nunca é o único canal — Situação e Confiança são texto. */
 .vf-page-fechamentos-api .vf-fapi-orders__table tr.is-cancel td:first-child { box-shadow: inset 3px 0 0 var(--vf-danger); }
 .vf-page-fechamentos-api .vf-fapi-orders__table tr.is-blocked td:first-child { box-shadow: inset 3px 0 0 var(--vf-danger-strong); }
 .vf-page-fechamentos-api .vf-fapi-orders__table tr.is-problem td:first-child { box-shadow: inset 3px 0 0 var(--vf-warning); }
@@ -561,10 +983,10 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Nota-legenda sob tabelas */
+/* Nota-legenda (drawer do pedido) */
 .vf-page-fechamentos-api .vf-fapi-legend {
   margin: 0;
-  font-size: var(--vf-fs-2xs);
+  font-size: var(--vf-fs-xs);
   line-height: var(--vf-lh-snug);
   color: var(--vf-text-muted);
 }
@@ -575,7 +997,7 @@
 }
 
 /* ------------------------------------------------------------
- * 8. Drawer do pedido
+ * 9. Drawer do pedido
  * ------------------------------------------------------------ */
 .vf-page-fechamentos-api .vf-fapi-order-drawer .vf-drawer__body {
   display: flex;
@@ -591,7 +1013,7 @@
 
 .vf-page-fechamentos-api .vf-fapi-drawer-section__title {
   margin: 0;
-  font-size: var(--vf-fs-2xs);
+  font-size: var(--vf-fs-xs);
   font-weight: var(--vf-fw-semibold);
   letter-spacing: var(--vf-ls-caps);
   text-transform: uppercase;
@@ -616,7 +1038,7 @@
   background: var(--vf-primary-soft);
   color: var(--vf-primary-strong);
   font-family: var(--vf-font-display);
-  font-size: var(--vf-fs-2xs);
+  font-size: var(--vf-fs-xs);
   font-weight: var(--vf-fw-bold);
 }
 
@@ -659,7 +1081,7 @@
 }
 
 .vf-page-fechamentos-api .vf-fapi-kv dt {
-  font-size: var(--vf-fs-2xs);
+  font-size: var(--vf-fs-xs);
   font-weight: var(--vf-fw-semibold);
   letter-spacing: var(--vf-ls-caps);
   text-transform: uppercase;
@@ -686,7 +1108,7 @@
 }
 
 /* ------------------------------------------------------------
- * 9. Módulo Curva ABC integrado permanentemente à Fechamento API
+ * 10. Módulo Curva ABC integrado permanentemente à Fechamento API
  * O escopo no root [data-module="curva-abc"] = .vf-fapi-abc existe
  * somente para organização interna; não há plano de outra página.
  * ------------------------------------------------------------ */
@@ -697,46 +1119,50 @@
   min-width: 0;
 }
 
+/* Resumo: faixa de números colados, como a da Visão geral, em tamanho menor. */
 .vf-page-fechamentos-api .vf-fapi-abc-summary {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: var(--vf-sp-2) var(--vf-sp-4);
-  padding: var(--vf-sp-3) var(--vf-sp-4);
-  background: var(--vf-surface);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px;
+  margin: 0;
+  overflow: hidden;
+  background: var(--vf-border);
   border: 1px solid var(--vf-border);
   border-radius: var(--vf-radius);
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-summary__item {
+  flex: 1 1 170px;
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  padding: var(--vf-sp-3) var(--vf-sp-4);
+  background: var(--vf-surface);
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-summary__label {
-  font-size: var(--vf-fs-2xs);
+  font-size: var(--vf-fs-xs);
   font-weight: var(--vf-fw-semibold);
-  letter-spacing: var(--vf-ls-caps);
-  text-transform: uppercase;
-  color: var(--vf-text-muted);
-  white-space: nowrap;
+  color: var(--vf-text-secondary);
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-summary__value {
+  margin: 0;
   font-family: var(--vf-font-display);
   font-variant-numeric: tabular-nums;
-  font-size: var(--vf-fs-sm);
-  font-weight: var(--vf-fw-semibold);
+  font-size: var(--vf-fs-lg);
+  font-weight: var(--vf-fw-bold);
+  letter-spacing: var(--vf-ls-tight);
   color: var(--vf-text);
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-summary__value.is-danger { color: var(--vf-danger-strong); }
 .vf-page-fechamentos-api .vf-fapi-abc-summary__value.is-warning { color: var(--vf-warning-strong); }
 
 .vf-page-fechamentos-api .vf-fapi-abc-summary__foot {
-  font-size: var(--vf-fs-2xs);
+  font-size: var(--vf-fs-xs);
   color: var(--vf-text-muted);
 }
 
@@ -746,28 +1172,20 @@
   justify-content: space-between;
   gap: var(--vf-sp-3);
   flex-wrap: wrap;
-  padding: var(--vf-toolbar-py) var(--vf-toolbar-px);
-  background: var(--vf-surface);
-  border: 1px solid var(--vf-border);
-  border-radius: var(--vf-radius);
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-toolbar__filters {
   display: flex;
   align-items: center;
-  gap: var(--vf-sp-2);
+  gap: var(--vf-sp-2) var(--vf-sp-3);
   flex-wrap: wrap;
   flex: 1 1 auto;
   min-width: 0;
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-toolbar__filters .vf-search {
-  flex: 1 1 200px;
-  max-width: 300px;
-}
-
-.vf-page-fechamentos-api .vf-fapi-abc-toolbar__filters .vf-select {
-  width: auto;
+  flex: 1 1 220px;
+  max-width: 340px;
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-toolbar__actions {
@@ -782,7 +1200,7 @@
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-table {
-  min-width: 1380px;
+  min-width: 1180px;
 }
 
 .vf-page-fechamentos-api .vf-fapi-abc-table td.vf-fapi-abc-rank {
@@ -799,26 +1217,11 @@
 }
 
 /* ------------------------------------------------------------
- * 10. Responsividade específica
+ * 11. Responsividade específica
  * ------------------------------------------------------------ */
-@media (max-width: 900px) {
-  .vf-page-fechamentos-api .vf-fapi-context__row {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .vf-page-fechamentos-api .vf-fapi-context__actions {
-    justify-content: flex-start;
-    padding-top: var(--vf-sp-1);
-  }
-
-  .vf-page-fechamentos-api .vf-fapi-orders-toolbar__main .vf-search {
-    max-width: none;
-  }
-
-  .vf-page-fechamentos-api .vf-fapi-orders-toolbar__count {
-    margin-left: 0;
-    width: 100%;
+@media (max-width: 960px) {
+  .vf-page-fechamentos-api .vf-cv-cartoes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -831,32 +1234,25 @@
   .vf-page-fechamentos-api .vf-page-header__main {
     flex-basis: auto;
   }
-}
 
-@media (max-width: 600px) {
-  .vf-page-fechamentos-api .vf-fapi-context__filters {
-    flex-direction: column;
-    align-items: stretch;
+  /* Ações e estado da leitura ocupam a largura e alinham à esquerda. */
+  .vf-page-fechamentos-api .vf-cv-topo__lado {
+    flex-basis: 100%;
+    justify-items: start;
   }
 
-  .vf-page-fechamentos-api .vf-fapi-context__filters .vf-field {
-    width: 100%;
+  .vf-page-fechamentos-api .vf-cv-topo__acoes,
+  .vf-page-fechamentos-api .vf-cv-topo__estado {
+    justify-content: flex-start;
   }
 
-  .vf-page-fechamentos-api .vf-fapi-context__filters .vf-select {
-    width: 100%;
+  .vf-page-fechamentos-api .vf-cv-bloco {
+    padding: var(--vf-sp-4);
   }
 
-  .vf-page-fechamentos-api .vf-fapi-context__actions .vf-btn {
-    flex: 1 1 auto;
-  }
-
-  .vf-page-fechamentos-api .vf-fapi-orders-toolbar__sort {
-    width: 100%;
-  }
-
-  .vf-page-fechamentos-api .vf-fapi-orders-toolbar__sort .vf-select {
-    flex: 1 1 auto;
+  .vf-page-fechamentos-api .vf-fapi-orders-toolbar .vf-search,
+  .vf-page-fechamentos-api .vf-fapi-abc-toolbar__filters .vf-search {
+    max-width: none;
   }
 
   .vf-page-fechamentos-api .vf-fapi-orders__table-wrap {
@@ -864,8 +1260,23 @@
   }
 }
 
+@media (max-width: 480px) {
+  .vf-page-fechamentos-api .vf-cv-cartoes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .vf-page-fechamentos-api .vf-cv-periodo,
+  .vf-page-fechamentos-api .vf-cv-periodo .vf-select {
+    width: 100%;
+  }
+
+  .vf-page-fechamentos-api .vf-cv-topo__acoes .vf-btn {
+    flex: 1 1 auto;
+  }
+}
+
 /* ------------------------------------------------------------
- * 11. [hidden] deve vencer as classes de componente que definem
+ * 12. [hidden] deve vencer as classes de componente que definem
  * display (.vf-banner/.vf-file-item/.vf-fapi-*…). Sem !important —
  * só especificidade (0,2,0) e posição (última regra do arquivo).
  * ------------------------------------------------------------ */

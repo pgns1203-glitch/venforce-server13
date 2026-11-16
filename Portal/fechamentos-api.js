@@ -88,6 +88,23 @@ const shortMoney = n => {
 };
 /* '—' para ausente; valor para 0 real. */
 const valOr = (v, f = num) => (v === null || v === undefined) ? '—' : f(v);
+/* Só apresentação: valor negativo com o sinal na frente do "R$" ("− R$ 30,00"). */
+const moneySinal = v => (v === null || v === undefined) ? '—' : (Number(v) < 0 ? '− ' + money(-Number(v)) : money(v));
+/* Dedução já positiva no contrato (taxas/frete/custo/imposto): mostra com "−". Zero real fica "R$ 0,00". */
+const deducao = v => (v === null || v === undefined) ? '—' : (Number(v) > 0 ? '− ' + money(v) : money(v));
+/* Topo "redondo" do eixo do gráfico diário (1/2/2,5/5/10 × 10ⁿ) — escala visual, não dado. */
+function escalaTopo(v) {
+  if (!(v > 0)) return 0;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  const f = v / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+}
+/* Modo da lista de pedidos (compacto/detalhado), lembrado neste navegador. */
+const ORDERS_MODE_KEY = 'vf-fapi-modo';
+function lerOrdersMode() {
+  try { return localStorage.getItem(ORDERS_MODE_KEY) === 'detalhado' ? 'detalhado' : 'compacto'; }
+  catch (_) { return 'compacto'; }
+}
 /* Datas do calendário do período — só aritmética de data (categoria A/B),
    usada para preencher dias sem pedido na régua de "Vendas por dia". */
 function getCompetenceDays(inicio, fim) {
@@ -533,6 +550,7 @@ const F = {
     drawerLoadSeq: 0,
     filtersPanelOpen: false,
     importPanelOpen: false,
+    ordersMode: lerOrdersMode(),
   },
 
   orders: {
@@ -548,6 +566,7 @@ const F = {
   summaryUi: {
     quickFilter: 'todos',      // recorte da Visão Geral (Composição/Qualidade) — vira resumoFiltro
     dailySort: 'data',
+    dailyTableOpen: false,     // <details> "Ver os dias em tabela" — sobrevive aos re-renders
   },
 
   abc: {                       // estado do módulo Curva ABC — navegação sobre F.products
@@ -1040,7 +1059,11 @@ function renderContextStatus() {
   const mockBanner = document.getElementById('fapi-mock-banner');
   if (!host) return;
 
-  const item = (label, html) => `<span class="vf-fapi-context__status-item"><span class="vf-fapi-context__status-label">${esc(label)}</span> ${html}</span>`;
+  // Intervalo do período escolhido, ao lado do seletor (só formatação de data).
+  const range = document.getElementById('fapi-period-range');
+  if (range) range.textContent = F.periodo ? `${fmtDt(F.periodo.dateFrom)} a ${fmtDt(F.periodo.dateTo)}` : '';
+
+  const item = (label, html) => `<span class="vf-cv-estado__item"><span class="vf-cv-estado__rotulo">${esc(label)}</span> ${html}</span>`;
 
   if (!F.cliente) {
     if (mockBanner) mockBanner.hidden = true;
@@ -1137,23 +1160,25 @@ function fechQuickCount(k, s) {
   }
 }
 
-function kpiValueHtml(v, { currency = false } = {}) {
-  if (v === null || v === undefined) return '<span class="vf-kpi__value">—</span>';
-  if (!currency) return `<span class="vf-kpi__value">${num(v)}</span>`;
-  return `<span class="vf-kpi__value vf-kpi__value--currency"><span class="vf-kpi__currency">R$</span><span>${num(v, 2)}</span></span>`;
-}
-function kpi({ label, valueHtml, foot = '', footTone = '', mod = '' }) {
-  return `<div class="vf-kpi${mod ? ' ' + mod : ''}">
-    <span class="vf-kpi__label">${esc(label)}</span>
-    ${valueHtml}
-    ${foot ? `<span class="vf-kpi__foot${footTone ? ' ' + footTone : ''}">${esc(foot)}</span>` : ''}
+/* Blocos de apresentação da Visão geral (layout "faixa de números + blocos"):
+   cartao = número grande da faixa de resumo · linhaKv = rótulo à esquerda,
+   valor à direita (faixa de contadores, Qualidade, Mercado Pago). */
+function cartao({ label, valorHtml, foot = '', painel = false, tom = '' }) {
+  return `<div class="vf-cv-cartao${painel ? ' vf-cv-cartao--painel' : ''}">
+    <dt>${esc(label)}</dt>
+    <dd${tom ? ` class="${tom}"` : ''}>${valorHtml}</dd>
+    ${foot ? `<small>${esc(foot)}</small>` : ''}
   </div>`;
 }
-function secondaryMetric(label, valueHtml, hint = '', muted = false) {
-  return `<div class="vf-fapi-secondary-metrics__item"${hint ? ` title="${esc(hint)}"` : ''}>
-    <span class="vf-fapi-secondary-metrics__label">${esc(label)}</span>
-    <span class="vf-fapi-secondary-metrics__value${muted ? ' is-muted' : ''}">${valueHtml}</span>
+function linhaKv(label, valorHtml, { tom = '', hint = '', cls = 'vf-cv-kv__linha' } = {}) {
+  return `<div class="${cls}"${hint ? ` title="${esc(hint)}"` : ''}>
+    <dt>${esc(label)}</dt>
+    <dd${tom ? ` class="${tom}"` : ''}>${valorHtml}</dd>
   </div>`;
+}
+function setHost(id, html) {
+  const el = document.getElementById(id);
+  if (el) el.innerHTML = html;
 }
 
 /* Linhas da "Composição do resultado" — formatação sobre os agregados já
@@ -1197,27 +1222,19 @@ function renderFechamentoSection() {
   const host = document.getElementById('fapi-fech-host');
   if (!host || !F.ok) return;
   const rAll = F.summary;
-  const fonteTxt = (F.motor?.origemPrincipal === 'orders_api') ? 'orders_api · central_vendas_db' : esc(F.motor?.origemPrincipal || 'central_vendas_db');
-  const headerMeta = `${esc(F.periodoResp?.label || '')} · ${esc(F.cliente?.nome || '')} · fonte: ${fonteTxt}`;
+  const limparBlocos = () => { setHost('fapi-comp-host', ''); setHost('fapi-qual-host', ''); setHost('fapi-nota-host', ''); };
 
   if (!rAll.pedidosTotal) {
     const syncBtn = isAdminUser()
       ? '<button type="button" class="vf-btn vf-btn--primary vf-btn--sm" data-action="sync-empty">Sincronizar via API</button>' : '';
     host.innerHTML = `
-      <section class="vf-section" aria-label="Fechamento do período">
-        <div class="vf-section__header">
-          <div>
-            <h2 class="vf-section__title">Fechamento do período</h2>
-            <p class="vf-section__description">${headerMeta}</p>
-          </div>
-        </div>
-        <div class="vf-card"><div class="vf-card__body">${emptyState({
-          icon:'doc', title:'Sem pedidos no período',
-          why:'Nada sincronizado para fechar neste intervalo.',
-          next:'Use "Sincronizar via API" para trazer os pedidos do Mercado Livre.',
-          action: syncBtn,
-        })}</div></div>
-      </section>`;
+      <section class="vf-cv-bloco" aria-label="Fechamento do período">${emptyState({
+        icon:'doc', title:'Sem pedidos no período',
+        why:'Nada sincronizado para fechar neste intervalo.',
+        next:'Use "Sincronizar via API" para trazer os pedidos do Mercado Livre.',
+        action: syncBtn,
+      })}</section>`;
+    limparBlocos();
     return;
   }
 
@@ -1225,11 +1242,14 @@ function renderFechamentoSection() {
   const s = F.filteredSummary || rAll;
   const chips = FECH_QUICKS.map(([k, l]) => {
     const count = fechQuickCount(k, rAll);
-    return `<button type="button" class="vf-filter-chip${quick === k ? ' is-active' : ''}" data-fechq="${k}" aria-pressed="${quick === k}">${esc(l)} <span class="vf-badge">${num(count)}</span></button>`;
+    return `<button type="button" class="vf-cv-seg__item" data-fechq="${k}" aria-pressed="${quick === k}">${esc(l)} <small>${num(count)}</small></button>`;
   }).join('');
-  const clearBtn = quick !== 'todos'
-    ? '<button type="button" class="vf-clear-filters" data-fechq="todos">Limpar recorte</button>' : '';
-  const recorteBar = `<div class="vf-fapi-fech-chips" role="group" aria-label="Recorte do fechamento">${chips}${clearBtn}</div>`;
+  const topo = `
+    <div class="vf-cv-resumo__topo">
+      <div class="vf-cv-seg" role="group" aria-label="Recorte do fechamento">${chips}</div>
+      <span class="vf-cv-resumo__conf">Confiança do fechamento ${confStatus(s.pedidosTotal ? s.confiancaFechamento : rAll.confiancaFechamento)}</span>
+    </div>`;
+
   const claimsMotivo = String(rAll.claimsMotivo || 'motivo_nao_informado');
   const claimsSemPermissao = claimsMotivo === 'http_401' || claimsMotivo === 'http_403';
   const claimsPermissaoHint = claimsSemPermissao
@@ -1237,127 +1257,118 @@ function renderFechamentoSection() {
     : '';
   const returnsNaoResolvidos = Number(rAll.claimsReturnsNaoResolvidos) || 0;
   const posVendaWarning = rAll.claimsIndisponivel
-    ? `<div class="vf-banner is-warning vf-banner--compact" role="alert">
-        <div class="vf-banner__content">
-          <p class="vf-banner__title">Pós-venda não verificado</p>
-          <p class="vf-banner__description">A consulta de claims do Mercado Livre não foi concluída (<strong>motivo: ${esc(claimsMotivo)}</strong>).${claimsPermissaoHint} Devoluções e mediações podem estar ausentes; por segurança, a confiança deste fechamento permanece parcial.</p>
-        </div>
-      </div>`
+    ? `<p class="vf-cv-nota vf-cv-nota--atencao" role="alert"><strong>Pós-venda não verificado.</strong> A consulta de claims do Mercado Livre não foi concluída (<strong>motivo: ${esc(claimsMotivo)}</strong>).${claimsPermissaoHint} Devoluções e mediações podem estar ausentes; por segurança, a confiança deste fechamento permanece parcial.</p>`
     : returnsNaoResolvidos > 0
-      ? `<div class="vf-banner is-warning vf-banner--compact" role="alert">
-        <div class="vf-banner__content">
-          <p class="vf-banner__title">Pós-venda verificado parcialmente</p>
-          <p class="vf-banner__description">A consulta de claims foi concluída, mas <strong>${num(returnsNaoResolvidos)}</strong> devolução(ões) não puderam ser ligadas a um pedido (detalhe de returns indisponível). Esses casos <strong>não</strong> foram tratados como "sem devolução"; a confiança permanece parcial.</p>
-        </div>
-      </div>`
+      ? `<p class="vf-cv-nota vf-cv-nota--atencao" role="alert"><strong>Pós-venda verificado parcialmente.</strong> A consulta de claims foi concluída, mas <strong>${num(returnsNaoResolvidos)}</strong> devolução(ões) não puderam ser ligadas a um pedido (detalhe de returns indisponível). Esses casos <strong>não</strong> foram tratados como "sem devolução"; a confiança permanece parcial.</p>`
       : '';
 
-  let corpo;
   if (!s.pedidosTotal) {
-    corpo = `<div class="vf-card"><div class="vf-card__body">${emptyState({
-      icon:'dot', title:'Nenhum pedido neste recorte',
-      why:'O recorte selecionado não tem pedidos.',
-      next:'Volte para "Todos".',
-    })}</div></div>`;
-  } else {
-    const parcialFoot = s.confiancaFechamento === 'confiavel'
-      ? 'todos componentes reais'
-      : (s.cobertura?.resultado != null ? `parcial · cobre ${pct(s.cobertura.resultado)} da receita` : 'parcial');
-    const kpis = `<div class="vf-kpi-grid" role="list" aria-label="Indicadores principais do fechamento">
-      ${kpi({ label:'Faturamento bruto', valueHtml: kpiValueHtml(s.faturamento, { currency:true }), foot:'pedidos válidos', mod:'vf-kpi--featured' })}
-      ${kpi({ label:'Resultado parcial', valueHtml: kpiValueHtml(s.lucroContribuicao, { currency:true }), foot: parcialFoot, footTone: s.confiancaFechamento === 'confiavel' ? 'is-success' : 'is-warning', mod: s.confiancaFechamento === 'confiavel' ? '' : 'vf-kpi--warning' })}
-      ${kpi({ label:'Receita bloqueada', valueHtml: kpiValueHtml(s.receitaBloqueada, { currency:true }), foot:'falta custo/frete p/ calcular', footTone: s.receitaBloqueada > 0 ? 'is-warning' : '', mod: s.receitaBloqueada > 0 ? 'vf-kpi--warning' : '' })}
-      ${kpi({ label:'Pedidos válidos', valueHtml: kpiValueHtml(s.pedidosValidos), foot:'fora cancelamentos, devoluções e mediações' })}
-      ${kpi({ label:'Cancelados', valueHtml: kpiValueHtml(s.cancelados), foot:'fora da venda boa · definitivo', footTone: s.cancelados > 0 ? 'is-danger' : '', mod: s.cancelados > 0 ? 'vf-kpi--danger' : '' })}
-      ${kpi({ label:'Devoluções / reembolsos', valueHtml: kpiValueHtml(s.devolucoes), foot:'fora da venda boa · pós-venda', footTone: s.devolucoes > 0 ? 'is-danger' : '', mod: s.devolucoes > 0 ? 'vf-kpi--danger' : '' })}
-      ${kpi({ label:'Mediações / problema', valueHtml: kpiValueHtml(s.problemas), foot:'fora da venda boa · aguardando decisão', footTone: s.problemas > 0 ? 'is-warning' : '', mod: s.problemas > 0 ? 'vf-kpi--warning' : '' })}
-      ${kpi({ label:'Unidades vendidas', valueHtml: kpiValueHtml(s.unidades), foot:'itens válidos' })}
-    </div>`;
-
-    const cob = s.cobertura || {};
-    const hintCob = (base, pctCob) =>
-      pctCob == null ? base
-        : pctCob >= 99.95 ? `${base} · cobre 100% da receita`
-        : `${base} · cobre ${pct(pctCob)} da receita`;
-    const mutedCob = (valor, pctCob) => valor == null || (pctCob != null && pctCob < 99.95);
-
-    const secundarios = `<div class="vf-fapi-secondary-metrics" aria-label="Métricas secundárias do fechamento">
-      ${secondaryMetric('Total de pedidos', valOr(s.pedidosTotal), 'no período')}
-      ${secondaryMetric('Ticket médio', valOr(s.ticket, money), 'por pedido válido')}
-      ${secondaryMetric('Comissão marketplace', valOr(s.comissao, money), hintCob('tarifa ML (sale_fee)', cob.comissao), mutedCob(s.comissao, cob.comissao))}
-      ${secondaryMetric('Custo dos produtos', valOr(s.custoTotal, money), hintCob('base vinculada', cob.custo), mutedCob(s.custoTotal, cob.custo))}
-      ${secondaryMetric('Imposto interno', valOr(s.impostoTotal, money), hintCob('cálculo interno', cob.imposto), mutedCob(s.impostoTotal, cob.imposto))}
-      ${secondaryMetric('Frete seller', valOr(s.freteTotal, money), s.freteTotal == null ? 'ausente (shipments)' : hintCob('real (shipments API)', cob.frete), mutedCob(s.freteTotal, cob.frete))}
-    </div>`;
-
-    const comps = buildComposicaoRows(s);
-    const compRows = comps.map(c => `
-      <tr${c.comp === 'Resultado parcial' ? ' class="vf-fapi-total-row"' : ''}>
-        <td>${esc(c.comp)}</td>
-        <td class="vf-fapi-op" aria-hidden="true">${esc(c.op)}</td>
-        <td class="num">${c.valor == null ? '<span class="is-absent">—</span>' : (c.comp === 'Resultado parcial' && c.status !== 'real' ? `<span class="vf-fapi-est">${money(c.valor)}</span>` : money(c.valor))}</td>
-        <td>${statusTag(c.status)}</td>
-        <td class="vf-fapi-fonte">${esc(c.fonte)}</td>
-        <td class="vf-fapi-obs vf-truncate" title="${esc(c.obs)}">${esc(c.obs)}</td>
-      </tr>`).join('');
-    const residuo = composicaoResiduo(comps);
-    const residuoRow = (residuo != null && Math.abs(residuo) >= 0.01)
-      ? `<tr class="vf-fapi-total-row"><td>Resíduo não explicado</td><td class="vf-fapi-op" aria-hidden="true">≠</td><td class="num"><span class="vf-fapi-est">${money(residuo)}</span></td><td>${statusTag('parcial')}</td><td class="vf-fapi-fonte">cálculo interno</td><td class="vf-fapi-obs">as linhas acima não fecham no resultado — reportar</td></tr>`
-      : '';
-    const composicao = `
-      <div class="vf-card vf-card--compact vf-fapi-composition">
-        <div class="vf-card__header"><h3 class="vf-card__title">Composição do resultado</h3></div>
-        <div class="vf-table-wrap">
-          <table class="vf-table vf-table--compact">
-            <thead><tr><th scope="col">Componente</th><th scope="col"><span class="vf-visually-hidden">Operação</span></th><th scope="col" class="num">Valor</th><th scope="col">Status</th><th scope="col">Fonte</th><th scope="col">Observação</th></tr></thead>
-            <tbody>${compRows}${residuoRow}</tbody>
-          </table>
-        </div>
-      </div>`;
-
-    const qRow = (lbl, val, cls) => `<div class="vf-fapi-quality__row"><span class="vf-fapi-quality__label">${esc(lbl)}</span><span class="vf-fapi-quality__value${cls ? ' ' + cls : ''}">${val}</span></div>`;
-    const comResultado = Math.max(0, s.pedidosValidos - s.pedidosBloqueados);
-    const qualidade = `
-      <div class="vf-card vf-card--compact vf-fapi-quality">
-        <div class="vf-card__header"><h3 class="vf-card__title">Qualidade do fechamento</h3></div>
-        <div class="vf-card__body">
-          <div class="vf-fapi-quality__list">
-            ${qRow('Pedidos sem custo', valOr(s.semCusto), s.semCusto ? 'is-danger' : '')}
-            ${qRow('Pedidos sem frete', valOr(s.semFrete), s.semFrete ? 'is-warning' : '')}
-            ${qRow('Com resultado calculável', valOr(comResultado))}
-            ${qRow('Pedidos bloqueados', valOr(s.pedidosBloqueados), s.pedidosBloqueados ? 'is-danger' : '')}
-            ${qRow('Cancelados', valOr(s.cancelados), s.cancelados ? 'is-danger' : '')}
-            ${qRow('Devoluções / reembolsos', valOr(s.devolucoes), s.devolucoes ? 'is-danger' : '')}
-            ${qRow('Devoluções parciais (no resultado)', valOr(s.devolucoesParciais), s.devolucoesParciais ? 'is-warning' : '')}
-            ${qRow('Mediações / problema', valOr(s.problemas), s.problemas ? 'is-warning' : '')}
-            ${qRow('% faturamento com custo', valOr(cob.custo, pct))}
-            ${qRow('% faturamento com frete real', valOr(cob.frete, pct), (cob.frete || 0) > 0 ? 'is-success' : '')}
-            ${qRow('% faturamento bloqueado', valOr(s.pctFatBloqueado, pct), (s.pctFatBloqueado || 0) > 0 ? 'is-warning' : '')}
-          </div>
-        </div>
-      </div>`;
-
-    const nota = `<div class="vf-banner is-info vf-banner--compact" role="note">
-      <div class="vf-banner__content"><p class="vf-banner__description">Fechamento do <strong>período inteiro</strong> (independe dos filtros da tabela de pedidos). O <strong>frete seller</strong> vem da Shipments API por pedido quando disponível; pedidos sem frete real mantêm o fechamento <strong>parcial</strong>. Ausência aparece como <strong>—</strong>, nunca R$ 0,00.</p></div>
-    </div>`;
-
-    corpo = `${posVendaWarning}${kpis}${secundarios}<div class="vf-fapi-composition-grid">${composicao}${qualidade}</div>${nota}`;
+    host.innerHTML = `
+      <section class="vf-cv-resumo" aria-label="Fechamento do período">
+        ${topo}
+        ${posVendaWarning}
+        <div class="vf-cv-bloco">${emptyState({
+          icon:'dot', title:'Nenhum pedido neste recorte',
+          why:'O recorte selecionado não tem pedidos.',
+          next:'Volte para "Todos".',
+        })}</div>
+      </section>`;
+    limparBlocos();
+    return;
   }
 
+  const confiavel = s.confiancaFechamento === 'confiavel';
+  const calculaveis = Math.max(0, s.pedidosValidos - s.pedidosBloqueados);
+  const parcialFoot = confiavel
+    ? 'todos os componentes reais'
+    : (s.cobertura?.resultado != null ? `parcial · cobre ${pct(s.cobertura.resultado)} da receita` : 'parcial');
+
+  // Aviso de receita bloqueada: o faturamento desses pedidos entra no total,
+  // mas o resultado só considera os calculáveis (números prontos do summary).
+  const notaBloqueada = s.receitaBloqueada > 0
+    ? `<p class="vf-cv-nota vf-cv-nota--atencao" role="status"><strong>Receita bloqueada: ${money(s.receitaBloqueada)}</strong> em ${num(s.pedidosBloqueados)} pedido(s) sem custo ou produto na base. O faturamento deles já está somado, mas o resultado considera só os outros ${num(calculaveis)}. <button type="button" class="vf-cv-link" data-action="ver-bloqueados">Ver esses pedidos</button></p>`
+    : '';
+
+  const margem = s.margemContribuicaoPercentual;
+  const cartoes = `<dl class="vf-cv-cartoes" aria-label="Resumo do período">
+    ${cartao({ label:'Faturamento bruto', valorHtml: money(s.faturamento), foot:`${num(s.pedidosValidos)} pedido(s) válido(s) · ${num(s.unidades)} unidade(s)` })}
+    ${cartao({ painel:true, label:'Resultado parcial', valorHtml: s.lucroContribuicao == null ? '—' : esc(moneySinal(s.lucroContribuicao)), foot: parcialFoot })}
+    ${cartao({ label:'Margem', valorHtml: margem == null ? '—' : pct(margem), tom: margem != null && margem < 0 ? 'is-danger' : '', foot:'resultado ÷ faturamento bruto' })}
+    ${cartao({ label:'Ticket médio', valorHtml: valOr(s.ticket, money), foot:'por pedido válido' })}
+  </dl>`;
+
+  const kvContador = { cls:'vf-cv-contador' };
+  const contadores = `<dl class="vf-cv-contadores" aria-label="Pedidos fora da venda boa e receita bloqueada">
+    ${linhaKv('Total de pedidos', valOr(s.pedidosTotal), { ...kvContador, hint:'no período' })}
+    ${linhaKv('Cancelados', valOr(s.cancelados), { ...kvContador, tom: s.cancelados > 0 ? 'is-danger' : '', hint:'fora da venda boa · definitivo' })}
+    ${linhaKv('Devoluções / reembolsos', valOr(s.devolucoes), { ...kvContador, tom: s.devolucoes > 0 ? 'is-danger' : '', hint:'fora da venda boa · pós-venda' })}
+    ${linhaKv('Mediações / problema', valOr(s.problemas), { ...kvContador, tom: s.problemas > 0 ? 'is-warning' : '', hint:'fora da venda boa · aguardando decisão' })}
+    ${linhaKv('Receita bloqueada', s.receitaBloqueada > 0 ? money(s.receitaBloqueada) : '—', { ...kvContador, tom: s.receitaBloqueada > 0 ? 'is-warning' : '', hint:'falta custo/frete para calcular' })}
+  </dl>`;
+
   host.innerHTML = `
-    <section class="vf-section vf-fapi-overview" aria-label="Fechamento do período">
-      <div class="vf-section__header">
-        <div>
-          <h2 class="vf-section__title">Fechamento do período</h2>
-          <p class="vf-section__description">${headerMeta}</p>
-        </div>
-        <div class="vf-section__actions">
-          <span class="vf-fapi-context__status-item"><span class="vf-fapi-context__status-label">Confiança</span> ${confStatus(s.pedidosTotal ? s.confiancaFechamento : rAll.confiancaFechamento)}</span>
-        </div>
-      </div>
-      ${recorteBar}
-      ${corpo}
+    <section class="vf-cv-resumo" aria-label="Fechamento do período">
+      ${topo}
+      ${posVendaWarning}
+      ${notaBloqueada}
+      ${cartoes}
+      ${contadores}
     </section>`;
+
+  /* "Para onde vai o dinheiro": as MESMAS linhas de buildComposicaoRows (agregados
+     prontos do backend). A parte de cada linha no faturamento é só a largura do
+     trilho e o rótulo entre parênteses — apresentação, não um novo número financeiro. */
+  const comps = buildComposicaoRows(s);
+  const base = Number(s.faturamento) || 0;
+  const linhas = comps.map((c, i) => {
+    const tipo = i === 0 ? 'inicio' : (c.op === '=' ? 'fim' : '');
+    const parte = (base > 0 && c.valor != null) ? Math.min(100, Math.abs(Number(c.valor)) / base * 100) : null;
+    const estimado = tipo === 'fim' && c.status !== 'real';
+    const valorTxt = c.valor == null
+      ? '<span class="is-absent">—</span>'
+      : (estimado ? `<span class="vf-fapi-est">${esc(moneySinal(c.valor))}</span>` : esc(moneySinal(c.valor)));
+    return `
+      <li class="vf-cv-linha${tipo ? ' vf-cv-linha--' + tipo : ''}" title="${esc(c.obs)}">
+        <span class="vf-cv-linha__rotulo">${esc(c.comp)} <small>${esc(c.fonte)}</small>${c.status !== 'real' ? ' ' + statusTag(c.status) : ''}</span>
+        <span class="vf-cv-linha__valor">${valorTxt}${parte == null ? '' : ` <small>(${pct(parte)})</small>`}</span>
+        <span class="vf-cv-trilho" aria-hidden="true"><i style="width:${parte == null ? 0 : round2(parte)}%"></i></span>
+      </li>`;
+  }).join('');
+  const residuo = composicaoResiduo(comps);
+  const residuoLinha = (residuo != null && Math.abs(residuo) >= 0.01)
+    ? `<li class="vf-cv-linha vf-cv-linha--residuo" title="as linhas acima não fecham no resultado — reportar">
+        <span class="vf-cv-linha__rotulo">Resíduo não explicado ${statusTag('parcial')}</span>
+        <span class="vf-cv-linha__valor"><span class="vf-fapi-est">${esc(moneySinal(residuo))}</span></span>
+      </li>`
+    : '';
+  const semFreteNota = (s.semFrete > 0 || s.freteTotal == null)
+    ? `<p class="vf-cv-sobre">Parcial: ${s.freteTotal == null ? 'nenhum envio retornou custo de frete' : `${num(s.semFrete)} pedido(s) calculáveis ainda sem frete real`} (Shipments API).</p>`
+    : '';
+  setHost('fapi-comp-host', `
+    <section class="vf-cv-bloco vf-cv-composicao" aria-labelledby="fapi-comp-titulo">
+      <h2 class="vf-cv-bloco__titulo" id="fapi-comp-titulo">Para onde vai o dinheiro</h2>
+      <p class="vf-cv-sobre">${esc(F.periodoResp?.label || '')}${F.periodoResp?.label ? ' · ' : ''}${num(s.pedidosValidos)} pedido(s) válido(s). Ausência aparece como —, nunca R$ 0,00.</p>
+      <ul class="vf-cv-linhas">${linhas}${residuoLinha}</ul>
+      ${semFreteNota}
+    </section>`);
+
+  const cob = s.cobertura || {};
+  setHost('fapi-qual-host', `
+    <section class="vf-cv-bloco" aria-labelledby="fapi-qual-titulo">
+      <h2 class="vf-cv-bloco__titulo" id="fapi-qual-titulo">Qualidade do fechamento</h2>
+      <dl class="vf-cv-kv">
+        ${linhaKv('Com resultado calculável', valOr(calculaveis))}
+        ${linhaKv('Pedidos sem custo', valOr(s.semCusto), { tom: s.semCusto ? 'is-danger' : '' })}
+        ${linhaKv('Pedidos sem frete', valOr(s.semFrete), { tom: s.semFrete ? 'is-warning' : '' })}
+        ${linhaKv('Pedidos bloqueados', valOr(s.pedidosBloqueados), { tom: s.pedidosBloqueados ? 'is-danger' : '' })}
+        ${linhaKv('Devoluções parciais (no resultado)', valOr(s.devolucoesParciais), { tom: s.devolucoesParciais ? 'is-warning' : '' })}
+        ${linhaKv('% faturamento com custo', valOr(cob.custo, pct))}
+        ${linhaKv('% faturamento com frete real', valOr(cob.frete, pct), { tom: (cob.frete || 0) > 0 ? 'is-success' : '' })}
+        ${linhaKv('% faturamento bloqueado', valOr(s.pctFatBloqueado, pct), { tom: (s.pctFatBloqueado || 0) > 0 ? 'is-warning' : '' })}
+      </dl>
+    </section>`);
+
+  setHost('fapi-nota-host', `<p class="vf-cv-rodape">Resultado parcial = receita de produtos − receita bloqueada − tarifa − custo − imposto − frete seller, somados pelo backend. Os números desta aba são do <strong>período inteiro</strong> e não mudam com os filtros da aba Pedidos. O frete seller vem da Shipments API por pedido; pedido sem frete real mantém o fechamento parcial.</p>`);
 }
 
 /* MP3 — Conciliação Mercado Pago (Payment + Settlement), seção enxuta e
@@ -1400,18 +1411,24 @@ const MP_RECONCILIATION_STATUS_LBL = {
 };
 function mpStatusTag(s) { return `<span class="vf-tag ${MP_STATUS_CLS[s] || 'is-neutral'}">${esc(MP_STATUS_LBL[s] || s || '—')}</span>`; }
 
+const MP_RECONCILIATION_STATUS_CLS = {
+  pending: 'is-neutral', partial: 'is-warning', complete: 'is-success', divergent: 'is-danger',
+};
+
 function renderMercadoPagoSection() {
   const host = document.getElementById('fapi-mp-host');
   if (!host || !F.ok) return;
 
+  const bloco = corpo => `
+    <section class="vf-cv-bloco" aria-labelledby="fapi-mp-titulo">${corpo}</section>`;
+  const titulo = (tag = '') => `
+    <div class="vf-cv-bloco__topo">
+      <h2 class="vf-cv-bloco__titulo" id="fapi-mp-titulo">Conciliação Mercado Pago</h2>
+      ${tag}
+    </div>`;
+
   if (F.mp.loading && !F.mp.data) {
-    host.innerHTML = `
-      <section class="vf-section" aria-label="Conciliação Mercado Pago">
-        <div class="vf-section__header"><div>
-          <h2 class="vf-section__title">Conciliação Mercado Pago</h2>
-        </div></div>
-        <div class="vf-card"><div class="vf-card__body"><p class="vf-fapi-legend">Carregando conciliação Mercado Pago…</p></div></div>
-      </section>`;
+    host.innerHTML = bloco(`${titulo()}<p class="vf-cv-sobre">Carregando conciliação Mercado Pago…</p>`);
     return;
   }
 
@@ -1422,43 +1439,34 @@ function renderMercadoPagoSection() {
 
   const status = F.mp.data.mpReconciliationStatus || 'not_available';
   if (status === 'not_available') {
-    host.innerHTML = `
-      <section class="vf-section" aria-label="Conciliação Mercado Pago">
-        <div class="vf-section__header"><div>
-          <h2 class="vf-section__title">Conciliação Mercado Pago</h2>
-          <p class="vf-section__description">Camada auxiliar de conciliação financeira com o Mercado Pago (Payment + Settlement) — não substitui o Resultado Parcial.</p>
-        </div></div>
-        <div class="vf-card"><div class="vf-card__body">${emptyState({
-          icon:'dot', title:'Ainda não disponível para este período',
-          why:'Nenhum Payment/Settlement do Mercado Pago foi sincronizado para este intervalo/conta.',
-          next:'Sincronize novamente após validar a integração de Mercado Pago.',
-        })}</div></div>
-      </section>`;
+    host.innerHTML = bloco(`
+      ${titulo()}
+      <p class="vf-cv-sobre">Camada auxiliar de conciliação financeira com o Mercado Pago (Payment + Settlement) — não substitui o Resultado Parcial.</p>
+      ${emptyState({
+        icon:'dot', title:'Ainda não disponível para este período',
+        why:'Nenhum Payment/Settlement do Mercado Pago foi sincronizado para este intervalo/conta.',
+        next:'Sincronize novamente após validar a integração de Mercado Pago.',
+      })}`);
     return;
   }
 
   const s = F.mp.data.summary || {};
   const cobertura = s.coveragePercent != null ? pct(s.coveragePercent) : '—';
-  const metrics = `<div class="vf-fapi-secondary-metrics" aria-label="Métricas da conciliação Mercado Pago">
-    ${secondaryMetric('Resultado calculado', esc(valOr(s.resultadoOperacionalDosOrdersCobertos, money)), 'sobre os pedidos conciliados')}
-    ${secondaryMetric(`Resultado conciliado MP · ${esc(cobertura)}`, esc(valOr(s.resultadoConciliadoDosOrdersCobertos, money)), `cobertura: ${esc(cobertura)} dos pedidos elegíveis`)}
-    ${secondaryMetric('Diferença nos pedidos conciliados', esc(valOr(s.deltaResultadoDosOrdersCobertos, money)), 'resultado conciliado − resultado calculado', s.deltaResultadoDosOrdersCobertos === 0)}
-    ${secondaryMetric('Payments conciliados', `${num(s.paymentsMatched)} / ${num(s.paymentsUnique)}`, 'matched / total únicos')}
-    ${secondaryMetric('Liberação', `${num(s.paymentsReleased)} liberados · ${num(s.paymentsPendingRelease)} pendentes`, 'money_release_status — nunca assume liberado por omissão')}
-    ${secondaryMetric('Divergências', num((s.ordersDivergent || 0) + (s.ordersAmbiguous || 0)), 'pedidos divergentes/ambíguos', !(s.ordersDivergent || s.ordersAmbiguous)) }
-    ${secondaryMetric('Eventos pós-venda financeiros', num(s.postMovementsCount), 'REFUND/DISPUTE/etc. — nunca somados ao resultado', !s.postMovementsCount)}
-  </div>`;
+  const divergencias = (s.ordersDivergent || 0) + (s.ordersAmbiguous || 0);
+  const tag = `<span class="vf-tag ${MP_RECONCILIATION_STATUS_CLS[status] || 'is-neutral'}">${esc(MP_RECONCILIATION_STATUS_LBL[status] || status)} · ${esc(cobertura)}</span>`;
 
-  host.innerHTML = `
-    <section class="vf-section" aria-label="Conciliação Mercado Pago">
-      <div class="vf-section__header">
-        <div>
-          <h2 class="vf-section__title">Conciliação Mercado Pago</h2>
-          <p class="vf-section__description">Resultado conciliado sobre ${esc(cobertura)} dos pedidos elegíveis — ${esc(MP_RECONCILIATION_STATUS_LBL[status] || status)}. Camada auxiliar; não substitui o Resultado Parcial.</p>
-        </div>
-      </div>
-      <div class="vf-card"><div class="vf-card__body">${metrics}</div></div>
-    </section>`;
+  host.innerHTML = bloco(`
+    ${titulo(tag)}
+    <p class="vf-cv-sobre">Resultado conciliado sobre ${esc(cobertura)} dos pedidos elegíveis. Camada auxiliar; não substitui o Resultado Parcial.</p>
+    <dl class="vf-cv-kv" aria-label="Métricas da conciliação Mercado Pago">
+      ${linhaKv('Resultado calculado', esc(valOr(s.resultadoOperacionalDosOrdersCobertos, moneySinal)), { hint:'sobre os pedidos conciliados' })}
+      ${linhaKv('Resultado conciliado MP', esc(valOr(s.resultadoConciliadoDosOrdersCobertos, moneySinal)), { hint:`cobertura: ${cobertura} dos pedidos elegíveis` })}
+      ${linhaKv('Diferença nos pedidos conciliados', esc(valOr(s.deltaResultadoDosOrdersCobertos, moneySinal)), { hint:'resultado conciliado − resultado calculado', tom: s.deltaResultadoDosOrdersCobertos ? 'is-warning' : '' })}
+      ${linhaKv('Payments conciliados', `${num(s.paymentsMatched)} / ${num(s.paymentsUnique)}`, { hint:'matched / total únicos' })}
+      ${linhaKv('Liberação', `${num(s.paymentsReleased)} liberados · ${num(s.paymentsPendingRelease)} pendentes`, { hint:'money_release_status — nunca assume liberado por omissão' })}
+      ${linhaKv('Divergências', num(divergencias), { hint:'pedidos divergentes/ambíguos', tom: divergencias ? 'is-warning' : '' })}
+      ${linhaKv('Eventos pós-venda financeiros', num(s.postMovementsCount), { hint:'REFUND/DISPUTE/etc. — nunca somados ao resultado' })}
+    </dl>`);
 }
 
 /* ── ABA 1 · VISÃO GERAL — Vendas por dia (régua + tabela) ──
@@ -1501,9 +1509,13 @@ function renderDaysSection() {
   if (!host || !F.ok) return;
 
   const dias = diasComZeros();
-  if (!dias.length) { host.innerHTML = ''; return; }
+  // Sem pedido nenhum no período o estado vazio já está no bloco de cima.
+  if (!dias.length || !F.summary?.pedidosTotal) { host.innerHTML = ''; return; }
 
-  const cells = dias.map(d => {
+  // Altura da barra = faturamento do dia sobre o topo "redondo" do eixo — só
+  // escala visual do dado que /read/daily já devolveu.
+  const topo = escalaTopo(dias.reduce((m, d) => Math.max(m, Number(d.faturamento) || 0), 0));
+  const barras = dias.map(d => {
     const scope = dayScope(d.data);
     const cls = ['vf-fapi-day'];
     if (scope === 'selected') cls.push('is-selected');
@@ -1518,10 +1530,10 @@ function renderDaysSection() {
     if (d.receitaBloqueada > 0) tipParts.push(`receita bloqueada ${money(d.receitaBloqueada)}`);
     if (d.topProduto) tipParts.push(`top: ${d.topProduto.titulo}`);
     const tip = tipParts.join(' · ');
+    const altura = topo > 0 ? Math.max(0, Math.min(100, (Number(d.faturamento) || 0) / topo * 100)) : 0;
     return `<button type="button" class="${cls.join(' ')}" data-day="${esc(d.data)}" title="${esc(tip)}" aria-label="Filtrar pedidos de ${esc(tip)}" aria-pressed="${scope === 'selected'}">
+      <span class="vf-fapi-day__trilho"><i style="height:${round2(altura)}%"></i></span>
       <span class="vf-fapi-day__num">${esc(String(new Date(d.data + 'T00:00:00').getDate()).padStart(2, '0'))}</span>
-      <span class="vf-fapi-day__value">${esc(shortMoney(d.faturamento))}</span>
-      <span class="vf-fapi-day__orders">${esc(String(d.pedidos))} ped.</span>
       <span class="vf-fapi-day__markers">${markers}</span>
     </button>`;
   }).join('');
@@ -1539,9 +1551,9 @@ function renderDaysSection() {
       <td>${fmtDt(d.data)}</td>
       <td class="num">${valOr(d.pedidos)}</td>
       <td class="num">${money(d.faturamento)}</td>
-      <td class="num">${valOr(d.comissao, money)}</td>
-      <td class="num">${valOr(d.custo, money)}</td>
-      <td class="num">${valOr(d.imposto, money)}</td>
+      <td class="num">${deducao(d.comissao)}</td>
+      <td class="num">${deducao(d.custo)}</td>
+      <td class="num">${deducao(d.imposto)}</td>
       <td class="num">${d.receitaBloqueada > 0 ? `<span class="vf-fapi-est">${money(d.receitaBloqueada)}</span>` : '—'}</td>
       <td class="num">${d.semFrete > 0 ? num(d.semFrete) : '—'}</td>
       <td class="num">${d.semCusto > 0 ? num(d.semCusto) : '—'}</td>
@@ -1549,39 +1561,53 @@ function renderDaysSection() {
     </tr>`).join('');
 
   host.innerHTML = `
-    <section class="vf-section vf-fapi-days" aria-label="Vendas por dia">
-      <div class="vf-section__header">
-        <div>
-          <h2 class="vf-section__title">Vendas por dia</h2>
-          <p class="vf-section__description">Clique num dia para filtrar a aba Pedidos · ponto âmbar = cancelamento/problema · ponto vermelho = receita bloqueada.</p>
+    <section class="vf-cv-bloco vf-fapi-days" aria-labelledby="fapi-days-titulo">
+      <div class="vf-cv-bloco__topo">
+        <h2 class="vf-cv-bloco__titulo" id="fapi-days-titulo">Faturamento por dia</h2>
+        <div class="vf-cv-legenda">
+          <span><i class="vf-cv-chave" aria-hidden="true"></i>Faturamento</span>
+          <span><i class="vf-fapi-day__dot vf-fapi-day__dot--problem" aria-hidden="true"></i>Cancelamento ou problema</span>
+          <span><i class="vf-fapi-day__dot vf-fapi-day__dot--blocked" aria-hidden="true"></i>Receita bloqueada</span>
         </div>
-        <div class="vf-section__actions">
-          <label class="vf-filter-group">
-            <span class="vf-filter-group__label">Ordenar resumo por</span>
+      </div>
+      <div class="vf-cv-grafico">
+        <div class="vf-cv-grafico__eixo" aria-hidden="true">
+          <span>${esc(shortMoney(topo))}</span><span>${esc(shortMoney(topo / 2))}</span><span>0</span>
+        </div>
+        <div class="vf-cv-grafico__rolagem">
+          <div class="vf-cv-grafico__barras" role="group" aria-label="Dias do período" style="min-width:${dias.length * 18}px">
+            <span class="vf-cv-grafico__grade" aria-hidden="true"></span>
+            ${barras}
+          </div>
+        </div>
+      </div>
+      <p class="vf-cv-sobre">Clique num dia para ver só os pedidos dele.</p>
+      <details class="vf-cv-detalhe" id="fapi-days-details"${F.summaryUi.dailyTableOpen ? ' open' : ''}>
+        <summary>Ver os dias em tabela</summary>
+        <div class="vf-cv-detalhe__corpo">
+          <label class="vf-cv-ordenar">
+            <span>Ordenar por</span>
             <select class="vf-select vf-select--sm" id="fapi-daily-sort">${dailySortOpts}</select>
           </label>
+          <div class="vf-table-wrap vf-fapi-days__table-wrap">
+            <table class="vf-table vf-table--compact">
+              <thead><tr>
+                ${dailyTh('data', 'Data')}
+                ${dailyTh('pedidos', 'Ped.', true)}
+                ${dailyTh('faturamento', 'Faturamento', true)}
+                <th scope="col" class="num">Comissão</th>
+                <th scope="col" class="num">Custo</th>
+                <th scope="col" class="num">Imposto</th>
+                ${dailyTh('receitaBloqueada', 'Receita bloq.', true)}
+                ${dailyTh('semFrete', 'S/frete', true)}
+                ${dailyTh('semCusto', 'S/custo', true)}
+                ${dailyTh('cancelProblema', 'Canc/Prob', true)}
+              </tr></thead>
+              <tbody>${diaRows}</tbody>
+            </table>
+          </div>
         </div>
-      </div>
-      <div class="vf-fapi-days__strip-wrap" role="group" aria-label="Régua de dias do período">
-        <div class="vf-fapi-days__strip">${cells}</div>
-      </div>
-      <div class="vf-table-wrap vf-fapi-days__table-wrap">
-        <table class="vf-table vf-table--compact">
-          <thead><tr>
-            ${dailyTh('data', 'Data')}
-            ${dailyTh('pedidos', 'Ped.', true)}
-            ${dailyTh('faturamento', 'Faturamento', true)}
-            <th scope="col" class="num">Comissão</th>
-            <th scope="col" class="num">Custo</th>
-            <th scope="col" class="num">Imposto</th>
-            ${dailyTh('receitaBloqueada', 'Receita bloq.', true)}
-            ${dailyTh('semFrete', 'S/frete', true)}
-            ${dailyTh('semCusto', 'S/custo', true)}
-            ${dailyTh('cancelProblema', 'Canc/Prob', true)}
-          </tr></thead>
-          <tbody>${diaRows}</tbody>
-        </table>
-      </div>
+      </details>
     </section>`;
 }
 
@@ -1613,7 +1639,24 @@ function quickCountFromSummary(k, s) {
   }
 }
 function quickChipHtml(k, label, count, active) {
-  return `<button type="button" class="vf-filter-chip${active ? ' is-active' : ''}" data-quick="${k}" aria-pressed="${active}">${esc(label)} <span class="vf-badge">${num(count)}</span></button>`;
+  return `<button type="button" class="vf-cv-seg__item" data-quick="${k}" aria-pressed="${active}">${esc(label)} <small>${num(count)}</small></button>`;
+}
+/* Os chips são desenhados uma vez (renderOrdersPanel); o estado "ligado"
+   acompanha F.orders.quickFilter a cada atualização da tabela. */
+function syncQuickChips() {
+  document.querySelectorAll('#fapi-panel-pedidos [data-quick]').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.quick === F.orders.quickFilter)));
+}
+function setOrdersMode(modo) {
+  F.ui.ordersMode = modo === 'detalhado' ? 'detalhado' : 'compacto';
+  try { localStorage.setItem(ORDERS_MODE_KEY, F.ui.ordersMode); } catch (_) { /* sem armazenamento: vale só nesta visita */ }
+  document.querySelectorAll('#fapi-panel-pedidos [data-modo]').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.modo === F.ui.ordersMode)));
+  const table = document.querySelector('#fapi-ped-table .vf-fapi-orders__table');
+  if (table) {
+    table.classList.toggle('vf-fapi-orders__table--compacto', F.ui.ordersMode === 'compacto');
+    table.classList.toggle('vf-fapi-orders__table--detalhado', F.ui.ordersMode === 'detalhado');
+  }
 }
 
 const ORDER_SORTS = [
@@ -1684,34 +1727,32 @@ function renderOrdersPanel() {
 
   const sortOpts = ORDER_SORTS.map(([k, l]) => `<option value="${k}"${F.orders.sort === k ? ' selected' : ''}>${esc(l)}</option>`).join('');
   const advCount = ['logistica', 'diagbase', 'status'].filter(k => fl[k] !== 'todos').length;
+  const modoBtn = (m, l) => `<button type="button" class="vf-cv-seg__item" data-modo="${m}" aria-pressed="${F.ui.ordersMode === m}">${l}</button>`;
 
   panel.innerHTML = `
-    <section class="vf-section" aria-label="Pedidos do período">
-      <div class="vf-section__header">
-        <div>
-          <h2 class="vf-section__title">Pedidos</h2>
-          <p class="vf-section__description">Clique num pedido para abrir o extrato. Filtro, busca e ordenação consultam o servidor.</p>
+    <section class="vf-cv-bloco" aria-label="Pedidos do período">
+      <div class="vf-cv-bloco__topo">
+        <h2 class="vf-cv-bloco__titulo">Pedidos do período <small id="fapi-orders-count" aria-live="polite"></small></h2>
+        <div class="vf-cv-bloco__acoes">
+          <label class="vf-cv-ordenar">
+            <span>Ordenar por</span>
+            <select class="vf-select vf-select--sm" id="fapi-order-sort">${sortOpts}</select>
+          </label>
+          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-filters-toggle" aria-expanded="${F.ui.filtersPanelOpen}" aria-controls="fapi-filters-panel">Filtros${advCount ? ` <span class="vf-badge is-primary">${num(advCount)}</span>` : ''}</button>
+          <div class="vf-cv-seg" role="group" aria-label="Modo de exibição dos pedidos">${modoBtn('compacto', 'Compacto')}${modoBtn('detalhado', 'Detalhado')}</div>
         </div>
       </div>
 
       <div class="vf-fapi-orders-toolbar">
-        <div class="vf-fapi-orders-toolbar__main">
-          <input type="search" id="fapi-search" class="vf-input vf-input--sm vf-search" placeholder="Buscar pedido, MLB, SKU, título, status…" value="${esc(F.orders.search || '')}" autocomplete="off" aria-label="Buscar pedidos">
-          <label class="vf-fapi-orders-toolbar__sort">
-            <span class="vf-filter-group__label">Ordenar por</span>
-            <select class="vf-select vf-select--sm" id="fapi-order-sort">${sortOpts}</select>
-          </label>
-          <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-filters-toggle" aria-expanded="${F.ui.filtersPanelOpen}" aria-controls="fapi-filters-panel">Filtros${advCount ? ` <span class="vf-badge is-primary">${num(advCount)}</span>` : ''}</button>
-          <span class="vf-fapi-orders-toolbar__count" id="fapi-orders-count" aria-live="polite"></span>
-        </div>
-        <div class="vf-fapi-orders-toolbar__chips" role="group" aria-label="Recortes rápidos">${primary}</div>
+        <input type="search" id="fapi-search" class="vf-input vf-input--sm vf-search" placeholder="Buscar por produto, MLB, SKU, pedido ou status" value="${esc(F.orders.search || '')}" autocomplete="off" aria-label="Buscar pedidos">
+        <div class="vf-cv-seg vf-cv-seg--rola" role="group" aria-label="Recortes rápidos">${primary}</div>
         <div class="vf-fapi-orders-filters" id="fapi-filters-panel"${F.ui.filtersPanelOpen ? '' : ' hidden'}>
           <div class="vf-fapi-orders-filters__grid">
             ${selF('fapi-filter-logistica', 'logistica', 'Logística', [opt('todos','Todas',fl.logistica), opt('full','Full',fl.logistica), opt('nao_full','Não Full',fl.logistica)].join(''))}
             ${selF('fapi-filter-diagbase', 'diagbase', 'Diagnóstico / base', [opt('todos','Todos',fl.diagbase), opt('com_custo','Com custo',fl.diagbase), opt('sem_custo','Sem custo',fl.diagbase)].join(''))}
             ${selF('fapi-filter-status', 'status', 'Status do pedido', [opt('todos','Todos',fl.status), opt('valido','Válido',fl.status), opt('cancelado','Cancelado',fl.status), opt('problema','Problema',fl.status), opt('bloqueado','Bloqueado',fl.status)].join(''))}
           </div>
-          <div class="vf-fapi-orders-toolbar__chips" role="group" aria-label="Recortes adicionais">${extra}</div>
+          <div class="vf-cv-seg vf-cv-seg--rola" role="group" aria-label="Recortes adicionais">${extra}</div>
         </div>
       </div>
 
@@ -1723,6 +1764,7 @@ function renderOrdersPanel() {
 function renderPedTable() {
   const host = document.getElementById('fapi-ped-table');
   if (!host) return;
+  syncQuickChips();
 
   if (F.orders.loading) {
     host.innerHTML = loadingState('Atualizando pedidos…');
@@ -1733,7 +1775,7 @@ function renderPedTable() {
   const pg = F.pagination || { page:1, limit:F.orders.pageSize, total:0, totalPages:0 };
 
   const countEl = document.getElementById('fapi-orders-count');
-  if (countEl) countEl.textContent = `${num(pg.total)} pedido(s) encontrados`;
+  if (countEl) countEl.textContent = `${num(pg.total)} encontrado(s)`;
 
   const ativos = buildActiveFilters();
   const activeLine = ativos.length ? `
@@ -1748,39 +1790,42 @@ function renderPedTable() {
 
   if (!pg.total) {
     const buscando = String(F.orders.search || '').trim();
-    host.innerHTML = `${activeLine}<div class="vf-card"><div class="vf-card__body">${emptyState({
+    host.innerHTML = `${activeLine}${emptyState({
       icon:'box',
       title: buscando ? 'Nenhum pedido para a busca' : 'Nenhum pedido neste recorte',
       why: buscando ? `Nada encontrado para "${buscando}".` : 'O recorte/filtros atuais não retornaram pedidos.',
       next:'Use "Limpar tudo" ou escolha "Todos" nos recortes.',
       action: ativos.length ? '<button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-clear-local-empty">Limpar tudo</button>' : '',
-    })}</div></div>`;
+    })}`;
     return;
   }
 
   const tr = rows.map(o => {
     const [scls, slbl] = statusPedidoInfo(o);
-    const res = o.resultado == null ? '—' : `<span class="vf-fapi-est">${money(o.resultado)}</span>`;
     const selected = F.ui.drawerRowId === o.rowId;
-    const pendPrimaria = o.pendencias?.length ? pendenciaLabel(o.pendencias[0]) : '—';
-    const pendTitle = o.pendencias?.length ? o.pendencias.map(pendenciaLabel).join(' · ') : '—';
+    const pendPrimaria = o.pendencias?.length ? pendenciaLabel(o.pendencias[0]) : '';
+    const pendTitle = o.pendencias?.length ? o.pendencias.map(pendenciaLabel).join(' · ') : '';
+    const titulo = (o.produto?.titulo || '—') + (o.multiItem ? ' (+ outros)' : '');
+    const meta = [o.produto?.mlb, o.produto?.sku ? `SKU ${o.produto.sku}` : 'sem SKU'].filter(Boolean).map(esc).join(' · ');
+    // Resultado: valor pronto do backend. Itálico (vf-fapi-est) só quando parcial.
+    const resTxt = o.resultado == null ? '—' : esc(moneySinal(o.resultado));
+    const res = o.resultado == null ? '—'
+      : (o.resultadoStatus === 'real' ? `<strong${o.resultado < 0 ? ' class="is-danger"' : ''}>${resTxt}</strong>` : `<span class="vf-fapi-est">${resTxt}</span>`);
     return `
       <tr class="${(pedidoRowClass(o) + (selected ? ' row--selected' : '')).trim()}" data-row-id="${esc(o.rowId)}" tabindex="0" aria-label="Abrir extrato do pedido ${esc(o.id)}">
-        <td class="vf-mono">${esc(o.id)}${o.multiItem ? ` <span class="vf-tag is-info" title="${esc(o.qtdItens)} itens neste pedido">${esc(o.qtdItens)} itens</span>` : ''}</td>
-        <td>${fmtDt(o.data)}</td>
-        <td><span class="vf-tag ${scls}">${esc(slbl)}</span></td>
-        <td class="vf-truncate" title="${esc(o.produto?.titulo || '—')}">${esc(o.produto?.titulo || '—')}${o.multiItem ? ' (+ outros)' : ''}</td>
-        <td class="vf-mono">${esc(o.produto?.mlb || '—')}</td>
-        <td class="vf-mono${o.produto?.sku ? '' : ' is-absent'}">${esc(o.produto?.sku || '—')}</td>
-        <td>${tagFull(o.full)}</td>
-        <td>${tagAds(o.adsStatus)}</td>
+        <td class="vf-cv-data">${fmtDt(o.data)}</td>
+        <td class="vf-cv-venda">
+          <span class="vf-cv-venda__titulo" title="${esc(titulo)}">${esc(titulo)}</span>
+          <small>${meta}<span class="vf-cv-venda__pedido"> · Pedido ${esc(o.id)}</span>${o.full === true ? ' <span class="vf-cv-full" title="Pedido enviado pelo Full">FULL</span>' : ''}${o.multiItem ? ` <span class="vf-tag is-info" title="${esc(o.qtdItens)} itens neste pedido">${esc(o.qtdItens)} itens</span>` : ''}</small>
+        </td>
+        <td class="vf-cv-sit"><span class="vf-tag ${scls}">${esc(slbl)}</span>${pendPrimaria ? `<small title="${esc(pendTitle)}">${esc(pendPrimaria)}</small>` : ''}</td>
         <td class="num">${valOr(o.valor, money)}</td>
-        <td class="num${o.frete == null ? ' is-absent' : ''}">${valOr(o.frete, money)}</td>
-        <td class="num${o.taxas == null ? ' is-absent' : ''}">${valOr(o.taxas, money)}</td>
-        <td class="num${o.custo == null ? ' is-absent' : ''}">${valOr(o.custo, money)}</td>
+        <td class="num${o.taxas == null ? ' is-absent' : ''}">${deducao(o.taxas)}</td>
+        <td class="num${o.frete == null ? ' is-absent' : ''}">${deducao(o.frete)}</td>
+        <td class="num${o.custo == null ? ' is-absent' : ''}">${deducao(o.custo)}</td>
+        <td class="num${o.imposto == null ? ' is-absent' : ''}">${deducao(o.imposto)}</td>
         <td class="num${o.resultado == null ? ' is-absent' : ''}">${res}</td>
         <td>${confStatus(o.confianca)}</td>
-        <td class="vf-truncate is-absent" title="${esc(pendTitle)}">${esc(pendPrimaria)}</td>
       </tr>`;
   }).join('');
 
@@ -1796,23 +1841,18 @@ function renderPedTable() {
 
   host.innerHTML = `${activeLine}
     <div class="vf-table-wrap vf-fapi-orders__table-wrap">
-      <table class="vf-table vf-table--compact vf-fapi-orders__table" aria-label="Pedidos do período">
+      <table class="vf-table vf-table--compact vf-fapi-orders__table vf-fapi-orders__table--${F.ui.ordersMode}" aria-label="Pedidos do período">
         <thead><tr>
-          <th scope="col">Pedido</th>
           ${th('data', 'Data')}
-          <th scope="col">Status</th>
-          <th scope="col">Produto</th>
-          <th scope="col">MLB</th>
-          <th scope="col">SKU</th>
-          <th scope="col">Full</th>
-          <th scope="col">Ads</th>
+          <th scope="col">Pedido</th>
+          <th scope="col">Situação</th>
           ${th('valor', 'Valor', true)}
-          ${th('frete', 'Frete', true)}
           ${th('taxas', 'Taxas', true)}
+          ${th('frete', 'Frete', true)}
           ${th('custo', 'Custo', true)}
+          <th scope="col" class="num">Imposto</th>
           ${th('resultado', 'Resultado', true)}
           ${th('confianca', 'Confiança')}
-          <th scope="col">Pendência</th>
         </tr></thead>
         <tbody>${tr}</tbody>
       </table>
@@ -1824,7 +1864,7 @@ function renderPedTable() {
         <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-next"${pg.page >= pg.totalPages ? ' disabled' : ''}>Próxima →</button>
       </div>
     </div>
-    <p class="vf-fapi-legend">Filete à esquerda da linha: <b>vermelho</b> cancelado/bloqueado · <b>âmbar</b> problema/sem custo · <b>cinza</b> sem frete. O estado também está escrito nas colunas Status, Confiança e Pendência. Pedido com mais de um item mostra a etiqueta "N itens" — os valores já são a soma de todos os itens (nunca só o primeiro produto). Ausência é <b>—</b>, nunca R$ 0,00.</p>`;
+    <p class="vf-cv-rodape">Clique num pedido para abrir o extrato. Resultado = valor − taxas − frete − custo − imposto, calculado e gravado pelo backend; em itálico quando ainda é parcial. Filete à esquerda da linha: <b>vermelho</b> cancelado/bloqueado · <b>âmbar</b> problema/sem custo · <b>cinza</b> sem frete. Pedido com mais de um item mostra a etiqueta "N itens" e os valores já são a soma de todos os itens. Ausência é <b>—</b>, nunca R$ 0,00.</p>`;
 }
 
 /* ── DETALHE DO PEDIDO (drawer lateral) ───────────────────────
@@ -2121,16 +2161,15 @@ function renderCurvaAbcToolbar(counts) {
   return `
     <div class="vf-fapi-abc-toolbar">
       <div class="vf-fapi-abc-toolbar__filters">
-        <input type="search" class="vf-input vf-input--sm vf-search" data-abc-search placeholder="Buscar MLB, SKU ou título…" value="${esc(F.abc.search || '')}" autocomplete="off" aria-label="Buscar produtos na Curva ABC">
-        <label class="vf-filter-group">
-          <span class="vf-filter-group__label">Grupo</span>
+        <input type="search" class="vf-input vf-input--sm vf-search" data-abc-search placeholder="Buscar por produto, MLB ou SKU" value="${esc(F.abc.search || '')}" autocomplete="off" aria-label="Buscar produtos na Curva ABC">
+        <label class="vf-cv-ordenar">
+          <span>Grupo</span>
           <select class="vf-select vf-select--sm" data-abc-group>${groupOpts}</select>
         </label>
-        <label class="vf-filter-group">
-          <span class="vf-filter-group__label">Ordenar por</span>
+        <label class="vf-cv-ordenar">
+          <span>Ordenar por</span>
           <select class="vf-select vf-select--sm" data-abc-sort>${sortOpts}</select>
         </label>
-        <span class="vf-fapi-orders-toolbar__count">${num(counts.visiveis)} produto(s)</span>
       </div>
       <div class="vf-fapi-abc-toolbar__actions">
         <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-abc-action="only-nocost">Ver apenas sem custo</button>
@@ -2151,12 +2190,12 @@ function renderCurvaAbcTable(rows, totalFat) {
 
   const semFaturamento = totalFat <= 0;
   if (semFaturamento || total === 0) {
-    return `<div class="vf-card"><div class="vf-card__body">${emptyState({
+    return emptyState({
       icon:'dot',
       title: semFaturamento ? 'Sem faturamento no período' : 'Sem produtos neste grupo',
       why: semFaturamento ? 'Não há receita para montar a Curva ABC.' : 'Nenhum produto no recorte atual.',
       next: semFaturamento ? 'Sincronize pedidos ou amplie o período.' : 'Troque o grupo ou limpe a busca.',
-    })}</div></div>`;
+    });
   }
 
   const sortDescCol = F.abc.group === 'receita_bloqueada' ? 'receitaBloqueada' : F.abc.sort;
@@ -2166,19 +2205,19 @@ function renderCurvaAbcTable(rows, totalFat) {
     <tr class="${!a.semProduto && !a.temCusto ? 'is-nocost' : ''}">
       <td class="vf-fapi-abc-rank">${num(start + i + 1)}</td>
       <td>${a.curva ? ABC_CURVA_TAG[a.curva] : '<span class="vf-tag is-neutral">—</span>'}</td>
-      <td class="vf-truncate" title="${esc(a.titulo || '—')}">${esc(a.titulo || '—')}</td>
-      <td class="vf-mono">${esc(a.mlb || '—')}</td>
-      <td class="vf-mono${a.sku ? '' : ' is-absent'}">${esc(a.sku || '—')}</td>
+      <td class="vf-cv-venda">
+        <span class="vf-cv-venda__titulo" title="${esc(a.titulo || '—')}">${esc(a.titulo || '—')}</span>
+        <small>${[a.mlb, a.sku ? `SKU ${a.sku}` : (a.semProduto ? null : 'sem SKU')].filter(Boolean).map(esc).join(' · ') || '—'}</small>
+      </td>
       <td class="num">${money(a.faturamento)}</td>
       <td class="num">${valOr(a.pctFat, pct)}</td>
       <td class="num is-absent">${valOr(a.acumPctFat, pct)}</td>
       <td class="num">${valOr(a.unidades)}</td>
       <td class="num">${valOr(a.pedidos)}</td>
       <td class="num${a.ticketMedio == null ? ' is-absent' : ''}">${valOr(a.ticketMedio, money)}</td>
-      <td class="num${a.comissao == null ? ' is-absent' : ''}">${valOr(a.comissao, money)}</td>
+      <td class="num${a.comissao == null ? ' is-absent' : ''}">${deducao(a.comissao)}</td>
       <td class="num${a.custoUnit == null ? ' is-absent' : ''}">${valOr(a.custoUnit, money)}</td>
       <td>${abcBaseTag(a)}</td>
-      <td>${tagDiag(a.temCusto ? 'real' : 'ausente')}</td>
       <td>${abcLogTag(a.logisticaTipo)}</td>
       <td class="num">${a.receitaBloqueada > 0 ? `<span class="vf-fapi-est">${money(a.receitaBloqueada)}</span>` : '—'}</td>
     </tr>`).join('');
@@ -2190,18 +2229,15 @@ function renderCurvaAbcTable(rows, totalFat) {
           <th scope="col"><span class="vf-visually-hidden">Posição</span>#</th>
           <th scope="col">Curva</th>
           <th scope="col">Produto</th>
-          <th scope="col">MLB</th>
-          <th scope="col">SKU</th>
           ${th('faturamento', 'Faturamento', true)}
           <th scope="col" class="num">% fat.</th>
-          <th scope="col" class="num">Acum. %</th>
+          <th scope="col" class="num">Acum.</th>
           ${th('unidades', 'Un.', true)}
           ${th('pedidos', 'Ped.', true)}
           ${th('ticketMedio', 'Ticket', true)}
           ${th('comissao', 'Comissão', true)}
           <th scope="col" class="num">Custo un.</th>
           <th scope="col">Base</th>
-          <th scope="col">Diagnóstico</th>
           <th scope="col">Logística</th>
           ${th('receitaBloqueada', 'Receita bloq.', true)}
         </tr></thead>
@@ -2215,7 +2251,7 @@ function renderCurvaAbcTable(rows, totalFat) {
         <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" data-abc-page="1"${F.abc.page >= pages ? ' disabled' : ''}>Próxima →</button>
       </div>
     </div>
-    <p class="vf-fapi-legend">A ≤ 80% · B ≤ 95% · C = resto do faturamento acumulado do período. Curva calculada sobre o período inteiro — a busca e os grupos não alteram a classificação. Filete âmbar = produto sem custo na base.</p>`;
+    <p class="vf-cv-rodape">A ≤ 80% · B ≤ 95% · C = resto do faturamento acumulado do período. Curva calculada sobre o período inteiro — a busca e os grupos não alteram a classificação. Filete âmbar = produto sem custo na base.</p>`;
 }
 
 function renderCurvaAbc() {
@@ -2233,28 +2269,27 @@ function renderCurvaAbc() {
 
   const sum = (label, val, cls = '', foot = '') => `
     <div class="vf-fapi-abc-summary__item">
-      <span class="vf-fapi-abc-summary__label">${esc(label)}</span>
-      <span class="vf-fapi-abc-summary__value${cls ? ' ' + cls : ''}">${val}</span>
-      ${foot ? `<span class="vf-fapi-abc-summary__foot">${esc(foot)}</span>` : ''}
+      <dt class="vf-fapi-abc-summary__label">${esc(label)}</dt>
+      <dd class="vf-fapi-abc-summary__value${cls ? ' ' + cls : ''}">${val}</dd>
+      ${foot ? `<small class="vf-fapi-abc-summary__foot">${esc(foot)}</small>` : ''}
     </div>`;
 
   root.innerHTML = `
-    <div class="vf-section__header">
-      <div>
-        <h2 class="vf-section__title">Curva ABC de produtos</h2>
-        <p class="vf-section__description">Agregação dos pedidos do período por produto — leitura/análise, sem recomendação automática.</p>
-      </div>
-    </div>
-    <div class="vf-fapi-abc-summary" aria-label="Resumo da Curva ABC">
+    <dl class="vf-fapi-abc-summary" aria-label="Resumo da Curva ABC">
       ${sum('Produtos vendidos', num(vendidos.length), '', 'com faturamento no período')}
       ${sum('Faturamento', money(totalFat))}
       ${sum('Unidades', num(unidadesTotal))}
       ${sum('Curva A', num(curvaA.length), '', 'concentram até 80%')}
       ${sum('Produtos sem custo', num(semCusto.length), semCusto.length ? 'is-danger' : '', fatSemCusto > 0 ? `${money(fatSemCusto)} sem custo p/ calcular` : '')}
       ${sum('Receita bloqueada', receitaBloqTotal > 0 ? money(receitaBloqTotal) : '—', receitaBloqTotal > 0 ? 'is-warning' : '')}
-    </div>
-    ${renderCurvaAbcToolbar({ visiveis: rows.length })}
-    <div data-abc-table>${renderCurvaAbcTable(rows, totalFat)}</div>`;
+    </dl>
+    <div class="vf-cv-bloco">
+      <div class="vf-cv-bloco__topo">
+        <h2 class="vf-cv-bloco__titulo">Produtos do período <small data-abc-count>${num(rows.length)} produto(s)</small></h2>
+      </div>
+      ${renderCurvaAbcToolbar({ visiveis: rows.length })}
+      <div data-abc-table>${renderCurvaAbcTable(rows, totalFat)}</div>
+    </div>`;
 }
 
 function renderAbc() {
@@ -2304,7 +2339,7 @@ function wireCurvaAbc() {
       const tableHost = root.querySelector('[data-abc-table]');
       if (!tableHost || !F.ok) return;
       const rows = buildCurvaAbcView({ group: F.abc.group, sortBy: F.abc.sort, search: F.abc.search });
-      const count = root.querySelector('.vf-fapi-abc-toolbar__count');
+      const count = root.querySelector('[data-abc-count]');
       if (count) count.textContent = `${num(rows.length)} produto(s)`;
       tableHost.innerHTML = renderCurvaAbcTable(rows, F.totalFaturamento);
     }, 300);
@@ -2342,6 +2377,13 @@ function applyDayFilter(day) {
 function applyQuickFilter(q) {
   F.orders.quickFilter = (q !== 'todos' && q === F.orders.quickFilter) ? 'todos' : q;
   closeOrderDrawer({ restoreFocus: false });
+  atualizarListaEResumo({ resetPage: true });
+}
+/* Atalho do aviso de receita bloqueada (Visão geral) → aba Pedidos já no recorte "Bloqueados". */
+function verPedidosBloqueados() {
+  F.orders.quickFilter = 'bloqueados';
+  closeOrderDrawer({ restoreFocus: false });
+  setActiveTab('pedidos');
   atualizarListaEResumo({ resetPage: true });
 }
 function setOrderSort(value) {
@@ -2661,6 +2703,7 @@ function wireStatic() {
     if (fechq) { setFechQuick(fechq.dataset.fechq); return; }
     const syncEmpty = e.target.closest('[data-action="sync-empty"]');
     if (syncEmpty) { executarSincronizacao(); return; }
+    if (e.target.closest('[data-action="ver-bloqueados"]')) { verPedidosBloqueados(); return; }
     const day = e.target.closest('[data-day]');
     if (day) { applyDayFilter(day.dataset.day); return; }
     const row = e.target.closest('[data-fechday]');
@@ -2674,6 +2717,10 @@ function wireStatic() {
   visao?.addEventListener('change', e => {
     if (e.target.id === 'fapi-daily-sort') setDailySort(e.target.value);
   });
+  // 'toggle' não borbulha: escuta na captura para lembrar se a tabela de dias está aberta.
+  visao?.addEventListener('toggle', e => {
+    if (e.target.id === 'fapi-days-details') F.summaryUi.dailyTableOpen = e.target.open;
+  }, true);
 
   const pedidos = document.getElementById('fapi-panel-pedidos');
   pedidos?.addEventListener('input', e => {
@@ -2687,6 +2734,8 @@ function wireStatic() {
   pedidos?.addEventListener('click', e => {
     const chip = e.target.closest('[data-quick]');
     if (chip) { applyQuickFilter(chip.dataset.quick); return; }
+    const modo = e.target.closest('[data-modo]');
+    if (modo) { setOrdersMode(modo.dataset.modo); return; }
     const remove = e.target.closest('[data-remove-filter]');
     if (remove) { removeActiveFilter(remove.dataset.removeFilter, remove.dataset.removeKey); return; }
     if (e.target.closest('#fapi-clear-local') || e.target.closest('#fapi-clear-local-empty')) { limparTudoLocal(); return; }

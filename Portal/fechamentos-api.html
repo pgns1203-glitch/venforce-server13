@@ -35,11 +35,20 @@
         <div class="vf-page-container vf-page-container--wide">
 
           <!-- 1. PAGE HEADER -->
-          <header class="vf-page-header">
+          <!-- Título à esquerda; à direita as ações e, embaixo delas, o estado
+               do conjunto carregado (motor, origem, geração, intervalo, base). -->
+          <header class="vf-page-header vf-cv-topo">
             <div class="vf-page-header__main">
-              <p class="vf-page-header__eyebrow">Fechamentos API</p>
               <h1 class="vf-page-header__title">Central de Vendas</h1>
-              <p class="vf-page-header__description">Concilie pedidos, faturamento, custos e qualidade dos dados do Mercado Livre.</p>
+              <p class="vf-page-header__description">Cada pedido do período, com o resultado e tudo que foi descontado dele.</p>
+            </div>
+            <div class="vf-cv-topo__lado">
+              <div class="vf-cv-topo__acoes" id="fapi-actions">
+                <button type="button" id="fapi-refresh-btn" class="vf-btn vf-btn--secondary vf-btn--sm" title="Relê os dados já sincronizados no banco — não chama a API do Mercado Livre">Atualizar leitura</button>
+                <button type="button" id="fapi-import-toggle" class="vf-btn vf-btn--secondary vf-btn--sm" aria-expanded="false" aria-controls="fapi-import-panel" hidden>Importar planilha</button>
+                <button type="button" id="fapi-sync-btn" class="vf-btn vf-btn--primary vf-btn--sm" title="Busca os pedidos direto da API do Mercado Livre (sem planilha)" hidden>Sincronizar via API</button>
+              </div>
+              <div class="vf-cv-topo__estado" id="fapi-context-status" aria-label="Estado dos dados carregados"></div>
             </div>
           </header>
 
@@ -51,18 +60,19 @@
             </div>
           </div>
 
-          <!-- 2. BARRA GLOBAL DE CONTEXTO (período + motor + ações) —
+          <!-- 2. FILTROS (período) — uma caixa só.
                F2.2: Cliente/Conta saíram daqui, o Shell V3 (barra lateral)
                é quem resolve o contexto agora; MASTER_SPEC §5/§9. -->
           <section class="vf-fapi-context" aria-label="Contexto da análise">
             <div class="vf-fapi-context__row">
               <div class="vf-fapi-context__filters">
-                <div class="vf-field">
-                  <label class="vf-field__label" for="fapi-period-select">Período de análise</label>
+                <label class="vf-cv-periodo" for="fapi-period-select">
+                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>
+                  <span class="vf-visually-hidden">Período de análise</span>
                   <select id="fapi-period-select" class="vf-select vf-select--sm"></select>
-                </div>
-                <div class="vf-field" id="fapi-period-custom" hidden>
-                  <span class="vf-field__label" id="fapi-period-custom-label">Datas</span>
+                </label>
+                <div id="fapi-period-custom" hidden>
+                  <span class="vf-visually-hidden" id="fapi-period-custom-label">Datas</span>
                   <div class="vf-fapi-context__range" role="group" aria-labelledby="fapi-period-custom-label">
                     <input type="date" id="fapi-period-from" class="vf-input vf-input--sm" aria-label="Data inicial">
                     <span class="vf-fapi-context__range-sep" aria-hidden="true">até</span>
@@ -70,11 +80,7 @@
                     <button type="button" id="fapi-period-apply" class="vf-btn vf-btn--secondary vf-btn--sm">Aplicar</button>
                   </div>
                 </div>
-              </div>
-              <div class="vf-fapi-context__actions" id="fapi-actions">
-                <button type="button" id="fapi-refresh-btn" class="vf-btn vf-btn--secondary vf-btn--sm" title="Relê os dados já sincronizados no banco — não chama a API do Mercado Livre">Atualizar leitura</button>
-                <button type="button" id="fapi-import-toggle" class="vf-btn vf-btn--secondary vf-btn--sm" aria-expanded="false" aria-controls="fapi-import-panel" hidden>Importar planilha</button>
-                <button type="button" id="fapi-sync-btn" class="vf-btn vf-btn--primary vf-btn--sm" title="Busca os pedidos direto da API do Mercado Livre (sem planilha)" hidden>Sincronizar via API</button>
+                <span class="vf-cv-periodo__intervalo" id="fapi-period-range" aria-live="polite"></span>
               </div>
             </div>
 
@@ -100,9 +106,6 @@
 
             <!-- Feedback das ações administrativas (importar/sincronizar) -->
             <div id="fapi-action-status" role="status" aria-live="polite" hidden></div>
-
-            <!-- Estado do conjunto carregado: motor, confiança, origem, geração, intervalo, base -->
-            <div class="vf-fapi-context__status" id="fapi-context-status" aria-label="Estado dos dados carregados"></div>
           </section>
 
           <!-- 3. ESTADOS GLOBAIS (sem cliente / carregando / backend indisponível) -->
@@ -117,17 +120,27 @@
               Pedidos <span class="vf-badge" id="fapi-tab-pedidos-count" hidden>0</span>
             </button>
             <button type="button" class="vf-tab" id="fapi-tab-produtos" role="tab" aria-selected="false" aria-controls="fapi-panel-produtos" data-tab="produtos" tabindex="-1">
-              Desempenho de produtos <span class="vf-badge" id="fapi-tab-produtos-count" hidden>0</span>
+              Produtos <span class="vf-badge" id="fapi-tab-produtos-count" hidden>0</span>
             </button>
           </nav>
 
           <!-- 5. PAINÉIS -->
           <div class="vf-fapi-tabpanel" id="fapi-panel-visao" role="tabpanel" aria-labelledby="fapi-tab-visao" tabindex="0" hidden>
+            <!-- Recorte, avisos e as duas faixas de números do período. -->
             <div id="fapi-fech-host"></div>
-            <!-- MP3 — Conciliação Mercado Pago: carrega à parte, depois do
-                 conteúdo principal (nunca bloqueia a carga da tela). -->
-            <div id="fapi-mp-host"></div>
-            <div id="fapi-days-host"></div>
+            <!-- Gráfico por dia ao lado de "Para onde vai o dinheiro". Host
+                 vazio some (CSS :empty) e o vizinho ocupa a linha toda. -->
+            <div class="vf-cv-duo">
+              <div class="vf-cv-duo__largo" id="fapi-days-host"></div>
+              <div class="vf-cv-duo__estreito" id="fapi-comp-host"></div>
+            </div>
+            <div class="vf-cv-duo">
+              <div class="vf-cv-duo__metade" id="fapi-qual-host"></div>
+              <!-- MP3 — Conciliação Mercado Pago: carrega à parte, depois do
+                   conteúdo principal (nunca bloqueia a carga da tela). -->
+              <div class="vf-cv-duo__metade" id="fapi-mp-host"></div>
+            </div>
+            <div id="fapi-nota-host"></div>
           </div>
 
           <div class="vf-fapi-tabpanel vf-fapi-orders" id="fapi-panel-pedidos" role="tabpanel" aria-labelledby="fapi-tab-pedidos" tabindex="0" hidden></div>

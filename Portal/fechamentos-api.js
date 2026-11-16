@@ -240,6 +240,7 @@ function mockPedido(over) {
     reembolso: null, reembolsoStatus: 'ausente',
     logistica: over.full ? 'full' : 'normal',
     adsStatus: 'ausente',
+    margem: null,
     pendencias: [],
     itens: [], componentes: [],
   }, over);
@@ -249,7 +250,7 @@ const MOCK_ROWS = [
   mockPedido({
     pedidoId:'9000000001', rowId:1, data:'2026-08-02', valor:200, frete:20, freteStatus:'real',
     taxas:30, taxasStatus:'real', custo:60, custoStatus:'real', imposto:8,
-    resultado:82, resultadoStatus:'real', confianca:'confiavel', unidades:2, full:true,
+    resultado:82, margem:41, resultadoStatus:'real', confianca:'confiavel', unidades:2, full:true,
     mlb:'MLBA', sku:'SKU-A', produto:{ mlb:'MLBA', sku:'SKU-A', titulo:'Cabo USB-C 2m' },
     itens: [{ id:'IT1', itemId:'IT1', mlb:'MLBA', sku:'SKU-A', titulo:'Cabo USB-C 2m', quantidade:2, valorUnitario:100, receitaProduto:200, custoProduto:60, impostoInterno:8, resultado:82, confianca:'confiavel', pendencias:[] }],
     componentes: [
@@ -263,7 +264,7 @@ const MOCK_ROWS = [
   mockPedido({
     pedidoId:'9000000002', rowId:2, data:'2026-08-03', valor:250, frete:25, freteStatus:'real',
     taxas:35, taxasStatus:'real', custo:80, custoStatus:'real', imposto:10,
-    resultado:100, resultadoStatus:'real', confianca:'confiavel', unidades:2, full:true,
+    resultado:100, margem:40, resultadoStatus:'real', confianca:'confiavel', unidades:2, full:true,
     multiItem:true, qtdItens:2,
     mlb:'MLBB', sku:'SKU-B', produto:{ mlb:'MLBB', sku:'SKU-B', titulo:'Suporte Articulado Monitor' },
     itens: [
@@ -310,7 +311,7 @@ const MOCK_ROWS = [
   mockPedido({
     pedidoId:'9000000006', rowId:6, data:'2026-08-06', valor:130, frete:null, freteStatus:'ausente',
     taxas:18, taxasStatus:'real', custo:40, custoStatus:'real', imposto:5,
-    resultado:67, resultadoStatus:'parcial', confianca:'parcial', unidades:1, full:false,
+    resultado:67, margem:51.54, resultadoStatus:'parcial', confianca:'parcial', unidades:1, full:false,
     mlb:'MLBC', sku:'SKU-C', produto:{ mlb:'MLBC', sku:'SKU-C', titulo:'Luminária LED Mesa' },
     pendencias:['frete_seller_ausente'],
     itens: [{ id:'IT5', itemId:'IT5', mlb:'MLBC', sku:'SKU-C', titulo:'Luminária LED Mesa', quantidade:1, valorUnitario:130, receitaProduto:130, custoProduto:40, impostoInterno:5, resultado:67, confianca:'parcial', pendencias:['frete_seller_ausente'] }],
@@ -1761,6 +1762,19 @@ function renderOrdersPanel() {
   renderPedTable();
 }
 
+/* Margem do pedido: valor pronto da Read API (resultado ÷ faturamento, gravado
+   pelo motor). Selo verde; vermelho quando negativa; parcial em itálico, como o
+   resultado. Sem resultado → "—" (nunca 0%). */
+function margemSelo(o) {
+  const m = o?.margem;
+  if (m === null || m === undefined || o.resultado == null) return '<span class="is-absent">—</span>';
+  const cls = ['vf-cv-margem'];
+  if (Number(m) < 0) cls.push('is-negativa');
+  if (o.resultadoStatus !== 'real') cls.push('is-parcial');
+  const titulo = o.resultadoStatus !== 'real' ? ' title="Parcial: o resultado deste pedido ainda não tem todos os componentes"' : '';
+  return `<span class="${cls.join(' ')}"${titulo}>${Number(m) < 0 ? '−' + pct(-Number(m)) : pct(m)}</span>`;
+}
+
 function renderPedTable() {
   const host = document.getElementById('fapi-ped-table');
   if (!host) return;
@@ -1816,15 +1830,19 @@ function renderPedTable() {
         <td class="vf-cv-data">${fmtDt(o.data)}</td>
         <td class="vf-cv-venda">
           <span class="vf-cv-venda__titulo" title="${esc(titulo)}">${esc(titulo)}</span>
-          <small>${meta}<span class="vf-cv-venda__pedido"> · Pedido ${esc(o.id)}</span>${o.full === true ? ' <span class="vf-cv-full" title="Pedido enviado pelo Full">FULL</span>' : ''}${o.multiItem ? ` <span class="vf-tag is-info" title="${esc(o.qtdItens)} itens neste pedido">${esc(o.qtdItens)} itens</span>` : ''}</small>
+          <small>${meta}<span class="vf-cv-venda__pedido"> · Pedido ${esc(o.id)}</span></small>
         </td>
-        <td class="vf-cv-sit"><span class="vf-tag ${scls}">${esc(slbl)}</span>${pendPrimaria ? `<small title="${esc(pendTitle)}">${esc(pendPrimaria)}</small>` : ''}</td>
+        <td class="vf-cv-sit">
+          <span class="vf-cv-sit__selos"><span class="vf-tag ${scls}">${esc(slbl)}</span>${o.full === true ? '<span class="vf-cv-full" title="Pedido enviado pelo Full">FULL</span>' : ''}${o.multiItem ? `<span class="vf-tag is-info" title="${esc(o.qtdItens)} itens neste pedido">${esc(o.qtdItens)} itens</span>` : ''}</span>
+          ${pendPrimaria ? `<small title="${esc(pendTitle)}">${esc(pendPrimaria)}</small>` : ''}
+        </td>
         <td class="num">${valOr(o.valor, money)}</td>
         <td class="num${o.taxas == null ? ' is-absent' : ''}">${deducao(o.taxas)}</td>
         <td class="num${o.frete == null ? ' is-absent' : ''}">${deducao(o.frete)}</td>
         <td class="num${o.custo == null ? ' is-absent' : ''}">${deducao(o.custo)}</td>
         <td class="num${o.imposto == null ? ' is-absent' : ''}">${deducao(o.imposto)}</td>
         <td class="num${o.resultado == null ? ' is-absent' : ''}">${res}</td>
+        <td class="num">${margemSelo(o)}</td>
         <td>${confStatus(o.confianca)}</td>
       </tr>`;
   }).join('');
@@ -1852,6 +1870,7 @@ function renderPedTable() {
           ${th('custo', 'Custo', true)}
           <th scope="col" class="num">Imposto</th>
           ${th('resultado', 'Resultado', true)}
+          <th scope="col" class="num">Margem</th>
           ${th('confianca', 'Confiança')}
         </tr></thead>
         <tbody>${tr}</tbody>
@@ -1864,7 +1883,7 @@ function renderPedTable() {
         <button type="button" class="vf-btn vf-btn--secondary vf-btn--sm" id="fapi-page-next"${pg.page >= pg.totalPages ? ' disabled' : ''}>Próxima →</button>
       </div>
     </div>
-    <p class="vf-cv-rodape">Clique num pedido para abrir o extrato. Resultado = valor − taxas − frete − custo − imposto, calculado e gravado pelo backend; em itálico quando ainda é parcial. Filete à esquerda da linha: <b>vermelho</b> cancelado/bloqueado · <b>âmbar</b> problema/sem custo · <b>cinza</b> sem frete. Pedido com mais de um item mostra a etiqueta "N itens" e os valores já são a soma de todos os itens. Ausência é <b>—</b>, nunca R$ 0,00.</p>`;
+    <p class="vf-cv-rodape">Clique num pedido para abrir o extrato. Resultado = valor − taxas − frete − custo − imposto e Margem = resultado ÷ valor, calculados e gravados pelo backend; em itálico quando ainda são parciais. Filete à esquerda da linha: <b>vermelho</b> cancelado/bloqueado · <b>âmbar</b> problema/sem custo · <b>cinza</b> sem frete. Pedido com mais de um item mostra a etiqueta "N itens" e os valores já são a soma de todos os itens. Ausência é <b>—</b>, nunca R$ 0,00.</p>`;
 }
 
 /* ── DETALHE DO PEDIDO (drawer lateral) ───────────────────────

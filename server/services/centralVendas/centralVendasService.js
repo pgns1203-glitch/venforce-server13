@@ -273,6 +273,11 @@ function buildPedidoContrato(pedido, itens, componentes) {
     reembolso: reembolso === null ? null : Math.abs(reembolso),
     reembolsoStatus: reembolso === null ? "ausente" : "real",
     resultado: numberOrNull(rowValue(pedido, "resultado", "resultado")),
+    // Margem do pedido (resultado ÷ faturamento × 100) já gravada pelo motor
+    // junto com o resultado; null quando o resultado é null (bloqueado).
+    margem: numberOrNull(rowValue(pedido, "resultado", "resultado")) === null
+      ? null
+      : numberOrNull(rowValue(pedido, "margemContribuicaoPercentual", "margem_contribuicao_percentual")),
     resultadoStatus: confidenceToResultadoStatus(confianca),
     confianca,
     pendencias: jsonValue(rowValue(pedido, "pendencias", "pendencias_json"), []),

@@ -118,10 +118,10 @@ function makeDb({ contas = [], imports = [], pedidos = [], itens = [], component
   };
 }
 
-function pedidoRow({ id, importId, pedidoId, data, faturamento = 100, resultado = null, confianca = "confiavel", status = "paid" }) {
+function pedidoRow({ id, importId, pedidoId, data, faturamento = 100, resultado = null, margem = null, confianca = "confiavel", status = "paid" }) {
   return {
     id, import_id: importId, pedido_id: pedidoId, data_pedido: data, status, confianca,
-    faturamento, resultado, pendencias_json: [], payload_json: {},
+    faturamento, resultado, margem_contribuicao_percentual: margem, pendencias_json: [], payload_json: {},
   };
 }
 
@@ -331,7 +331,7 @@ async function run() {
     const imp = importRow({ id: 1, competencia: "2026-08", publicationStatus: "published", coverageFrom: "2026-08-01", coverageTo: "2026-08-31", publishedAt: "2026-08-01T10:00:00Z" });
     // pedido.faturamento/resultado já são o valor CANÔNICO (soma dos itens, M5) —
     // a Read API nunca recalcula, só expõe o que já foi persistido.
-    const pedidos = [pedidoRow({ id: 1, importId: 1, pedidoId: "MULTI", data: "2026-08-05", faturamento: 200, resultado: 150 })];
+    const pedidos = [pedidoRow({ id: 1, importId: 1, pedidoId: "MULTI", data: "2026-08-05", faturamento: 200, resultado: 150, margem: 75 })];
     const itens = [
       { id: 1, import_id: 1, pedido_row_id: 1, item_id: "ITA", mlb: "MLBA", pedido_id: "MULTI", quantidade: 1, receita_produto: 150, confianca: "confiavel", pendencias_json: [], payload_json: {} },
       { id: 2, import_id: 1, pedido_row_id: 1, item_id: "ITB", mlb: "MLBB", pedido_id: "MULTI", quantidade: 1, receita_produto: 50, confianca: "confiavel", pendencias_json: [], payload_json: {} },
@@ -349,6 +349,14 @@ async function run() {
     eq("K: qtdItens 2", row.qtdItens, 2);
     eq("K: valor = soma dos itens (M5), nao so o primeiro item", row.valor, 200);
     eq("K: resultado = canonico persistido", row.resultado, 150);
+    eq("K: margem do pedido = a persistida pelo motor (não recalculada)", row.margem, 75);
+
+    // Margem só existe junto com o resultado: sem resultado (bloqueado), margem null mesmo se a coluna vier preenchida.
+    {
+      const dbSem = makeDb({ imports: [imp], pedidos: [pedidoRow({ id: 1, importId: 1, pedidoId: "BLOQ", data: "2026-08-05", resultado: null, margem: 12, confianca: "bloqueado" })], itens: [], componentes: [] });
+      const rowSem = (await svcFor(dbSem).getCentralVendasRead(cliente.slug, { dateFrom: "2026-08-01", dateTo: "2026-08-31" })).rows[0];
+      eq("K: pedido sem resultado → margem null (nunca 0%)", rowSem.margem, null);
+    }
     ok("K: lista NAO inclui itens/componentes (payload leve)", row.itens === undefined && row.componentes === undefined);
     ok("K: rowId presente para detalhe sob demanda", row.rowId === 1);
 

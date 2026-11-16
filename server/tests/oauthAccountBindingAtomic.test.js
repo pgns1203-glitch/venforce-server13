@@ -180,6 +180,26 @@ async function run(){
   await test("ML2 preserva Grant1 e sua Conta",async()=>{await service.concluirOAuthContaMl(args);const first=JSON.stringify(db.grants[0]);await service.concluirOAuthContaMl({...args,clienteContaId:11,mlUserId:"222"});assert.equal(JSON.stringify(db.grants[0]),first);assert.equal(db.grants[1].cliente_conta_id,11);});
   await test("callback legado ML2 cria Conta por seller, não principal",async()=>{await service.concluirOAuthContaMl(args);const first=JSON.stringify(db.grants[0]);const c=await service.concluirOAuthContaMl({...args,clienteContaId:null,mlUserId:"222"});assert.notEqual(c.conta.id,10);assert.equal(c.conta.external_account_id,"222");assert.equal(JSON.stringify(db.grants[0]),first);});
   await test("seller compartilhado rejeita antes de persistir token",async()=>{db.grants=[{id:99,cliente_id:2,cliente_conta_id:null,ml_user_id:"111",token_status:"revoked"}];await assert.rejects(service.concluirOAuthContaMl(args),e=>e.code==="SELLER_OWNERSHIP_AMBIGUOUS");assert.ok(!db.log.some(q=>q.startsWith("INSERT")));});
+  for (const source of ["ml_tokens", "cliente_contas", "both"]) {
+    await test(`diagnóstico ${source}: identifica origem sem credenciais e rollback preserva ML1`, async()=>{
+      await service.concluirOAuthContaMl(args);
+      if (source !== "cliente_contas") db.grants.push({id:99,cliente_id:2,cliente_conta_id:null,ml_user_id:"222",token_status:"revoked",access_token:args.accessToken,refresh_token:args.refreshToken});
+      if (source !== "ml_tokens") db.contas.push({id:98,cliente_id:3,marketplace:"meli",external_account_id:"222",ativo:false,metadata_json:{secret:"fixture-secret"}});
+      const before = JSON.stringify({contas:db.contas,grants:db.grants});
+      const logs=[]; const warn=console.warn; console.warn=line=>logs.push(line);
+      try {
+        await assert.rejects(service.concluirOAuthContaMl({...args,clienteContaId:11,mlUserId:"222"}), e=>e.code==="SELLER_OWNERSHIP_AMBIGUOUS" && !JSON.stringify(e.payload).includes("conflicts"));
+      } finally { console.warn=warn; }
+      assert.equal(JSON.stringify({contas:db.contas,grants:db.grants}),before);
+      assert.equal(db.log.at(-1),"ROLLBACK");
+      assert.equal(logs.length,1);
+      const conflicts=[];
+      if(source!=="ml_tokens") conflicts.push({source:"cliente_contas",id:98,cliente_id:3});
+      if(source!=="cliente_contas") conflicts.push({source:"ml_tokens",id:99,cliente_id:2,cliente_conta_id:null});
+      assert.deepStrictEqual(JSON.parse(logs[0]), {event:"ml_seller_ownership_ambiguous",code:"SELLER_OWNERSHIP_AMBIGUOUS",seller:"222",cliente_id:1,cliente_conta_id:11,conflicting_cliente_ids:[...new Set(conflicts.map(c=>c.cliente_id))],conflicts});
+      for(const secret of [args.accessToken,args.refreshToken,"fixture-secret","access_token","refresh_token","state","password"]) assert.ok(!logs[0].includes(secret));
+    });
+  }
   await test("seller já vinculado à ML1 não pode ir para ML2",async()=>{await service.concluirOAuthContaMl(args);const old=JSON.stringify(db.grants);await assert.rejects(service.concluirOAuthContaMl({...args,clienteContaId:11}),e=>e.code==="ACCOUNT_CONTEXT_AMBIGUOUS");assert.equal(JSON.stringify(db.grants),old);});
   await test("Conta inativa/outro Cliente/marketplace bloqueia",async()=>{for(const patch of [{ativo:false},{cliente_id:2},{marketplace:"shopee"}]){const original={...db.contas[0]};Object.assign(db.contas[0],patch);await assert.rejects(service.concluirOAuthContaMl(args));db.contas[0]=original;}assert.ok(!db.log.some(q=>q.startsWith("INSERT")));});
   await test("Grant anteriormente vinculado a outra Conta não é movido",async()=>{db.grants=[{id:99,cliente_id:1,cliente_conta_id:11,ml_user_id:"111"}];await assert.rejects(service.concluirOAuthContaMl(args),e=>e.code==="GRANT_ACCOUNT_MISMATCH");assert.equal(db.grants[0].cliente_conta_id,11);});

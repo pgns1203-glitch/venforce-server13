@@ -884,7 +884,39 @@
 }
 
 .vf-page-fechamentos-api .vf-fapi-orders__table {
-  min-width: 1080px;
+  min-width: 1040px;
+}
+
+/* Com 11 colunas, a célula do produto cede espaço (corta com reticências no compacto). */
+.vf-page-fechamentos-api .vf-fapi-orders__table td.vf-cv-venda {
+  min-width: 180px;
+}
+
+/* Em tabela automática o max-width da célula não segura texto sem quebra:
+   o limite vai no conteúdo do modo compacto. */
+.vf-page-fechamentos-api .vf-fapi-orders__table--compacto .vf-cv-venda > * {
+  max-width: 160px;
+}
+
+.vf-page-fechamentos-api .vf-fapi-orders__table--compacto .vf-cv-sit small {
+  max-width: 140px;
+}
+
+.vf-page-fechamentos-api .vf-table td.vf-cv-sit {
+  min-width: 120px;
+}
+
+/* Status do pedido, selo FULL e "N itens" lado a lado; quebram se faltar espaço. */
+.vf-page-fechamentos-api .vf-cv-sit__selos {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vf-sp-1);
+}
+
+.vf-page-fechamentos-api .vf-fapi-orders__table th,
+.vf-page-fechamentos-api .vf-fapi-orders__table td {
+  padding-inline: 10px;
 }
 
 .vf-page-fechamentos-api .vf-fapi-orders__table tbody tr[data-row-id] {
@@ -907,7 +939,7 @@
 
 /* Célula do produto: título e, embaixo, MLB · SKU (· pedido no modo detalhado). */
 .vf-page-fechamentos-api .vf-table td.vf-cv-venda {
-  min-width: 220px;
+  min-width: 180px;
   max-width: 340px;
 }
 
@@ -948,6 +980,27 @@
 
 .vf-page-fechamentos-api .vf-fapi-orders__table--compacto .vf-cv-venda__pedido {
   display: none;
+}
+
+/* Margem do pedido em selo: verde; vermelho só quando negativa; itálico quando parcial. */
+.vf-page-fechamentos-api .vf-cv-margem {
+  display: inline-block;
+  min-width: 4.5em;
+  padding: 2px var(--vf-sp-2);
+  border-radius: calc(var(--vf-radius-sm) - 2px);
+  background: var(--vf-success-bg);
+  color: var(--vf-success-strong);
+  font-weight: var(--vf-fw-semibold);
+  text-align: right;
+}
+
+.vf-page-fechamentos-api .vf-cv-margem.is-negativa {
+  background: var(--vf-danger-bg);
+  color: var(--vf-danger-strong);
+}
+
+.vf-page-fechamentos-api .vf-cv-margem.is-parcial {
+  font-style: italic;
 }
 
 /* Selo do pedido enviado pelo Full. */

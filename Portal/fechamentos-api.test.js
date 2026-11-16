@@ -86,7 +86,7 @@ const EXPOSE = [
   "buildComposicaoRows", "composicaoResiduo", "pendenciaLabel", "buildMockRead",
   "buildCurvaAbcView", "F", "renderAll", "renderFechamentoSection", "renderDaysSection",
   "renderOrdersPanel", "renderPedTable", "renderAbc", "renderTabCounts", "renderContextStatus",
-  "buildOrderDrawerBody", "applyReadResponse", "resetCurvaAbcState",
+  "buildOrderDrawerBody", "applyReadResponse", "resetCurvaAbcState", "margemSelo",
 ];
 const wrapped = `${src}\n;(function(){ const _o = {};\n${EXPOSE.map((n) => `try { _o[${JSON.stringify(n)}] = ${n}; } catch (_) { _o[${JSON.stringify(n)}] = undefined; }`).join("\n")}\nglobalThis.__TEST_EXPORTS__ = _o; })();`;
 
@@ -151,6 +151,15 @@ eq("D: pendência custo_produto_ausente traduzida para leitura humana", sandbox.
 const rowSemFrete = respTodos.rows.find((r) => r.pedidoId === "9000000006");
 eq("E: pedido sem frete — frete=null (nunca 0,00)", rowSemFrete.frete, null);
 ok("E: pedido sem frete permanece confiança parcial (frontend não sobe sozinho)", rowSemFrete.confianca === "parcial");
+
+// ── M. Margem por pedido: só formata o valor pronto da Read API ──
+{
+  const confiavel = respTodos.rows.find((r) => r.pedidoId === "9000000001");
+  ok("M: margem do pedido aparece como veio (41,0%), sem recálculo", sandbox.margemSelo(confiavel).includes(">41,0%<"));
+  ok("M: pedido sem resultado (bloqueado) mostra —, nunca 0%", sandbox.margemSelo(rowSemCusto).includes("—") && !sandbox.margemSelo(rowSemCusto).includes("%"));
+  ok("M: margem parcial em itálico (is-parcial)", sandbox.margemSelo(rowSemFrete).includes("is-parcial"));
+  ok("M: margem negativa com sinal e selo vermelho", sandbox.margemSelo({ resultado: -5, margem: -6.3, resultadoStatus: "real" }).includes('is-negativa">−6,3%<'));
+}
 
 // ── F. Claims indisponível não sobe a confiança sozinho (formatação, não invenção) ──
 const resumoComClaims = sandbox.mockResumo(sandbox.MOCK_ROWS);

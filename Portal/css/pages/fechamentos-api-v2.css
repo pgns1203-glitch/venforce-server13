@@ -42,8 +42,10 @@
  * Título à esquerda; à direita as ações e, embaixo delas, o estado
  * do conjunto carregado. O período fica numa caixa só, logo abaixo.
  * ------------------------------------------------------------ */
+/* margin-bottom herdado do layout V1 somava com o gap do container (32 + 32). */
 .vf-page-fechamentos-api .vf-cv-topo {
   gap: var(--vf-sp-4) var(--vf-sp-6);
+  margin-bottom: 0;
 }
 
 .vf-page-fechamentos-api .vf-cv-topo .vf-page-header__description {

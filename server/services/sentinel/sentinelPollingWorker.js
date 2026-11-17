@@ -31,6 +31,7 @@ const { createCentralVendasFreteService } = require("../centralVendas/centralVen
 const { iterarOrdersUpdatedSince, fetchOrderById, fetchPackById } = require("./sentinelOrdersFetch");
 const { criarEnvioPack } = require("./sentinelEnvioPack");
 const { processarPedido } = require("./sentinelPedidoService");
+const { configRecalculo, planejarRecalculo, marcarRecalculadas, estadoPadrao: estadoRecalculoPadrao } = require("./sentinelRecalculoBase");
 const { criarMlFetchSentinel, criarEscopoMl } = require("./sentinelMlClient");
 const { incidentesDisponiveis } = require("./sentinelSchema");
 const { avaliarIncidentesConta } = require("./sentinelIncidentes");
@@ -335,30 +336,36 @@ async function processarConta(contaId, deps = {}) {
   //   1) exceções 'retentando' (inclusive reabertas por reabrirExcecao), até excecoesMax;
   //   2) provisórias recentes (frete/imposto podem chegar sem o ML mexer no pedido).
   // Erro (fetch ou processarPedido) segue o protocolo de exceção e NÃO afeta o checkpoint.
-  const reprocessarPorId = async (ids) => {
+  // opcoes.forcar (padrão true): refaz a leitura do frete. O recálculo por base de custos passa false: só custo/imposto mudaram,
+  // então o frete GRAVADO é reaproveitado (sem chamada extra). Devolve { processados, falhas, interrompido } p/ o chamador.
+  const reprocessarPorId = async (ids, { forcar = true } = {}) => {
+    const st = { processados: 0, falhas: 0, interrompido: false };
     for (const id of ids) {
-      if (semOrcamento()) return;
+      if (semOrcamento()) { st.interrompido = true; return st; }
       if (vistos.has(id) || excecoes.quarentena.has(id)) continue;
       vistos.add(id);
       let r;
       try {
         const order = await fetchOrder(ctx, id);
         pedidoDeps.envio.conhecidos.set(String(order.id), order);
-        r = await processarPedido(ctx, order, { ...pedidoDeps, forcar: true });
+        r = await processarPedido(ctx, order, { ...pedidoDeps, forcar });
       } catch (err) {
         if (err && err.code === "SENTINEL_LOCK_PERDIDO") throw err;
-        if (escopo.tokenIndisponivel || (err && (err.code === "SENTINEL_TOKEN_INDISPONIVEL" || err.code === "SENTINEL_ORCAMENTO_CHAMADAS"))) return;
+        if (escopo.tokenIndisponivel || (err && (err.code === "SENTINEL_TOKEN_INDISPONIVEL" || err.code === "SENTINEL_ORCAMENTO_CHAMADAS"))) { st.interrompido = true; return st; }
         r = { resultado: "erro", erro: `${err.code ? `${err.code}: ` : ""}${err.message}`, codigo: err.code || null };
       }
-      if (escopo.tokenIndisponivel || escopo.orcamentoEsgotado) { if (r.resultado !== "erro") contar(resumo, r); return; }
+      if (escopo.tokenIndisponivel || escopo.orcamentoEsgotado) { if (r.resultado !== "erro") contar(resumo, r); st.interrompido = true; return st; }
       if (r.resultado === "erro") {
         contarErro(resumo, r);
         await tratarErro(id, r.erro);
+        st.falhas += 1;
       } else {
         contar(resumo, r);
         await tratarSucesso(id);
+        st.processados += 1;
       }
     }
+    return st;
   };
   if (!erroNaoTratado) {
     try {
@@ -379,6 +386,24 @@ async function processarConta(contaId, deps = {}) {
           [ctx.clienteContaId, String(cfg.provisoriaDias), cfg.provisoriaMax]
         );
         await reprocessarPorId(provisorias.rows.map((x) => String(x.pedido_id)));
+      }
+      // Recálculo por alteração da base de custos/impostos (SENTINEL_RECALC_BASE_ENABLED; padrão desligado): linhas estáveis cujo
+      // custo/imposto gravado difere do que a base ATUAL resolve, independentemente de ml_date_last_updated. Mesmo fluxo por id,
+      // mesmo orçamento/lock/exceções; teto por ciclo; não mexe no checkpoint.
+      if (!semOrcamento()) {
+        const cfgRec = { ...configRecalculo(), ...(deps.recalculoConfig || {}) };
+        const plano = await planejarRecalculo({ db, ctx, cfg: cfgRec, estado: deps.recalculoEstado || estadoRecalculoPadrao, cacheCusto: pedidoDeps.cacheCusto, nowMs });
+        if (plano) {
+          const st = plano.ids.length ? await reprocessarPorId(plano.ids, { forcar: false }) : { processados: 0, falhas: 0, interrompido: false };
+          let marcados = 0;
+          try {
+            marcados = await marcarRecalculadas({ db, dbEscrita: dbW, contaId: ctx.clienteContaId, plano, agoraIso: new Date(nowMs).toISOString(), verificarLock });
+          } finally {
+            plano.concluir(st); // o estado do recálculo é registrado MESMO que a marcação falhe
+          }
+          resumo.recalculo = { divergentes: plano.divergentes, tentados: plano.ids.length, marcados, falhas: st.falhas, pendente: plano.pendente || st.interrompido || st.falhas > 0 };
+          if (plano.ids.length) console.log(`[sentinel] conta ${contaId}: recálculo por base de custos: divergentes=${plano.divergentes} tentados=${plano.ids.length} marcados=${marcados} falhas=${st.falhas}`);
+        }
       }
     } catch (err) {
       if (err && err.code === "SENTINEL_LOCK_PERDIDO") throw err;

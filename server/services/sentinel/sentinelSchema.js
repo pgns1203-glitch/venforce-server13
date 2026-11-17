@@ -89,7 +89,55 @@ async function incidentesDisponiveis(db) {
   return r.rows[0]?.ok === true;
 }
 
+// Evidência financeira (modo sombra): SEPARADA de propósito, como a de incidentes. O worker de coleta NÃO depende
+// dela (verificarSentinelSchema não a exige); sem as colunas, a coleta segue no SQL legado. Aplicar é etapa
+// manual e autorizada (aplicarMigrationSerializada); aqui só há leitura (information_schema).
+const SENTINEL_EVIDENCIA_MIGRATION = "20261117_sentinel_evidencia_financeira.sql";
+const SENTINEL_EVIDENCIA_LOCK_KEY = "vf:schema:sentinel_evidencia_financeira";
+const EVIDENCIA_COLUNAS = Object.freeze(["calculo_versao", "afirmacao_financeira", "evidencia_financeira"]);
+const EVIDENCIA_TTL_AUSENTE_MS = 60000;
+const evidenciaCache = new WeakMap();
+
+// Esquece o cache (ex.: coluna sumiu depois de ter sido vista — rollback manual com o worker no ar).
+function invalidarEvidenciaSchema(db) {
+  if (db && typeof db === "object") evidenciaCache.delete(db);
+}
+
+async function ensureSentinelEvidenciaSchema(db) {
+  if (!db || typeof db.query !== "function") throw new Error("ensureSentinelEvidenciaSchema exige `db` explícito.");
+  const ddl = fs.readFileSync(path.join(migrationsDir, SENTINEL_EVIDENCIA_MIGRATION), "utf8");
+  await aplicarMigrationSerializada(db, ddl, SENTINEL_EVIDENCIA_LOCK_KEY);
+  evidenciaCache.delete(db);
+}
+
+// Somente leitura. Presente ⇒ cache permanente (colunas não somem); ausente ⇒ reavaliada após o TTL (a migration
+// pode ser aplicada com o worker no ar). Erro de consulta ⇒ false (nunca derruba a coleta) e NÃO é memorizado.
+async function evidenciaSchemaPronto(db, { agora = Date.now(), ttlMs = EVIDENCIA_TTL_AUSENTE_MS } = {}) {
+  if (!db || typeof db.query !== "function") return false;
+  const c = evidenciaCache.get(db);
+  if (c && (c.ok || agora - c.em < ttlMs)) return c.ok;
+  try {
+    const r = await db.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'sentinel_pedidos' AND column_name = ANY($1::text[])`,
+      [EVIDENCIA_COLUNAS]);
+    const nomes = new Set(r.rows.map((x) => x.column_name));
+    const ok = EVIDENCIA_COLUNAS.every((n) => nomes.has(n));
+    evidenciaCache.set(db, { ok, em: agora });
+    return ok;
+  } catch (err) {
+    console.warn(`[sentinel] verificação do schema de evidência falhou (${String(err?.message || err).slice(0, 120)}); seguindo sem evidência.`);
+    return false;
+  }
+}
+
 module.exports = {
+  ensureSentinelEvidenciaSchema,
+  evidenciaSchemaPronto,
+  invalidarEvidenciaSchema,
+  EVIDENCIA_COLUNAS,
+  SENTINEL_EVIDENCIA_MIGRATION,
+  SENTINEL_EVIDENCIA_LOCK_KEY,
   ensureSentinelIncidentesSchema,
   incidentesDisponiveis,
   SENTINEL_INCIDENTES_MIGRATION,

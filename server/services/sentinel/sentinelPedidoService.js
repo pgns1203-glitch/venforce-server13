@@ -26,6 +26,10 @@ const { prepararEnvioCompartilhado, entraNoRateioEnvio } = require("../centralVe
 const { resolverEnvio } = require("./sentinelEnvioPack");
 
 const { carregarIndiceCusto, resolverCustoItem, montarCostMap } = require("./sentinelCusto");
+const {
+  CONTRATO_VERSAO, extrairEvidencia, extrairEvidenciaSegura, afirmar, evidenciaParaPersistir, evidenciaParaHash, preservarEvidenciaMaisRica,
+} = require("./sentinelEvidenciaFinanceira");
+const { evidenciaSchemaPronto, invalidarEvidenciaSchema } = require("./sentinelSchema");
 
 // Estados que não mudam sem o ML atualizar o pedido: o skip por
 // ml_date_last_updated igual só vale para eles. provisoria/erro sempre
@@ -38,6 +42,42 @@ function competenciaDoPedido(order, agora = new Date()) {
   const comp = String(order?.date_created || "").slice(0, 7);
   if (/^\d{4}-\d{2}$/.test(comp)) return comp;
   return `${agora.getFullYear()}-${String(agora.getMonth() + 1).padStart(2, "0")}`;
+}
+
+// Evidência financeira (MODO SOMBRA): desligada por padrão. Só true|1|on|yes ligam (mesma convenção do worker).
+function evidenciaPromoAtiva(env = process.env) {
+  return /^(true|1|on|yes)$/i.test(String(env?.SENTINEL_EVIDENCIA_PROMO_ENABLED ?? "").trim());
+}
+
+let avisouEvidencia = false;
+function avisarEvidenciaUmaVez(msg) {
+  if (avisouEvidencia) return;
+  avisouEvidencia = true;
+  console.warn(`[sentinel] evidência financeira: ${msg} (aviso único; a coleta segue normalmente).`);
+}
+
+// Anexa a evidência à linha SEM tocar nos números oficiais. Qualquer falha ⇒ devolve a linha como estava.
+//   persistir=true  ⇒ calculo_versao/afirmacao_financeira/evidencia_financeira entram na linha (e no hash);
+//   persistir=false ⇒ só `evidencia_sombra` em memória (não vai ao SQL nem ao hash).
+function anexarEvidencia(linha, order, cfg) {
+  try {
+    const ctx = { clienteContaId: cfg.clienteContaId, sellerId: cfg.sellerId, observadoEm: cfg.observadoEm };
+    const nova = extrairEvidenciaSegura(order, ctx, cfg.extrator || extrairEvidencia);
+    // Guarda final: a evidência é da MESMA conta e do MESMO pedido da linha (nunca mistura entre contas).
+    if (nova?.conta?.cliente_conta_id !== Number(cfg.clienteContaId) || nova?.pedido?.id !== String(linha.pedido_id)) {
+      avisarEvidenciaUmaVez("evidência descartada (conta/pedido não conferem)");
+      return linha;
+    }
+    const evidencia = preservarEvidenciaMaisRica(nova, cfg.previa || null);
+    const a = afirmar({ evidencia, linha });
+    if (!cfg.persistir) {
+      return { ...linha, evidencia_sombra: { estado: evidencia.estado, confianca: evidencia.confianca, credito_max_pedido: evidencia.credito_max_pedido ?? null, afirmacao: a.afirmacao, persistido: false } };
+    }
+    return { ...linha, calculo_versao: CONTRATO_VERSAO, afirmacao_financeira: a.afirmacao, evidencia_financeira: evidencia };
+  } catch (err) {
+    avisarEvidenciaUmaVez(`falha ao montar a evidência (${String(err?.message || err).slice(0, 120)})`);
+    return linha;
+  }
 }
 
 function somaComponente(componentes, tipo) {
@@ -71,6 +111,13 @@ function calcularPayloadHash(linha) {
     itens: linha.itens || [],
     status_ml: linha.status_ml ?? null,
   };
+  // Só linhas COM evidência (calculo_versao) ampliam o hash; sem ela o hash é byte-idêntico ao anterior.
+  // observado_em fica fora (evidenciaParaHash): reprocessar o mesmo pedido não regrava.
+  if (linha.calculo_versao !== null && linha.calculo_versao !== undefined) {
+    payload.calculo_versao = linha.calculo_versao;
+    payload.afirmacao_financeira = linha.afirmacao_financeira ?? null;
+    payload.evidencia_financeira = evidenciaParaHash(linha.evidencia_financeira);
+  }
   return crypto.createHash("sha256").update(canonico(payload)).digest("hex");
 }
 
@@ -181,8 +228,10 @@ function calcularPedidoSemHash({ order, freteEntry, indiceCusto, clienteSlug, co
   };
 }
 
+// args.evidencia (opcional): { persistir, clienteContaId, sellerId, observadoEm, previa, extrator }. Ausente ⇒ comportamento anterior.
 function calcularPedido(args) {
-  const linha = calcularPedidoSemHash(args);
+  let linha = calcularPedidoSemHash(args);
+  if (args.evidencia) linha = anexarEvidencia(linha, args.order, args.evidencia);
   return { ...linha, payload_hash: calcularPayloadHash(linha) };
 }
 
@@ -241,6 +290,51 @@ const UPSERT_SQL = `
          AND sentinel_pedidos.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash)
   RETURNING id`;
 
+// Variante COM evidência (só usada com a flag ligada E a migration aplicada). Mesma monotonicidade do UPSERT legado
+// (testada por igualdade textual da cláusula WHERE). $20 calculo_versao, $21 afirmacao_financeira, $22 evidencia (JSONB).
+const UPSERT_EVIDENCIA_SQL = `
+  INSERT INTO sentinel_pedidos (
+    cliente_id, cliente_conta_id, pedido_id, competencia, data_pedido, ml_date_last_updated, status_ml,
+    itens, faturamento, comissao, frete, custo, imposto, margem_valor, margem_pct,
+    estado_margem, pendencias, claims_verificado, payload_hash,
+    calculo_versao, afirmacao_financeira, evidencia_financeira, calculado_em, created_at, updated_at
+  ) VALUES (
+    COALESCE((SELECT cc.cliente_id FROM cliente_contas cc WHERE cc.id = $2 FOR SHARE), $1::int),
+    $2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16,$17::jsonb,$18,$19,$20,$21,$22::jsonb,NOW(),NOW(),NOW())
+  ON CONFLICT (cliente_conta_id, pedido_id) DO UPDATE SET
+    cliente_id = EXCLUDED.cliente_id,
+    competencia = EXCLUDED.competencia,
+    data_pedido = EXCLUDED.data_pedido,
+    ml_date_last_updated = EXCLUDED.ml_date_last_updated,
+    status_ml = EXCLUDED.status_ml,
+    itens = EXCLUDED.itens,
+    faturamento = EXCLUDED.faturamento,
+    comissao = EXCLUDED.comissao,
+    frete = EXCLUDED.frete,
+    custo = EXCLUDED.custo,
+    imposto = EXCLUDED.imposto,
+    margem_valor = EXCLUDED.margem_valor,
+    margem_pct = EXCLUDED.margem_pct,
+    estado_margem = EXCLUDED.estado_margem,
+    pendencias = EXCLUDED.pendencias,
+    claims_verificado = EXCLUDED.claims_verificado,
+    payload_hash = EXCLUDED.payload_hash,
+    calculo_versao = EXCLUDED.calculo_versao,
+    afirmacao_financeira = EXCLUDED.afirmacao_financeira,
+    evidencia_financeira = EXCLUDED.evidencia_financeira,
+    calculado_em = NOW(),
+    updated_at = NOW()
+  WHERE (sentinel_pedidos.ml_date_last_updated IS NULL AND EXCLUDED.ml_date_last_updated IS NOT NULL)
+     OR EXCLUDED.ml_date_last_updated > sentinel_pedidos.ml_date_last_updated
+     OR (EXCLUDED.ml_date_last_updated IS NOT DISTINCT FROM sentinel_pedidos.ml_date_last_updated
+         AND sentinel_pedidos.payload_hash IS DISTINCT FROM EXCLUDED.payload_hash)
+  RETURNING id`;
+
+// Pack incompleto COM evidência: a margem vira NULL, então a afirmação das linhas que já têm evidência vira INDETERMINADO.
+const MARCAR_PACK_INCOMPLETO_EVIDENCIA_SQL = MARCAR_PACK_INCOMPLETO_SQL.replace(
+  "calculado_em = NOW(), updated_at = NOW()",
+  "afirmacao_financeira = CASE WHEN calculo_versao IS NOT NULL THEN 'INDETERMINADO' ELSE afirmacao_financeira END,\n    calculado_em = NOW(), updated_at = NOW()");
+
 // Estado erro: só cria a linha se o pedido ainda não existe. NUNCA sobrescreve um
 // cálculo válido anterior (o erro vai para sentinel_pedido_excecoes).
 const INSERT_ERRO_SQL = `
@@ -252,13 +346,17 @@ const INSERT_ERRO_SQL = `
   ON CONFLICT (cliente_conta_id, pedido_id) DO NOTHING`;
 
 async function gravarLinha(db, contaCtx, linha) {
-  const r = await db.query(UPSERT_SQL, [
+  const params = [
     contaCtx.clienteId, contaCtx.clienteContaId, linha.pedido_id, linha.competencia, linha.data_pedido,
     linha.ml_date_last_updated, linha.status_ml, JSON.stringify(linha.itens || []), linha.faturamento ?? null,
     linha.comissao ?? null, linha.frete ?? null, linha.custo ?? null, linha.imposto ?? null,
     linha.margem_valor ?? null, linha.margem_pct ?? null, linha.estado_margem,
     JSON.stringify(linha.pendencias || []), linha.claims_verificado === true, linha.payload_hash ?? null,
-  ]);
+  ];
+  // Linha com evidência ⇒ variante com as 3 colunas novas; sem ela ⇒ SQL legado (idêntico ao anterior).
+  const comEvidencia = linha.calculo_versao !== null && linha.calculo_versao !== undefined;
+  if (comEvidencia) params.push(linha.calculo_versao, linha.afirmacao_financeira, JSON.stringify(evidenciaParaPersistir(linha.evidencia_financeira)));
+  const r = await db.query(comEvidencia ? UPSERT_EVIDENCIA_SQL : UPSERT_SQL, params);
   return r.rowCount > 0;
 }
 
@@ -280,22 +378,27 @@ function buscarFretePadrao(args) {
 }
 
 // Linhas recalculadas dos irmãos que JÁ existem em sentinel_pedidos (com o grupo resolvido).
-async function linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto }) {
+async function linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto, evidencia = null }) {
   const irmaos = envio.pedidos.filter((o) => String(o.id) !== String(order.id));
   if (!irmaos.length) return [];
+  // Com evidência persistida, o irmão é recalculado COM evidência (e com a prévia gravada): senão o hash nunca bateria
+  // e o grupo seria regravado a cada ciclo.
+  const persiste = !!(evidencia && evidencia.persistir);
   const existentes = await db.query(
-    "SELECT pedido_id, payload_hash FROM sentinel_pedidos WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[])",
+    `SELECT pedido_id, payload_hash${persiste ? ", calculo_versao, evidencia_financeira" : ""} FROM sentinel_pedidos WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[])`,
     [contaCtx.clienteContaId, irmaos.map((o) => String(o.id))]
   );
-  const gravado = new Map(existentes.rows.map((r) => [String(r.pedido_id), r.payload_hash]));
+  const gravado = new Map(existentes.rows.map((r) => [String(r.pedido_id), r]));
   const out = [];
   for (const irmao of irmaos) {
     if (!gravado.has(String(irmao.id))) continue;
+    const row = gravado.get(String(irmao.id));
     const linha = calcularPedido({
       order: irmao, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug,
       grupoEnvio: envio.pedidos, fretePackIncompleto: false,
+      evidencia: persiste ? { ...evidencia, previa: row.calculo_versao != null ? row.evidencia_financeira : null } : undefined,
     });
-    out.push({ linha, hashGravado: gravado.get(String(irmao.id)) });
+    out.push({ linha, hashGravado: row.payload_hash });
   }
   return out;
 }
@@ -303,8 +406,8 @@ async function linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceC
 // BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
 // inteiro). Regrava os irmãos que já existem (mesma monotonicidade/hash do UPSERT). `w` = a conexão
 // da TRANSAÇÃO do grupo.
-async function regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto }) {
-  for (const { linha } of await linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto })) {
+async function regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto, evidencia = null }) {
+  for (const { linha } of await linhasDosIrmaos({ db, contaCtx, order, envio, freteEntry, indiceCusto, evidencia })) {
     await gravarLinha(w, contaCtx, linha);
   }
 }
@@ -333,8 +436,18 @@ async function comTransacao(dbW, fn) {
   }
 }
 
+// Resumo em memória da evidência (para testes/relatórios locais). Não vai ao SQL nem ao hash.
+function sombraDe(linha) {
+  if (linha.evidencia_sombra) return linha.evidencia_sombra;
+  if (linha.calculo_versao != null) {
+    const e = linha.evidencia_financeira || {};
+    return { estado: e.estado ?? null, confianca: e.confianca ?? null, credito_max_pedido: e.credito_max_pedido ?? null, afirmacao: linha.afirmacao_financeira, persistido: true };
+  }
+  return { estado: null, confianca: null, credito_max_pedido: null, afirmacao: null, persistido: false, indisponivel: true };
+}
+
 // contaCtx: { clienteId, clienteContaId, clienteSlug, sellerId, baseId }
-// deps: { db, buscarFrete, cacheCusto, forcar }
+// deps: { db, buscarFrete, cacheCusto, forcar, evidenciaPromo?, observadoEm?, evidenciaExtrator? }
 // Devolve { pedidoId, resultado: "gravado"|"inalterado"|"pulado"|"erro", estado, dateLastUpdated }.
 async function processarPedido(contaCtx, order, deps = {}) {
   const db = deps.db; // leituras
@@ -347,12 +460,22 @@ async function processarPedido(contaCtx, order, deps = {}) {
   if (!pedidoId) return { pedidoId: null, resultado: "erro", estado: "erro", dateLastUpdated, erro: "pedido sem id" };
 
   try {
+    // MODO SOMBRA da evidência financeira: flag desligada por padrão; ligada sem a migration = só em memória.
+    // Nenhuma chamada ao ML; nenhuma consulta extra com a flag desligada.
+    const evAtiva = deps.evidenciaPromo !== undefined ? !!deps.evidenciaPromo : evidenciaPromoAtiva();
+    const persistirEv = evAtiva && await evidenciaSchemaPronto(db);
     const atual = await db.query(
-      `SELECT ml_date_last_updated, estado_margem, frete, payload_hash FROM sentinel_pedidos
+      `SELECT ml_date_last_updated, estado_margem, frete, payload_hash${persistirEv ? ", calculo_versao, evidencia_financeira" : ""} FROM sentinel_pedidos
         WHERE cliente_conta_id = $1 AND pedido_id = $2`,
       [contaCtx.clienteContaId, pedidoId]
     );
     const row = atual.rows[0];
+    const evCfg = evAtiva ? {
+      persistir: persistirEv, clienteContaId: contaCtx.clienteContaId, sellerId: contaCtx.sellerId,
+      observadoEm: deps.observadoEm || new Date().toISOString(),
+      previa: persistirEv && row && row.calculo_versao != null ? row.evidencia_financeira : null,
+      extrator: deps.evidenciaExtrator,
+    } : undefined;
     const novoMs = dateLastUpdated ? Date.parse(dateLastUpdated) : null;
     const atualMs = row?.ml_date_last_updated ? new Date(row.ml_date_last_updated).getTime() : null;
     const mesmaDate = novoMs !== null && atualMs !== null && novoMs === atualMs;
@@ -390,32 +513,41 @@ async function processarPedido(contaCtx, order, deps = {}) {
     const indiceCusto = await carregarIndiceCusto(contaCtx.baseId, db, deps.cacheCusto || null);
     const linha = calcularPedido({
       order, freteEntry, indiceCusto, clienteSlug: contaCtx.clienteSlug, coletaFreteFalhou,
-      grupoEnvio: compartilhado ? envio.pedidos : null, fretePackIncompleto,
+      grupoEnvio: compartilhado ? envio.pedidos : null, fretePackIncompleto, evidencia: evCfg,
     });
+    const sombra = evAtiva ? { sombra: sombraDe(linha) } : {};
 
     // Estado estável, mesma date e cálculo idêntico (custo/frete/imposto não
     // mudaram): nada a gravar.
     if (estavel && mesmaDate && row.payload_hash && row.payload_hash === linha.payload_hash) {
       // Pedido de pack: um ciclo anterior pode ter gravado este e falhado nos irmãos (ou o grupo mudou).
       // Confere se os irmãos gravados batem com o rateio atual; se não, regrava o grupo (atômico).
-      if (compartilhado && await irmaosDesalinhados({ db, contaCtx, order, envio, freteEntry, indiceCusto })) {
-        await comTransacao(dbW, (w) => regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto }));
-        return { pedidoId, resultado: "gravado", estado: row.estado_margem, dateLastUpdated, irmaosCorrigidos: true };
+      if (compartilhado && await irmaosDesalinhados({ db, contaCtx, order, envio, freteEntry, indiceCusto, evidencia: evCfg })) {
+        await comTransacao(dbW, (w) => regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto, evidencia: evCfg }));
+        return { pedidoId, resultado: "gravado", estado: row.estado_margem, dateLastUpdated, irmaosCorrigidos: true, ...sombra };
       }
-      return { pedidoId, resultado: "pulado", estado: row.estado_margem, dateLastUpdated };
+      return { pedidoId, resultado: "pulado", estado: row.estado_margem, dateLastUpdated, ...sombra };
     }
     const marcarIrmaos = fretePackIncompleto && envio.irmaosIds && envio.irmaosIds.length;
     const gravarGrupo = async (w) => {
       const alterou = await gravarLinha(w, contaCtx, linha);
       // BL1: o rateio de TODOS os irmãos depende do grupo (ex.: B cancela ⇒ A passa a levar o shipment
       // inteiro). Recalcula e regrava os irmãos que JÁ existem, com os pedidos do grupo resolvido.
-      if (compartilhado) await regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto });
-      if (marcarIrmaos) await w.query(MARCAR_PACK_INCOMPLETO_SQL, [contaCtx.clienteContaId, envio.irmaosIds.map(String)]);
+      if (compartilhado) await regravarIrmaos({ db, w, contaCtx, order, envio, freteEntry, indiceCusto, evidencia: evCfg });
+      if (marcarIrmaos) await w.query(persistirEv ? MARCAR_PACK_INCOMPLETO_EVIDENCIA_SQL : MARCAR_PACK_INCOMPLETO_SQL, [contaCtx.clienteContaId, envio.irmaosIds.map(String)]);
       return alterou;
     };
     const mudou = compartilhado || marcarIrmaos ? await comTransacao(dbW, gravarGrupo) : await gravarGrupo(dbW);
-    return { pedidoId, resultado: mudou ? "gravado" : "inalterado", estado: linha.estado_margem, dateLastUpdated };
+    return { pedidoId, resultado: mudou ? "gravado" : "inalterado", estado: linha.estado_margem, dateLastUpdated, ...sombra };
   } catch (err) {
+    // Rollback manual da migration com o worker no ar: o cache dizia "colunas presentes" e o SQL com evidência falha
+    // com 42703. Reavalia o schema e refaz UMA vez no caminho legado (nada foi gravado: a transação do grupo desfaz).
+    // Só 42703 — qualquer outro erro segue o protocolo de exceção de sempre, sem ser mascarado.
+    if (err?.code === "42703" && deps.evidenciaPromo !== false && !deps._semEvidencia && /calculo_versao|afirmacao_financeira|evidencia_financeira/.test(String(err?.message || ""))) {
+      invalidarEvidenciaSchema(db);
+      avisarEvidenciaUmaVez("colunas de evidência ausentes (migration revertida?); seguindo no SQL legado");
+      return processarPedido(contaCtx, order, { ...deps, evidenciaPromo: false, _semEvidencia: true });
+    }
     const mensagem = String(err?.message || err).slice(0, 500);
     try {
       await dbW.query(INSERT_ERRO_SQL, [
@@ -435,6 +567,12 @@ module.exports = {
   calcularPedido,
   calcularPayloadHash,
   gravarLinha,
+  evidenciaPromoAtiva,
+  UPSERT_SQL,
+  UPSERT_EVIDENCIA_SQL,
+  MARCAR_PACK_INCOMPLETO_SQL,
+  MARCAR_PACK_INCOMPLETO_EVIDENCIA_SQL,
+  _linhasDosIrmaos: linhasDosIrmaos,
   competenciaDoPedido,
   ESTADOS_ESTAVEIS,
 };

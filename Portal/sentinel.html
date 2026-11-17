@@ -26,51 +26,59 @@
       <a href="bases.html">Bases</a>
       <a href="sentinel.html" aria-current="page">Sentinel</a>
     </nav>
+    <span class="sn-topbar__demo">Demonstração — dados fictícios, nenhuma conta real</span>
+    <nav class="sn-cenarios" aria-label="Cenário da demonstração">
+      <span>Cenário:</span>
+      <a href="sentinel.html?demo=1" data-cenario="">operação com casos</a>
+      <a href="sentinel.html?demo=1&amp;cenario=parado" data-cenario="parado">motor parado</a>
+      <a href="sentinel.html?demo=1&amp;cenario=limpo" data-cenario="limpo">tudo em ordem</a>
+    </nav>
   </header>
 
   <main class="vf-content" id="sn-app" aria-label="Sentinel">
     <div class="vf-page-shell">
-      <div class="vf-page-container vf-page-container--wide">
+      <div class="vf-page-container vf-page-container--wide sn-page">
         <div class="vf-page-header sn-header">
           <div class="vf-page-header__main">
-            <div class="vf-page-header__eyebrow">Monitoramento</div>
+            <div class="vf-page-header__eyebrow">Proteção operacional e financeira</div>
             <h1 class="vf-page-header__title">Sentinel</h1>
-            <p class="vf-page-header__description">Fila de incidentes de margem, custo e leitura das contas do Mercado Livre, por Squad.</p>
+            <p class="vf-page-header__description">O que pede ação agora nas contas do Mercado Livre da sua carteira, com o impacto, a evidência e o próximo passo.</p>
           </div>
-          <div class="vf-page-header__actions"><span class="sn-seal" id="sn-demo-seal" role="status" hidden>DADOS DE EXEMPLO</span></div>
+          <div class="vf-page-header__actions sn-header__acoes">
+            <span class="sn-seal" id="sn-demo-seal" role="status" hidden>DADOS DE EXEMPLO</span>
+            <span class="sn-frescor" id="sn-frescor" aria-live="polite"></span>
+          </div>
         </div>
 
-        <div id="sn-banners"></div>
-        <div class="vf-kpi-grid" id="sn-kpis" aria-label="Resumo"></div>
+        <section class="sn-motor is-unknown" id="sn-motor" aria-label="Estado do monitoramento" aria-live="polite"></section>
+        <section class="sn-sintese" id="sn-sintese" aria-label="Resumo financeiro e cobertura" hidden></section>
+
+        <div class="vf-tabs" role="tablist" id="sn-abas">
+          <button class="vf-tab" role="tab" data-tab="fila">Central de ações</button>
+          <button class="vf-tab" role="tab" data-tab="motor">Motor e contas</button>
+        </div>
 
         <div class="sn-toolbar" id="sn-filtros" role="group" aria-label="Filtros" hidden>
-          <select class="vf-select vf-select--sm" id="sn-f-squad" aria-label="Squad / carteira"></select>
+          <input class="vf-input vf-input--sm sn-busca" id="sn-f-busca" type="search" placeholder="Buscar anúncio (MLB) ou título" aria-label="Buscar">
           <select class="vf-select vf-select--sm" id="sn-f-conta" aria-label="Conta"></select>
+          <select class="vf-select vf-select--sm" id="sn-f-squad" aria-label="Squad"></select>
           <select class="vf-select vf-select--sm" id="sn-f-tipo" aria-label="Tipo"></select>
-          <select class="vf-select vf-select--sm" id="sn-f-status" aria-label="Status"></select>
-          <select class="vf-select vf-select--sm" id="sn-f-sev" aria-label="Prioridade"></select>
+          <select class="vf-select vf-select--sm" id="sn-f-sev" aria-label="Severidade"></select>
           <select class="vf-select vf-select--sm" id="sn-f-periodo" aria-label="Período (última ocorrência)">
-            <option value="24h">Últimas 24 h</option><option value="7d">Últimos 7 dias</option><option value="30d">Últimos 30 dias</option><option value="todos">Todo o período</option>
+            <option value="todos">Qualquer data</option><option value="24h">Ocorrência nas últimas 24 h</option><option value="7d">Ocorrência nos últimos 7 dias</option><option value="30d">Ocorrência nos últimos 30 dias</option>
           </select>
-          <input class="vf-input vf-input--sm" id="sn-f-busca" type="search" placeholder="Buscar MLB ou título" aria-label="Buscar">
-          <button type="button" class="vf-btn vf-btn--sm vf-btn--ghost" id="sn-clear">Limpar</button>
-          <span class="sn-count" id="sn-count" aria-live="polite"></span>
+          <button type="button" class="vf-btn vf-btn--sm vf-btn--ghost" id="sn-clear" hidden>Limpar filtros</button>
         </div>
 
-        <div class="vf-tabs" role="tablist">
-          <button class="vf-tab" role="tab" data-tab="fila">Fila de incidentes</button>
-          <button class="vf-tab" role="tab" data-tab="contas">Contas</button>
-          <button class="vf-tab" role="tab" data-tab="saude">Saúde do monitoramento</button>
-        </div>
         <div id="sn-painel" role="tabpanel" aria-live="polite"></div>
       </div>
     </div>
   </main>
 
   <div class="vf-drawer-backdrop" id="sn-backdrop"></div>
-  <aside class="vf-drawer vf-drawer--lg" id="sn-drawer" role="dialog" aria-modal="true" aria-labelledby="sn-drawer-title" aria-hidden="true">
+  <aside class="vf-drawer vf-drawer--lg sn-drawer" id="sn-drawer" role="dialog" aria-modal="true" aria-labelledby="sn-drawer-title" aria-hidden="true">
     <div class="vf-drawer__header">
-      <div class="vf-drawer__heading"><h2 class="vf-drawer__title" id="sn-drawer-title"></h2><div class="vf-drawer__subtitle" id="sn-drawer-sub"></div></div>
+      <div class="vf-drawer__heading"><div class="vf-drawer__subtitle sn-drawer__sub" id="sn-drawer-sub"></div><h2 class="vf-drawer__title" id="sn-drawer-title"></h2></div>
       <button type="button" class="vf-btn vf-btn--icon vf-btn--ghost" id="sn-drawer-close" aria-label="Fechar">✕</button>
     </div>
     <div class="vf-drawer__body" id="sn-drawer-body"></div>

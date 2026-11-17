@@ -25,6 +25,7 @@
 
 const crypto = require("crypto");
 const { classificarPedido } = require("./sentinelClassificacao");
+const { recalculoSchemaPronto } = require("./sentinelRecalculoBase");
 
 const DIA_MS = 24 * 60 * 60 * 1000;
 
@@ -457,11 +458,32 @@ async function avaliarIncidentesConta(db, contaId, opts = {}) {
       // Conta desativada: só a LEITURA deixa de ser observada (o worker não a lê mais).
       // Margem/custo continuam como estavam — o impacto não some do resumo.
       if (desativada && atual.tipo !== "leitura_atrasada") continue;
-      await c.query("UPDATE sentinel_incidentes SET condicao_ativa = FALSE, avaliado_em = $2, updated_at = $2 WHERE id = $1", [atual.id, agoraIso]);
       if (atual.status !== "resolvido") {
-        await registrarEvento(c, atual.id, "condicao_encerrada", "sentinel", atual.status, atual.status,
-          { motivo: desativada ? "conta desativada"
-            : atual.tipo === "leitura_atrasada" ? "leitura voltou ao normal" : `sem ocorrência nos últimos ${cfg.janelaDias} dias` });
+        // A condição pode ter acabado porque os pedidos foram RECALCULADOS com a base de custos atual (sentinelRecalculoBase),
+        // não porque "não houve ocorrência": o texto precisa dizer a verdade. Só consulta o marcador se a coluna existir.
+        let dados = { motivo: desativada ? "conta desativada"
+          : atual.tipo === "leitura_atrasada" ? "leitura voltou ao normal" : `sem ocorrência nos últimos ${cfg.janelaDias} dias` };
+        if (!desativada && (atual.tipo === "margem_negativa" || atual.tipo === "custo_pendente") && Array.isArray(atual.pedidos_ids) && atual.pedidos_ids.length
+          && await recalculoSchemaPronto(c)) {
+          // SAVEPOINT: se a coluna sumir entre a checagem e a consulta (rollback manual), isso NÃO pode abortar a transação inteira
+          // da avaliação — o texto cai no motivo genérico e o resto segue.
+          await c.query("SAVEPOINT sentinel_rec");
+          try {
+            const rec = (await c.query(
+              `SELECT COUNT(*)::int AS n, MAX(recalculo_base->>'em') AS em FROM sentinel_pedidos
+                WHERE cliente_conta_id = $1 AND pedido_id = ANY($2::text[]) AND recalculo_base IS NOT NULL
+                  AND (recalculo_base->>'em')::timestamptz > COALESCE($3::timestamptz, '-infinity'::timestamptz)`,
+              [contaId, atual.pedidos_ids.map(String), atual.avaliado_em])).rows[0];
+            await c.query("RELEASE SAVEPOINT sentinel_rec");
+            if (rec && rec.n > 0) dados = { motivo: "pedidos recalculados com a base de custos atual: a condição deixou de ocorrer", recalculoBase: { pedidos: rec.n, em: rec.em } };
+          } catch (_) {
+            await c.query("ROLLBACK TO SAVEPOINT sentinel_rec");
+          }
+        }
+        await c.query("UPDATE sentinel_incidentes SET condicao_ativa = FALSE, avaliado_em = $2, updated_at = $2 WHERE id = $1", [atual.id, agoraIso]);
+        await registrarEvento(c, atual.id, "condicao_encerrada", "sentinel", atual.status, atual.status, dados);
+      } else {
+        await c.query("UPDATE sentinel_incidentes SET condicao_ativa = FALSE, avaliado_em = $2, updated_at = $2 WHERE id = $1", [atual.id, agoraIso]);
       }
       resumo.encerrados += 1;
     }
